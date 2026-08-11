@@ -1,0 +1,6 @@
+/factor
+/dist/
+/.cache/
+*.log
+coverage.out
+coverage.html
