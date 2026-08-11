@@ -23,6 +23,7 @@
 - [ ] 11. Skills loader + prompt slot + skill_install + tests
 - [ ] 12. MCP stdio client + dynamic tool mounting + mcp_* tools + tests
 - [ ] 13. Self-management tools (config_get/config_set, pkg_install) + tests
+- [ ] 13b. Browser suite (chromedp: attach-or-launch, headed default, nobrowser tag) + tests
 - [ ] CHECKPOINT: gateway runs; all green
 
 ## Phase 5: Polish & ship
