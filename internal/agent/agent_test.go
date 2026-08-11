@@ -58,6 +58,7 @@ func (f *fakeEngine) Recall(context.Context, string, int, float64) ([]memory.Mem
 func (f *fakeEngine) Forget(context.Context, string, string) error    { return nil }
 func (f *fakeEngine) Reflect(context.Context) (map[string]any, error) { return nil, nil }
 func (f *fakeEngine) Status(context.Context) (map[string]any, error)  { return nil, nil }
+func (f *fakeEngine) Enabled() bool                                   { return true }
 func (f *fakeEngine) Healthy() bool                                   { return f.healthy }
 func (f *fakeEngine) Close() error                                    { return nil }
 

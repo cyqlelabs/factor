@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
@@ -155,9 +156,28 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn) (st
 		toolCtx:    tools.ToolContext{Channel: msg.Channel, ChatID: msg.ChatID, SessionKey: msg.SessionKey()},
 	}, t)
 	if err == nil && l.ambient != nil {
-		go l.ambient.StoreExchange(msg.Content, reply)
+		l.wg.Add(1)
+		go func() {
+			defer l.wg.Done()
+			l.ambient.StoreExchange(msg.Content, reply)
+		}()
 	}
 	return reply, err
+}
+
+// WaitBackground blocks until async work (memory stores, compaction) drains,
+// or the timeout passes. One-shot mode calls this so memory writes are not
+// lost to process exit.
+func (l *Loop) WaitBackground(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		l.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
 }
 
 // execute is the turn state machine: assemble → chat → tools → steer → repeat.

@@ -156,6 +156,7 @@ func runChat(configPath, sessionName, message string) error {
 			return err
 		}
 		fmt.Println(reply)
+		a.Loop.WaitBackground(2 * time.Minute) // let memory writes land (bounded by StoreExchange itself)
 		return nil
 	}
 
@@ -187,12 +188,12 @@ func runChat(configPath, sessionName, message string) error {
 			return scanner.Err()
 		}
 		line := strings.TrimSpace(scanner.Text())
-		switch {
-		case line == "":
+		switch line {
+		case "":
 			continue
-		case line == "/quit" || line == "/exit":
+		case "/quit", "/exit":
 			return nil
-		case line == "/new":
+		case "/new":
 			sessionKey = fmt.Sprintf("cli:%s-%d", sessionName, time.Now().Unix())
 			fmt.Println("(started a fresh session)")
 			continue
