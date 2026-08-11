@@ -3,29 +3,29 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"sync"
 
 	"github.com/cyqlelabs/factor/internal/config"
 )
 
 // NewConfigTools lets the agent inspect and modify its own configuration.
-// Reads are secret-redacted; writes are schema-validated and persisted.
+// Both tools operate on the config FILE (the live in-memory config is
+// immutable while running): reads are secret-redacted, writes are
+// schema-validated, persisted atomically, and apply on restart.
 func NewConfigTools(cfg *config.Config) []Tool {
-	mu := &sync.Mutex{}
+	path := cfg.Path()
 	return []Tool{
-		&configGetTool{cfg: cfg, mu: mu},
-		&configSetTool{cfg: cfg, mu: mu},
+		&configGetTool{path: path},
+		&configSetTool{path: path},
 	}
 }
 
 type configGetTool struct {
-	cfg *config.Config
-	mu  *sync.Mutex
+	path string
 }
 
 func (t *configGetTool) Name() string { return "config_get" }
 func (t *configGetTool) Description() string {
-	return "Read Factor's own configuration (secrets are redacted). Optional dotted key, e.g. 'provider.model' or 'tools.disabled'; omit for the full config."
+	return "Read Factor's configuration file (secrets are redacted). Optional dotted key, e.g. 'provider.model' or 'tools.disabled'; omit for the full config."
 }
 func (t *configGetTool) Parameters() map[string]any {
 	return map[string]any{
@@ -34,9 +34,11 @@ func (t *configGetTool) Parameters() map[string]any {
 	}
 }
 func (t *configGetTool) Execute(_ context.Context, args map[string]any) *Result {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	val, err := t.cfg.Get(StringArg(args, "key"))
+	cfg, err := config.ReadFile(t.path)
+	if err != nil {
+		return Errorf("%v", err)
+	}
+	val, err := cfg.Get(StringArg(args, "key"))
 	if err != nil {
 		return Errorf("%v", err)
 	}
@@ -48,13 +50,12 @@ func (t *configGetTool) Execute(_ context.Context, args map[string]any) *Result 
 }
 
 type configSetTool struct {
-	cfg *config.Config
-	mu  *sync.Mutex
+	path string
 }
 
 func (t *configSetTool) Name() string { return "config_set" }
 func (t *configSetTool) Description() string {
-	return "Set one configuration value by dotted key (e.g. key='heartbeat.interval_minutes', value=15) and persist it. Prompt/tool settings apply on the next turn; provider and memory changes need a restart. Confirm with the user before changing provider credentials."
+	return "Set one configuration value by dotted key (e.g. key='heartbeat.interval_minutes', value=15) and persist it to the config file. Changes apply on the next start (use workspace instruction files for hot-editable behavior). Confirm with the user before changing provider credentials."
 }
 func (t *configSetTool) Parameters() map[string]any {
 	return map[string]any{
@@ -67,14 +68,12 @@ func (t *configSetTool) Parameters() map[string]any {
 	}
 }
 func (t *configSetTool) Execute(_ context.Context, args map[string]any) *Result {
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	key := StringArg(args, "key")
-	if err := t.cfg.Set(key, args["value"]); err != nil {
+	err := config.Update(t.path, func(cfg *config.Config) error {
+		return cfg.Set(key, args["value"])
+	})
+	if err != nil {
 		return Errorf("%v", err)
 	}
-	if err := t.cfg.Save(); err != nil {
-		return Errorf("set applied in memory but save failed: %v", err)
-	}
-	return Textf("Set %s and saved config. Provider/memory/channel changes take effect after a gateway restart.", key)
+	return Textf("Set %s and saved the config file. It takes effect on the next factor start (or gateway restart).", key)
 }

@@ -323,3 +323,20 @@ func TestWebFetchRejectsBadScheme(t *testing.T) {
 		t.Error("file:// scheme allowed")
 	}
 }
+
+func TestExecDenyRmFlagOrder(t *testing.T) {
+	g := testGuard(t)
+	et := execTool(t, g)
+	for _, bad := range []string{"rm -fr /tmp/x", "rm -f -r build", "rm -r -f build", "rm -Rf things"} {
+		res := et.Execute(context.Background(), map[string]any{"command": bad})
+		if !res.IsError {
+			t.Errorf("command %q not blocked", bad)
+		}
+	}
+	for _, ok := range []string{"rm foo.txt", "rm -f single.txt", "rm -r emptydir"} {
+		res := et.Execute(context.Background(), map[string]any{"command": ok})
+		if res.IsError && strings.Contains(res.ForLLM, "blocked") {
+			t.Errorf("benign command %q blocked: %s", ok, res.ForLLM)
+		}
+	}
+}

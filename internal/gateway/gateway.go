@@ -119,6 +119,7 @@ func Run(configPath string) error {
 	slog.Info("shutting down")
 	manager.Stop()
 	a.Jobs.Wait()
+	a.Loop.WaitBackground(30 * time.Second) // in-flight turns, memory stores, compaction
 	return nil
 }
 

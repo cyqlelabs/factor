@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/caarlos0/env/v11"
 )
@@ -230,6 +231,20 @@ func Default() *Config {
 // Load reads the config file (DefaultPath when path is empty), overlays it on
 // defaults, then applies FACTOR_* environment overrides.
 func Load(path string) (*Config, error) {
+	cfg, err := loadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := env.Parse(cfg); err != nil {
+		return nil, fmt.Errorf("env overrides: %w", err)
+	}
+	cfg.normalize()
+	return cfg, nil
+}
+
+// loadFile reads defaults + file WITHOUT env overrides — the form safe to
+// write back to disk (env secrets must never be persisted).
+func loadFile(path string) (*Config, error) {
 	if path == "" {
 		path = DefaultPath()
 	}
@@ -246,11 +261,33 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 	}
-	if err := env.Parse(cfg); err != nil {
-		return nil, fmt.Errorf("env overrides: %w", err)
-	}
-	cfg.normalize()
 	return cfg, nil
+}
+
+var fileMu sync.Mutex
+
+// Update atomically load-modifies-saves the config FILE. The live in-memory
+// Config is deliberately immutable after startup (concurrent turns read it
+// lock-free); durable changes go through here and apply on restart.
+func Update(path string, fn func(*Config) error) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	cfg, err := loadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := fn(cfg); err != nil {
+		return err
+	}
+	return cfg.Save()
+}
+
+// ReadFile returns a fresh file-backed copy (no env overlay), for
+// introspection consistent with what Update sees.
+func ReadFile(path string) (*Config, error) {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	return loadFile(path)
 }
 
 // Path returns where this config was loaded from (or will be saved to).
