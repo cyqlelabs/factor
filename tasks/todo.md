@@ -1,24 +1,25 @@
 # Factor — Task List
 
 ## Phase 1: Foundation
-- [ ] 1. Repo bootstrap (go.mod, .gitignore, LICENSE, Makefile, version, CI skeleton)
-- [ ] 2. Config + workspace (JSON + FACTOR_* env, templates, redaction, raw channel/MCP sections) + tests
-- [ ] 3. Providers (OpenAI-compat, Anthropic, classifier, fallback/cooldown) + tests
+- [x] 1. Repo bootstrap (go.mod, .gitignore, LICENSE, Makefile, version, CI skeleton)
+- [x] 2. Config + workspace (JSON + FACTOR_* env, templates, redaction, raw channel/MCP sections) + tests
+- [x] 3. Providers (OpenAI-compat, Anthropic, classifier, fallback/cooldown) + tests
 - [ ] CHECKPOINT: build/vet/test clean
 
 ## Phase 2: Core chat vertical
-- [ ] 4. Bus + JSONL session store + tests
+- [x] 4. Bus + JSONL session store + tests
 - [ ] 5. Agent loop (steering, turn state machine, context builder + instructions.d, tool registry w/ config gating, fs tools, CLI REPL) + e2e mock test
-- [ ] 6. exec + web_fetch + web_search tools + tests
+- [x] 6. exec + web_fetch + web_search tools + tests
 - [ ] CHECKPOINT: chat with tool use works; race clean
 
 ## Phase 3: The soul — smrti
-- [ ] 7. memory.Engine + smrti client + sidecar manager + tests
+- [x] 7. memory.Engine + smrti client + sidecar manager + tests
 - [ ] 8. Ambient recall/store + memory tools + turn wiring + tests
 - [ ] CHECKPOINT: inject/store verified vs fake smrti; degraded mode tested
 
 ## Phase 4: Companion daemon + extensibility
 - [ ] 9. Channel registry + Telegram connector + manager + gateway daemon + tests
+- [ ] 9b. Background job engine (job_start exec|task, status/list/cancel, completion → proactive session notification) + tests
 - [ ] 10. Cron + heartbeat + tests
 - [ ] 11. Skills loader + prompt slot + skill_install + tests
 - [ ] 12. MCP stdio client + dynamic tool mounting + mcp_* tools + tests
