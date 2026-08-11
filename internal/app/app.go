@@ -105,12 +105,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	jobEngine := jobs.NewEngine(ctx, ws,
 		loop.ProcessDirect,
 		func(job *jobs.Job) {
+			v := job.Snapshot()
 			content := fmt.Sprintf(
 				"[system] Background job %s (%s, %q) finished with state %s.\nOutput tail:\n%s\n\nReport the outcome to the user concisely.",
-				job.ID, job.Kind, job.Description, job.State, job.OutputTail())
+				v.ID, v.Kind, v.Description, v.State, job.OutputTail())
 			b.PublishInbound(bus.InboundMessage{
-				Channel: job.Origin.Channel,
-				ChatID:  job.Origin.ChatID,
+				Channel: v.Origin.Channel,
+				ChatID:  v.Origin.ChatID,
 				Content: content,
 				Time:    time.Now(),
 			})
@@ -122,6 +123,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			return loop.ProcessDirect(ctx, job.Message, "cron:"+job.ID)
 		},
 		func(channelName, chatID, content string) {
+			// A job scheduled from the CLI has no live channel under the
+			// gateway; fall back to the last active external chat.
+			if channelName == "cli" {
+				if ch, chat, ok := loop.LastChannel(); ok {
+					channelName, chatID = ch, chat
+				}
+			}
 			b.PublishOutbound(bus.OutboundMessage{Channel: channelName, ChatID: chatID, Content: content})
 		})
 	if err != nil {

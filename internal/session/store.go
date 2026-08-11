@@ -163,7 +163,7 @@ func (s *Store) Summary(key string) string {
 }
 
 // SetSummary records a summary and logically truncates all but the last
-// keepLast messages.
+// keepLast messages (counted at call time).
 func (s *Store) SetSummary(key, summary string, keepLast int) error {
 	l := s.lock(key)
 	l.Lock()
@@ -177,6 +177,29 @@ func (s *Store) SetSummary(key, summary string, keepLast int) error {
 		skip = 0
 	}
 	return s.writeMeta(key, meta{Skip: skip, Summary: summary})
+}
+
+// SetSummaryAt records a summary with an absolute physical skip offset.
+// Because the log is append-only, an offset computed from an earlier
+// snapshot stays valid even if messages were appended meanwhile — this is
+// what compaction must use so a mid-summarize append can never shift the
+// cut past the chosen turn-safe boundary.
+func (s *Store) SetSummaryAt(key, summary string, skip int) error {
+	l := s.lock(key)
+	l.Lock()
+	defer l.Unlock()
+	if skip < 0 {
+		skip = 0
+	}
+	return s.writeMeta(key, meta{Skip: skip, Summary: summary})
+}
+
+// Skip returns the current physical truncation offset.
+func (s *Store) Skip(key string) int {
+	l := s.lock(key)
+	l.Lock()
+	defer l.Unlock()
+	return s.readMeta(key).Skip
 }
 
 // SetSkip logically truncates the first skip messages, keeping the summary.

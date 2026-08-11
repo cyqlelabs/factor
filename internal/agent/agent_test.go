@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -420,5 +421,103 @@ func TestSkillCatalogInPrompt(t *testing.T) {
 	}
 	if strings.Contains(p, "wttr.in") {
 		t.Error("skill body leaked into prompt (progressive disclosure broken)")
+	}
+}
+
+func TestCompactionSurvivesConcurrentAppends(t *testing.T) {
+	// Regression: the truncation offset must be absolute. Messages appended
+	// while the summarize LLM call is in flight must stay in live history,
+	// and the cut must hold the boundary chosen before the call.
+	h := newHarness(t)
+	key := "cli:busy"
+	for i := range 10 {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		_ = h.store.Append(key, provider.Message{Role: role, Content: fmt.Sprintf("old-%d", i)})
+	}
+	h.chat.script = []func(*provider.Request) (*provider.Response, error){
+		func(*provider.Request) (*provider.Response, error) {
+			// mid-summarize: another turn appends to the same session
+			_ = h.store.Append(key, provider.Message{Role: "user", Content: "raced-user"})
+			_ = h.store.Append(key, provider.Message{Role: "assistant", Content: "raced-reply"})
+			return &provider.Response{Content: "the summary"}, nil
+		},
+	}
+	if err := h.loop.compact(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	history, err := h.store.History(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contents []string
+	for _, m := range history {
+		contents = append(contents, m.Content)
+	}
+	joined := strings.Join(contents, ",")
+	if !strings.Contains(joined, "raced-user") || !strings.Contains(joined, "raced-reply") {
+		t.Fatalf("messages appended during summarize were truncated: %v", contents)
+	}
+	if history[0].Role != "user" {
+		t.Errorf("cut drifted off the turn-safe boundary; history starts with %q", history[0].Role)
+	}
+	if h.store.Summary(key) != "the summary" {
+		t.Errorf("summary = %q", h.store.Summary(key))
+	}
+}
+
+func TestProcessDirectSerializesPerSession(t *testing.T) {
+	// Regression: direct turns honor the one-live-turn claim, so overlapping
+	// cron firings (same session key) cannot interleave histories.
+	h := newHarness(t)
+	release := make(chan struct{})
+	h.tool.block = release
+	h.chat.script = []func(*provider.Request) (*provider.Response, error){
+		toolCall("probe", map[string]any{"value": "slow"}),
+		final("first done"),
+		final("second done"),
+	}
+	key := "cron:job1"
+	firstDone := make(chan string, 1)
+	go func() {
+		reply, _ := h.loop.ProcessDirect(context.Background(), "first", key)
+		firstDone <- reply
+	}()
+	// wait until the first turn is live (blocked in the tool)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		h.loop.mu.Lock()
+		_, live := h.loop.active[key]
+		h.loop.mu.Unlock()
+		if live || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	secondDone := make(chan string, 1)
+	go func() {
+		reply, _ := h.loop.ProcessDirect(context.Background(), "second", key)
+		secondDone <- reply
+	}()
+	select {
+	case <-secondDone:
+		t.Fatal("second turn completed while first held the session")
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(release)
+	if r := <-firstDone; r != "first done" {
+		t.Errorf("first = %q", r)
+	}
+	if r := <-secondDone; r != "second done" {
+		t.Errorf("second = %q", r)
+	}
+	history, _ := h.store.History(key)
+	// serialized: first,asst(tool),tool,asst-final, then second,asst-final
+	for i, m := range history {
+		if m.Content == "second" && i != 4 {
+			t.Errorf("interleaved history: %d %+v", i, history)
+		}
 	}
 }

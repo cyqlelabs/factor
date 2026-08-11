@@ -40,12 +40,22 @@ type Config struct {
 
 type Telegram struct {
 	apiBase string
+	token   string
 	allow   map[string]bool
 	b       *bus.MessageBus
 	client  *http.Client
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	offset  int64
+}
+
+// redact keeps the bot token out of error chains: transport errors embed the
+// full request URL, which contains the token, and errors end up in logs.
+func (t *Telegram) redact(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.ReplaceAll(err.Error(), t.token, "[token]"))
 }
 
 func New(cfg Config, b *bus.MessageBus) (*Telegram, error) {
@@ -58,6 +68,7 @@ func New(cfg Config, b *bus.MessageBus) (*Telegram, error) {
 	}
 	t := &Telegram{
 		apiBase: base + "/bot" + cfg.Token,
+		token:   cfg.Token,
 		allow:   map[string]bool{},
 		b:       b,
 		client:  &http.Client{Timeout: 70 * time.Second},
@@ -132,12 +143,12 @@ func (t *Telegram) getUpdates(ctx context.Context) ([]update, error) {
 	}
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, t.redact(err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return nil, err
+		return nil, t.redact(err)
 	}
 	var parsed struct {
 		OK          bool     `json:"ok"`
@@ -190,7 +201,7 @@ func (t *Telegram) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return err
+		return t.redact(err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

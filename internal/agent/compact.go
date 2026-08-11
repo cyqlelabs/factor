@@ -63,8 +63,14 @@ func (l *Loop) maybeCompactAsync(in turnInput) {
 }
 
 // compact summarizes the old portion of a session at a turn-safe boundary
-// and truncates the live history to the recent tail.
+// and truncates the live history to the recent tail. Compactions are
+// serialized: the truncation offset is absolute (snapshot skip + cut), so
+// messages appended during the summarize LLM call are never truncated and
+// the cut cannot drift off its turn-safe boundary.
 func (l *Loop) compact(ctx context.Context, sessionKey string) error {
+	l.compactMu.Lock()
+	defer l.compactMu.Unlock()
+	priorSkip := l.sessions.Skip(sessionKey)
 	history, err := l.sessions.History(sessionKey)
 	if err != nil {
 		return err
@@ -110,7 +116,7 @@ func (l *Loop) compact(ctx context.Context, sessionKey string) error {
 		return fmt.Errorf("summarize: %w", err)
 	}
 
-	if err := l.sessions.SetSummary(sessionKey, strings.TrimSpace(resp.Content), len(history)-cut); err != nil {
+	if err := l.sessions.SetSummaryAt(sessionKey, strings.TrimSpace(resp.Content), priorSkip+cut); err != nil {
 		return err
 	}
 	return l.sessions.Compact(sessionKey)

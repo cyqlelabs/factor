@@ -40,10 +40,11 @@ type Loop struct {
 	builder  *ContextBuilder
 	ambient  *memory.Ambient
 
-	mu     sync.Mutex
-	active map[string]*turn
-	sem    chan struct{}
-	wg     sync.WaitGroup
+	mu        sync.Mutex
+	active    map[string]*turn
+	sem       chan struct{}
+	wg        sync.WaitGroup
+	compactMu sync.Mutex
 
 	lastMu      sync.Mutex
 	lastChannel bus.InboundMessage
@@ -78,31 +79,61 @@ func (l *Loop) Run(ctx context.Context) {
 	}
 }
 
-func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
-	key := msg.SessionKey()
+// claim registers a live turn for key, or steers msg into the existing one.
+// The steering send happens under l.mu — the same lock release drains under —
+// so a message can never slip into a turn that has already been released.
+func (l *Loop) claim(key string, steer *bus.InboundMessage) (*turn, bool) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	if t, running := l.active[key]; running {
-		l.mu.Unlock()
-		select {
-		case t.steering <- msg:
-			slog.Info("steering message into live turn", "session", key)
-		default:
-			slog.Warn("steering queue full, dropping message", "session", key)
+		if steer != nil {
+			select {
+			case t.steering <- *steer:
+				slog.Info("steering message into live turn", "session", key)
+			default:
+				slog.Warn("steering queue full, dropping message", "session", key)
+			}
 		}
-		return
+		return nil, false
 	}
 	t := &turn{steering: make(chan bus.InboundMessage, steeringBuffer)}
 	l.active[key] = t
-	l.mu.Unlock()
+	return t, true
+}
+
+// release removes the claim and returns any steering messages that arrived
+// too late for the finished turn, so the caller can republish them as fresh
+// inbound work instead of losing them.
+func (l *Loop) release(key string, t *turn) []bus.InboundMessage {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.active, key)
+	var leftover []bus.InboundMessage
+	for {
+		select {
+		case msg := <-t.steering:
+			leftover = append(leftover, msg)
+		default:
+			return leftover
+		}
+	}
+}
+
+func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
+	key := msg.SessionKey()
+	t, ok := l.claim(key, &msg)
+	if !ok {
+		return
+	}
 
 	l.recordLastChannel(msg)
 	l.wg.Add(1)
 	go func() {
 		defer l.wg.Done()
 		defer func() {
-			l.mu.Lock()
-			delete(l.active, key)
-			l.mu.Unlock()
+			for _, missed := range l.release(key, t) {
+				l.bus.PublishInbound(missed)
+			}
 		}()
 		select {
 		case l.sem <- struct{}{}:
@@ -122,13 +153,32 @@ func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 	}()
 }
 
-// ProcessDirect runs a synchronous turn outside the bus (CLI, cron).
+// ProcessDirect runs a synchronous turn outside the bus (CLI one-shot,
+// cron, delegated jobs). It honors the one-live-turn-per-session invariant:
+// if the session is busy (e.g. an overlapping cron firing), it waits for
+// the claim instead of interleaving histories.
 func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (string, error) {
 	msg := bus.InboundMessage{Channel: "cli", ChatID: strings.TrimPrefix(sessionKey, "cli:"), Content: content}
 	if idx := strings.IndexByte(sessionKey, ':'); idx > 0 {
 		msg.Channel, msg.ChatID = sessionKey[:idx], sessionKey[idx+1:]
 	}
-	t := &turn{steering: make(chan bus.InboundMessage, steeringBuffer)}
+	var t *turn
+	for {
+		var ok bool
+		if t, ok = l.claim(sessionKey, nil); ok {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	defer func() {
+		for _, missed := range l.release(sessionKey, t) {
+			l.bus.PublishInbound(missed)
+		}
+	}()
 	return l.runTurn(ctx, msg, t)
 }
 
