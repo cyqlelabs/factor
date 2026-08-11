@@ -139,7 +139,7 @@ func (t *Telegram) getUpdates(ctx context.Context) ([]update, error) {
 	url := fmt.Sprintf("%s/getUpdates?timeout=50&offset=%d&allowed_updates=[\"message\"]", t.apiBase, t.offset)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, t.redact(err) // the URL in this error embeds the token
 	}
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -196,7 +196,7 @@ func (t *Telegram) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.apiBase+"/sendMessage", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return t.redact(err) // the URL in this error embeds the token
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := t.client.Do(req)

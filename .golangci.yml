@@ -6,7 +6,10 @@ linters:
       exclude-functions:
         - (io.Closer).Close
         - (*os.File).Close
+        - (net.Listener).Close
+        - (net.Conn).Close
         - (net/http.ResponseWriter).Write
         - fmt.Fprint
         - fmt.Fprintf
+        - fmt.Fprintln
         - (*bufio.Writer).Flush

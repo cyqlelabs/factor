@@ -138,13 +138,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			return loop.ProcessDirect(ctx, job.Message, "cron:"+job.ID)
 		},
 		func(channelName, chatID, content string) {
-			// A job scheduled from the CLI has no live channel under the
-			// gateway; fall back to the last active external chat.
-			if channelName == "cli" {
-				if ch, chat, ok := loop.LastChannel(); ok {
-					channelName, chatID = ch, chat
-				}
-			}
+			channelName, chatID = cronTarget(channelName, chatID, loop.LastChannel)
 			b.PublishOutbound(bus.OutboundMessage{Channel: channelName, ChatID: chatID, Content: content})
 		})
 	if err != nil {
@@ -168,6 +162,19 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 
 		closeBrowser: closeBrowser,
 	}, nil
+}
+
+// cronTarget resolves where a scheduled job's result should go. A job
+// created from the CLI has no live channel under the gateway, so it follows
+// the user to the last external chat they used.
+func cronTarget(channelName, chatID string, last func() (string, string, bool)) (string, string) {
+	if channelName != "cli" {
+		return channelName, chatID
+	}
+	if ch, chat, ok := last(); ok {
+		return ch, chat
+	}
+	return channelName, chatID
 }
 
 func (a *App) Close() {

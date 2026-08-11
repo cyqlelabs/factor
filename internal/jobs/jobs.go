@@ -142,6 +142,9 @@ func NewEngine(ctx context.Context, workdir string, runTask TaskRunner, notify N
 
 // Start launches a background job and returns immediately.
 func (e *Engine) Start(kind Kind, description, payload string, origin Origin) (*Job, error) {
+	if kind != KindExec && kind != KindTask {
+		return nil, fmt.Errorf("unknown job kind %q (want %q or %q)", kind, KindExec, KindTask)
+	}
 	if strings.TrimSpace(payload) == "" {
 		return nil, fmt.Errorf("empty %s payload", kind)
 	}
@@ -185,8 +188,6 @@ func (e *Engine) Start(kind Kind, description, payload string, origin Origin) (*
 			err = e.runExec(jobCtx, job)
 		case KindTask:
 			err = e.runTaskJob(jobCtx, job)
-		default:
-			err = fmt.Errorf("unknown job kind %q", kind)
 		}
 		switch {
 		case jobCtx.Err() != nil:

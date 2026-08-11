@@ -17,6 +17,12 @@ import (
 // TestMain lets the test binary act as a fake MCP server when re-executed.
 func TestMain(m *testing.M) {
 	if os.Getenv("FACTOR_TEST_MCP_SERVER") == "1" {
+		// FACTOR_TEST_MCP_MODE selects the richer server variants defined in
+		// manager_extra_test.go; unset keeps the original echo server.
+		if mode := os.Getenv("FACTOR_TEST_MCP_MODE"); mode != "" {
+			richServerMain(mode)
+			os.Exit(0)
+		}
 		fakeServerMain()
 		os.Exit(0)
 	}

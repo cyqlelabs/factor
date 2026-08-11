@@ -73,12 +73,7 @@ func (s *Session) ensure() (context.Context, error) {
 	if s.tabCtx != nil && s.tabCtx.Err() == nil {
 		return s.tabCtx, nil
 	}
-	if s.tabCancel != nil {
-		s.tabCancel()
-	}
-	if s.allocCancel != nil {
-		s.allocCancel()
-	}
+	s.teardownLocked()
 
 	base := context.Background()
 	attach := s.cfg.AttachURL
@@ -134,29 +129,36 @@ func (s *Session) ensure() (context.Context, error) {
 	select {
 	case err := <-done:
 		if err != nil {
-			s.tabCancel()
-			s.tabCtx = nil
+			s.teardownLocked()
 			return nil, fmt.Errorf("browser start failed: %w", err)
 		}
 	case <-time.After(45 * time.Second):
-		s.tabCancel()
-		s.tabCtx = nil
+		s.teardownLocked()
 		return nil, fmt.Errorf("browser start timed out")
 	}
 	return s.tabCtx, nil
+}
+
+// teardownLocked releases the current browser handles exactly once. Calling
+// chromedp's cancel funcs twice on a half-started browser blocks forever, so
+// every field is cleared as it is released. The caller holds s.mu.
+func (s *Session) teardownLocked() {
+	if s.tabCancel != nil {
+		s.tabCancel()
+		s.tabCancel = nil
+	}
+	if s.allocCancel != nil {
+		s.allocCancel()
+		s.allocCancel = nil
+	}
+	s.tabCtx = nil
 }
 
 // Close shuts the managed browser down.
 func (s *Session) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.tabCancel != nil {
-		s.tabCancel()
-	}
-	if s.allocCancel != nil {
-		s.allocCancel()
-	}
-	s.tabCtx = nil
+	s.teardownLocked()
 }
 
 // run executes chromedp actions with a per-call timeout.
@@ -466,9 +468,22 @@ func (t *backTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
 func (t *backTool) Execute(ctx context.Context, _ map[string]any) *tools.Result {
-	if err := t.s.run(ctx, 20*time.Second, chromedp.NavigateBack()); err != nil {
+	// history.back() rather than chromedp.NavigateBack(): the latter waits
+	// for a lifecycle event that a back/forward-cache restore never fires,
+	// so it stalls until timeout on most real pages.
+	var outcome string
+	script := `(() => {
+		if (history.length <= 1) return "no-history";
+		history.back();
+		return "ok";
+	})()`
+	if err := t.s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &outcome)); err != nil {
 		return tools.Errorf("back failed: %v", err)
 	}
+	if outcome == "no-history" {
+		return tools.Errorf("back failed: this tab has no earlier page to return to")
+	}
+	time.Sleep(600 * time.Millisecond) // let the restore or navigation settle
 	r, err := t.s.read(ctx)
 	if err != nil {
 		return tools.Errorf("went back, but read failed: %v", err)

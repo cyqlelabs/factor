@@ -97,6 +97,9 @@ func (s *Store) readMeta(key string) meta {
 	if err == nil {
 		_ = json.Unmarshal(data, &m)
 	}
+	if m.Skip < 0 {
+		m.Skip = 0 // a hand-edited or corrupt sidecar must not slice out of range
+	}
 	return m
 }
 
@@ -208,6 +211,9 @@ func (s *Store) SetSkip(key string, skip int) error {
 	l.Lock()
 	defer l.Unlock()
 	m := s.readMeta(key)
+	if skip < 0 {
+		skip = 0
+	}
 	m.Skip = skip
 	return s.writeMeta(key, m)
 }
