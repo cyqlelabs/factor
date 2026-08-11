@@ -130,12 +130,11 @@ func ValidateArgs(schema, args map[string]any) error {
 	if schema == nil {
 		return nil
 	}
-	if req, ok := schema["required"].([]any); ok {
-		for _, r := range req {
-			name, _ := r.(string)
-			if _, present := args[name]; !present {
-				return fmt.Errorf("missing required argument %q", name)
-			}
+	// Accept both JSON-decoded ([]any) and hand-written Go ([]string) schemas
+	// so a new tool cannot silently lose required-argument checking.
+	for _, name := range requiredNames(schema["required"]) {
+		if _, present := args[name]; !present {
+			return fmt.Errorf("missing required argument %q", name)
 		}
 	}
 	props, _ := schema["properties"].(map[string]any)
@@ -151,6 +150,22 @@ func ValidateArgs(schema, args map[string]any) error {
 		if !typeMatches(want, raw) {
 			return fmt.Errorf("argument %q must be a %s", key, want)
 		}
+	}
+	return nil
+}
+
+func requiredNames(raw any) []string {
+	switch req := raw.(type) {
+	case []any:
+		out := make([]string, 0, len(req))
+		for _, r := range req {
+			if name, ok := r.(string); ok {
+				out = append(out, name)
+			}
+		}
+		return out
+	case []string:
+		return req
 	}
 	return nil
 }

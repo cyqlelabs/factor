@@ -10,7 +10,9 @@ LDFLAGS   := -s -w \
 
 export CGO_ENABLED=0
 
-.PHONY: build build-all build-tiny install test test-race vet fmt lint check clean
+COVER_MIN := 90
+
+.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check clean
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/factor
@@ -40,6 +42,15 @@ test:
 test-race:
 	CGO_ENABLED=1 go test -race ./...
 
+# Statement coverage across every package that has tests, gated at COVER_MIN.
+# Test-less packages are listed out explicitly: they contribute nothing to the
+# profile, and some Go installs ship without the covdata tool they'd need.
+cover:
+	go test -coverprofile=coverage.out $$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
+	@go tool cover -func=coverage.out | tail -1
+	@total=$$(go tool cover -func=coverage.out | tail -1 | awk '{print $$3}' | tr -d '%'); \
+	awk -v t="$$total" -v min="$(COVER_MIN)" 'BEGIN { if (t+0 < min+0) { printf "FAIL: coverage %.1f%% is below the %s%% minimum\n", t, min; exit 1 } printf "coverage %.1f%% meets the %s%% minimum\n", t, min }'
+
 vet:
 	go vet ./...
 
@@ -49,7 +60,7 @@ fmt:
 lint:
 	golangci-lint run
 
-check: vet test-race
+check: vet test-race cover
 	@gofmt -l . | tee /dev/stderr | wc -l | grep -q '^0$$'
 
 clean:

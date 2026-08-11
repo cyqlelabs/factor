@@ -185,17 +185,21 @@ under your own account for yourself; set `channels.telegram.allow_from`; keep
 ## Development
 
 ```bash
-make check        # gofmt + vet + race tests
+make check        # gofmt + vet + race tests + coverage gate
+make cover        # statement coverage, fails under 90%
 make build        # local binary
 make build-all    # release cross-compile (incl. GOAMD64=v1 for old x86-64)
 make build-tiny   # -tags nobrowser: smallest binary
 ```
 
-The test suite runs against fakes (scripted providers, fake smrti, fake Telegram
-API, a re-exec fake MCP server, a scripted desktop where every helper command is
-asserted) plus live tests — a real headless-Chrome browser run and a real
-desktop round-trip — that auto-skip when the machine cannot host them.
+CI fails below 90% statement coverage. The suite runs against fakes — scripted
+providers, a fake smrti (spawned by re-execing the test binary, so the real
+sidecar supervision and env contract are exercised), a fake Telegram API, a fake
+MCP server over real stdio JSON-RPC, a scripted desktop where every helper
+command is asserted, and a daemon test that boots the gateway and shuts it down
+with SIGTERM — plus live tests, a real headless-Chrome browser run and a real
+desktop round-trip, that auto-skip when the machine cannot host them.
 
 ## License
 
-MIT © Cyqle Labs
+MIT © CyqleLabs

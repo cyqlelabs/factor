@@ -123,8 +123,10 @@ func firstLine(s string, max int) string {
 	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
 		s = s[:idx]
 	}
-	if len(s) > max {
-		s = s[:max] + "…"
+	// Cut on runes, not bytes: a byte-slice through a multi-byte character
+	// would put invalid UTF-8 in front of the model and the user.
+	if runes := []rune(s); len(runes) > max {
+		s = string(runes[:max]) + "…"
 	}
 	return s
 }

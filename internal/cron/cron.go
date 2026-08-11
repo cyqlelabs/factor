@@ -141,6 +141,11 @@ func (s *Service) Add(schedule, message, channelName, chatID string) (Job, error
 	}
 	s.jobs[job.ID] = job
 	err := s.save()
+	if err != nil {
+		// Roll back so memory never disagrees with disk.
+		delete(s.jobs, job.ID)
+		s.seq--
+	}
 	s.mu.Unlock()
 	if err != nil {
 		return Job{}, err
@@ -153,11 +158,13 @@ func (s *Service) Add(schedule, message, channelName, chatID string) (Job, error
 func (s *Service) Remove(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.jobs[id]; !ok {
+	job, ok := s.jobs[id]
+	if !ok {
 		return fmt.Errorf("no cron job %q", id)
 	}
 	delete(s.jobs, id)
 	if err := s.save(); err != nil {
+		s.jobs[id] = job // roll back: the job is still on disk
 		return err
 	}
 	s.wake()
@@ -172,8 +179,10 @@ func (s *Service) SetEnabled(id string, enabled bool) error {
 	if !ok {
 		return fmt.Errorf("no cron job %q", id)
 	}
+	previous := j.Enabled
 	j.Enabled = enabled
 	if err := s.save(); err != nil {
+		j.Enabled = previous // roll back to what is still on disk
 		return err
 	}
 	s.wake()

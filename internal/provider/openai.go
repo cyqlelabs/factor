@@ -17,7 +17,6 @@ type OpenAI struct {
 	apiKey  string
 	model   string
 	client  *http.Client
-	headers map[string]string
 
 	reasoning *Reasoning
 	dialect   string // "object" | "effort" | "" (send nothing)
@@ -139,10 +138,6 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 	if p.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
-	for k, v := range p.headers {
-		httpReq.Header.Set(k, v)
-	}
-
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
 		return nil, ClassifyTransport(p.Name(), err)

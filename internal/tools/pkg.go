@@ -130,11 +130,13 @@ func (t *PkgInstallTool) Execute(ctx context.Context, args map[string]any) *Resu
 	}
 
 	argv := append([]string{}, spec.install...)
+	elevated := false
 	if spec.system && t.euid() != 0 {
 		if _, err := t.lookPath("sudo"); err != nil {
 			return Errorf("%s needs root and sudo is unavailable; ask the user to install manually", name)
 		}
 		argv = append([]string{"sudo", "-n"}, argv...)
+		elevated = true
 	}
 	argv = append(argv, packages...)
 
@@ -144,7 +146,13 @@ func (t *PkgInstallTool) Execute(ctx context.Context, args map[string]any) *Resu
 	}
 	if err != nil {
 		if strings.Contains(out, "a password is required") {
-			return Errorf("%s needs an interactive sudo password; ask the user to run: %s", name, strings.Join(argv[2:], " "))
+			// Suggest the command without our non-interactive sudo prefix.
+			suggestion := argv
+			if elevated {
+				suggestion = argv[2:]
+			}
+			return Errorf("%s needs an interactive sudo password; ask the user to run: sudo %s",
+				name, strings.Join(suggestion, " "))
 		}
 		return Errorf("install failed via %s: %v\n%s", name, err, out)
 	}
