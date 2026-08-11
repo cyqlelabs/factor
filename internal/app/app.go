@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/agent"
+	"github.com/cyqlelabs/factor/internal/browser"
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/cron"
 	"github.com/cyqlelabs/factor/internal/jobs"
+	"github.com/cyqlelabs/factor/internal/mcp"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/session"
@@ -33,6 +35,9 @@ type App struct {
 	Loop     *agent.Loop
 	Jobs     *jobs.Engine
 	Cron     *cron.Service
+	MCP      *mcp.Manager
+
+	closeBrowser func()
 }
 
 // New assembles a fully wired Factor instance. The memory sidecar starts in
@@ -75,6 +80,19 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(tools.NewWebTools()...)
 	registry.Register(memory.NewTools(engine)...)
 	registry.Register(&skills.InstallTool{Root: filepath.Join(ws, "skills")})
+	registry.Register(tools.NewConfigTools(cfg)...)
+	registry.Register(tools.NewPkgInstallTool())
+
+	closeBrowser := func() {}
+	if cfg.Browser.Enabled {
+		var browserTools []tools.Tool
+		browserTools, closeBrowser = browser.NewTools(cfg.Browser, ws)
+		registry.Register(browserTools...)
+	}
+
+	mcpManager := mcp.NewManager(registry, cfg)
+	registry.Register(mcp.NewTools(mcpManager)...)
+	go mcpManager.StartAll(ctx) // dead servers must not stall startup
 
 	loader := skills.NewLoader(filepath.Join(ws, "skills"), filepath.Join(config.Home(), "skills"))
 	builder := agent.NewContextBuilder(cfg, loader, ambient)
@@ -123,10 +141,17 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Loop:     loop,
 		Jobs:     jobEngine,
 		Cron:     cronService,
+		MCP:      mcpManager,
+
+		closeBrowser: closeBrowser,
 	}, nil
 }
 
 func (a *App) Close() {
+	a.closeBrowser()
+	if a.MCP != nil {
+		a.MCP.CloseAll()
+	}
 	if a.Memory != nil {
 		_ = a.Memory.Close()
 	}
