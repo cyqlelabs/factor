@@ -153,5 +153,6 @@ func (c *Client) CheckHealth(ctx context.Context) error {
 	return err
 }
 
+func (c *Client) Enabled() bool { return true }
 func (c *Client) Healthy() bool { return c.healthy.Load() }
 func (c *Client) Close() error  { return nil }

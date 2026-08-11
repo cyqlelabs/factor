@@ -39,7 +39,7 @@ func ReadPidFile() (int, bool) {
 	if err != nil || pid <= 0 {
 		return 0, false
 	}
-	return pid, syscall.Kill(pid, 0) == nil
+	return pid, pidAlive(pid)
 }
 
 func writePidFile() error {
@@ -61,7 +61,7 @@ func Run(configPath string) error {
 	if err := writePidFile(); err != nil {
 		return err
 	}
-	defer os.Remove(pidPath())
+	defer func() { _ = os.Remove(pidPath()) }()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

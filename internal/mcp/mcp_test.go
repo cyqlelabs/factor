@@ -89,7 +89,7 @@ func TestClientHandshakeListCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	specs, err := client.ListTools(context.Background())
 	if err != nil {
