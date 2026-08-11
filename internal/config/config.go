@@ -23,6 +23,7 @@ type Config struct {
 	Channels      map[string]json.RawMessage `json:"channels,omitempty"`
 	MCP           MCPConfig                  `json:"mcp"`
 	Tools         ToolsConfig                `json:"tools"`
+	Browser       BrowserConfig              `json:"browser"`
 	Heartbeat     HeartbeatConfig            `json:"heartbeat"`
 	Gateway       GatewayConfig              `json:"gateway"`
 
@@ -132,6 +133,17 @@ func (t ToolsConfig) IsToolEnabled(name string) bool {
 	return true
 }
 
+// BrowserConfig controls the CDP browser integration. With AttachURL empty,
+// Factor probes the standard DevTools port and falls back to launching a
+// managed instance (visible unless Headless).
+type BrowserConfig struct {
+	Enabled     bool   `json:"enabled"`
+	AttachURL   string `json:"attach_url,omitempty" env:"FACTOR_BROWSER_ATTACH_URL"`
+	Command     string `json:"command,omitempty"`
+	Headless    bool   `json:"headless"`
+	UserDataDir string `json:"user_data_dir,omitempty"`
+}
+
 type HeartbeatConfig struct {
 	Enabled         bool `json:"enabled"`
 	IntervalMinutes int  `json:"interval_minutes"`
@@ -203,6 +215,10 @@ func Default() *Config {
 			ExecTimeoutSecs:     120,
 			EnableDenyPatterns:  true,
 			AllowInstall:        true,
+		},
+		Browser: BrowserConfig{
+			Enabled:     true,
+			UserDataDir: filepath.Join(home, "browser"),
 		},
 		Heartbeat: HeartbeatConfig{Enabled: true, IntervalMinutes: 30},
 		Gateway:   GatewayConfig{Host: "127.0.0.1", Port: 8720},

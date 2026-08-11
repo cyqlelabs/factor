@@ -89,6 +89,7 @@ inside smrti's reflect epochs.
 - [ ] Task 11: Skills — loader (frontmatter, workspace/global roots), summaries-only prompt slot, progressive disclosure via read_file, `skill_install`. Tests.
 - [ ] Task 12: MCP client (stdio JSON-RPC 2.0: initialize/tools list/tools call) + dynamic tool mounting + `mcp_add`/`mcp_remove`/`mcp_list` tools. Tests against a fake MCP server.
 - [ ] Task 13: Self-management tools — `config_get`/`config_set` with redaction + hot reload, `pkg_install` (apt/apk/pacman/pip/npm detection). Tests.
+- [ ] Task 13b: Browser tool suite — CDP via chromedp; attach to the user's running Chrome/Chromium/Brave (DevTools port) or launch managed instance, headed by default; tools: browser_navigate/read/click/fill/screenshot/eval/back; `nobrowser` build tag strips it. Tests against a stub CDP target where feasible.
 
 ### Checkpoint: Daemon
 - [ ] `factor gateway` runs CLI-less with cron + heartbeat + Telegram wired; all tests green
