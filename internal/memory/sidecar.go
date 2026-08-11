@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -84,11 +85,19 @@ type Sidecar struct {
 	logDir   string
 	external bool
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	binaryMissing atomic.Bool
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 func (s *Sidecar) start(parent context.Context) {
+	// Synchronous first probe: a warm server (kept alive by a previous run,
+	// or external) is recognized before the caller's first turn, so recall
+	// works from message one instead of racing the async supervisor.
+	probeCtx, probeCancel := context.WithTimeout(parent, 2*time.Second)
+	_ = s.client.CheckHealth(probeCtx)
+	probeCancel()
+
 	ctx, cancel := context.WithCancel(parent)
 	s.cancel = cancel
 	s.wg.Add(1)
@@ -153,25 +162,25 @@ func (s *Sidecar) buildEnv() []string {
 	return env
 }
 
+// spawnAndWait starts a detached smrti process and blocks until it exits or
+// ctx is done. With keep_alive (the default) the process survives Factor's
+// exit: one-shot commands and restarts adopt the warm engine instead of
+// paying the cold start every time.
 func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 	command := s.cfg.Command
 	if command == "" {
 		command = "smrti"
 	}
 	if _, err := exec.LookPath(command); err != nil {
+		s.binaryMissing.Store(true)
 		return fmt.Errorf("%q not found in PATH (pip install smrti): %w", command, err)
 	}
+	s.binaryMissing.Store(false)
 
-	cmd := exec.CommandContext(ctx, command, "serve", "rest",
+	cmd := exec.Command(command, "serve", "rest",
 		"--host", s.cfg.Host, "--port", strconv.Itoa(s.cfg.Port))
 	cmd.Env = s.buildEnv()
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return cmd.Process.Signal(syscall.SIGTERM)
-	}
-	cmd.WaitDelay = 8 * time.Second
+	detachSidecar(cmd) // own session: survives Factor unless we signal it
 
 	if s.logDir != "" {
 		if err := os.MkdirAll(s.logDir, 0o755); err == nil {
@@ -186,11 +195,14 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	slog.Info("smrti sidecar started", "pid", cmd.Process.Pid, "port", s.cfg.Port)
+	slog.Info("smrti sidecar started", "pid", cmd.Process.Pid, "port", s.cfg.Port, "keep_alive", s.cfg.KeepAlive)
+
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
 
 	// Poll health while the process lives. First start can be slow (ONNX
 	// model download); warn at the startup timeout but keep waiting.
-	pollCtx, stopPoll := context.WithCancel(ctx)
+	pollCtx, stopPoll := context.WithCancel(context.Background())
 	defer stopPoll()
 	go func() {
 		deadline := time.Now().Add(time.Duration(s.cfg.StartupTimeoutSecs) * time.Second)
@@ -209,7 +221,24 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 		}
 	}()
 
-	return cmd.Wait()
+	select {
+	case err := <-waitCh:
+		return err
+	case <-ctx.Done():
+		if s.cfg.KeepAlive {
+			slog.Info("leaving smrti running for the next factor invocation", "pid", cmd.Process.Pid)
+			go func() { <-waitCh }() // reap if it dies while we're still alive
+			return ctx.Err()
+		}
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case err := <-waitCh:
+			return err
+		case <-time.After(8 * time.Second):
+			_ = cmd.Process.Kill()
+			return <-waitCh
+		}
+	}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) {
@@ -232,6 +261,7 @@ func (s *Sidecar) Forget(ctx context.Context, query, reason string) error {
 }
 func (s *Sidecar) Reflect(ctx context.Context) (map[string]any, error) { return s.client.Reflect(ctx) }
 func (s *Sidecar) Status(ctx context.Context) (map[string]any, error)  { return s.client.Status(ctx) }
+func (s *Sidecar) Enabled() bool                                       { return !s.binaryMissing.Load() }
 func (s *Sidecar) Healthy() bool                                       { return s.client.Healthy() }
 
 func (s *Sidecar) Close() error {

@@ -25,8 +25,8 @@ func (f *fakeAPI) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		switch {
-		case r.URL.Path == "/botTOKEN/getUpdates":
+		switch r.URL.Path {
+		case "/botTOKEN/getUpdates":
 			f.offsets = append(f.offsets, r.URL.Query().Get("offset"))
 			if f.served {
 				time.Sleep(50 * time.Millisecond)
@@ -35,7 +35,7 @@ func (f *fakeAPI) handler(t *testing.T) http.HandlerFunc {
 			}
 			f.served = true
 			fmt.Fprint(w, f.updates)
-		case r.URL.Path == "/botTOKEN/sendMessage":
+		case "/botTOKEN/sendMessage":
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.sent = append(f.sent, body)
@@ -71,7 +71,7 @@ func TestPollPublishesAllowedOnly(t *testing.T) {
 	if err := tg.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	defer tg.Stop()
+	defer func() { _ = tg.Stop() }()
 
 	select {
 	case msg := <-b.Inbound():

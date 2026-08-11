@@ -49,7 +49,8 @@ type Engine interface {
 	Forget(ctx context.Context, query, reason string) error
 	Reflect(ctx context.Context) (map[string]any, error)
 	Status(ctx context.Context) (map[string]any, error)
-	Healthy() bool
+	Enabled() bool // false only for the disabled (off-mode) engine
+	Healthy() bool // reachable right now
 	Close() error
 }
 
@@ -65,5 +66,6 @@ func (Noop) Reflect(context.Context) (map[string]any, error) { return map[string
 func (Noop) Status(context.Context) (map[string]any, error) {
 	return map[string]any{"mode": "off"}, nil
 }
+func (Noop) Enabled() bool { return false }
 func (Noop) Healthy() bool { return false }
 func (Noop) Close() error  { return nil }

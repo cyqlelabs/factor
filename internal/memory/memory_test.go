@@ -207,7 +207,7 @@ func TestSidecarAdoptsRunningServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer eng.Close()
+	defer func() { _ = eng.Close() }()
 
 	deadline := time.Now().Add(3 * time.Second)
 	for !eng.Healthy() && time.Now().Before(deadline) {

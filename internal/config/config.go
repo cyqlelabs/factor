@@ -71,6 +71,7 @@ type MemoryConfig struct {
 	Mode                string   `json:"mode" env:"FACTOR_MEMORY_MODE"` // sidecar | external | off
 	URL                 string   `json:"url,omitempty" env:"FACTOR_MEMORY_URL"`
 	Command             string   `json:"command"`
+	KeepAlive           bool     `json:"keep_alive"` // sidecar outlives Factor; later runs adopt it warm
 	Host                string   `json:"host"`
 	Port                int      `json:"port" env:"FACTOR_MEMORY_PORT"`
 	DBPath              string   `json:"db_path"`
@@ -194,6 +195,7 @@ func Default() *Config {
 		Memory: MemoryConfig{
 			Mode:                "sidecar",
 			Command:             "smrti",
+			KeepAlive:           true,
 			Host:                "127.0.0.1",
 			Port:                8420,
 			DBPath:              filepath.Join(home, "memory.db"),

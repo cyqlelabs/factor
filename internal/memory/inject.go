@@ -59,6 +59,13 @@ func FormatMemories(mems []Memory, maxCharsEach int) string {
 	}
 	var constraints, background []string
 	for _, m := range mems {
+		if strings.TrimSpace(m.Content) == "" {
+			// concept atoms carry their text in the label
+			m.Content = m.Label
+			if strings.TrimSpace(m.Content) == "" {
+				continue
+			}
+		}
 		conf := int(m.Confidence*100 + 0.5)
 		switch m.Severity {
 		case SeverityCriticalWarning:
@@ -147,13 +154,26 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 }
 
 // StoreExchange persists both sides of a completed turn as episodes.
-// Call it from a goroutine; it must never block a reply.
+// Call it from a goroutine; it must never block a reply. If the memory
+// engine is still cold-booting (first sidecar start downloads models), it
+// waits for health rather than dropping the very first memories.
 func (a *Ambient) StoreExchange(userText, assistantText string) {
-	if a == nil || a.Engine == nil {
+	if a == nil || a.Engine == nil || !a.Engine.Enabled() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	healthDeadline := time.Now().Add(90 * time.Second)
+	for !a.Engine.Healthy() {
+		if time.Now().After(healthDeadline) || ctx.Err() != nil {
+			slog.Warn("memory store dropped; engine never became healthy")
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+		}
+	}
 	store := func(prefix, text string) {
 		text = strings.TrimSpace(text)
 		if text == "" || a.ignored(text) {
