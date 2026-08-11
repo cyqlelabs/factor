@@ -63,6 +63,32 @@ func (j *Job) OutputTail() string {
 	return j.output.String()
 }
 
+// View is a consistent point-in-time copy of a job's mutable state, safe to
+// read while the job is running or being cancelled.
+type View struct {
+	ID          string
+	Kind        Kind
+	Description string
+	State       State
+	Started     time.Time
+	Finished    time.Time
+	Origin      Origin
+}
+
+func (j *Job) Snapshot() View {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return View{
+		ID:          j.ID,
+		Kind:        j.Kind,
+		Description: j.Description,
+		State:       j.State,
+		Started:     j.Started,
+		Finished:    j.Finished,
+		Origin:      j.Origin,
+	}
+}
+
 // TaskRunner runs a delegated agent sub-turn (wired to Loop.ProcessDirect).
 type TaskRunner func(ctx context.Context, prompt, sessionKey string) (string, error)
 
@@ -153,7 +179,7 @@ func (e *Engine) Start(kind Kind, description, payload string, origin Origin) (*
 			err = fmt.Errorf("unknown job kind %q", kind)
 		}
 		switch {
-		case jobCtx.Err() != nil && job.State == StateRunning:
+		case jobCtx.Err() != nil:
 			e.finish(job, StateCancelled, err)
 		case err != nil:
 			e.finish(job, StateFailed, err)

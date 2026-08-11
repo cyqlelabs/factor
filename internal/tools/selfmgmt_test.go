@@ -24,6 +24,9 @@ func testConfig(t *testing.T) *config.Config {
 func TestConfigGetRedactsSecrets(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Provider.APIKey = "sk-very-secret"
+	if err := cfg.Save(); err != nil { // config_get reads the file
+		t.Fatal(err)
+	}
 	get := NewConfigTools(cfg)[0]
 
 	res := get.Execute(context.Background(), map[string]any{"key": "provider"})
@@ -52,8 +55,9 @@ func TestConfigSetPersistsAndValidates(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("set = %+v", res)
 	}
-	if cfg.Heartbeat.IntervalMinutes != 15 {
-		t.Errorf("in-memory value = %d", cfg.Heartbeat.IntervalMinutes)
+	// the live config is immutable; the FILE carries the change
+	if cfg.Heartbeat.IntervalMinutes == 15 {
+		t.Error("config_set must not mutate the live config")
 	}
 	reloaded, err := config.Load(cfg.Path())
 	if err != nil {
@@ -68,10 +72,17 @@ func TestConfigSetPersistsAndValidates(t *testing.T) {
 	if !res.IsError {
 		t.Error("type-invalid set accepted")
 	}
-	// list values work
+	// list values work and persist
 	res = set.Execute(context.Background(), map[string]any{"key": "tools.disabled", "value": []any{"exec"}})
-	if res.IsError || cfg.Tools.IsToolEnabled("exec") {
-		t.Errorf("list set failed: %+v", res)
+	if res.IsError {
+		t.Fatalf("list set failed: %+v", res)
+	}
+	reloaded, err = config.Load(cfg.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Tools.IsToolEnabled("exec") {
+		t.Error("list value not persisted")
 	}
 }
 

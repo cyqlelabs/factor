@@ -14,7 +14,10 @@ import (
 // administration stay allowed on purpose (Factor is a desktop companion).
 var defaultDenyPatterns = []string{
 	`\brm\s+(-[a-zA-Z]*\s+)*(/|/\*|~|\$HOME)\s*$`,
-	`\brm\s+-[a-zA-Z]*r[a-zA-Z]*f`,
+	// recursive+force in any spelling/order: -rf, -Rf, -fr, -r ... -f, -f ... -r
+	`\brm\s+(\S+\s+)*-[a-zA-Z]*([rR][a-zA-Z]*[fF]|[fF][a-zA-Z]*[rR])`,
+	`\brm\s+(\S+\s+)*-[a-zA-Z]*[rR][a-zA-Z]*(\s+\S+)*\s+-[a-zA-Z]*[fF]`,
+	`\brm\s+(\S+\s+)*-[a-zA-Z]*[fF][a-zA-Z]*(\s+\S+)*\s+-[a-zA-Z]*[rR]\b`,
 	`\bmkfs\b`,
 	`\bdd\b.*\bof=/dev/(sd|nvme|mmcblk|vd|hd)`,
 	`>\s*/dev/(sd|nvme|mmcblk|vd|hd)`,

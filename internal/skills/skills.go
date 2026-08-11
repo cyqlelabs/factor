@@ -38,6 +38,9 @@ func NewLoader(roots ...string) *Loader {
 	return &Loader{roots: kept}
 }
 
+// Roots exposes the scan roots (the prompt cache stamps their SKILL.md files).
+func (l *Loader) Roots() []string { return l.roots }
+
 func (l *Loader) List() []Skill {
 	seen := map[string]bool{}
 	var out []Skill

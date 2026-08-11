@@ -68,8 +68,9 @@ func (t *listTool) Execute(_ context.Context, _ map[string]any) *tools.Result {
 	}
 	var b strings.Builder
 	for _, j := range list {
-		age := time.Since(j.Started).Round(time.Second)
-		fmt.Fprintf(&b, "%s [%s] %s — %s (started %s ago)\n", j.ID, j.State, j.Kind, j.Description, age)
+		v := j.Snapshot()
+		age := time.Since(v.Started).Round(time.Second)
+		fmt.Fprintf(&b, "%s [%s] %s — %s (started %s ago)\n", v.ID, v.State, v.Kind, v.Description, age)
 	}
 	return tools.Text(b.String())
 }
@@ -92,11 +93,12 @@ func (t *statusTool) Execute(_ context.Context, args map[string]any) *tools.Resu
 	if !ok {
 		return tools.Errorf("no job %q", tools.StringArg(args, "id"))
 	}
+	v := job.Snapshot()
 	tail := job.OutputTail()
 	if tail == "" {
 		tail = "(no output yet)"
 	}
-	return tools.Textf("%s [%s] %s\n--- output tail ---\n%s", job.ID, job.State, job.Description, tail)
+	return tools.Textf("%s [%s] %s\n--- output tail ---\n%s", v.ID, v.State, v.Description, tail)
 }
 
 type cancelTool struct{ engine *Engine }

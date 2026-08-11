@@ -20,17 +20,19 @@ type Manager struct {
 	registry *tools.Registry
 	cfg      *config.Config
 
-	mu        sync.Mutex
-	clients   map[string]*Client
-	toolNames map[string][]string
+	mu         sync.Mutex
+	clients    map[string]*Client
+	toolNames  map[string][]string
+	connecting map[string]bool
 }
 
 func NewManager(registry *tools.Registry, cfg *config.Config) *Manager {
 	return &Manager{
-		registry:  registry,
-		cfg:       cfg,
-		clients:   map[string]*Client{},
-		toolNames: map[string][]string{},
+		registry:   registry,
+		cfg:        cfg,
+		clients:    map[string]*Client{},
+		toolNames:  map[string][]string{},
+		connecting: map[string]bool{},
 	}
 }
 
@@ -46,14 +48,22 @@ func (m *Manager) StartAll(ctx context.Context) {
 	}
 }
 
-// Connect spawns one server and mounts its tools.
+// Connect spawns one server and mounts its tools. A reservation held for
+// the whole connect prevents two concurrent adds of the same name from
+// spawning a duplicate, orphaned server process.
 func (m *Manager) Connect(ctx context.Context, name string, srv config.MCPServer) error {
 	m.mu.Lock()
-	if _, exists := m.clients[name]; exists {
+	if _, exists := m.clients[name]; exists || m.connecting[name] {
 		m.mu.Unlock()
 		return fmt.Errorf("mcp server %q already connected", name)
 	}
+	m.connecting[name] = true
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.connecting, name)
+		m.mu.Unlock()
+	}()
 
 	client, err := Connect(ctx, name, srv.Command, srv.Args, srv.Env)
 	if err != nil {
@@ -150,6 +160,13 @@ func (t *mcpTool) Execute(ctx context.Context, args map[string]any) *tools.Resul
 	if text == "" {
 		text = "(empty result)"
 	}
+	// Bound what enters the context and the session log — a runaway MCP
+	// result must not make the session history unreadable.
+	const maxResult = 32 * 1024
+	if len(text) > maxResult {
+		half := maxResult / 2
+		text = text[:half] + fmt.Sprintf("\n... [%d bytes truncated] ...\n", len(text)-maxResult) + text[len(text)-half:]
+	}
 	return &tools.Result{ForLLM: text, IsError: isErr}
 }
 
@@ -200,12 +217,16 @@ func (t *addTool) Execute(ctx context.Context, args map[string]any) *tools.Resul
 	if err := t.m.Connect(ctx, name, srv); err != nil {
 		return tools.Errorf("connect failed (nothing saved): %v", err)
 	}
+	// Persist to the config FILE only; the live config stays immutable
+	// (concurrent turns read it lock-free).
+	err := config.Update(t.m.cfg.Path(), func(c *config.Config) error {
+		if c.MCP.Servers == nil {
+			c.MCP.Servers = map[string]config.MCPServer{}
+		}
+		c.MCP.Servers[name] = srv
+		return nil
+	})
 	t.m.mu.Lock()
-	if t.m.cfg.MCP.Servers == nil {
-		t.m.cfg.MCP.Servers = map[string]config.MCPServer{}
-	}
-	t.m.cfg.MCP.Servers[name] = srv
-	err := t.m.cfg.Save()
 	count := len(t.m.toolNames[name])
 	t.m.mu.Unlock()
 	if err != nil {
@@ -230,14 +251,12 @@ func (t *removeTool) Parameters() map[string]any {
 func (t *removeTool) Execute(_ context.Context, args map[string]any) *tools.Result {
 	name := tools.StringArg(args, "name")
 	discErr := t.m.Disconnect(name)
-	t.m.mu.Lock()
-	_, inConfig := t.m.cfg.MCP.Servers[name]
-	delete(t.m.cfg.MCP.Servers, name)
-	var saveErr error
-	if inConfig {
-		saveErr = t.m.cfg.Save()
-	}
-	t.m.mu.Unlock()
+	inConfig := false
+	saveErr := config.Update(t.m.cfg.Path(), func(c *config.Config) error {
+		_, inConfig = c.MCP.Servers[name]
+		delete(c.MCP.Servers, name)
+		return nil
+	})
 	if discErr != nil && !inConfig {
 		return tools.Errorf("%v", discErr)
 	}

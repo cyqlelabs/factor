@@ -62,9 +62,13 @@ func (cb *ContextBuilder) sourcePaths() []string {
 		sort.Strings(extra)
 		paths = append(paths, extra...)
 	}
-	if skillFiles, err := filepath.Glob(filepath.Join(ws, "skills", "*", "SKILL.md")); err == nil {
-		sort.Strings(skillFiles)
-		paths = append(paths, skillFiles...)
+	if cb.skills != nil {
+		for _, root := range cb.skills.Roots() {
+			if skillFiles, err := filepath.Glob(filepath.Join(root, "*", "SKILL.md")); err == nil {
+				sort.Strings(skillFiles)
+				paths = append(paths, skillFiles...)
+			}
+		}
 	}
 	return paths
 }

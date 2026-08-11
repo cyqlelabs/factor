@@ -63,6 +63,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode >= 500 {
+			c.healthy.Store(false) // server up but failing; don't act on stale health
+		}
 		msg := string(data)
 		if len(msg) > 300 {
 			msg = msg[:300]

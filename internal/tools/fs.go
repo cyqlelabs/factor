@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,9 +45,20 @@ func (t *readFileTool) Execute(_ context.Context, args map[string]any) *Result {
 	if err != nil {
 		return Errorf("%v", err)
 	}
-	data, err := os.ReadFile(path)
+	// Bounded read: never slurp a multi-GB file into memory.
+	f, err := os.Open(path)
 	if err != nil {
 		return Errorf("read %s: %v", path, err)
+	}
+	defer f.Close()
+	const readCap = 4 << 20
+	data, err := io.ReadAll(io.LimitReader(f, readCap+1))
+	if err != nil {
+		return Errorf("read %s: %v", path, err)
+	}
+	capped := len(data) > readCap
+	if capped {
+		data = data[:readCap]
 	}
 	content := string(data)
 	offset, limit := IntArg(args, "offset", 0), IntArg(args, "limit", 0)
@@ -63,7 +75,9 @@ func (t *readFileTool) Execute(_ context.Context, args map[string]any) *Result {
 		content = strings.Join(lines[start:end], "\n")
 	}
 	if len(content) > maxReadBytes {
-		content = content[:maxReadBytes] + fmt.Sprintf("\n... [truncated, %d bytes total; use offset/limit]", len(data))
+		content = content[:maxReadBytes] + fmt.Sprintf("\n... [truncated, %d bytes read; use offset/limit]", len(data))
+	} else if capped {
+		content += "\n... [file larger than 4MB; only the first 4MB was read]"
 	}
 	return Text(content)
 }
