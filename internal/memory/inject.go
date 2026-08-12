@@ -174,15 +174,19 @@ func (a *Ambient) StoreExchange(userText, assistantText string) {
 		case <-time.After(time.Second):
 		}
 	}
-	store := func(prefix, text string) {
+	// Who said it travels as the Source field, not as an English prefix on the
+	// content. A prefix is invisible to smrti's scoring and decay — it reads as
+	// ordinary text — so both sides of the turn used to be stored with equal
+	// standing. It is also untranslated text injected into a multilingual graph.
+	store := func(source, text string) {
 		text = strings.TrimSpace(text)
 		if text == "" || a.ignored(text) {
 			return
 		}
-		if _, err := a.Engine.Remember(ctx, RememberRequest{Content: prefix + text}); err != nil {
+		if _, err := a.Engine.Remember(ctx, RememberRequest{Content: text, Source: source}); err != nil {
 			slog.Debug("memory store dropped", "error", err)
 		}
 	}
-	store("User said: ", userText)
-	store("Assistant replied: ", assistantText)
+	store(SourceUser, userText)
+	store(SourceAgent, assistantText)
 }

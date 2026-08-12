@@ -101,9 +101,67 @@ func TestStoreExchangeWaitsForHealthThenStores(t *testing.T) {
 	if len(stored) != 2 {
 		t.Fatalf("stored %d memories, want 2", len(stored))
 	}
-	if !strings.HasPrefix(stored[0].Content, "User said: ") ||
-		!strings.HasPrefix(stored[1].Content, "Assistant replied: ") {
-		t.Errorf("stored contents = %+v", stored)
+	// Provenance rides on Source, not on an English prefix baked into Content.
+	if stored[0].Content != "user text" || stored[0].Source != SourceUser {
+		t.Errorf("user side = %+v", stored[0])
+	}
+	if stored[1].Content != "assistant text" || stored[1].Source != SourceAgent {
+		t.Errorf("assistant side = %+v", stored[1])
+	}
+}
+
+// The assistant's own turns must never be stored as if the user had said them:
+// smrti weights user-authored memory above agent-authored memory and only ever
+// prunes the latter, so an unmarked reply becomes a permanent graph fixture.
+func TestStoreExchangeMarksTheAssistantSide(t *testing.T) {
+	engine := &stubEngine{enabled: true, healthy: true}
+	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil)
+	a.StoreExchange("what should I do this weekend?", "here are some ideas: ...")
+	stored := engine.stored()
+	if len(stored) != 2 {
+		t.Fatalf("stored %d memories, want 2", len(stored))
+	}
+	if stored[1].Source != SourceAgent {
+		t.Errorf("assistant turn stored with source %q, want %q", stored[1].Source, SourceAgent)
+	}
+}
+
+func TestRememberOmitsSourceWhenUnset(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"status":"ok","atom_id":"a1"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "", "")
+	if _, err := c.Remember(context.Background(), RememberRequest{Content: "hello"}); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+	// Keeps the payload identical to what older Factor builds sent, so the
+	// wire format only changes when there is provenance to actually report.
+	if _, present := body["source"]; present {
+		t.Errorf("source sent when unset: %+v", body)
+	}
+}
+
+func TestRememberSendsSourceWhenSet(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"status":"ok","atom_id":"a1"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "", "")
+	_, err := c.Remember(context.Background(), RememberRequest{
+		Content: "a reply", Source: SourceAgent,
+	})
+	if err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+	if body["source"] != SourceAgent {
+		t.Errorf("source = %v, want %q", body["source"], SourceAgent)
 	}
 }
 

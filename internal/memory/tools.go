@@ -35,6 +35,11 @@ func (t *rememberTool) Parameters() map[string]any {
 			"probability": map[string]any{"type": "number", "description": "How true this is (0-1, default 0.8)"},
 			"valence":     map[string]any{"type": "number", "description": "Emotional tone -1..1; omit to auto-estimate"},
 			"evidence":    map[string]any{"type": "string", "description": "Why you believe this (beliefs only)"},
+			"source": map[string]any{
+				"type":        "string",
+				"enum":        []any{"user", "agent"},
+				"description": "Who authored this. Use \"agent\" for facts about yourself — mistakes you made, actions you took. Omit for anything the user told you.",
+			},
 		},
 		"required": []any{"content"},
 	}
@@ -45,6 +50,10 @@ func (t *rememberTool) Execute(ctx context.Context, args map[string]any) *tools.
 		Type:        tools.StringArg(args, "type"),
 		Probability: tools.FloatArg(args, "probability", 0.8),
 		Evidence:    tools.StringArg(args, "evidence"),
+		Source:      tools.StringArg(args, "source"),
+	}
+	if req.Source != SourceUser && req.Source != SourceAgent {
+		req.Source = "" // unrecognised value: store with default user standing
 	}
 	if v, ok := args["valence"].(float64); ok {
 		req.Valence = &v

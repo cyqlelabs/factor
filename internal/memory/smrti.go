@@ -101,6 +101,12 @@ func (c *Client) Remember(ctx context.Context, req RememberRequest) (string, err
 	if req.Valence != nil {
 		body["valence"] = *req.Valence
 	}
+	// Omitted when empty so the payload is byte-identical to what earlier
+	// builds sent; older smrti versions ignore the field, newer ones default
+	// it to "user", so either way an unset source behaves as before.
+	if req.Source != "" {
+		body["source"] = req.Source
+	}
 	if err := c.do(ctx, http.MethodPost, "/remember", body, &out); err != nil {
 		return "", err
 	}
