@@ -57,6 +57,16 @@ type Origin struct {
 	SessionKey string
 }
 
+// state reads the job's state under the job's own lock. Every mutable Job
+// field is guarded by j.mu, not by the engine lock, so readers that hold only
+// the engine lock (prune) must still come through here — otherwise they race
+// a goroutine finishing its job.
+func (j *Job) state() State {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.State
+}
+
 func (j *Job) OutputTail() string {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -260,14 +270,15 @@ func (e *Engine) Cancel(id string) error {
 		return fmt.Errorf("no job %s", id)
 	}
 	job.mu.Lock()
-	running := job.State == StateRunning
+	current := job.State
+	running := current == StateRunning
 	if running {
 		job.State = StateCancelled
 		job.Finished = time.Now()
 	}
 	job.mu.Unlock()
 	if !running {
-		return fmt.Errorf("job %s already %s", id, job.State)
+		return fmt.Errorf("job %s already %s", id, current)
 	}
 	job.cancel()
 	return nil
@@ -277,7 +288,7 @@ func (e *Engine) Cancel(id string) error {
 func (e *Engine) prune() {
 	finished := 0
 	for _, id := range e.order {
-		if e.jobs[id].State != StateRunning {
+		if e.jobs[id].state() != StateRunning {
 			finished++
 		}
 	}
@@ -286,7 +297,7 @@ func (e *Engine) prune() {
 	}
 	var kept []string
 	for _, id := range e.order {
-		if finished > keepFinished && e.jobs[id].State != StateRunning {
+		if finished > keepFinished && e.jobs[id].state() != StateRunning {
 			delete(e.jobs, id)
 			finished--
 			continue

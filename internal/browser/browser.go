@@ -108,6 +108,14 @@ func (s *Session) ensure() (context.Context, error) {
 		if s.cfg.Headless {
 			opts = append(opts, chromedp.Headless, chromedp.Flag("disable-gpu", true))
 		}
+		// Chrome refuses to start as root, and distros that restrict
+		// unprivileged user namespaces (Ubuntu 23.10+, most CI images,
+		// containers) leave it with "No usable sandbox!". Dropping the
+		// sandbox is the documented workaround, so it is offered as an
+		// explicit opt-in rather than silently on.
+		if s.cfg.NoSandbox {
+			opts = append(opts, chromedp.NoSandbox)
+		}
 		allocCtx, s.allocCancel = chromedp.NewExecAllocator(base, opts...)
 	}
 
