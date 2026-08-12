@@ -86,8 +86,34 @@ type Sidecar struct {
 	external bool
 
 	binaryMissing atomic.Bool
+	installTried  atomic.Bool
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
+}
+
+// resolveCommand locates the smrti executable, installing it when it is
+// missing and memory.auto_install is on. The install runs at most once per
+// process: a machine without a usable Python installer must not re-attempt a
+// multi-minute install on every supervisor restart.
+func (s *Sidecar) resolveCommand(ctx context.Context) (string, error) {
+	if path, ok := FindSmrti(s.cfg.Command, config.Home()); ok {
+		return path, nil
+	}
+	if !s.cfg.AutoInstall {
+		return "", fmt.Errorf("%q not found in PATH and memory.auto_install is off (pip install smrti)", s.cfg.Command)
+	}
+	if s.installTried.Swap(true) {
+		return "", fmt.Errorf("%q not found and the automatic install already failed this run", s.cfg.Command)
+	}
+	slog.Info("smrti not found; installing it automatically")
+	path, method, err := Install(ctx, config.Home(), func(format string, args ...any) {
+		slog.Info("smrti install: " + fmt.Sprintf(format, args...))
+	})
+	if err != nil {
+		return "", err
+	}
+	slog.Info("smrti installed", "path", path, "method", method)
+	return path, nil
 }
 
 func (s *Sidecar) start(parent context.Context) {
@@ -167,13 +193,10 @@ func (s *Sidecar) buildEnv() []string {
 // exit: one-shot commands and restarts adopt the warm engine instead of
 // paying the cold start every time.
 func (s *Sidecar) spawnAndWait(ctx context.Context) error {
-	command := s.cfg.Command
-	if command == "" {
-		command = "smrti"
-	}
-	if _, err := exec.LookPath(command); err != nil {
+	command, err := s.resolveCommand(ctx)
+	if err != nil {
 		s.binaryMissing.Store(true)
-		return fmt.Errorf("%q not found in PATH (pip install smrti): %w", command, err)
+		return err
 	}
 	s.binaryMissing.Store(false)
 

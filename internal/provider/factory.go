@@ -16,17 +16,27 @@ var defaultAPIBases = map[string]string{
 	"llamacpp":   "http://127.0.0.1:8080/v1",
 }
 
+// DefaultAPIBase returns the built-in endpoint for a provider type ("" when
+// the type has none and api_base must be supplied).
+func DefaultAPIBase(providerType string) string {
+	if providerType == "anthropic" {
+		return "https://api.anthropic.com/v1"
+	}
+	return defaultAPIBases[providerType]
+}
+
 // New builds a Provider from one candidate. Every type except "anthropic" is
 // OpenAI-compatible; unknown types work too when api_base is set.
 func New(c config.Candidate) (Provider, error) {
 	if c.Model == "" {
 		return nil, fmt.Errorf("provider %q: model is required", c.Type)
 	}
+	reasoning := reasoningFrom(c.Reasoning)
 	if c.Type == "anthropic" {
 		if c.APIKey == "" {
 			return nil, fmt.Errorf("provider anthropic: api_key is required")
 		}
-		return NewAnthropic(c.APIBase, c.APIKey, c.Model), nil
+		return NewAnthropic(c.APIBase, c.APIKey, c.Model).WithReasoning(reasoning), nil
 	}
 	base := c.APIBase
 	if base == "" {
@@ -35,7 +45,7 @@ func New(c config.Candidate) (Provider, error) {
 	if base == "" {
 		return nil, fmt.Errorf("provider %q: api_base is required for unknown types", c.Type)
 	}
-	return NewOpenAI(base, c.APIKey, c.Model), nil
+	return NewOpenAI(base, c.APIKey, c.Model).WithReasoning(reasoning, c.Type), nil
 }
 
 // BuildChain assembles the failover chain from configuration.

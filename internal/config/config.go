@@ -24,6 +24,7 @@ type Config struct {
 	Channels      map[string]json.RawMessage `json:"channels,omitempty"`
 	MCP           MCPConfig                  `json:"mcp"`
 	Tools         ToolsConfig                `json:"tools"`
+	Desktop       DesktopConfig              `json:"desktop"`
 	Browser       BrowserConfig              `json:"browser"`
 	Heartbeat     HeartbeatConfig            `json:"heartbeat"`
 	Gateway       GatewayConfig              `json:"gateway"`
@@ -43,36 +44,72 @@ type AgentConfig struct {
 }
 
 // Candidate identifies one provider+model combination in the failover chain.
+// A nil Reasoning inherits the provider-level setting.
 type Candidate struct {
-	Type    string `json:"type"`
-	APIKey  string `json:"api_key,omitempty"`
-	APIBase string `json:"api_base,omitempty"`
-	Model   string `json:"model"`
+	Type      string           `json:"type"`
+	APIKey    string           `json:"api_key,omitempty"`
+	APIBase   string           `json:"api_base,omitempty"`
+	Model     string           `json:"model"`
+	Reasoning *ReasoningConfig `json:"reasoning,omitempty"`
 }
+
+// ReasoningConfig asks the model to think before answering. Each backend
+// spells this differently (OpenRouter takes a reasoning object, OpenAI and
+// Groq take reasoning_effort, Anthropic takes a thinking budget); Factor
+// translates one setting into whichever the active provider understands.
+// The fields are written even when empty: the section is overlaid on top of
+// the defaults at load time, so an omitted "effort" would silently restore
+// the default xhigh instead of the "off" the user asked for.
+type ReasoningConfig struct {
+	Effort    string `json:"effort"`     // xhigh | high | medium | low | minimal | none
+	MaxTokens int    `json:"max_tokens"` // explicit thinking budget; wins over effort
+	Exclude   bool   `json:"exclude"`    // think, but keep the reasoning out of the reply
+}
+
+// IsZero reports that nothing was configured (no reasoning parameters sent).
+func (r ReasoningConfig) IsZero() bool {
+	return r.Effort == "" && r.MaxTokens == 0 && !r.Exclude
+}
+
+// Off reports an explicit opt-out.
+func (r ReasoningConfig) Off() bool { return r.Effort == "none" && r.MaxTokens == 0 }
 
 type ProviderConfig struct {
-	Type             string      `json:"type" env:"FACTOR_PROVIDER_TYPE"`
-	APIKey           string      `json:"api_key,omitempty" env:"FACTOR_PROVIDER_API_KEY"`
-	APIBase          string      `json:"api_base,omitempty" env:"FACTOR_PROVIDER_API_BASE"`
-	Model            string      `json:"model" env:"FACTOR_PROVIDER_MODEL"`
-	MaxTokens        int         `json:"max_tokens"`
-	Temperature      float64     `json:"temperature,omitempty"`
-	Fallbacks        []Candidate `json:"fallbacks,omitempty"`
-	MaxRetries       int         `json:"max_retries"`
-	RetryBackoffSecs int         `json:"retry_backoff_secs"`
+	Type             string          `json:"type" env:"FACTOR_PROVIDER_TYPE"`
+	APIKey           string          `json:"api_key,omitempty" env:"FACTOR_PROVIDER_API_KEY"`
+	APIBase          string          `json:"api_base,omitempty" env:"FACTOR_PROVIDER_API_BASE"`
+	Model            string          `json:"model" env:"FACTOR_PROVIDER_MODEL"`
+	Reasoning        ReasoningConfig `json:"reasoning"`
+	MaxTokens        int             `json:"max_tokens"`
+	Temperature      float64         `json:"temperature,omitempty"`
+	Fallbacks        []Candidate     `json:"fallbacks,omitempty"`
+	MaxRetries       int             `json:"max_retries"`
+	RetryBackoffSecs int             `json:"retry_backoff_secs"`
 }
 
-// Candidates returns the primary candidate followed by the fallbacks.
+// Candidates returns the primary candidate followed by the fallbacks, each
+// carrying the reasoning settings it should use.
 func (p ProviderConfig) Candidates() []Candidate {
-	out := []Candidate{{Type: p.Type, APIKey: p.APIKey, APIBase: p.APIBase, Model: p.Model}}
-	return append(out, p.Fallbacks...)
+	primary := Candidate{Type: p.Type, APIKey: p.APIKey, APIBase: p.APIBase, Model: p.Model}
+	reasoning := p.Reasoning
+	primary.Reasoning = &reasoning
+	out := []Candidate{primary}
+	for _, f := range p.Fallbacks {
+		if f.Reasoning == nil {
+			inherited := p.Reasoning
+			f.Reasoning = &inherited
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 type MemoryConfig struct {
 	Mode                string   `json:"mode" env:"FACTOR_MEMORY_MODE"` // sidecar | external | off
 	URL                 string   `json:"url,omitempty" env:"FACTOR_MEMORY_URL"`
 	Command             string   `json:"command"`
-	KeepAlive           bool     `json:"keep_alive"` // sidecar outlives Factor; later runs adopt it warm
+	AutoInstall         bool     `json:"auto_install"` // install smrti (uv/pipx/pip/venv) when missing
+	KeepAlive           bool     `json:"keep_alive"`   // sidecar outlives Factor; later runs adopt it warm
 	Host                string   `json:"host"`
 	Port                int      `json:"port" env:"FACTOR_MEMORY_PORT"`
 	DBPath              string   `json:"db_path"`
@@ -135,6 +172,23 @@ func (t ToolsConfig) IsToolEnabled(name string) bool {
 	return true
 }
 
+// DesktopConfig controls the desktop-control tools (windows, screenshots,
+// mouse, keyboard, clipboard, notifications). Enabled is a tri-state: unset
+// means "register them when a graphical session is detected", which keeps a
+// headless server's prompt free of tools that could never work there.
+type DesktopConfig struct {
+	Enabled       *bool  `json:"enabled,omitempty"`
+	ScreenshotDir string `json:"screenshot_dir,omitempty"`
+}
+
+// Register reports whether the desktop tools should be registered.
+func (d DesktopConfig) Register(hasDisplay bool) bool {
+	if d.Enabled != nil {
+		return *d.Enabled
+	}
+	return hasDisplay
+}
+
 // BrowserConfig controls the CDP browser integration. With AttachURL empty,
 // Factor probes the standard DevTools port and falls back to launching a
 // managed instance (visible unless Headless).
@@ -186,9 +240,9 @@ func Default() *Config {
 			KeepRecentMessages:  8,
 		},
 		Provider: ProviderConfig{
-			Type:             "openai",
-			APIBase:          "https://openrouter.ai/api/v1",
-			Model:            "anthropic/claude-sonnet-5",
+			Type:             "openrouter",
+			Model:            "google/gemini-pro-latest",
+			Reasoning:        ReasoningConfig{Effort: "xhigh"},
 			MaxTokens:        4096,
 			MaxRetries:       2,
 			RetryBackoffSecs: 2,
@@ -196,6 +250,7 @@ func Default() *Config {
 		Memory: MemoryConfig{
 			Mode:                "sidecar",
 			Command:             "smrti",
+			AutoInstall:         true,
 			KeepAlive:           true,
 			Host:                "127.0.0.1",
 			Port:                8420,

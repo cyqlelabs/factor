@@ -18,6 +18,16 @@ type OpenAI struct {
 	model   string
 	client  *http.Client
 	headers map[string]string
+
+	reasoning *Reasoning
+	dialect   string // "object" | "effort" | "" (send nothing)
+}
+
+// WithReasoning attaches reasoning parameters in the dialect the given
+// provider type understands. It returns the receiver for chaining.
+func (p *OpenAI) WithReasoning(r *Reasoning, providerType string) *OpenAI {
+	p.reasoning, p.dialect = r, reasoningDialect(providerType)
+	return p
 }
 
 func NewOpenAI(apiBase, apiKey, model string) *OpenAI {
@@ -51,11 +61,13 @@ type oaFunction struct {
 }
 
 type oaRequest struct {
-	Model       string      `json:"model"`
-	Messages    []oaMessage `json:"messages"`
-	MaxTokens   int         `json:"max_tokens,omitempty"`
-	Temperature *float64    `json:"temperature,omitempty"`
-	Tools       []oaTool    `json:"tools,omitempty"`
+	Model           string         `json:"model"`
+	Messages        []oaMessage    `json:"messages"`
+	MaxTokens       int            `json:"max_tokens,omitempty"`
+	Temperature     *float64       `json:"temperature,omitempty"`
+	Tools           []oaTool       `json:"tools,omitempty"`
+	Reasoning       map[string]any `json:"reasoning,omitempty"`
+	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
 }
 
 type oaTool struct {
@@ -80,6 +92,14 @@ type oaResponse struct {
 
 func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 	body := oaRequest{Model: p.model, MaxTokens: req.MaxTokens}
+	switch p.dialect {
+	case "object":
+		body.Reasoning = p.reasoning.object()
+	case "effort":
+		if p.reasoning != nil {
+			body.ReasoningEffort = p.reasoning.Effort
+		}
+	}
 	if req.Temperature != 0 {
 		t := req.Temperature
 		body.Temperature = &t

@@ -7,6 +7,7 @@ require (
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/chromedp/chromedp v0.14.1
 	golang.org/x/net v0.57.0
+	golang.org/x/term v0.45.0
 )
 
 require (

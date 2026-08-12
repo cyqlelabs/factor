@@ -32,3 +32,17 @@
 - [x] 15. README, Makefile build-all, CI + release workflows
 - [x] 16. Full verification: lint, race tests, smoke, review
 - [x] CHECKPOINT: complete
+
+## Phase 6: First-run experience
+- [x] 17. smrti auto-install (uv/pipx/pip --user/venv, PEP-668 retry, PATH-independent
+      discovery) wired into `factor init` and the sidecar supervisor + tests
+- [x] 18. `factor init` wizard (arrow-key menus, masked input, spinners; provider +
+      live model list + verification, reasoning effort/budget, memory, Telegram,
+      desktop helpers, tools) with a non-TTY/`-y` path + tests
+- [x] 19. Desktop tool suite (window_list/window_control/screenshot/mouse/type_text/
+      press_key/clipboard/notify/open/desktop_info) across X11, Wayland, macOS and
+      Windows, registered by default when a display exists + tests
+- [x] 20. Reasoning configuration translated per provider dialect (OpenRouter object,
+      OpenAI/Groq reasoning_effort, Anthropic thinking budget), default xhigh + tests
+- [x] CHECKPOINT: fmt/vet/race clean; wizard verified over a real pty; smrti
+      auto-install verified against the real package

@@ -16,6 +16,20 @@ type Anthropic struct {
 	apiKey  string
 	model   string
 	client  *http.Client
+
+	reasoning *Reasoning
+}
+
+// WithReasoning turns on extended thinking with the configured budget.
+func (p *Anthropic) WithReasoning(r *Reasoning) *Anthropic {
+	p.reasoning = r
+	return p
+}
+
+// anthThinking is the extended-thinking block.
+type anthThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens"`
 }
 
 func NewAnthropic(apiBase, apiKey, model string) *Anthropic {
@@ -61,6 +75,22 @@ type anthRequest struct {
 	Messages    []anthMessage `json:"messages"`
 	Tools       []anthTool    `json:"tools,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
+	Thinking    *anthThinking `json:"thinking,omitempty"`
+}
+
+// applyThinking sets the thinking block, keeping the two invariants the
+// Messages API enforces: max_tokens must exceed the budget, and temperature
+// must be left at its default while thinking is on.
+func (p *Anthropic) applyThinking(body *anthRequest) {
+	budget := p.reasoning.budget()
+	if budget <= 0 {
+		return
+	}
+	body.Thinking = &anthThinking{Type: "enabled", BudgetTokens: budget}
+	if body.MaxTokens <= budget {
+		body.MaxTokens = budget + 4096
+	}
+	body.Temperature = nil
 }
 
 type anthResponse struct {
@@ -126,6 +156,7 @@ func (p *Anthropic) Chat(ctx context.Context, req *Request) (*Response, error) {
 	for _, t := range req.Tools {
 		body.Tools = append(body.Tools, anthTool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters})
 	}
+	p.applyThinking(&body)
 
 	raw, err := json.Marshal(body)
 	if err != nil {
