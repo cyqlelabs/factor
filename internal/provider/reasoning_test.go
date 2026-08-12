@@ -180,7 +180,7 @@ func TestFallbacksInheritReasoning(t *testing.T) {
 
 func TestDefaultConfigAsksForMaximumReasoning(t *testing.T) {
 	def := config.Default()
-	if def.Provider.Type != "openrouter" || def.Provider.Model != "google/gemini-pro-latest" {
+	if def.Provider.Type != "openrouter" || def.Provider.Model != "google/gemini-3.1-pro-preview" {
 		t.Errorf("default provider = %s / %s", def.Provider.Type, def.Provider.Model)
 	}
 	if def.Provider.Reasoning.Effort != "xhigh" {

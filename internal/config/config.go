@@ -242,7 +242,7 @@ func Default() *Config {
 		},
 		Provider: ProviderConfig{
 			Type:             "openrouter",
-			Model:            "google/gemini-pro-latest",
+			Model:            "google/gemini-3.1-pro-preview",
 			Reasoning:        ReasoningConfig{Effort: "xhigh"},
 			MaxTokens:        4096,
 			MaxRetries:       2,

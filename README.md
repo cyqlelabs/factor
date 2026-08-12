@@ -110,7 +110,7 @@ Point `memory.mode: "external"` + `memory.url` at a shared smrti if you run one.
   "provider": {
     "type": "openrouter",                    // openrouter|openai|groq|ollama|lmstudio|llamacpp|anthropic|custom
     "api_key": "sk-or-...",
-    "model": "google/gemini-pro-latest",
+    "model": "google/gemini-3.1-pro-preview",
     "reasoning": { "effort": "xhigh" },      // or {"max_tokens": 12000}; "none" turns it off
     "fallbacks": [{ "type": "ollama", "model": "qwen3:8b" }]
   },
