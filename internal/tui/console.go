@@ -36,7 +36,6 @@ const (
 	ansiGreen   = "\x1b[32m"
 	ansiYellow  = "\x1b[33m"
 	ansiMagenta = "\x1b[35m"
-	ansiInverse = "\x1b[7m"
 	ansiBarBG   = "\x1b[48;5;236m"
 	ansiBarFG   = "\x1b[38;5;250m"
 )
@@ -106,11 +105,7 @@ func newConsole(out *os.File) *Console {
 	c.out = out
 	usable := os.Getenv("TERM") != "dumb" && term.IsTerminal(int(out.Fd()))
 	c.color = usable && os.Getenv("NO_COLOR") == ""
-	// A 256-color terminal gets a real bar; anything else settles for dim.
-	c.barStyle = ansiDim + ansiInverse
-	if strings.Contains(os.Getenv("TERM"), "256color") {
-		c.barStyle = ansiBarBG + ansiBarFG
-	}
+	c.barStyle = barStyle()
 	if usable {
 		c.width = func() int {
 			if w, _, err := term.GetSize(int(out.Fd())); err == nil && w >= 24 {
@@ -420,6 +415,31 @@ func (c *Console) renderBar(bar Bar) string {
 		text += strings.Repeat(" ", pad)
 	}
 	return c.styleBar(truncateVisible(text, width))
+}
+
+// barStyle picks how the bar is painted. A terminal with a real palette gets
+// a bar that names both its background and its foreground, so it reads the
+// same under any theme; everything else gets plain dim text. Reverse video
+// is deliberately not used: it borrows the theme's colors and inverts them,
+// which is how a bar ends up as pale text on a pale background.
+func barStyle() string {
+	if os.Getenv("NO_COLOR") != "" {
+		return ""
+	}
+	term := os.Getenv("TERM")
+	switch os.Getenv("COLORTERM") {
+	case "truecolor", "24bit":
+		return ansiBarBG + ansiBarFG
+	}
+	// TERM names the terminal, not its palette: xterm-ghostty and friends
+	// support 256 colors without saying so.
+	for _, name := range []string{"256color", "direct", "kitty", "ghostty",
+		"alacritty", "wezterm", "foot", "contour", "rio", "iterm"} {
+		if strings.Contains(term, name) {
+			return ansiBarBG + ansiBarFG
+		}
+	}
+	return ansiDim
 }
 
 // styleBar paints the whole row. Nested styling inside the text resets as it
