@@ -116,6 +116,11 @@ func (s *Session) ensure() (context.Context, error) {
 		if s.cfg.NoSandbox {
 			opts = append(opts, chromedp.NoSandbox)
 		}
+		// chromedp gives Chrome 20s to print its DevTools socket, which a
+		// cold start on a loaded CI runner — or on the low-resource desktops
+		// Factor targets — can miss. The outer 45s guard below still bounds
+		// the whole start.
+		opts = append(opts, chromedp.WSURLReadTimeout(40*time.Second))
 		allocCtx, s.allocCancel = chromedp.NewExecAllocator(base, opts...)
 	}
 

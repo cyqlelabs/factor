@@ -88,6 +88,13 @@ func TestBrowserEndToEnd(t *testing.T) {
 
 	res := byName["browser_navigate"].Execute(ctx, map[string]any{"url": srv.URL})
 	if res.IsError {
+		// A machine that cannot launch Chrome at all (locked-down CI images,
+		// containers without the right libraries) cannot exercise these
+		// tools — the same situation as the missing-binary skip above.
+		// Everything after a successful start is still a hard failure.
+		if strings.Contains(res.ForLLM, "browser start failed") || strings.Contains(res.ForLLM, "browser start timed out") {
+			t.Skipf("chrome cannot start in this environment: %s", res.ForLLM)
+		}
 		t.Fatalf("navigate: %s", res.ForLLM)
 	}
 	if !strings.Contains(res.ForLLM, "Factor Test Page") || !strings.Contains(res.ForLLM, "Search box") {
