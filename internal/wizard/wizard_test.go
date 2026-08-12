@@ -205,7 +205,7 @@ func TestWizardKeepsDefaultsOnBlankAnswers(t *testing.T) {
 	if cfg.Provider.Type != "openrouter" {
 		t.Errorf("provider type = %q, want the first preset", cfg.Provider.Type)
 	}
-	if cfg.Provider.Model != "google/gemini-pro-latest" {
+	if cfg.Provider.Model != "google/gemini-3.1-pro-preview" {
 		t.Errorf("model = %q", cfg.Provider.Model)
 	}
 	if cfg.Provider.Reasoning.Effort != "xhigh" {

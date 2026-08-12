@@ -165,7 +165,7 @@ type providerPreset struct {
 }
 
 var providerPresets = []providerPreset{
-	{Type: "openrouter", Label: "OpenRouter", Hint: "one key, every major model", Model: "google/gemini-pro-latest", NeedsKey: true, KeyURL: "https://openrouter.ai/keys"},
+	{Type: "openrouter", Label: "OpenRouter", Hint: "one key, every major model", Model: "google/gemini-3.1-pro-preview", NeedsKey: true, KeyURL: "https://openrouter.ai/keys"},
 	{Type: "anthropic", Label: "Anthropic", Hint: "Claude, native API", Model: "claude-sonnet-5", NeedsKey: true, KeyURL: "https://console.anthropic.com/settings/keys"},
 	{Type: "openai", Label: "OpenAI", Hint: "GPT models", Model: "gpt-5", NeedsKey: true, KeyURL: "https://platform.openai.com/api-keys"},
 	{Type: "groq", Label: "Groq", Hint: "very fast open models", Model: "llama-3.3-70b-versatile", NeedsKey: true, KeyURL: "https://console.groq.com/keys"},
