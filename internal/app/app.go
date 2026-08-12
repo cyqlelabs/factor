@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/cron"
+	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/jobs"
 	"github.com/cyqlelabs/factor/internal/mcp"
 	"github.com/cyqlelabs/factor/internal/memory"
@@ -82,6 +84,19 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(&skills.InstallTool{Root: filepath.Join(ws, "skills")})
 	registry.Register(tools.NewConfigTools(cfg)...)
 	registry.Register(tools.NewPkgInstallTool())
+
+	// Desktop control: skipped on headless machines, where these tools would
+	// be prompt weight that can only ever fail (desktop.enabled forces it).
+	desktopEnv := desktop.DefaultEnv()
+	if cfg.Desktop.Register(desktop.HasDisplay(desktopEnv)) {
+		shotDir := cfg.Desktop.ScreenshotDir
+		if shotDir == "" {
+			shotDir = filepath.Join(ws, "screenshots")
+		}
+		registry.Register(desktop.NewTools(desktopEnv, guard, shotDir)...)
+	} else {
+		slog.Info("desktop tools not registered: no graphical session (set desktop.enabled=true to force)")
+	}
 
 	closeBrowser := func() {}
 	if cfg.Browser.Enabled {

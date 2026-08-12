@@ -202,6 +202,7 @@ func TestSidecarAdoptsRunningServer(t *testing.T) {
 	cfg := config.Default().Memory
 	cfg.Host, cfg.Port = u.Hostname(), port
 	cfg.Command = "/nonexistent-binary-that-must-not-run"
+	cfg.AutoInstall = false // a test must never install or spawn the real smrti
 
 	eng, err := NewEngine(context.Background(), cfg, ExtractSettings{Mode: "local"}, "")
 	if err != nil {
@@ -225,6 +226,7 @@ func TestSidecarDegradedWhenBinaryMissing(t *testing.T) {
 	cfg := config.Default().Memory
 	cfg.Host, cfg.Port = "127.0.0.1", 1 // nothing listens here
 	cfg.Command = "/nonexistent-binary-that-must-not-run"
+	cfg.AutoInstall = false // the point here is the missing binary, not the installer
 	cfg.StartupTimeoutSecs = 1
 
 	eng, err := NewEngine(context.Background(), cfg, ExtractSettings{Mode: "local"}, "")
@@ -241,6 +243,41 @@ func TestSidecarDegradedWhenBinaryMissing(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close hung")
+	}
+}
+
+// A missing smrti is no longer a dead end: the sidecar installs it. That must
+// happen at most once per process, though — a machine with no usable Python
+// installer must not re-run a multi-minute install on every restart.
+func TestSidecarAutoInstallsOnceThenGivesUp(t *testing.T) {
+	f := newFakeEnv(t, "uv") // uv is present, but every install fails
+	f.fail("uv tool install smrti", "resolution impossible")
+
+	cfg := config.Default().Memory
+	cfg.Host, cfg.Port = "127.0.0.1", 1
+	s := &Sidecar{client: NewClient("http://127.0.0.1:1", "", ""), cfg: cfg}
+
+	if _, err := s.resolveCommand(context.Background()); err == nil {
+		t.Fatal("expected the failing install to surface")
+	}
+	if f.installs != 1 {
+		t.Fatalf("ran %d install commands, want 1", f.installs)
+	}
+	if _, err := s.resolveCommand(context.Background()); err == nil {
+		t.Fatal("expected the second attempt to fail too")
+	}
+	if f.installs != 1 {
+		t.Errorf("the installer ran again (%d attempts) after failing once", f.installs)
+	}
+
+	cfg.AutoInstall = false
+	off := &Sidecar{client: NewClient("http://127.0.0.1:1", "", ""), cfg: cfg}
+	if _, err := off.resolveCommand(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "auto_install is off") {
+		t.Errorf("error = %v", err)
+	}
+	if f.installs != 1 {
+		t.Error("auto_install=false still ran the installer")
 	}
 }
 

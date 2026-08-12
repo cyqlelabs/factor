@@ -5,10 +5,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -17,9 +17,11 @@ import (
 	"github.com/cyqlelabs/factor/internal/app"
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
+	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/gateway"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/version"
+	"github.com/cyqlelabs/factor/internal/wizard"
 )
 
 const usage = `factor — desktop AI agent with smrti memory
@@ -29,12 +31,14 @@ Usage:
   factor -m "message"    one-shot message
   factor -s NAME         use a named session (default "main")
   factor gateway         run the daemon (channels, cron, heartbeat)
-  factor init            create config + workspace, check dependencies
+  factor init            interactive setup wizard (provider, memory, channels)
   factor status          show daemon, provider, and memory status
   factor version         print version
 
 Flags:
-  -c PATH   config file (default ~/.factor/config.json)
+  -c PATH      config file (default ~/.factor/config.json)
+  -y           init: skip the wizard and accept the defaults
+  --no-install init: never install smrti or desktop helpers
 `
 
 func main() {
@@ -42,6 +46,8 @@ func main() {
 	configPath := fs.String("c", "", "config file path")
 	message := fs.String("m", "", "one-shot message")
 	sessionName := fs.String("s", "main", "session name")
+	yes := fs.Bool("y", false, "init: skip the wizard, accept defaults")
+	noInstall := fs.Bool("no-install", false, "init: never install anything")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 
 	args := os.Args[1:]
@@ -56,7 +62,7 @@ func main() {
 	case "version":
 		fmt.Printf("factor %s (%s, built %s)\n", version.Version, version.GitCommit, version.BuildTime)
 	case "init":
-		err = runInit(*configPath)
+		err = runInit(*configPath, *yes, *noInstall)
 	case "status":
 		err = runStatus(*configPath)
 	case "gateway":
@@ -77,34 +83,19 @@ func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
-func runInit(configPath string) error {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return err
-	}
-	if _, statErr := os.Stat(cfg.Path()); os.IsNotExist(statErr) {
-		if err := cfg.Save(); err != nil {
-			return err
-		}
-		fmt.Printf("Created config: %s\n", cfg.Path())
-	} else {
-		fmt.Printf("Config exists: %s\n", cfg.Path())
-	}
-	if err := config.EnsureWorkspace(cfg.Agent.Workspace); err != nil {
-		return err
-	}
-	fmt.Printf("Workspace ready: %s\n", cfg.Agent.Workspace)
+func runInit(configPath string, nonInteractive, noInstall bool) error {
+	ctx, cancel := signalContext()
+	defer cancel()
 
-	if cfg.Provider.APIKey == "" {
-		fmt.Println("\n⚠ No provider API key set. Edit the config or export FACTOR_PROVIDER_API_KEY.")
+	err := wizard.Run(ctx, configPath, wizard.Options{
+		Version:        version.Version,
+		NonInteractive: nonInteractive,
+		NoInstall:      noInstall,
+	})
+	if errors.Is(err, wizard.ErrAborted) {
+		return nil // the wizard already said so; not a failure
 	}
-	if _, err := exec.LookPath(cfg.Memory.Command); err != nil {
-		fmt.Printf("\n⚠ smrti not found in PATH — Factor's memory engine.\n  Install it with: pip install smrti\n")
-	} else {
-		fmt.Println("smrti found — memory engine ready.")
-	}
-	fmt.Println("\nRun `factor` to chat or `factor gateway` for the daemon.")
-	return nil
+	return err
 }
 
 func runStatus(configPath string) error {
@@ -121,6 +112,30 @@ func runStatus(configPath string) error {
 		fmt.Printf("gateway:   running (pid %d)\n", pid)
 	} else {
 		fmt.Printf("gateway:   not running\n")
+	}
+
+	if path, ok := memory.FindSmrti(cfg.Memory.Command, config.Home()); ok {
+		fmt.Printf("smrti:     %s\n", path)
+	} else {
+		fmt.Printf("smrti:     not installed (it will be installed on demand)\n")
+	}
+
+	env := desktop.DefaultEnv()
+	if cfg.Desktop.Register(desktop.HasDisplay(env)) {
+		ctl := desktop.NewController(env)
+		line := "desktop:   " + ctl.Backend()
+		if missing := desktop.MissingHelpers(env, ctl); len(missing) > 0 {
+			names := make([]string, 0, len(missing))
+			for _, h := range missing {
+				names = append(names, h.Bin)
+			}
+			line += " — missing " + strings.Join(names, ", ")
+		} else {
+			line += " — all helpers present"
+		}
+		fmt.Println(line)
+	} else {
+		fmt.Println("desktop:   off (no graphical session)")
 	}
 
 	client := memory.NewClient(cfg.Memory.BaseURL(), cfg.Memory.APIKey, "")

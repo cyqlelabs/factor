@@ -31,6 +31,15 @@ desktops — it runs happily on an old Puppy Linux box.
 - **Provider failover that works** — OpenAI-compatible (OpenRouter, Ollama, LM Studio,
   Groq, llama.cpp, …) and native Anthropic backends, error classification, per-candidate
   cooldowns, context-overflow-triggered compaction at turn-safe boundaries.
+- **Reasoning, dialect-translated** — one `provider.reasoning` setting (effort or an
+  explicit token budget) reaches OpenRouter as `reasoning`, OpenAI/Groq as
+  `reasoning_effort`, and Anthropic as a `thinking` budget. Defaults to `xhigh`.
+- **Hands on your desktop** — `window_list` / `window_control` (focus, close,
+  move, maximize…), `screenshot`, `mouse`, `type_text`, `press_key`,
+  `clipboard`, `notify`, `open`, `desktop_info`. X11 and Wayland via the usual
+  helpers (xdotool, wmctrl, scrot, xclip, grim, wl-clipboard), macOS via
+  osascript/screencapture, Windows via PowerShell. Registered automatically
+  when a graphical session exists, skipped on headless boxes.
 - **A real browser, not just fetch** — CDP tools (`browser_navigate/read/click/fill/
   screenshot/eval/back`) that attach to your running Chrome/Chromium/Brave DevTools
   port, or launch a managed instance — visible by default so you can watch it work.
@@ -54,24 +63,27 @@ desktops — it runs happily on an old Puppy Linux box.
 
 ## Install
 
-**1. Factor** (single binary, CGO-free):
-
 ```bash
 go install github.com/cyqlelabs/factor/cmd/factor@latest
 # or grab a release binary; linux-amd64 targets GOAMD64=v1 (no SSE4.2 needed)
+
+factor init      # interactive setup wizard
 ```
 
-**2. smrti** (the memory engine — Python, one SQLite file, CPU-only ONNX):
+`factor init` is a terminal wizard: pick a provider from a menu, paste a key,
+choose a model from the endpoint's **live model list**, set the reasoning
+effort, then memory, channels and tools — each step verified as you go (the
+provider with a real completion, the Telegram token with `getMe`).
 
-```bash
-pip install smrti
-```
+It also **installs smrti**, Factor's memory engine, if it is missing — trying
+`uv tool install`, `pipx`, `pip install --user` (retrying with
+`--break-system-packages` on PEP-668 distros), and finally a private venv under
+`~/.factor/venv`. Nothing needs root. Any later run installs it too if it went
+missing (`memory.auto_install`), and the wizard offers to install the desktop
+helpers your session lacks.
 
-**3. Initialize:**
-
-```bash
-factor init      # creates ~/.factor/config.json + workspace, checks dependencies
-```
+Scripting a machine? `factor init -y` takes the defaults and never prompts;
+`--no-install` keeps it from installing anything.
 
 ## Quick start
 
@@ -96,14 +108,15 @@ Point `memory.mode: "external"` + `memory.url` at a shared smrti if you run one.
 ```jsonc
 {
   "provider": {
-    "type": "openai",                        // openai|openrouter|groq|ollama|lmstudio|llamacpp|anthropic|custom
-    "api_base": "https://openrouter.ai/api/v1",
+    "type": "openrouter",                    // openrouter|openai|groq|ollama|lmstudio|llamacpp|anthropic|custom
     "api_key": "sk-or-...",
-    "model": "anthropic/claude-sonnet-5",
+    "model": "google/gemini-pro-latest",
+    "reasoning": { "effort": "xhigh" },      // or {"max_tokens": 12000}; "none" turns it off
     "fallbacks": [{ "type": "ollama", "model": "qwen3:8b" }]
   },
   "memory": {
     "mode": "sidecar",                       // sidecar | external | off
+    "auto_install": true,                    // install smrti when it is missing
     "personality": "balanced",               // analytical | curious | empathetic | maverick | deterministic
     "space": "main"
   },
@@ -114,6 +127,7 @@ Point `memory.mode: "external"` + `memory.url` at a shared smrti if you run one.
     "servers": { "github": { "command": "github-mcp-server", "args": ["stdio"] } }
   },
   "tools": { "disabled": [], "restrict_to_workspace": true },
+  "desktop": { "enabled": null },            // null = on when a display exists
   "browser": { "enabled": true, "headless": false },
   "heartbeat": { "enabled": true, "interval_minutes": 30 }
 }
@@ -152,7 +166,8 @@ channels (telegram, cli, …)        smrti (Python sidecar, SQLite)
         ▲          │    │ one turn per session; overflow = steering
         │          │    └► provider chain (failover, cooldowns, compaction)
         │          └────► tool registry
-        │                  fs · exec · web · browser(CDP) · memory · jobs · cron
+        │                  fs · exec · web · browser(CDP) · desktop(X11/Wayland/
+        │                  macOS/Windows) · memory · jobs · cron
         │                  config · pkg · skills · MCP mounts
         └── job engine / cron / heartbeat re-enter the bus proactively
 ```
@@ -177,8 +192,9 @@ make build-tiny   # -tags nobrowser: smallest binary
 ```
 
 The test suite runs against fakes (scripted providers, fake smrti, fake Telegram
-API, a re-exec fake MCP server) plus a real headless-Chrome browser test that
-auto-skips when no Chromium is installed.
+API, a re-exec fake MCP server, a scripted desktop where every helper command is
+asserted) plus live tests — a real headless-Chrome browser run and a real
+desktop round-trip — that auto-skip when the machine cannot host them.
 
 ## License
 
