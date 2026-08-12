@@ -1,7 +1,11 @@
-<!-- Plain markdown image on purpose: the GitHub mobile app does not render
+<!-- Plain <img> on purpose: the GitHub mobile app does not render
      <picture>/<source>, it drops the element and shows a broken-image icon. -->
 
-![Factor by Cyqle — the agent at the next cursor. Long-term memory, real tools, one static Go binary.](docs/assets/hero-wide.png)
+<p align="center">
+  <img src="docs/assets/logo.png" width="128" alt="Factor logo">
+</p>
+
+<h1 align="center">Factor</h1>
 
 **A fast, reliable, lightweight desktop AI agent and companion — with a real memory.**
 
