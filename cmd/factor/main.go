@@ -3,23 +3,27 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/agent"
 	"github.com/cyqlelabs/factor/internal/app"
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/gateway"
 	"github.com/cyqlelabs/factor/internal/memory"
+	"github.com/cyqlelabs/factor/internal/tui"
 	"github.com/cyqlelabs/factor/internal/version"
 	"github.com/cyqlelabs/factor/internal/wizard"
 )
@@ -166,20 +170,26 @@ func runChat(configPath, sessionName, message string) error {
 	sessionKey := "cli:" + sessionName
 
 	if message != "" {
-		reply, err := a.Loop.ProcessDirect(ctx, message, sessionKey)
-		if err != nil {
-			return err
-		}
-		fmt.Println(reply)
-		a.Loop.WaitBackground(2 * time.Minute) // let memory writes land (bounded by StoreExchange itself)
-		return nil
+		return runOneShot(ctx, a, message, sessionKey)
 	}
 
-	fmt.Printf("factor %s — %s | session %s | /quit to exit, /new for a fresh session\n",
+	con := tui.NewChat(os.Stdin, os.Stdout)
+	con.Start()
+	defer con.Close()
+	if con.Interactive() {
+		// Logging goes through the console, or a warning lands mid-prompt.
+		log.SetOutput(con.LogWriter())
+		defer log.SetOutput(os.Stderr)
+	}
+
+	ui := newChatUI(con)
+	a.Loop.OnActivity(ui.activity)
+
+	con.Printf("factor %s — %s | session %s | /quit to exit, /new for a fresh session",
 		version.Version, cfg.Provider.Model, sessionName)
 
 	// Bus-driven REPL: replies AND proactive messages (finished background
-	// jobs, steered turns) print as they arrive.
+	// jobs, steered turns) print as they arrive, above the live prompt.
 	go a.Loop.Run(ctx)
 	go func() {
 		for {
@@ -188,32 +198,162 @@ func runChat(configPath, sessionName, message string) error {
 				return
 			case out := <-a.Bus.Outbound():
 				if out.Channel == "cli" {
-					fmt.Printf("\rfactor> %s\n\nyou> ", out.Content)
+					ui.reply(out.Content)
 				}
 			}
 		}
 	}()
 
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for {
-		fmt.Print("you> ")
-		if !scanner.Scan() {
-			fmt.Println()
-			return scanner.Err()
+		line, err := con.ReadLine()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, tui.ErrInterrupted) {
+				return nil
+			}
+			return err
 		}
-		line := strings.TrimSpace(scanner.Text())
-		switch line {
+		switch line = strings.TrimSpace(line); line {
 		case "":
 			continue
 		case "/quit", "/exit":
 			return nil
 		case "/new":
 			sessionKey = fmt.Sprintf("cli:%s-%d", sessionName, time.Now().Unix())
-			fmt.Println("(started a fresh session)")
+			con.Printf("(started a fresh session)")
 			continue
 		}
 		chatID := strings.TrimPrefix(sessionKey, "cli:")
-		a.Bus.PublishInbound(bus.InboundMessage{Channel: "cli", ChatID: chatID, Content: line, Time: time.Now()})
+		ui.begin(sessionKey)
+		if !a.Bus.PublishInbound(bus.InboundMessage{Channel: "cli", ChatID: chatID, Content: line, Time: time.Now()}) {
+			ui.abort()
+			con.Printf("(too busy to take that message — try again in a moment)")
+		}
 	}
+}
+
+// runOneShot answers a single -m message, pulsing while it works so a slow
+// turn does not look like a hung terminal.
+func runOneShot(ctx context.Context, a *app.App, message, sessionKey string) error {
+	con := tui.NewStatus(os.Stdout)
+	defer con.Close()
+	spin := tui.NewSpinner(con)
+	a.Loop.OnActivity(func(act agent.Activity) {
+		if act.SessionKey != sessionKey {
+			return
+		}
+		if act.Phase == agent.PhaseDone {
+			spin.Stop()
+			return
+		}
+		spin.Set(string(act.Phase), act.Detail)
+	})
+
+	spin.Start()
+	reply, err := a.Loop.ProcessDirect(ctx, message, sessionKey)
+	spin.Stop()
+	if err != nil {
+		return err
+	}
+	fmt.Println(reply)
+	a.Loop.WaitBackground(2 * time.Minute) // let memory writes land (bounded by StoreExchange itself)
+	return nil
+}
+
+// chatUI joins the console, the pulse, and the loop's activity events into
+// one view: a message you send stays on screen with a live pulse under it
+// until its reply lands, and the prompt says so while you wait.
+type chatUI struct {
+	con  *tui.Console
+	spin *tui.Spinner
+
+	mu      sync.Mutex
+	live    string       // session key of the turn being waited on, "" when idle
+	summary *tui.Summary // the finished turn's numbers, consumed by its reply
+}
+
+func newChatUI(con *tui.Console) *chatUI {
+	return &chatUI{con: con, spin: tui.NewSpinner(con)}
+}
+
+// begin marks a turn as in flight the moment its message is sent, before the
+// loop has picked it up.
+func (u *chatUI) begin(sessionKey string) { u.start(sessionKey, false) }
+
+// adopt does the same for a turn the user did not start, but only when
+// nothing else is already being waited on.
+func (u *chatUI) adopt(sessionKey string) { u.start(sessionKey, true) }
+
+func (u *chatUI) start(sessionKey string, onlyWhenIdle bool) {
+	u.mu.Lock()
+	idle := u.live == ""
+	if !idle && onlyWhenIdle {
+		u.mu.Unlock()
+		return
+	}
+	u.live = sessionKey
+	u.mu.Unlock()
+	if idle {
+		u.spin.Start()
+		u.con.PromptSteering()
+	}
+}
+
+// activity mirrors the loop's phases onto the pulse. Turns nobody asked for
+// (a finished background job re-entering the session) are adopted too, so
+// unprompted work is visible rather than mysterious.
+func (u *chatUI) activity(act agent.Activity) {
+	if !strings.HasPrefix(act.SessionKey, "cli:") {
+		return
+	}
+	if act.Phase != agent.PhaseDone {
+		u.adopt(act.SessionKey)
+	}
+	u.mu.Lock()
+	mine := u.live == act.SessionKey
+	u.mu.Unlock()
+	if !mine {
+		return
+	}
+	if act.Phase == agent.PhaseDone {
+		u.end()
+		return
+	}
+	u.spin.Set(string(act.Phase), act.Detail)
+}
+
+// end stops the pulse and keeps its summary for the reply that follows.
+func (u *chatUI) end() {
+	u.mu.Lock()
+	if u.live == "" {
+		u.mu.Unlock()
+		return
+	}
+	u.live = ""
+	u.mu.Unlock()
+
+	sum := u.spin.Stop()
+	u.mu.Lock()
+	u.summary = &sum
+	u.mu.Unlock()
+	u.con.PromptIdle()
+}
+
+// abort ends a turn that never started, leaving no summary behind.
+func (u *chatUI) abort() {
+	u.end()
+	u.mu.Lock()
+	u.summary = nil
+	u.mu.Unlock()
+}
+
+func (u *chatUI) reply(content string) {
+	u.end()
+	u.mu.Lock()
+	note := ""
+	if u.summary != nil {
+		note = u.summary.Note()
+		u.summary = nil
+	}
+	u.mu.Unlock()
+	u.con.Reply(content, note)
 }

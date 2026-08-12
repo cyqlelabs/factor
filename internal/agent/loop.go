@@ -46,6 +46,9 @@ type Loop struct {
 	wg        sync.WaitGroup
 	compactMu sync.Mutex
 
+	watchMu sync.RWMutex
+	watcher func(Activity)
+
 	lastMu      sync.Mutex
 	lastChannel bus.InboundMessage
 }
@@ -233,6 +236,8 @@ func (l *Loop) WaitBackground(timeout time.Duration) {
 // execute is the turn state machine: assemble → chat → tools → steer → repeat.
 func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, error) {
 	ctx = tools.WithToolContext(ctx, in.toolCtx)
+	l.emit(in.sessionKey, PhaseContext, "")
+	defer l.emit(in.sessionKey, PhaseDone, "")
 
 	var history []provider.Message
 	var err error
@@ -252,6 +257,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 	overflowRecoveries := 0
 
 	for iteration := 0; iteration < l.cfg.Agent.MaxToolIterations; iteration++ {
+		l.emit(in.sessionKey, PhaseThinking, "")
 		resp, err := l.chat.Chat(ctx, &provider.Request{
 			Messages:    messages,
 			Tools:       l.registry.Definitions(),
@@ -261,6 +267,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		if err != nil {
 			if provider.IsContextOverflow(err) && !in.ephemeral && overflowRecoveries < 2 {
 				overflowRecoveries++
+				l.emit(in.sessionKey, PhaseCompacting, "")
 				slog.Warn("context overflow; compacting session", "session", in.sessionKey)
 				if cerr := l.compact(ctx, in.sessionKey); cerr != nil {
 					return "", fmt.Errorf("compact after overflow: %w (original: %v)", cerr, err)
@@ -294,6 +301,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		}
 
 		for _, call := range resp.ToolCalls {
+			l.emit(in.sessionKey, PhaseTool, call.Name)
 			result := l.registry.Execute(ctx, call.Name, call.Args)
 			content := result.ForLLM
 			if result.IsError {
@@ -341,6 +349,9 @@ func (l *Loop) drainSteering(in turnInput, t *turn) []provider.Message {
 			}
 			out = append(out, userMsg)
 		default:
+			if len(out) > 0 {
+				l.emit(in.sessionKey, PhaseSteering, "")
+			}
 			return out
 		}
 	}
