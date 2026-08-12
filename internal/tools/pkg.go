@@ -32,6 +32,18 @@ var managerSpecs = map[string]managerSpec{
 // autoOrder is the probe order for system managers in auto mode.
 var autoOrder = []string{"apt", "apk", "dnf", "pacman", "xbps", "pkg"}
 
+// DetectSystemManager returns the system package manager available on this
+// machine ("" when none of the supported ones is installed). The wizard uses
+// it to name the exact packages a distribution needs.
+func DetectSystemManager() string {
+	for _, name := range autoOrder {
+		if _, err := exec.LookPath(managerSpecs[name].probe); err == nil {
+			return name
+		}
+	}
+	return ""
+}
+
 // PkgInstallTool installs software so the agent can extend its own
 // environment (e.g. `pip install smrti`, MCP servers, CLI utilities).
 type PkgInstallTool struct {
