@@ -1,6 +1,6 @@
 module github.com/cyqlelabs/factor
 
-go 1.25.0
+go 1.25.12
 
 require (
 	github.com/adhocore/gronx v1.20.1
