@@ -70,3 +70,58 @@ jobs:
           name: binaries
           path: dist/
           retention-days: 7
+
+  # Semantic versioning. Once every check above is green on main, derive the
+  # next version from the Conventional Commits since the last tag and push it.
+  # A no-op when nothing since the last tag warrants a bump (docs:, chore:, …).
+  tag:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, lint, govulncheck, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Serialized, never cancelled: two pushes landing close together would
+    # otherwise compute the same next version and one tag push would lose the
+    # race, dropping a release that was due.
+    concurrency:
+      group: tag-main
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      # fetch-depth 0 brings the tags svu needs to find the last release.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: compute next version
+        id: next
+        run: |
+          current=$(make version)
+          next=$(make version-next)
+          echo "current $current, next $next"
+          if [ "$current" = "$next" ]; then
+            echo "no release-worthy commits since $current"
+            exit 0
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+      - name: push tag
+        if: steps.next.outputs.version != ''
+        env:
+          TAG: ${{ steps.next.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+  release:
+    needs: tag
+    if: needs.tag.outputs.version != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.tag.outputs.version }}

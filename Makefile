@@ -8,11 +8,16 @@ LDFLAGS   := -s -w \
 	-X $(MODULE)/internal/version.GitCommit=$(COMMIT) \
 	-X $(MODULE)/internal/version.BuildTime=$(BUILDTIME)
 
+# svu derives the next semantic version from the Conventional Commits since the
+# last tag; the bump rules live in .svu.yml. Pinned so a new svu release can't
+# silently change what CI tags.
+SVU ?= go run github.com/caarlos0/svu/v3@v3.4.1
+
 export CGO_ENABLED=0
 
 COVER_MIN := 90
 
-.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check clean
+.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check clean version version-next
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/factor
@@ -62,6 +67,14 @@ lint:
 
 check: vet test-race cover
 	@gofmt -l . | tee /dev/stderr | wc -l | grep -q '^0$$'
+
+# The version this tree builds as (the last tag), and the version CI will tag
+# next. Equal output means nothing since the last tag warrants a release.
+version:
+	@$(SVU) current
+
+version-next:
+	@$(SVU) next
 
 clean:
 	rm -rf dist $(BINARY) $(BINARY)-tiny
