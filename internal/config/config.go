@@ -197,6 +197,7 @@ type BrowserConfig struct {
 	AttachURL   string `json:"attach_url,omitempty" env:"FACTOR_BROWSER_ATTACH_URL"`
 	Command     string `json:"command,omitempty"`
 	Headless    bool   `json:"headless"`
+	NoSandbox   bool   `json:"no_sandbox"` // needed as root, in containers, and where user namespaces are restricted
 	UserDataDir string `json:"user_data_dir,omitempty"`
 }
 
