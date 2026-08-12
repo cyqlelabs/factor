@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cyqlelabs/factor/internal/agent"
+	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/tui"
 )
 
@@ -33,6 +34,55 @@ func pipedUI(t *testing.T) (*chatUI, func() string) {
 
 func act(phase agent.Phase, detail string) agent.Activity {
 	return agent.Activity{SessionKey: "cli:main", Phase: phase, Detail: detail}
+}
+
+// flakyMemory is an enabled engine whose health a test can flip.
+type flakyMemory struct {
+	memory.Noop
+	healthy bool
+}
+
+func (f *flakyMemory) Enabled() bool { return true }
+func (f *flakyMemory) Healthy() bool { return f.healthy }
+
+func TestChatBarShowsWhereYouAreAndHowToTypeANewline(t *testing.T) {
+	bar := chatBar("main", "some/model", &flakyMemory{healthy: true})
+	if bar.Session != "main" || bar.Model != "some/model" {
+		t.Errorf("bar = %+v", bar)
+	}
+	if bar.Memory != "memory ✓" {
+		t.Errorf("memory = %q, want a healthy mark", bar.Memory)
+	}
+	if len(bar.Hints) == 0 || !strings.Contains(bar.Hints[0], "newline") {
+		t.Errorf("hints = %v, want the newline shortcut first", bar.Hints)
+	}
+
+	if got := chatBar("main", "m", &flakyMemory{}).Memory; got != "memory ✗" {
+		t.Errorf("unhealthy memory = %q", got)
+	}
+	// Memory turned off is left out of the bar entirely.
+	if got := chatBar("main", "m", memory.Noop{}).Memory; got != "" {
+		t.Errorf("disabled memory = %q, want nothing", got)
+	}
+	if got := chatBar("main", "m", nil).Memory; got != "" {
+		t.Errorf("absent memory = %q, want nothing", got)
+	}
+}
+
+func TestChatUIRefreshesTheBarAtTurnBoundaries(t *testing.T) {
+	ui, _ := pipedUI(t)
+	calls := 0
+	ui.bar = func() tui.Bar { calls++; return tui.Bar{Session: "main"} }
+
+	ui.begin("cli:main")
+	ui.activity(act(agent.PhaseDone, ""))
+	if calls != 2 {
+		t.Errorf("bar refreshed %d times, want one per turn boundary", calls)
+	}
+
+	// A UI without a bar source must not panic.
+	plain, _ := pipedUI(t)
+	plain.refreshBar()
 }
 
 func TestChatUIReportsWhatTheTurnDid(t *testing.T) {

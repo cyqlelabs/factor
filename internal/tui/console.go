@@ -36,6 +36,9 @@ const (
 	ansiGreen   = "\x1b[32m"
 	ansiYellow  = "\x1b[33m"
 	ansiMagenta = "\x1b[35m"
+	ansiInverse = "\x1b[7m"
+	ansiBarBG   = "\x1b[48;5;236m"
+	ansiBarFG   = "\x1b[38;5;250m"
 )
 
 const defaultWidth = 80
@@ -47,8 +50,9 @@ type Console struct {
 	reader *bufio.Reader
 	width  func() int
 
-	canRaw bool
-	color  bool
+	canRaw   bool
+	color    bool
+	barStyle string
 
 	// pending holds bytes read but not yet turned into keys — type-ahead
 	// and pasted lines that arrived past an Enter. Only the reader touches
@@ -63,6 +67,7 @@ type Console struct {
 	buf      []rune
 	cursor   int
 	status   string
+	bar      string
 	above    int // physical rows between the live region's top and the cursor
 	drawn    bool
 	hist     []string
@@ -101,6 +106,11 @@ func newConsole(out *os.File) *Console {
 	c.out = out
 	usable := os.Getenv("TERM") != "dumb" && term.IsTerminal(int(out.Fd()))
 	c.color = usable && os.Getenv("NO_COLOR") == ""
+	// A 256-color terminal gets a real bar; anything else settles for dim.
+	c.barStyle = ansiDim + ansiInverse
+	if strings.Contains(os.Getenv("TERM"), "256color") {
+		c.barStyle = ansiBarBG + ansiBarFG
+	}
 	if usable {
 		c.width = func() int {
 			if w, _, err := term.GetSize(int(out.Fd())); err == nil && w >= 24 {
@@ -267,10 +277,11 @@ func (c *Console) eraseLocked() {
 	c.above, c.drawn = 0, false
 }
 
-// drawLocked paints the activity line and, in raw mode, the prompt line
-// under it — leaving the cursor exactly where the user is typing. The
-// wrap math counts one cell per rune, so a line of double-width glyphs
-// (CJK, emoji) can wrap a row earlier than it thinks; Ctrl-L repaints.
+// drawLocked paints the live region — activity line, the (possibly
+// multi-line) input, and the status bar under it — leaving the cursor
+// exactly where the user is typing. The wrap math counts one cell per rune,
+// so a line of double-width glyphs (CJK, emoji) can wrap a row earlier than
+// it thinks; Ctrl-L repaints.
 func (c *Console) drawLocked() {
 	if !c.paint {
 		return
@@ -286,13 +297,17 @@ func (c *Console) drawLocked() {
 		}
 	}
 	if c.rawInput {
-		b.WriteString(c.prompt)
-		b.WriteString(string(c.buf))
-		promptWidth := visibleWidth(c.prompt)
-		endRow := (promptWidth + len(c.buf)) / width
-		curRow, curCol := (promptWidth+c.cursor)/width, (promptWidth+c.cursor)%width
-		if endRow > curRow {
-			fmt.Fprintf(&b, "\x1b[%dA", endRow-curRow)
+		indent := c.indent()
+		b.WriteString(renderInput(c.prompt, indent, c.buf))
+		rows, curRow, curCol := layout(visibleWidth(c.prompt), visibleWidth(indent), width, c.buf, c.cursor)
+		below := rows - 1 - curRow
+		if c.bar != "" {
+			b.WriteString("\r\n")
+			b.WriteString(truncateVisible(c.bar, width-1))
+			below++
+		}
+		if below > 0 {
+			fmt.Fprintf(&b, "\x1b[%dA", below)
 		}
 		b.WriteString("\r")
 		if curCol > 0 {
@@ -302,6 +317,118 @@ func (c *Console) drawLocked() {
 	}
 	c.writeLocked(b.String())
 	c.above, c.drawn = above, true
+}
+
+// indent is the guide drawn at the head of every continuation row, sized to
+// line the text up under the prompt.
+func (c *Console) indent() string {
+	pad := visibleWidth(c.prompt) - 2
+	if pad < 0 {
+		pad = 0
+	}
+	return strings.Repeat(" ", pad) + c.style(ansiDim, "┆ ")
+}
+
+// renderInput writes the prompt, the buffer, and a continuation guide at the
+// head of each row the user broke with a newline.
+func renderInput(prompt, indent string, buf []rune) string {
+	var b strings.Builder
+	b.WriteString(prompt)
+	for _, r := range buf {
+		if r == '\n' {
+			b.WriteString("\r\n")
+			b.WriteString(indent)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// layout maps the prompt and buffer onto physical rows, reporting how many
+// rows they cover and where the cursor lands inside them.
+func layout(promptWidth, indentWidth, width int, buf []rune, cursor int) (rows, curRow, curCol int) {
+	if width < 2 {
+		width = defaultWidth
+	}
+	row, col := 0, promptWidth
+	if cursor == 0 {
+		curRow, curCol = row, col
+	}
+	for i, r := range buf {
+		if r == '\n' {
+			row, col = row+1, indentWidth
+		} else if col++; col >= width {
+			row, col = row+1, 0
+		}
+		if i+1 == cursor {
+			curRow, curCol = row, col
+		}
+	}
+	return row + 1, curRow, curCol
+}
+
+// ---- status bar ------------------------------------------------------------
+
+// Bar is the persistent bottom line: which conversation you are in, what is
+// answering it, and the keys that drive the prompt.
+type Bar struct {
+	Session string
+	Model   string
+	Memory  string   // "" leaves memory out entirely
+	Hints   []string // right-aligned, dropped first when the terminal is narrow
+}
+
+// SetBar replaces the status bar. A zero Bar removes it.
+func (c *Console) SetBar(bar Bar) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rendered := c.renderBar(bar)
+	if !c.paint || !c.rawInput || rendered == c.bar {
+		return
+	}
+	c.bar = rendered
+	c.eraseLocked()
+	c.drawLocked()
+}
+
+func (c *Console) renderBar(bar Bar) string {
+	left := make([]string, 0, 3)
+	if bar.Session != "" {
+		left = append(left, c.style(ansiBold, bar.Session))
+	}
+	for _, part := range []string{bar.Model, bar.Memory} {
+		if part != "" {
+			left = append(left, part)
+		}
+	}
+	if len(left) == 0 && len(bar.Hints) == 0 {
+		return ""
+	}
+	text := " " + strings.Join(left, c.style(ansiDim, " · "))
+	width := c.width() - 1
+	// Hints are right-aligned, and the least important ones (last) go first
+	// when the terminal is too narrow to hold them all.
+	for n := len(bar.Hints); n > 0; n-- {
+		hints := strings.Join(bar.Hints[:n], " · ")
+		if gap := width - visibleWidth(text) - visibleWidth(hints) - 1; gap > 0 {
+			text += strings.Repeat(" ", gap) + hints
+			break
+		}
+	}
+	if pad := width - visibleWidth(text); pad > 0 {
+		text += strings.Repeat(" ", pad)
+	}
+	return c.styleBar(truncateVisible(text, width))
+}
+
+// styleBar paints the whole row. Nested styling inside the text resets as it
+// ends, so the bar's own colors are re-applied after every reset it finds.
+func (c *Console) styleBar(text string) string {
+	if !c.color {
+		return text
+	}
+	return c.barStyle + strings.ReplaceAll(text, ansiReset, ansiReset+c.barStyle) + ansiReset
 }
 
 // ---- input -----------------------------------------------------------------
@@ -377,13 +504,21 @@ func (c *Console) apply(k key) (line string, done bool, err error) {
 
 	switch k.kind {
 	case keyEnter:
+		// A trailing backslash continues the message instead of sending it —
+		// the shortcut that works on terminals which swallow Alt-Enter.
+		if c.cursor == len(c.buf) && len(c.buf) > 0 && c.buf[len(c.buf)-1] == '\\' {
+			c.buf[len(c.buf)-1] = '\n'
+			break
+		}
 		line = string(c.buf)
 		c.pushHistory(line)
 		c.buf, c.cursor = c.buf[:0], 0
 		c.eraseLocked()
-		c.writeLocked(c.prompt + line + "\r\n")
+		c.writeLocked(renderInput(c.prompt, c.indent(), []rune(line)) + "\r\n")
 		c.drawLocked()
 		return line, true, nil
+	case keyNewline:
+		c.insert('\n')
 	case keyInterrupt:
 		if len(c.buf) > 0 {
 			c.buf, c.cursor = c.buf[:0], 0
@@ -399,10 +534,7 @@ func (c *Console) apply(k key) (line string, done bool, err error) {
 		}
 		c.deleteForward()
 	case keyRune:
-		c.buf = append(c.buf, 0)
-		copy(c.buf[c.cursor+1:], c.buf[c.cursor:])
-		c.buf[c.cursor] = k.r
-		c.cursor++
+		c.insert(k.r)
 	case keyBackspace:
 		if c.cursor > 0 {
 			c.buf = append(c.buf[:c.cursor-1], c.buf[c.cursor:]...)
@@ -443,6 +575,13 @@ func (c *Console) apply(k key) (line string, done bool, err error) {
 	c.eraseLocked()
 	c.drawLocked()
 	return "", false, nil
+}
+
+func (c *Console) insert(r rune) {
+	c.buf = append(c.buf, 0)
+	copy(c.buf[c.cursor+1:], c.buf[c.cursor:])
+	c.buf[c.cursor] = r
+	c.cursor++
 }
 
 func (c *Console) deleteForward() {
@@ -592,6 +731,7 @@ const (
 	keyIgnore keyKind = iota
 	keyRune
 	keyEnter
+	keyNewline
 	keyBackspace
 	keyDelete
 	keyLeft
@@ -622,8 +762,10 @@ func decodeKey(b []byte) (int, key) {
 	switch b[0] {
 	case 0x1b:
 		return decodeEscape(b)
-	case '\r', '\n':
+	case '\r':
 		return 1, key{kind: keyEnter}
+	case '\n': // Ctrl-J: a newline inside the message
+		return 1, key{kind: keyNewline}
 	case 0x7f, 0x08:
 		return 1, key{kind: keyBackspace}
 	case 0x01:
@@ -661,6 +803,11 @@ func decodeKey(b []byte) (int, key) {
 }
 
 func decodeEscape(b []byte) (int, key) {
+	// Alt-Enter is only two bytes: decide it before waiting for a third,
+	// or the newline would not appear until the next keystroke.
+	if len(b) >= 2 && (b[1] == '\r' || b[1] == '\n') {
+		return 2, key{kind: keyNewline}
+	}
 	if len(b) < 3 {
 		return 0, key{}
 	}
@@ -684,12 +831,20 @@ func decodeEscape(b []byte) (int, key) {
 	if b[1] == '[' {
 		// A longer CSI sequence: consume through its final byte.
 		for i := 2; i < len(b); i++ {
-			if b[i] >= 0x40 && b[i] <= 0x7e {
-				if b[i] == '~' && i == 3 && b[2] == '3' {
-					return 4, key{kind: keyDelete}
-				}
-				return i + 1, key{kind: keyIgnore}
+			if b[i] < 0x40 || b[i] > 0x7e {
+				continue
 			}
+			seq := string(b[2 : i+1])
+			if seq == "3~" {
+				return 4, key{kind: keyDelete}
+			}
+			// Shift-Enter, from terminals that disambiguate it: kitty's
+			// CSI 13;<mods> u or xterm's CSI 27;<mods>;13 ~.
+			if strings.HasPrefix(seq, "13;") && b[i] == 'u' ||
+				strings.HasPrefix(seq, "27;") && strings.HasSuffix(seq, ";13~") {
+				return i + 1, key{kind: keyNewline}
+			}
+			return i + 1, key{kind: keyIgnore}
 		}
 		return 0, key{}
 	}

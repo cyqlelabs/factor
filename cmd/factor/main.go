@@ -167,7 +167,7 @@ func runChat(configPath, sessionName, message string) error {
 	}
 	defer a.Close()
 
-	sessionKey := "cli:" + sessionName
+	baseName, sessionKey := sessionName, "cli:"+sessionName
 
 	if message != "" {
 		return runOneShot(ctx, a, message, sessionKey)
@@ -183,10 +183,12 @@ func runChat(configPath, sessionName, message string) error {
 	}
 
 	ui := newChatUI(con)
+	ui.bar = func() tui.Bar { return chatBar(sessionName, cfg.Provider.Model, a.Memory) }
 	a.Loop.OnActivity(ui.activity)
+	ui.refreshBar()
 
-	con.Printf("factor %s — %s | session %s | /quit to exit, /new for a fresh session",
-		version.Version, cfg.Provider.Model, sessionName)
+	con.Printf("factor %s — %s | /quit to exit, /new for a fresh session",
+		version.Version, cfg.Provider.Model)
 
 	// Bus-driven REPL: replies AND proactive messages (finished background
 	// jobs, steered turns) print as they arrive, above the live prompt.
@@ -218,8 +220,10 @@ func runChat(configPath, sessionName, message string) error {
 		case "/quit", "/exit":
 			return nil
 		case "/new":
-			sessionKey = fmt.Sprintf("cli:%s-%d", sessionName, time.Now().Unix())
+			sessionName = fmt.Sprintf("%s-%d", baseName, time.Now().Unix())
+			sessionKey = "cli:" + sessionName
 			con.Printf("(started a fresh session)")
+			ui.refreshBar()
 			continue
 		}
 		chatID := strings.TrimPrefix(sessionKey, "cli:")
@@ -265,6 +269,7 @@ func runOneShot(ctx context.Context, a *app.App, message, sessionKey string) err
 type chatUI struct {
 	con  *tui.Console
 	spin *tui.Spinner
+	bar  func() tui.Bar
 
 	mu      sync.Mutex
 	live    string       // session key of the turn being waited on, "" when idle
@@ -295,7 +300,32 @@ func (u *chatUI) start(sessionKey string, onlyWhenIdle bool) {
 	if idle {
 		u.spin.Start()
 		u.con.PromptSteering()
+		u.refreshBar()
 	}
+}
+
+// refreshBar redraws the status bar: the session name and the memory
+// engine's health both change under it.
+func (u *chatUI) refreshBar() {
+	if u.bar != nil {
+		u.con.SetBar(u.bar())
+	}
+}
+
+// chatBar is what the bar says: where you are, what is answering, and the
+// keys that are not guessable.
+func chatBar(session, model string, mem memory.Engine) tui.Bar {
+	bar := tui.Bar{
+		Session: session,
+		Model:   model,
+		Hints:   []string{"alt+⏎ newline", "↑ history", "/quit"},
+	}
+	if mem != nil && mem.Enabled() {
+		if bar.Memory = "memory ✓"; !mem.Healthy() {
+			bar.Memory = "memory ✗"
+		}
+	}
+	return bar
 }
 
 // activity mirrors the loop's phases onto the pulse. Turns nobody asked for
@@ -336,6 +366,7 @@ func (u *chatUI) end() {
 	u.summary = &sum
 	u.mu.Unlock()
 	u.con.PromptIdle()
+	u.refreshBar()
 }
 
 // abort ends a turn that never started, leaving no summary behind.
