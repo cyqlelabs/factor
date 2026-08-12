@@ -70,15 +70,9 @@ func TestBrowserEndToEnd(t *testing.T) {
 	defer srv.Close()
 
 	ws := t.TempDir()
-	suite, closeFn := NewTools(config.BrowserConfig{
-		Enabled:  true,
-		Headless: true, // tests never pop a window
-		// CI runners and containers restrict unprivileged user namespaces,
-		// which stops Chrome from starting at all. The sandbox is not what
-		// this test is about.
-		NoSandbox:   true,
-		UserDataDir: filepath.Join(ws, "profile"),
-	}, ws)
+	cfg := liveConfig()
+	cfg.UserDataDir = filepath.Join(liveProfileDir(t), "profile")
+	suite, closeFn := NewTools(cfg, ws)
 	defer closeFn()
 	byName := map[string]tools.Tool{}
 	for _, tool := range suite {
