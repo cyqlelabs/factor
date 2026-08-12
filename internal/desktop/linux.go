@@ -247,9 +247,10 @@ func (c *linuxController) Screenshot(ctx context.Context, path string, shot Shot
 		return err
 	case c.env.has("grim"):
 		argv := []string{"grim"}
-		if shot.Mode == "region" {
+		switch shot.Mode {
+		case "region":
 			argv = append(argv, "-g", fmt.Sprintf("%d,%d %dx%d", region.X, region.Y, region.W, region.H))
-		} else if shot.Mode == "window" {
+		case "window":
 			return unsupported("window screenshots", "wayland/grim", "capture the full screen or a region instead")
 		}
 		_, err := c.env.Run(ctx, "", append(argv, path)...)

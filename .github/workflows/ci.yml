@@ -43,10 +43,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Package-level scanning instead of the default symbol level: the SSA
+      # builder govulncheck uses for symbol analysis panics on a transitive
+      # chromedp dependency ("got jsontext.Value, want variadic parameter of
+      # unnamed slice or string type"). Package level still reports every
+      # vulnerable package this module actually imports.
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          govulncheck -scan package ./...
 
   build:
     runs-on: ubuntu-latest

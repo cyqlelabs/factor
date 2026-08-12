@@ -394,9 +394,10 @@ func (u *UI) MultiSelect(question string, opts []Option, selected []bool) ([]boo
 		case n == 1 && buf[0] == ' ':
 			selected[cursor] = !selected[cursor]
 		case n == 3 && buf[0] == 0x1b && buf[1] == '[':
-			if buf[2] == 'A' {
+			switch buf[2] {
+			case 'A':
 				cursor = (cursor - 1 + len(opts)) % len(opts)
-			} else if buf[2] == 'B' {
+			case 'B':
 				cursor = (cursor + 1) % len(opts)
 			}
 		default:
