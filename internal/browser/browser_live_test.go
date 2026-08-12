@@ -49,16 +49,37 @@ func servePage(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// liveConfig is the browser setup every live test starts from. CI runners and
+// containers restrict unprivileged user namespaces, which stops Chrome from
+// starting at all; the sandbox is not what these tests are about.
+func liveConfig() config.BrowserConfig {
+	return config.BrowserConfig{
+		Enabled:   true,
+		Headless:  true, // tests never pop a window
+		NoSandbox: true,
+	}
+}
+
+// liveProfileDir returns a directory for a browser profile, outside t.TempDir:
+// a browser being torn down keeps writing to its profile for a moment, which
+// would fail the strict cleanup t.TempDir does.
+func liveProfileDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "factor-profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 // liveSuite starts a browser-backed tool suite keyed by tool name. No user
 // data dir is configured, so chromedp owns (and cleans up) the throwaway
 // profile of any browser it launches.
 func liveSuite(t *testing.T) map[string]tools.Tool {
 	t.Helper()
 	ws := t.TempDir()
-	suite, closeFn := NewTools(config.BrowserConfig{
-		Enabled:  true,
-		Headless: true, // tests never pop a window
-	}, ws)
+	suite, closeFn := NewTools(liveConfig(), ws)
 	t.Cleanup(closeFn)
 	byName := map[string]tools.Tool{}
 	for _, tool := range suite {
@@ -217,7 +238,7 @@ func TestBrowserScreenshotReportsWorkspaceFailures(t *testing.T) {
 	if err := os.WriteFile(blocked, []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := NewSession(config.BrowserConfig{Enabled: true, Headless: true}, blocked)
+	s := NewSession(liveConfig(), blocked)
 	defer s.Close()
 	shot := &screenshotTool{s}
 	ctx := context.Background()
@@ -244,7 +265,7 @@ func TestBrowserScreenshotReportsWorkspaceFailures(t *testing.T) {
 func TestRunStopsWhenTheCallerCancels(t *testing.T) {
 	requireBrowser(t)
 	ws := t.TempDir()
-	s := NewSession(config.BrowserConfig{Enabled: true, Headless: true}, ws)
+	s := NewSession(liveConfig(), ws)
 	defer s.Close()
 	if _, err := s.ensure(); err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -264,18 +285,10 @@ func TestSessionLaunchesAManagedBrowserWhenNoDevToolsPortIsOpen(t *testing.T) {
 	requireBrowser(t)
 	blockDevToolsProbe(t)
 	srv := servePage(t)
-	// The profile lives outside t.TempDir: a browser being torn down keeps
-	// writing to it for a moment, which would fail a strict directory cleanup.
-	profile, err := os.MkdirTemp("", "factor-profile")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(profile) })
-	s := NewSession(config.BrowserConfig{
-		Enabled:     true,
-		Headless:    true,
-		UserDataDir: filepath.Join(profile, "nested"),
-	}, t.TempDir())
+	profile := liveProfileDir(t)
+	cfg := liveConfig()
+	cfg.UserDataDir = filepath.Join(profile, "nested")
+	s := NewSession(cfg, t.TempDir())
 	defer s.Close()
 
 	res := (&navigateTool{s}).Execute(context.Background(), map[string]any{"url": srv.URL})
@@ -295,7 +308,7 @@ func TestSessionStartsAFreshBrowserAfterClose(t *testing.T) {
 	requireBrowser(t)
 	srv := servePage(t)
 	ws := t.TempDir()
-	s := NewSession(config.BrowserConfig{Enabled: true, Headless: true}, ws)
+	s := NewSession(liveConfig(), ws)
 	defer s.Close()
 
 	nav := &navigateTool{s}
