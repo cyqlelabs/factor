@@ -172,8 +172,6 @@ channels (telegram, cli, …)        smrti (Python sidecar, SQLite)
         └── job engine / cron / heartbeat re-enter the bus proactively
 ```
 
-Design lineage and decisions are documented in [`tasks/plan.md`](tasks/plan.md).
-
 ## Security model
 
 Factor is a personal agent, not a multi-tenant service. The guardrails (workspace
