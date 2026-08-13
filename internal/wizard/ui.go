@@ -260,6 +260,100 @@ func (u *UI) selectNumbered(question string, opts []Option, def int) (int, error
 
 var errNoRawMode = errors.New("raw mode unavailable")
 
+// Arrow keys, decoded from their CSI escape sequences. Values sit above any
+// single byte so they can never collide with a literal keystroke.
+const (
+	keyUp = 0x100 + iota
+	keyDown
+)
+
+// keyReader decodes raw-mode keystrokes from a byte stream. A terminal
+// delivers bytes, not keystrokes: two keys pressed quickly can arrive in one
+// read, and an escape sequence can arrive split across two, so fixed-size
+// reads misparse exactly when input is fast (key autorepeat, paste, a laggy
+// ssh). The reader buffers whatever arrives and hands back one keystroke at
+// a time.
+type keyReader struct {
+	in  io.Reader
+	buf []byte
+}
+
+// next returns the next decoded keystroke: a plain byte as itself, arrows as
+// keyUp/keyDown. Escape sequences are consumed whole — a modified arrow like
+// Ctrl-Up (\x1b[1;5A) or a function key (\x1b[15~) must never leak its tail
+// into the key stream, where a stray digit would hit selectRaw's number
+// shortcut and commit an option the user did not choose. A lone ESC is
+// dropped so the key that follows it still registers.
+func (k *keyReader) next() (int, error) {
+	for {
+		for len(k.buf) > 0 {
+			b := k.buf[0]
+			if b != 0x1b {
+				k.buf = k.buf[1:]
+				return int(b), nil
+			}
+			if len(k.buf) == 1 {
+				break // partial escape: wait for the rest
+			}
+			switch k.buf[1] {
+			case 'O': // SS3, application cursor mode: \x1bOA / \x1bOB
+				if len(k.buf) < 3 {
+					break
+				}
+				final := k.buf[2]
+				k.buf = k.buf[3:]
+				if key, ok := arrowKey(final); ok {
+					return key, nil
+				}
+				continue
+			case '[': // CSI: \x1b[ <params 0x20-0x3f>... <final 0x40-0x7e>
+				i := 2
+				for i < len(k.buf) && k.buf[i] >= 0x20 && k.buf[i] <= 0x3f {
+					i++
+				}
+				if i == len(k.buf) {
+					if len(k.buf) > 64 {
+						k.buf = nil // runaway unterminated sequence: discard
+					}
+					break // sequence still incomplete: wait for the final byte
+				}
+				final := k.buf[i]
+				if final < 0x40 || final > 0x7e {
+					k.buf = k.buf[i:] // malformed: not a CSI, re-decode as keys
+					continue
+				}
+				k.buf = k.buf[i+1:]
+				// Dispatch on the final byte alone so modified arrows
+				// (Ctrl-Up, Shift-Down) still move the cursor.
+				if key, ok := arrowKey(final); ok {
+					return key, nil
+				}
+				continue
+			default:
+				k.buf = k.buf[1:] // bare ESC (or Alt chord): drop the ESC
+				continue
+			}
+			break // partial SS3/CSI fell out of the switch: read more bytes
+		}
+		chunk := make([]byte, 64)
+		n, err := k.in.Read(chunk)
+		if err != nil {
+			return 0, err
+		}
+		k.buf = append(k.buf, chunk[:n]...)
+	}
+}
+
+func arrowKey(final byte) (int, bool) {
+	switch final {
+	case 'A':
+		return keyUp, true
+	case 'B':
+		return keyDown, true
+	}
+	return 0, false
+}
+
 func (u *UI) selectRaw(question string, opts []Option, def int) (int, error) {
 	state, err := term.MakeRaw(int(u.in.Fd()))
 	if err != nil {
@@ -272,38 +366,29 @@ func (u *UI) selectRaw(question string, opts []Option, def int) (int, error) {
 	cursor := def
 	u.renderMenu(opts, cursor, false)
 
-	buf := make([]byte, 3)
+	keys := &keyReader{in: u.in}
 	for {
-		n, err := u.in.Read(buf)
+		key, err := keys.next()
 		if err != nil {
 			return 0, ErrAborted
 		}
 		switch {
-		case n == 1 && (buf[0] == '\r' || buf[0] == '\n'):
+		case key == '\r' || key == '\n':
 			u.renderMenu(opts, cursor, true)
 			return cursor, nil
-		case n == 1 && (buf[0] == 3 || buf[0] == 4 || buf[0] == 'q'): // Ctrl-C, Ctrl-D
+		case key == 3 || key == 4 || key == 'q': // Ctrl-C, Ctrl-D
 			u.printf("\r\n")
 			return 0, ErrAborted
-		case n == 1 && buf[0] >= '1' && buf[0] <= '9':
-			if idx := int(buf[0] - '1'); idx < len(opts) {
+		case key >= '1' && key <= '9':
+			if idx := key - '1'; idx < len(opts) {
 				cursor = idx
 				u.renderMenu(opts, cursor, true)
 				return cursor, nil
 			}
-		case n == 3 && buf[0] == 0x1b && buf[1] == '[':
-			switch buf[2] {
-			case 'A': // up
-				cursor = (cursor - 1 + len(opts)) % len(opts)
-			case 'B': // down
-				cursor = (cursor + 1) % len(opts)
-			}
-		case n == 1 && (buf[0] == 'k' || buf[0] == 'j'):
-			if buf[0] == 'k' {
-				cursor = (cursor - 1 + len(opts)) % len(opts)
-			} else {
-				cursor = (cursor + 1) % len(opts)
-			}
+		case key == keyUp || key == 'k':
+			cursor = (cursor - 1 + len(opts)) % len(opts)
+		case key == keyDown || key == 'j':
+			cursor = (cursor + 1) % len(opts)
 		default:
 			continue
 		}
@@ -379,27 +464,24 @@ func (u *UI) MultiSelect(question string, opts []Option, selected []bool) ([]boo
 	}
 	render()
 
-	buf := make([]byte, 3)
+	keys := &keyReader{in: u.in}
 	for {
-		n, err := u.in.Read(buf)
+		key, err := keys.next()
 		if err != nil {
 			return nil, ErrAborted
 		}
-		switch {
-		case n == 1 && (buf[0] == '\r' || buf[0] == '\n'):
+		switch key {
+		case '\r', '\n':
 			return selected, nil
-		case n == 1 && (buf[0] == 3 || buf[0] == 4):
+		case 3, 4:
 			u.printf("\r\n")
 			return nil, ErrAborted
-		case n == 1 && buf[0] == ' ':
+		case ' ':
 			selected[cursor] = !selected[cursor]
-		case n == 3 && buf[0] == 0x1b && buf[1] == '[':
-			switch buf[2] {
-			case 'A':
-				cursor = (cursor - 1 + len(opts)) % len(opts)
-			case 'B':
-				cursor = (cursor + 1) % len(opts)
-			}
+		case keyUp:
+			cursor = (cursor - 1 + len(opts)) % len(opts)
+		case keyDown:
+			cursor = (cursor + 1) % len(opts)
 		default:
 			continue
 		}
