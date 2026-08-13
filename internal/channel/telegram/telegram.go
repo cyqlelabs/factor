@@ -38,6 +38,10 @@ type Config struct {
 	APIBase   string   `json:"api_base"` // override for tests; default api.telegram.org
 }
 
+// typingInterval sits under Telegram's ~5s chat-action lifetime, so a
+// re-sent action keeps the indicator unbroken for as long as a turn runs.
+var typingInterval = 4 * time.Second
+
 type Telegram struct {
 	apiBase string
 	token   string
@@ -47,6 +51,10 @@ type Telegram struct {
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	offset  int64
+
+	typingMu sync.Mutex
+	runCtx   context.Context // set by Start; parents the typing loops
+	typing   map[string]context.CancelFunc
 }
 
 // redact keeps the bot token out of error chains: transport errors embed the
@@ -72,6 +80,7 @@ func New(cfg Config, b *bus.MessageBus) (*Telegram, error) {
 		allow:   map[string]bool{},
 		b:       b,
 		client:  &http.Client{Timeout: 70 * time.Second},
+		typing:  map[string]context.CancelFunc{},
 	}
 	for _, a := range cfg.AllowFrom {
 		t.allow[strings.TrimSpace(a)] = true
@@ -87,6 +96,9 @@ func (t *Telegram) MaxMessageLength() int { return 4000 }
 
 func (t *Telegram) Start(ctx context.Context) error {
 	ctx, t.cancel = context.WithCancel(ctx)
+	t.typingMu.Lock()
+	t.runCtx = ctx
+	t.typingMu.Unlock()
 	t.wg.Add(1)
 	go t.pollLoop(ctx)
 	return nil
@@ -96,6 +108,12 @@ func (t *Telegram) Stop() error {
 	if t.cancel != nil {
 		t.cancel()
 	}
+	// Turns outlive the connector during shutdown and keep reporting phases;
+	// dropping the run context makes those late calls inert instead of
+	// racing a new typing goroutine against the wait below.
+	t.typingMu.Lock()
+	t.runCtx = nil
+	t.typingMu.Unlock()
 	t.wg.Wait()
 	return nil
 }
@@ -190,11 +208,54 @@ func (t *Telegram) handle(u update) {
 }
 
 func (t *Telegram) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	body, err := json.Marshal(map[string]any{"chat_id": msg.ChatID, "text": msg.Content})
+	return t.call(ctx, "sendMessage", map[string]any{"chat_id": msg.ChatID, "text": msg.Content})
+}
+
+// SetTyping starts or stops the "typing…" indicator for one chat. The agent
+// loop calls it from turn goroutines, so it only touches the map here and
+// leaves the API calls to a per-chat goroutine.
+func (t *Telegram) SetTyping(chatID string, on bool) {
+	t.typingMu.Lock()
+	defer t.typingMu.Unlock()
+	if !on {
+		if cancel, running := t.typing[chatID]; running {
+			cancel()
+			delete(t.typing, chatID)
+		}
+		return
+	}
+	if _, running := t.typing[chatID]; running || t.runCtx == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(t.runCtx)
+	t.typing[chatID] = cancel
+	t.wg.Add(1)
+	go t.typingLoop(ctx, chatID)
+}
+
+// typingLoop re-sends the chat action until the turn ends or the connector
+// stops. Telegram clears the indicator on its own once the reply lands.
+func (t *Telegram) typingLoop(ctx context.Context, chatID string) {
+	defer t.wg.Done()
+	for {
+		if err := t.call(ctx, "sendChatAction", map[string]any{"chat_id": chatID, "action": "typing"}); err != nil && ctx.Err() == nil {
+			slog.Debug("telegram sendChatAction failed", "chat", chatID, "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(typingInterval):
+		}
+	}
+}
+
+// call posts a JSON payload to one Bot API method and checks its ok flag.
+func (t *Telegram) call(ctx context.Context, method string, payload map[string]any) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.apiBase+"/sendMessage", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.apiBase+"/"+method, bytes.NewReader(body))
 	if err != nil {
 		return t.redact(err) // the URL in this error embeds the token
 	}
@@ -210,7 +271,7 @@ func (t *Telegram) Send(ctx context.Context, msg bus.OutboundMessage) error {
 		Description string `json:"description"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil || !parsed.OK {
-		return fmt.Errorf("telegram sendMessage failed: HTTP %d %s", resp.StatusCode, parsed.Description)
+		return fmt.Errorf("telegram %s failed: HTTP %d %s", method, resp.StatusCode, parsed.Description)
 	}
 	return nil
 }

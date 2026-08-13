@@ -324,6 +324,190 @@ func TestPollLoopExitsWhenTheContextIsCancelledMidRequest(t *testing.T) {
 	}
 }
 
+// fastTyping shortens the chat-action refresh so a test can watch it repeat.
+func fastTyping(t *testing.T) {
+	t.Helper()
+	original := typingInterval
+	typingInterval = 10 * time.Millisecond
+	t.Cleanup(func() { typingInterval = original })
+}
+
+// typingServer answers polls slowly and counts typing actions per chat.
+func typingServer(t *testing.T) (*Telegram, func(chatID string) int) {
+	t.Helper()
+	var mu sync.Mutex
+	actions := map[string]int{}
+	tg, _ := newTelegram(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/sendChatAction") {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["action"] != "typing" {
+				t.Errorf("chat action = %v, want typing", body["action"])
+			}
+			mu.Lock()
+			actions[body["chat_id"].(string)]++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		time.Sleep(20 * time.Millisecond) // a hot poll loop would drown the counts
+		_, _ = w.Write([]byte(`{"ok":true,"result":[]}`))
+	})
+	return tg, func(chatID string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return actions[chatID]
+	}
+}
+
+// waitForActions polls until chatID has at least want actions.
+func waitForActions(t *testing.T, count func(string) int, chatID string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for count(chatID) < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("chat %s got %d typing actions, want at least %d", chatID, count(chatID), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestSetTypingRepeatsTheActionUntilItIsStopped(t *testing.T) {
+	fastTyping(t)
+
+	tg, count := typingServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := tg.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tg.Stop() }()
+
+	tg.SetTyping("77", true)
+	waitForActions(t, count, "77", 3) // the indicator has to be refreshed, not sent once
+
+	tg.SetTyping("77", false)
+	settled := count("77")
+	time.Sleep(100 * time.Millisecond)
+	if after := count("77"); after > settled+1 { // one action may already be in flight
+		t.Errorf("typing actions grew from %d to %d after the turn ended", settled, after)
+	}
+}
+
+func TestSetTypingStartsOneLoopPerChat(t *testing.T) {
+	tg, _ := typingServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := tg.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tg.Stop() }()
+
+	tg.SetTyping("77", true)
+	tg.SetTyping("77", true)
+	tg.SetTyping("88", true)
+
+	tg.typingMu.Lock()
+	live := len(tg.typing)
+	tg.typingMu.Unlock()
+	if live != 2 {
+		t.Errorf("live typing loops = %d, want one per chat (2)", live)
+	}
+}
+
+func TestSetTypingIsInertWithoutAStartedConnector(t *testing.T) {
+	tg, count := typingServer(t)
+
+	tg.SetTyping("77", true)  // no run context yet: nothing to hang the loop off
+	tg.SetTyping("77", false) // stopping a chat that was never typing
+
+	tg.typingMu.Lock()
+	live := len(tg.typing)
+	tg.typingMu.Unlock()
+	if live != 0 {
+		t.Errorf("live typing loops = %d before Start, want 0", live)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := count("77"); n != 0 {
+		t.Errorf("sent %d typing actions before Start, want 0", n)
+	}
+}
+
+func TestStopEndsTypingLoops(t *testing.T) {
+	fastTyping(t)
+
+	tg, count := typingServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := tg.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tg.SetTyping("77", true)
+	waitForActions(t, count, "77", 1)
+
+	stopped := make(chan struct{})
+	go func() {
+		_ = tg.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop hung on a running typing loop")
+	}
+
+	settled := count("77")
+	tg.SetTyping("88", true) // a turn still finishing after shutdown
+	time.Sleep(100 * time.Millisecond)
+	if after := count("77"); after != settled {
+		t.Errorf("typing actions grew from %d to %d after Stop", settled, after)
+	}
+	if n := count("88"); n != 0 {
+		t.Errorf("a stopped connector sent %d typing actions, want 0", n)
+	}
+}
+
+func TestTypingLoopSurvivesARejectedAction(t *testing.T) {
+	fastTyping(t)
+
+	var mu sync.Mutex
+	calls := 0
+	tg, _ := newTelegram(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/sendChatAction") {
+			time.Sleep(20 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"ok":true,"result":[]}`))
+			return
+		}
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"ok":false,"description":"Too Many Requests"}`))
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := tg.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tg.Stop() }()
+
+	tg.SetTyping("77", true)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		n := calls
+		mu.Unlock()
+		if n >= 2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the typing loop stopped after %d rejected actions, want it to keep trying", n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestStopIsSafeBeforeStart(t *testing.T) {
 	tg, _ := newTelegram(t, func(http.ResponseWriter, *http.Request) {})
 	if err := tg.Stop(); err != nil {

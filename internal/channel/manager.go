@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +65,19 @@ func (m *Manager) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// SetTyping routes a session's busy state to the channel it belongs to, for
+// connectors that can show one. Session keys of channels this manager does
+// not own (cli, cron, heartbeat) are ignored.
+func (m *Manager) SetTyping(sessionKey string, on bool) {
+	name, chatID, ok := strings.Cut(sessionKey, ":")
+	if !ok {
+		return
+	}
+	if typer, can := m.channels[name].(Typer); can {
+		typer.SetTyping(chatID, on)
+	}
 }
 
 func (m *Manager) deliver(ctx context.Context, msg bus.OutboundMessage) {

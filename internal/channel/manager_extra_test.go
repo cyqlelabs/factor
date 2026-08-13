@@ -109,6 +109,63 @@ func TestManagerStartStartsHealthyChannelsWhenOneFails(t *testing.T) {
 	}
 }
 
+// typingChannel is a scriptedChannel that can also show a typing indicator.
+type typingChannel struct {
+	scriptedChannel
+	mu    sync.Mutex
+	calls []string // "chatID:on" / "chatID:off"
+}
+
+func (c *typingChannel) SetTyping(chatID string, on bool) {
+	state := "off"
+	if on {
+		state = "on"
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, chatID+":"+state)
+}
+
+func (c *typingChannel) typingCalls() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.calls...)
+}
+
+func TestSetTypingRoutesSessionKeysToTheirChannel(t *testing.T) {
+	typer := &typingChannel{scriptedChannel: scriptedChannel{name: "telegram"}}
+	plain := &scriptedChannel{name: "sms"} // no Typer: must be skipped, not panic
+	m := NewManager(bus.New(), []Channel{typer, plain})
+
+	m.SetTyping("telegram:42", true)
+	m.SetTyping("telegram:42", false)
+	m.SetTyping("sms:9", true)
+	m.SetTyping("ghost:1", true) // a channel this manager does not own
+	m.SetTyping("no-chat-id", true)
+
+	got := typer.typingCalls()
+	want := []string{"42:on", "42:off"}
+	if len(got) != len(want) {
+		t.Fatalf("typing calls = %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("typing call %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSetTypingSplitsOnTheFirstColonOnly(t *testing.T) {
+	typer := &typingChannel{scriptedChannel: scriptedChannel{name: "telegram"}}
+	m := NewManager(bus.New(), []Channel{typer})
+
+	m.SetTyping("telegram:-100:99", true) // supergroup ids carry their own colons
+
+	if got := typer.typingCalls(); len(got) != 1 || got[0] != "-100:99:on" {
+		t.Errorf("typing calls = %v, want the full chat id after the first colon", got)
+	}
+}
+
 func TestDeliverDropsMessagesForUnknownChannels(t *testing.T) {
 	known := &scriptedChannel{name: "known"}
 	m := NewManager(bus.New(), []Channel{known})

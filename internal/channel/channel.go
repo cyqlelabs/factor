@@ -22,6 +22,12 @@ type Channel interface {
 	MaxMessageLength() int // 0 = unlimited
 }
 
+// Typer is the optional capability of showing the user that a turn is being
+// worked on. Connectors whose protocol has no such signal simply omit it.
+type Typer interface {
+	SetTyping(chatID string, on bool)
+}
+
 // Factory builds a channel from its raw config section.
 type Factory func(raw json.RawMessage, b *bus.MessageBus) (Channel, error)
 
