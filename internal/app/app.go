@@ -81,7 +81,10 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(execTool)
 	registry.Register(tools.NewWebTools()...)
 	registry.Register(memory.NewTools(engine)...)
-	registry.Register(&skills.InstallTool{Root: filepath.Join(ws, "skills")})
+	skillsRoot := filepath.Join(ws, "skills")
+	registry.Register(&skills.InstallTool{Root: skillsRoot})
+	registry.Register(&skills.WriteTool{Root: skillsRoot})
+	registry.Register(&skills.RemoveTool{Root: skillsRoot})
 	registry.Register(tools.NewConfigTools(cfg)...)
 	registry.Register(tools.NewPkgInstallTool())
 

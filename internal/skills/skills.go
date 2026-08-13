@@ -75,16 +75,20 @@ func (l *Loader) List() []Skill {
 }
 
 // Summary renders the prompt catalog: summaries only, full skill on demand.
+// It always renders, even with no skills installed: the closing note is how the
+// model learns that reusable work must go through skill_write to be indexed.
 func (l *Loader) Summary() string {
-	list := l.List()
-	if len(list) == 0 {
-		return ""
-	}
 	var b strings.Builder
-	b.WriteString("# Skills\n\nAvailable skills (read the SKILL.md with read_file before using one):\n")
-	for _, s := range list {
-		fmt.Fprintf(&b, "- %s: %s (%s)\n", s.Name, s.Description, s.Path)
+	b.WriteString("# Skills\n\n")
+	if list := l.List(); len(list) == 0 {
+		b.WriteString("No skills yet.\n")
+	} else {
+		b.WriteString("Available skills (read the SKILL.md with read_file before using one):\n")
+		for _, s := range list {
+			fmt.Fprintf(&b, "- %s: %s (%s)\n", s.Name, s.Description, s.Path)
+		}
 	}
+	b.WriteString("\nWhen you build something reusable (a script, a procedure, a recipe), save it with skill_write so it appears in this catalog on later turns. A file written into the skills directory any other way is invisible to you and will be forgotten.\n")
 	return b.String()
 }
 
@@ -183,4 +187,96 @@ func (t *InstallTool) Execute(ctx context.Context, args map[string]any) *tools.R
 		return tools.Errorf("source has no SKILL.md at its root; not a skill")
 	}
 	return tools.Textf("Installed skill %q to %s", name, dest)
+}
+
+// WriteTool authors a skill in place. Without it the model writes loose scripts
+// into the skills root, which the directory+SKILL.md scan never indexes, so the
+// work vanishes from the catalog the moment the session ends.
+type WriteTool struct {
+	Root string // workspace/skills
+}
+
+func (t *WriteTool) Name() string { return "skill_write" }
+func (t *WriteTool) Description() string {
+	return "Create or update a skill so it is indexed and listed in your prompt on every later turn. Use this for anything reusable you build (scripts, procedures, recipes) instead of writing files into the skills directory directly. Writing an existing name replaces its SKILL.md; helper scripts belong in the returned directory."
+}
+func (t *WriteTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":        map[string]any{"type": "string", "description": "Skill directory name (letters, digits, - and _)"},
+			"description": map[string]any{"type": "string", "description": "One line describing when to use this skill; this is what you see in the catalog"},
+			"content":     map[string]any{"type": "string", "description": "Markdown body: what the skill does, how to run it, which files it uses"},
+		},
+		"required": []any{"name", "description", "content"},
+	}
+}
+
+func (t *WriteTool) Execute(_ context.Context, args map[string]any) *tools.Result {
+	name := strings.TrimSpace(tools.StringArg(args, "name"))
+	if !skillNameRe.MatchString(name) {
+		return tools.Errorf("invalid skill name %q", name)
+	}
+	desc := strings.Join(strings.Fields(tools.StringArg(args, "description")), " ")
+	if desc == "" {
+		return tools.Errorf("description is required: it is the only thing you see in the catalog")
+	}
+	content := strings.TrimSpace(tools.StringArg(args, "content"))
+	if content == "" {
+		return tools.Errorf("content is required")
+	}
+
+	dir := filepath.Join(t.Root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return tools.Errorf("create skill dir: %v", err)
+	}
+	path := filepath.Join(dir, "SKILL.md")
+	_, statErr := os.Stat(path)
+	existed := statErr == nil
+	doc := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n\n%s\n", name, desc, content)
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		return tools.Errorf("write SKILL.md: %v", err)
+	}
+
+	verb := "Created"
+	if existed {
+		verb = "Updated"
+	}
+	return tools.Textf("%s skill %q (%s). Put helper scripts in %s and reference them from the body.", verb, name, path, dir)
+}
+
+// RemoveTool deletes a skill directory so retired work leaves the catalog.
+type RemoveTool struct {
+	Root string // workspace/skills
+}
+
+func (t *RemoveTool) Name() string { return "skill_remove" }
+func (t *RemoveTool) Description() string {
+	return "Delete a skill and its directory, removing it from your catalog. Use when a skill is obsolete or wrong."
+}
+func (t *RemoveTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name": map[string]any{"type": "string", "description": "Skill directory name"},
+		},
+		"required": []any{"name"},
+	}
+}
+
+func (t *RemoveTool) Execute(_ context.Context, args map[string]any) *tools.Result {
+	name := strings.TrimSpace(tools.StringArg(args, "name"))
+	if !skillNameRe.MatchString(name) {
+		return tools.Errorf("invalid skill name %q", name)
+	}
+	dir := filepath.Join(t.Root, name)
+	// Confirm it is a skill before a recursive delete: a directory without
+	// SKILL.md is something else that happens to live under the skills root.
+	if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
+		return tools.Errorf("no skill %q to remove (no %s)", name, filepath.Join(dir, "SKILL.md"))
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return tools.Errorf("remove skill: %v", err)
+	}
+	return tools.Textf("Removed skill %q", name)
 }
