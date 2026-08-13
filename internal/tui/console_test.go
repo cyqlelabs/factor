@@ -617,6 +617,43 @@ func TestBarFitsTheTerminal(t *testing.T) {
 	}
 }
 
+func TestBarStyleNamesItsOwnColors(t *testing.T) {
+	cases := []struct {
+		name              string
+		term, colorterm   string
+		wantOwnBackground bool
+	}{
+		{"truecolor", "xterm-ghostty", "truecolor", true},
+		{"24bit", "screen", "24bit", true},
+		{"256color in TERM", "xterm-256color", "", true},
+		{"a terminal that names itself", "xterm-kitty", "", true},
+		{"direct color", "xterm-direct", "", true},
+		{"a plain terminal", "vt220", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TERM", tc.term)
+			t.Setenv("COLORTERM", tc.colorterm)
+			t.Setenv("NO_COLOR", "")
+			got := barStyle()
+			// Reverse video would borrow the user's theme and invert it,
+			// which is how the bar ended up pale-on-pale.
+			if strings.Contains(got, "\x1b[7m") {
+				t.Errorf("bar style uses reverse video: %q", got)
+			}
+			if own := strings.Contains(got, ansiBarBG) && strings.Contains(got, ansiBarFG); own != tc.wantOwnBackground {
+				t.Errorf("bar style = %q, want its own background = %v", got, tc.wantOwnBackground)
+			}
+		})
+	}
+
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "1")
+	if got := barStyle(); got != "" {
+		t.Errorf("NO_COLOR bar style = %q, want nothing", got)
+	}
+}
+
 func TestLayoutMapsInputOntoRows(t *testing.T) {
 	cases := []struct {
 		name                 string
