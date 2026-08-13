@@ -137,7 +137,7 @@ The workspace (`~/.factor/workspace`) is the agent's home: `AGENT.md`, `SOUL.md`
 | **Skill** | Drop `workspace/skills/<name>/SKILL.md` — catalog in prompt, full text on demand, `skill_install` from git |
 
 <details>
-<summary><b>A connector in ten lines</b></summary>
+<summary><b>Wiring in a connector</b></summary>
 
 ```go
 func init() {
