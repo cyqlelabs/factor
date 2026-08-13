@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cyqlelabs/factor/internal/agent"
 	"github.com/cyqlelabs/factor/internal/memory"
@@ -83,6 +86,32 @@ func TestChatUIRefreshesTheBarAtTurnBoundaries(t *testing.T) {
 	// A UI without a bar source must not panic.
 	plain, _ := pipedUI(t)
 	plain.refreshBar()
+}
+
+// The bar is drawn before the sidecar finishes warming up, so without a
+// repaint between turns a healthy engine kept showing "memory ✗" until the
+// first message was sent.
+func TestChatUIWatchBarRepaintsWhileIdle(t *testing.T) {
+	ui, _ := pipedUI(t)
+	var calls atomic.Int32
+	ui.bar = func() tui.Bar { calls.Add(1); return tui.Bar{Session: "main"} }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go ui.watchBar(ctx, time.Millisecond)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	if calls.Load() < 3 {
+		t.Error("watchBar never repainted the idle bar")
+	}
+	n := calls.Load()
+	time.Sleep(20 * time.Millisecond)
+	if calls.Load() > n+1 { // one tick may already be in flight at cancel
+		t.Error("watchBar kept repainting after its context was cancelled")
+	}
 }
 
 func TestChatUIReportsWhatTheTurnDid(t *testing.T) {
