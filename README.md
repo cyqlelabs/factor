@@ -1,10 +1,7 @@
-<p align="center">
-  <picture>
-    <source media="(max-width: 600px)" srcset="docs/assets/hero-compact.png">
-    <img src="docs/assets/hero-wide.png" width="100%"
-         alt="Factor by Cyqle — the agent at the next cursor. Long-term memory, real tools, one static Go binary.">
-  </picture>
-</p>
+<!-- Plain markdown image on purpose: the GitHub mobile app does not render
+     <picture>/<source>, it drops the element and shows a broken-image icon. -->
+
+![Factor by Cyqle — the agent at the next cursor. Long-term memory, real tools, one static Go binary.](docs/assets/hero-wide.png)
 
 **A fast, reliable, lightweight desktop AI agent and companion — with a real memory.**
 
