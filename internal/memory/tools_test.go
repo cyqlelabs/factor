@@ -153,14 +153,40 @@ func TestRememberTool(t *testing.T) {
 	if got.Valence == nil || *got.Valence != -0.6 {
 		t.Errorf("valence not forwarded: %+v", got.Valence)
 	}
-	if got.Probability != 0.8 {
-		t.Errorf("default probability = %v", got.Probability)
+	if got.Probability != 0 {
+		t.Errorf("probability = %v, want 0 (client fills the default)", got.Probability)
+	}
+
+	// permanent retention translates client-side to the strongest write old
+	// engines accept: plain remember, type=belief, user source, no evidence.
+	tool.Execute(ctx, map[string]any{
+		"content": "Nicolás is married to Roxsana", "type": "episode",
+		"retention": "permanent", "evidence": "stated in chat",
+	})
+	if p := engine.remembered[1]; p.Type != "belief" || p.Source != SourceUser ||
+		p.Evidence != "" || p.Probability != 0.95 {
+		t.Errorf("permanent request = %+v", p)
+	}
+
+	// permanent keeps an explicit agent source
+	tool.Execute(ctx, map[string]any{"content": "I misread the config", "retention": "permanent", "source": "agent"})
+	if p := engine.remembered[2]; p.Source != SourceAgent {
+		t.Errorf("permanent agent source = %+v", p)
 	}
 
 	// omitted valence stays nil so smrti auto-estimates it
-	tool.Execute(ctx, map[string]any{"content": "no valence", "probability": 0.5})
-	if last := engine.remembered[1]; last.Valence != nil || last.Probability != 0.5 {
+	tool.Execute(ctx, map[string]any{"content": "no valence"})
+	if last := engine.remembered[3]; last.Valence != nil {
 		t.Errorf("second request = %+v", last)
+	}
+
+	// a misspelled retention value must error, not silently fade
+	res = tool.Execute(ctx, map[string]any{"content": "x", "retention": "permanant"})
+	if !res.IsError || !strings.Contains(res.ForLLM, "unknown retention") {
+		t.Errorf("bad retention = %+v", res)
+	}
+	if len(engine.stored()) != 4 {
+		t.Errorf("bad retention still stored a memory")
 	}
 
 	// engine filtered the memory: empty atom id is not an error

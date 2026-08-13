@@ -249,22 +249,30 @@ func Default() *Config {
 			RetryBackoffSecs: 2,
 		},
 		Memory: MemoryConfig{
-			Mode:                "sidecar",
-			Command:             "smrti",
-			AutoInstall:         true,
-			KeepAlive:           true,
-			Host:                "127.0.0.1",
-			Port:                8420,
-			DBPath:              filepath.Join(home, "memory.db"),
-			Tenant:              "default",
-			Space:               "main",
-			Personality:         "balanced",
-			RecallTopK:          5,
-			RecallMinConfidence: 0.3,
+			Mode:        "sidecar",
+			Command:     "smrti",
+			AutoInstall: true,
+			KeepAlive:   true,
+			Host:        "127.0.0.1",
+			Port:        8420,
+			DBPath:      filepath.Join(home, "memory.db"),
+			Tenant:      "default",
+			Space:       "main",
+			Personality: "balanced",
+			RecallTopK:  5,
+			// smrti never prunes a user-stated episode or belief — it pins
+			// them at an LTI floor above the prune line — but their confidence
+			// decays toward zero forever. A floor near the 0.5 an atom is born
+			// with therefore makes recall lose facts smrti is still storing.
+			RecallMinConfidence: 0.05,
 			QueryContextMsgs:    5,
 			QueryMaxChars:       500,
 			InjectMaxChars:      500,
-			ReflectIntervalSecs: 60,
+			// Confidence decays once per consolidation epoch, and smrti's
+			// personality presets are tuned per epoch, not per hour, so this
+			// interval is the real decay rate. At 60s a belief born at 0.5
+			// falls under a 0.1 floor within hours on every preset.
+			ReflectIntervalSecs: 3600,
 			IgnorePatterns:      []string{"^HEARTBEAT_OK$", "^# Heartbeat"},
 			StartupTimeoutSecs:  90,
 		},
