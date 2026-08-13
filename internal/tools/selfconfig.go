@@ -30,7 +30,7 @@ func (t *configGetTool) Description() string {
 func (t *configGetTool) Parameters() map[string]any {
 	return map[string]any{
 		"type":       "object",
-		"properties": map[string]any{"key": map[string]any{"type": "string"}},
+		"properties": map[string]any{"key": map[string]any{"type": "string", "description": "Dotted path such as provider.model; omit to return the whole config"}},
 	}
 }
 func (t *configGetTool) Execute(_ context.Context, args map[string]any) *Result {
@@ -61,7 +61,7 @@ func (t *configSetTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"key":   map[string]any{"type": "string"},
+			"key":   map[string]any{"type": "string", "description": "Dotted path such as heartbeat.interval_minutes; read it with config_get first if unsure it exists"},
 			"value": map[string]any{"description": "New value (any JSON type)"},
 		},
 		"required": []any{"key", "value"},

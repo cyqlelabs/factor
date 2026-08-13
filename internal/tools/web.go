@@ -33,7 +33,7 @@ func (t *webFetchTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"url":       map[string]any{"type": "string"},
+			"url":       map[string]any{"type": "string", "description": "Absolute http:// or https:// URL"},
 			"max_chars": map[string]any{"type": "integer", "description": "Cap on returned characters (default 20000)"},
 		},
 		"required": []any{"url"},
@@ -136,7 +136,7 @@ func (t *webSearchTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"query": map[string]any{"type": "string"},
+			"query": map[string]any{"type": "string", "description": "Search keywords, as you would type them into a search box"},
 			"count": map[string]any{"type": "integer", "description": "Results to return (default 5, max 10)"},
 		},
 		"required": []any{"query"},

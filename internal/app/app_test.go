@@ -77,7 +77,8 @@ func TestDefaultToolArsenal(t *testing.T) {
 		// background work and scheduling
 		"job_start", "job_status", "job_list", "job_cancel", "cron",
 		// self-management
-		"config_get", "config_set", "pkg_install", "skill_install",
+		"config_get", "config_set", "pkg_install",
+		"skill_install", "skill_write", "skill_remove",
 		"mcp_add", "mcp_remove", "mcp_list",
 		// desktop control
 		"window_list", "window_control", "screenshot", "mouse", "type_text",
@@ -87,6 +88,39 @@ func TestDefaultToolArsenal(t *testing.T) {
 		if !got[name] {
 			t.Errorf("tool %q is not registered by default", name)
 		}
+	}
+}
+
+// Every schema in this test is prompt text the model reads before it can call
+// anything. A property without a description, or an enum it cannot see, is a
+// tool call the model has to guess at — so the whole arsenal is held to the
+// contract, not just the built-ins that internal/tools can reach.
+func TestEveryToolSchemaIsModelReady(t *testing.T) {
+	cfg := testConfig(t)
+	on := true
+	cfg.Desktop.Enabled = &on
+	a := newTestApp(t, cfg)
+
+	for _, def := range a.Registry.Definitions() {
+		t.Run(def.Name, func(t *testing.T) {
+			if len(strings.TrimSpace(def.Description)) < 20 {
+				t.Errorf("description %q is too thin to route on", def.Description)
+			}
+			props, _ := def.Parameters["properties"].(map[string]any)
+			for key, raw := range props {
+				spec, ok := raw.(map[string]any)
+				if !ok {
+					t.Errorf("property %q spec is %T, want map[string]any", key, raw)
+					continue
+				}
+				if desc, _ := spec["description"].(string); strings.TrimSpace(desc) == "" {
+					t.Errorf("property %q has no description; the model must guess what to pass", key)
+				}
+				if _, declared := spec["enum"]; declared && len(tools.SchemaStrings(spec["enum"])) == 0 {
+					t.Errorf("property %q declares an enum with no usable string values", key)
+				}
+			}
+		})
 	}
 }
 

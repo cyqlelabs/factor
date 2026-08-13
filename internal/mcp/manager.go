@@ -187,7 +187,7 @@ func (t *addTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"name":    map[string]any{"type": "string", "description": "Short identifier, e.g. 'github'"},
 			"command": map[string]any{"type": "string", "description": "Executable to run"},
-			"args":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"args":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Arguments passed to the command, one array element each (no shell quoting)"},
 			"env":     map[string]any{"type": "object", "description": "Extra environment variables"},
 		},
 		"required": []any{"name", "command"},
@@ -244,7 +244,7 @@ func (t *removeTool) Description() string {
 func (t *removeTool) Parameters() map[string]any {
 	return map[string]any{
 		"type":       "object",
-		"properties": map[string]any{"name": map[string]any{"type": "string"}},
+		"properties": map[string]any{"name": map[string]any{"type": "string", "description": "Server name as shown by mcp_list"}},
 		"required":   []any{"name"},
 	}
 }

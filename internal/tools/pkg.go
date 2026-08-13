@@ -76,8 +76,8 @@ func (t *PkgInstallTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"packages": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"manager":  map[string]any{"type": "string", "enum": []any{"auto", "apt", "apk", "dnf", "pacman", "xbps", "pkg", "pip", "pipx", "uv", "npm"}},
+			"packages": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Package names as the chosen manager spells them (e.g. python3-pip for apt, pillow for pip)"},
+			"manager":  map[string]any{"type": "string", "enum": []any{"auto", "apt", "apk", "dnf", "pacman", "xbps", "pkg", "pip", "pipx", "uv", "npm"}, "description": "Which manager to use (default auto, which picks the system one). Choose pip/pipx/uv/npm explicitly for language packages"},
 		},
 		"required": []any{"packages"},
 	}
