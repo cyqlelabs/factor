@@ -45,11 +45,11 @@ mistake*.
 flowchart LR
     TG([Telegram]) <--> BUS
     CLI([CLI]) <--> BUS
-    BUS[message bus] --> LOOP[agent loop<br>one live turn per session]
-    LOOP <-->|recall · store| MEM[(smrti<br>REST sidecar)]
-    LOOP --> PROV[provider chain<br>failover · cooldowns · compaction]
+    BUS[message bus] --> LOOP["agent loop<br/>one live turn per session"]
+    LOOP <-->|recall · store| MEM[("smrti<br/>REST sidecar")]
+    LOOP --> PROV["provider chain<br/>failover · cooldowns · compaction"]
     LOOP --> REG[tool registry]
-    REG --- SUITES[fs · exec · web · browser · desktop<br>memory · jobs · cron · config · pkg · skills · MCP]
+    REG --- SUITES["fs · exec · web · browser · desktop<br/>memory · jobs · cron · config · pkg · skills · MCP"]
     BG[jobs · cron · heartbeat] -.->|proactive results| BUS
 ```
 
