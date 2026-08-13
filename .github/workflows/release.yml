@@ -1,8 +1,23 @@
 name: Release
 
+# Two ways in: a hand-pushed tag, or the auto-tag job in ci.yml calling this
+# workflow directly. The call is not optional plumbing — a tag pushed with
+# GITHUB_TOKEN does not trigger workflows, so the push trigger alone would
+# never fire for an automatic release.
+#
+# `inputs` is empty on the push path, so `inputs.version || github.ref_name`
+# resolves to the tag either way. It is spelled out at each use rather than
+# hoisted into a job-level env because the contexts a job-level env may read
+# are narrower than the ones a step may.
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      version:
+        description: The tag to build and publish.
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -14,16 +29,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.version || github.ref_name }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - name: test
         run: go test ./...
       - name: build
-        run: make build-all VERSION=${GITHUB_REF_NAME}
+        env:
+          TAG: ${{ inputs.version || github.ref_name }}
+        run: make build-all VERSION="$TAG"
       - name: checksums
         run: cd dist && sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
+          # Explicit: on the workflow_call path github.ref is the branch, not
+          # the tag, so the default would publish a release named "main".
+          tag_name: ${{ inputs.version || github.ref_name }}
           files: dist/*
           generate_release_notes: true

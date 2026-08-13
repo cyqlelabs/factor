@@ -1,0 +1,8 @@
+# Next-version rules for svu, which derives the version from Conventional
+# Commits since the last tag. https://github.com/caarlos0/svu
+#
+# v0: while the project is pre-1.0, a breaking change bumps the minor rather
+# than jumping to 1.0.0. Promote to 1.0 by tagging v1.0.0 by hand once.
+v0: true
+tag:
+  prefix: "v"
