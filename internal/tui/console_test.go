@@ -388,10 +388,10 @@ func TestClearScreenRepaints(t *testing.T) {
 	if _, err := w.WriteString("\x0c"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool { return strings.Contains(out.String(), "\x1b[2J") })
-	if !strings.Contains(stripANSI(out.String()), "you> ") {
-		t.Errorf("prompt not repainted after clear: %q", out.String())
-	}
+	// The clear sequence and the prompt repaint are separate writes; wait for both.
+	waitFor(t, func() bool {
+		return strings.Contains(out.String(), "\x1b[2J") && strings.Contains(stripANSI(out.String()), "you> ")
+	})
 	_, _ = w.WriteString("\r")
 }
 
