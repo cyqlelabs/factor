@@ -38,6 +38,9 @@ const (
 	ansiMagenta = "\x1b[35m"
 	ansiBarBG   = "\x1b[48;5;236m"
 	ansiBarFG   = "\x1b[38;5;250m"
+	ansiBlue    = "\x1b[34m"
+	// The closest 256-color match to the Factor logo's blue (#0b94d4).
+	ansiLogoBlue = "\x1b[38;5;32m"
 )
 
 const defaultWidth = 80
@@ -52,6 +55,7 @@ type Console struct {
 	canRaw   bool
 	color    bool
 	barStyle string
+	blue     string
 
 	// pending holds bytes read but not yet turned into keys — type-ahead
 	// and pasted lines that arrived past an Enter. Only the reader touches
@@ -106,6 +110,7 @@ func newConsole(out *os.File) *Console {
 	usable := os.Getenv("TERM") != "dumb" && term.IsTerminal(int(out.Fd()))
 	c.color = usable && os.Getenv("NO_COLOR") == ""
 	c.barStyle = barStyle()
+	c.blue = blueStyle()
 	if usable {
 		c.width = func() int {
 			if w, _, err := term.GetSize(int(out.Fd())); err == nil && w >= 24 {
@@ -175,7 +180,7 @@ func (c *Console) Printf(format string, args ...any) {
 func (c *Console) Reply(content, meta string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	text := c.style(ansiCyan+ansiBold, "factor") + c.style(ansiDim, "› ") + sanitize(content)
+	text := c.style(c.blue+ansiBold, "factor") + c.style(ansiDim, "› ") + sanitize(content)
 	if meta != "" {
 		text += "\n" + c.style(ansiDim, "  "+meta)
 	}
@@ -426,20 +431,37 @@ func barStyle() string {
 	if os.Getenv("NO_COLOR") != "" {
 		return ""
 	}
-	term := os.Getenv("TERM")
+	if paletteTerm() {
+		return ansiBarBG + ansiBarFG
+	}
+	return ansiDim
+}
+
+// blueStyle is the logo's blue on terminals with a real palette, and the
+// theme's plain blue everywhere else.
+func blueStyle() string {
+	if paletteTerm() {
+		return ansiLogoBlue
+	}
+	return ansiBlue
+}
+
+// paletteTerm reports whether the terminal has a real 256-color palette.
+func paletteTerm() bool {
 	switch os.Getenv("COLORTERM") {
 	case "truecolor", "24bit":
-		return ansiBarBG + ansiBarFG
+		return true
 	}
 	// TERM names the terminal, not its palette: xterm-ghostty and friends
 	// support 256 colors without saying so.
+	term := os.Getenv("TERM")
 	for _, name := range []string{"256color", "direct", "kitty", "ghostty",
 		"alacritty", "wezterm", "foot", "contour", "rio", "iterm"} {
 		if strings.Contains(term, name) {
-			return ansiBarBG + ansiBarFG
+			return true
 		}
 	}
-	return ansiDim
+	return false
 }
 
 // styleBar paints the whole row. Nested styling inside the text resets as it
