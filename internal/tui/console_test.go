@@ -112,6 +112,68 @@ func TestReadLineEditsTheBuffer(t *testing.T) {
 	}
 }
 
+func TestNewlineShortcutsBuildAMultiLineMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		keys []string
+	}{
+		{"ctrl-j", []string{"first\nsecond\r"}},
+		{"alt-enter", []string{"first", "\x1b\r", "second\r"}},
+		{"alt-enter as escape-newline", []string{"first", "\x1b\n", "second\r"}},
+		{"kitty shift-enter", []string{"first", "\x1b[13;2u", "second\r"}},
+		{"xterm shift-enter", []string{"first", "\x1b[27;2;13~", "second\r"}},
+		{"a trailing backslash continues", []string{"first\\", "\r", "second\r"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, w, _ := rawConsole(t)
+			line, err := c.readWith(t, w, tc.keys...)
+			if err != nil {
+				t.Fatalf("ReadLine = %v", err)
+			}
+			if line != "first\nsecond" {
+				t.Errorf("line = %q, want a two-line message", line)
+			}
+		})
+	}
+}
+
+func TestMultiLineInputIsDrawnWithAContinuationGuide(t *testing.T) {
+	c, w, out := rawConsole(t)
+	go func() { _, _ = c.ReadLine() }()
+	if _, err := w.WriteString("first\nsecond"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return strings.Contains(out.String(), "second") })
+
+	painted := stripANSI(out.String())
+	if !strings.Contains(painted, "you> first\r\n   ┆ second") {
+		t.Errorf("continuation row not drawn: %q", painted)
+	}
+	// Printing over a two-row input has to climb back over both rows.
+	out.Reset()
+	c.Printf("a message")
+	if !strings.Contains(out.String(), "\x1b[1A") {
+		t.Errorf("the second input row was not walked back: %q", out.String())
+	}
+	if !strings.Contains(stripANSI(out.String()), "   ┆ second") {
+		t.Errorf("input not repainted after printing: %q", stripANSI(out.String()))
+	}
+	_, _ = w.WriteString("\r")
+}
+
+func TestBackslashOnlyContinuesAtTheEndOfTheLine(t *testing.T) {
+	c, w, _ := rawConsole(t)
+	// With the cursor parked mid-line, a trailing backslash still sends.
+	line, err := c.readWith(t, w, "a\\b", "\x1b[D", "\r")
+	if err != nil {
+		t.Fatalf("ReadLine = %v", err)
+	}
+	if line != "a\\b" {
+		t.Errorf("line = %q, want the message sent as typed", line)
+	}
+}
+
 func TestPastedLinesAreNotLost(t *testing.T) {
 	c, w, _ := rawConsole(t)
 	// Three lines arrive in one paste: each ReadLine takes the next one.
@@ -447,7 +509,10 @@ func TestDecodeKey(t *testing.T) {
 	}{
 		{"empty", "", 0, keyIgnore, 0},
 		{"enter", "\r", 1, keyEnter, 0},
-		{"newline", "\n", 1, keyEnter, 0},
+		{"ctrl-j inserts a newline", "\n", 1, keyNewline, 0},
+		{"alt-enter inserts a newline", "\x1b\r", 2, keyNewline, 0},
+		{"kitty shift-enter", "\x1b[13;2u", 7, keyNewline, 0},
+		{"xterm shift-enter", "\x1b[27;2;13~", 10, keyNewline, 0},
 		{"backspace", "\x7f", 1, keyBackspace, 0},
 		{"ctrl-h", "\x08", 1, keyBackspace, 0},
 		{"ctrl-a", "\x01", 1, keyHome, 0},
@@ -477,6 +542,102 @@ func TestDecodeKey(t *testing.T) {
 			if size != tc.size || k.kind != tc.kind || k.r != tc.rune_ {
 				t.Errorf("decodeKey(%q) = %d, %v/%q; want %d, %v/%q",
 					tc.in, size, k.kind, k.r, tc.size, tc.kind, tc.rune_)
+			}
+		})
+	}
+}
+
+func TestStatusBarSitsUnderThePrompt(t *testing.T) {
+	c, w, out := rawConsole(t)
+	c.width = func() int { return 100 }
+	go func() { _, _ = c.ReadLine() }()
+	waitFor(t, func() bool { return strings.Contains(out.String(), "you> ") })
+
+	out.Reset()
+	c.SetBar(Bar{Session: "main", Model: "fake-model", Memory: "memory ✓",
+		Hints: []string{"alt+⏎ newline"}})
+	painted := stripANSI(out.String())
+	prompt, bar, found := strings.Cut(painted, "\r\n")
+	if !found || !strings.Contains(prompt, "you> ") {
+		t.Fatalf("bar not drawn below the prompt: %q", painted)
+	}
+	for _, want := range []string{"main", "fake-model", "memory ✓", "alt+⏎ newline"} {
+		if !strings.Contains(bar, want) {
+			t.Errorf("bar %q is missing %q", bar, want)
+		}
+	}
+	if !strings.Contains(out.String(), "\x1b[1A") {
+		t.Errorf("the cursor was not walked back up to the prompt: %q", out.String())
+	}
+
+	// An unchanged bar does not repaint.
+	out.Reset()
+	c.SetBar(Bar{Session: "main", Model: "fake-model", Memory: "memory ✓",
+		Hints: []string{"alt+⏎ newline"}})
+	if out.String() != "" {
+		t.Errorf("repainted an unchanged bar: %q", out.String())
+	}
+
+	// A new session name replaces it.
+	out.Reset()
+	c.SetBar(Bar{Session: "main-2", Model: "fake-model"})
+	if !strings.Contains(stripANSI(out.String()), "main-2") {
+		t.Errorf("bar not updated: %q", out.String())
+	}
+	_, _ = w.WriteString("\r")
+}
+
+func TestBarFitsTheTerminal(t *testing.T) {
+	c, _, _ := rawConsole(t)
+	c.color, c.width = true, func() int { return 60 }
+	info := Bar{Session: "main", Model: "some/long-model-name", Memory: "memory ✓",
+		Hints: []string{"alt+⏎ newline", "↑ history", "/quit"}}
+	bar := c.renderBar(info)
+	if got := visibleWidth(bar); got != 59 {
+		t.Errorf("bar is %d cells wide, want the terminal width less one: %q", got, stripANSI(bar))
+	}
+	// The hints that do not fit go from the right, so the newline shortcut
+	// is the last one standing.
+	if !strings.Contains(stripANSI(bar), "alt+⏎ newline") {
+		t.Errorf("the newline hint should survive a narrow bar: %q", stripANSI(bar))
+	}
+	if strings.Contains(stripANSI(bar), "/quit") {
+		t.Errorf("the least important hint should be dropped first: %q", stripANSI(bar))
+	}
+	c.width = func() int { return 30 }
+	if narrow := stripANSI(c.renderBar(info)); strings.Contains(narrow, "alt+⏎") || len([]rune(narrow)) != 29 {
+		t.Errorf("a very narrow bar = %q", narrow)
+	}
+	// The bar's own colors resume after each nested style ends.
+	if !strings.Contains(bar, ansiReset+c.barStyle) {
+		t.Errorf("bar styling not restored after nested styles: %q", bar)
+	}
+	if c.renderBar(Bar{}) != "" {
+		t.Error("an empty Bar should render nothing")
+	}
+}
+
+func TestLayoutMapsInputOntoRows(t *testing.T) {
+	cases := []struct {
+		name                 string
+		buf                  string
+		cursor, width        int
+		rows, curRow, curCol int
+	}{
+		{"empty", "", 0, 40, 1, 0, 5},
+		{"one line", "abc", 3, 40, 1, 0, 8},
+		{"cursor at home", "abc", 0, 40, 1, 0, 5},
+		{"wrapped", strings.Repeat("x", 40), 40, 40, 2, 1, 5},
+		{"newline", "a\nb", 3, 40, 2, 1, 6},
+		{"cursor on the newline", "a\nb", 2, 40, 2, 1, 5},
+		{"absurd width falls back", "abc", 3, 1, 1, 0, 8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, curRow, curCol := layout(5, 5, tc.width, []rune(tc.buf), tc.cursor)
+			if rows != tc.rows || curRow != tc.curRow || curCol != tc.curCol {
+				t.Errorf("layout = %d rows, cursor (%d,%d); want %d rows, cursor (%d,%d)",
+					rows, curRow, curCol, tc.rows, tc.curRow, tc.curCol)
 			}
 		})
 	}
