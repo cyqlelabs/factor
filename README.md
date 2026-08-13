@@ -11,63 +11,44 @@
 Factor is a single static Go binary that lives on your machine, talks to you over the
 CLI or Telegram, does real work with real tools, and remembers what matters across
 conversations. Its long-term memory is [smrti](https://github.com/cyqlelabs/smrti) —
-an AtomSpace-inspired engine with Bayesian truth values, attention economics, and
-emotional valence — so Factor doesn't just log what you said: it consolidates,
-prioritizes, and *never repeats a critical mistake*.
-
-Factor distills the architecture of [PicoClaw](https://github.com/sipeed/picoclaw)
-(bus + bounded workers, mid-turn steering, narrow pluggable seams, CGO-free
-portability) into a small, sharply focused codebase built for low-resource Linux
-desktops — it runs happily on an old Puppy Linux box.
+Bayesian truth values, attention economics, emotional valence — so Factor doesn't
+just log what you said: it consolidates, prioritizes, and *never repeats a critical
+mistake*.
 
 ## Highlights
 
-- **smrti memory as the soul** — every exchange is stored as episodes; every turn
-  recalls salience-ranked memories into context. Past failures surface as hard
-  behavioral constraints (`YOU MUST NOT …`), background facts as notes. Consolidation
-  (decay, promotion, contradiction resolution, pruning) runs inside smrti's reflect
-  epochs. The agent also has deliberate `remember` / `recall` / `forget` / `reflect`
-  tools.
-- **Never keeps you waiting** — long work runs through a background job engine
-  (`job_start`, shell commands or delegated agent sub-tasks). The agent acks
-  immediately; when a job finishes, the completion event re-enters the same session
-  and Factor proactively messages you with the result — even mid-conversation.
-- **One turn per session, steering for the rest** — a second message during a live
-  turn is injected into that turn between tool iterations instead of queuing.
-- **Provider failover that works** — OpenAI-compatible (OpenRouter, Ollama, LM Studio,
-  Groq, llama.cpp, …) and native Anthropic backends, error classification, per-candidate
-  cooldowns, context-overflow-triggered compaction at turn-safe boundaries.
-- **Reasoning, dialect-translated** — one `provider.reasoning` setting (effort or an
-  explicit token budget) reaches OpenRouter as `reasoning`, OpenAI/Groq as
-  `reasoning_effort`, and Anthropic as a `thinking` budget. Defaults to `xhigh`.
-- **Hands on your desktop** — `window_list` / `window_control` (focus, close,
-  move, maximize…), `screenshot`, `mouse`, `type_text`, `press_key`,
-  `clipboard`, `notify`, `open`, `desktop_info`. X11 and Wayland via the usual
-  helpers (xdotool, wmctrl, scrot, xclip, grim, wl-clipboard), macOS via
-  osascript/screencapture, Windows via PowerShell. Registered automatically
-  when a graphical session exists, skipped on headless boxes.
-- **A real browser, not just fetch** — CDP tools (`browser_navigate/read/click/fill/
-  screenshot/eval/back`) that attach to your running Chrome/Chromium/Brave DevTools
-  port, or launch a managed instance — visible by default so you can watch it work.
-- **Extensible everything**:
-  - *Connectors*: self-registering channel factories (Telegram included; WhatsApp,
-    Twilio, Slack… are one package each).
-  - *Tools*: one interface, one registration line; users curate the arsenal via
-    `tools.disabled`.
-  - *MCP*: built-in stdio client; `mcp_add` mounts any MCP server's tools at runtime
-    and persists it to config.
-  - *Skills*: markdown skills with progressive disclosure (catalog in prompt, full
-    text on demand), `skill_install` from git or local dirs.
-  - *Instructions*: `AGENT.md` / `SOUL.md` / `USER.md` plus drop-in
-    `workspace/instructions/*.md`.
-- **Self-managing** — `config_get` / `config_set` (redacted reads, schema-validated
-  persisted writes), `pkg_install` (apt/apk/dnf/pacman/xbps/pkg/pip/pipx/uv/npm),
-  cron schedules, HEARTBEAT.md proactive checks that cost zero LLM calls when idle.
-- **Safety rails** — workspace-restricted file access with symlink-escape resolution,
-  exec deny-patterns for catastrophic commands, sender allowlists, secrets scrubbed
-  from every tool result. (Rails, not a sandbox — see [Security](#security-model).)
+| | |
+|---|---|
+| 🧠 **Memory as the soul** | Salience-ranked recall every turn; past failures become hard constraints; consolidation decays, promotes, and prunes — plus deliberate `remember` / `recall` / `forget` / `reflect` tools |
+| ⚡ **Never keeps you waiting** | Long work runs as background jobs — Factor acks instantly and proactively messages you when the result lands, even mid-conversation |
+| 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations instead of queuing |
+| 🔁 **Provider failover that works** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with error classification, per-candidate cooldowns, and overflow-triggered compaction |
+| 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning` (OpenRouter), `reasoning_effort` (OpenAI/Groq), or a `thinking` budget (Anthropic) |
+| 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications — X11, Wayland, macOS, Windows; auto-registered when a display exists |
+| 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed instance — visible by default so you can watch it work |
+| 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills, drop-in instructions — see [Extending](#extending-factor) |
+| 🔧 **Self-managing** | Edits its own config, installs packages (apt/dnf/pip/npm/…), runs cron schedules and `HEARTBEAT.md` checks that cost zero LLM calls when idle |
+| 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, secrets scrubbed from every tool result — rails, not a sandbox ([Security](#security-model)) |
 
-## Install
+## How it works
+
+```mermaid
+flowchart LR
+    TG([Telegram]) <--> BUS
+    CLI([CLI]) <--> BUS
+    BUS[message bus] --> LOOP[agent loop<br>one live turn per session]
+    LOOP <-->|recall · store| MEM[(smrti<br>REST sidecar)]
+    LOOP --> PROV[provider chain<br>failover · cooldowns · compaction]
+    LOOP --> REG[tool registry]
+    REG --- SUITES[fs · exec · web · browser · desktop<br>memory · jobs · cron · config · pkg · skills · MCP]
+    BG[jobs · cron · heartbeat] -.->|proactive results| BUS
+```
+
+Bus + bounded workers, mid-turn steering, narrow pluggable seams, CGO-free
+portability — the architecture of [PicoClaw](https://github.com/sipeed/picoclaw)
+distilled into a codebase that runs happily on an old Puppy Linux box.
+
+## Get started
 
 ```bash
 go install github.com/cyqlelabs/factor/cmd/factor@latest
@@ -76,22 +57,11 @@ go install github.com/cyqlelabs/factor/cmd/factor@latest
 factor init      # interactive setup wizard
 ```
 
-`factor init` is a terminal wizard: pick a provider from a menu, paste a key,
-choose a model from the endpoint's **live model list**, set the reasoning
-effort, then memory, channels and tools — each step verified as you go (the
-provider with a real completion, the Telegram token with `getMe`).
-
-It also **installs smrti**, Factor's memory engine, if it is missing — trying
-`uv tool install`, `pipx`, `pip install --user` (retrying with
-`--break-system-packages` on PEP-668 distros), and finally a private venv under
-`~/.factor/venv`. Nothing needs root. Any later run installs it too if it went
-missing (`memory.auto_install`), and the wizard offers to install the desktop
-helpers your session lacks.
-
-Scripting a machine? `factor init -y` takes the defaults and never prompts;
-`--no-install` keeps it from installing anything.
-
-## Quick start
+The wizard verifies every step live — the provider with a real completion, the
+model picked from the endpoint's live list, the Telegram token with `getMe` — and
+installs smrti if it's missing (`uv` → `pipx` → `pip --user` → private venv; no
+root needed). `factor init -y` takes the defaults for scripting; `--no-install`
+keeps it from installing anything.
 
 ```bash
 export FACTOR_PROVIDER_API_KEY=sk-or-...   # OpenRouter by default
@@ -101,15 +71,17 @@ factor gateway                             # daemon: Telegram, cron, heartbeat, 
 factor status                              # daemon / provider / memory health
 ```
 
-Factor spawns and supervises `smrti serve rest` on localhost automatically
-(`memory.mode: "sidecar"`), restarts it with backoff if it dies, and degrades
-gracefully (empty recalls, dropped writes, clear health status) when it's down.
+Factor spawns and supervises the smrti sidecar automatically, restarts it with
+backoff, and degrades gracefully (empty recalls, dropped writes) when it's down.
 Point `memory.mode: "external"` + `memory.url` at a shared smrti if you run one.
 
 ## Configuration
 
-`~/.factor/config.json` (all keys optional — defaults work). Environment overrides:
-`FACTOR_HOME`, `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MODE`, …
+`~/.factor/config.json` — every key optional, defaults work. `FACTOR_*` env
+overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MODE`, …
+
+<details>
+<summary><b>Annotated example</b></summary>
 
 ```jsonc
 {
@@ -139,13 +111,23 @@ Point `memory.mode: "external"` + `memory.url` at a shared smrti if you run one.
 }
 ```
 
+</details>
+
 The workspace (`~/.factor/workspace`) is the agent's home: `AGENT.md`, `SOUL.md`,
 `USER.md` shape its identity; `HEARTBEAT.md` lists proactive tasks; `instructions/`,
 `skills/`, `sessions/`, `cron/` do what they say.
 
 ## Extending Factor
 
-**A new connector** is one package:
+| Seam | What it takes |
+|---|---|
+| **Connector** | One package: `channel.Register(name, factory)` in `init()`, with its own config section |
+| **Tool** | Four methods — `Name`, `Description`, `Parameters`, `Execute` — and one `registry.Register(t)` line |
+| **MCP server** | `mcp_add` (or the `mcp.servers` config section) mounts its tools at runtime — no Go required |
+| **Skill** | Drop `workspace/skills/<name>/SKILL.md` — catalog in prompt, full text on demand, `skill_install` from git |
+
+<details>
+<summary><b>A connector in ten lines</b></summary>
 
 ```go
 func init() {
@@ -157,26 +139,7 @@ func init() {
 }
 ```
 
-**A new tool** implements four methods (`Name`, `Description`, `Parameters`,
-`Execute`) and registers with `registry.Register(t)` — or skip Go entirely and add
-an **MCP server** (`mcp_add`, or the `mcp.servers` config section) or a **markdown
-skill** (`workspace/skills/<name>/SKILL.md`).
-
-## Architecture
-
-```
-channels (telegram, cli, …)        smrti (Python sidecar, SQLite)
-        │  ▲                                ▲  REST :8420
-        ▼  │                                │
-   message bus ──► agent loop ──► memory engine (recall → prompt, store ← turns)
-        ▲          │    │ one turn per session; overflow = steering
-        │          │    └► provider chain (failover, cooldowns, compaction)
-        │          └────► tool registry
-        │                  fs · exec · web · browser(CDP) · desktop(X11/Wayland/
-        │                  macOS/Windows) · memory · jobs · cron
-        │                  config · pkg · skills · MCP mounts
-        └── job engine / cron / heartbeat re-enter the bus proactively
-```
+</details>
 
 ## Security model
 
@@ -189,20 +152,16 @@ under your own account for yourself; set `channels.telegram.allow_from`; keep
 ## Development
 
 ```bash
-make check        # gofmt + vet + race tests + coverage gate
-make cover        # statement coverage, fails under 90%
+make check        # gofmt + vet + race tests + coverage gate (≥90%, what CI runs)
 make build        # local binary
 make build-all    # release cross-compile (incl. GOAMD64=v1 for old x86-64)
 make build-tiny   # -tags nobrowser: smallest binary
 ```
 
-CI fails below 90% statement coverage. The suite runs against fakes — scripted
-providers, a fake smrti (spawned by re-execing the test binary, so the real
-sidecar supervision and env contract are exercised), a fake Telegram API, a fake
-MCP server over real stdio JSON-RPC, a scripted desktop where every helper
-command is asserted, and a daemon test that boots the gateway and shuts it down
-with SIGTERM — plus live tests, a real headless-Chrome browser run and a real
-desktop round-trip, that auto-skip when the machine cannot host them.
+The suite runs against fakes — scripted providers, a fake smrti sidecar (spawned
+by re-execing the test binary), a fake Telegram API, a fake MCP server over real
+stdio JSON-RPC, a scripted desktop — plus live headless-Chrome and desktop
+round-trip tests that auto-skip where the machine can't host them.
 
 ## License
 
