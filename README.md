@@ -1,4 +1,10 @@
-# Factor
+<p align="center">
+  <picture>
+    <source media="(max-width: 600px)" srcset="docs/assets/hero-compact.png">
+    <img src="docs/assets/hero-wide.png" width="100%"
+         alt="Factor by Cyqle — the agent at the next cursor. Long-term memory, real tools, one static Go binary.">
+  </picture>
+</p>
 
 **A fast, reliable, lightweight desktop AI agent and companion — with a real memory.**
 
