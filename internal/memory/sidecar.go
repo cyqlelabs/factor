@@ -89,6 +89,14 @@ type Sidecar struct {
 	installTried  atomic.Bool
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
+	probeInterval time.Duration // healthy re-probe cadence; zero means 30s
+}
+
+func (s *Sidecar) reprobeInterval() time.Duration {
+	if s.probeInterval > 0 {
+		return s.probeInterval
+	}
+	return 30 * time.Second
 }
 
 // resolveCommand locates the smrti executable, installing it when it is
@@ -157,7 +165,7 @@ func (s *Sidecar) run(ctx context.Context) {
 
 func (s *Sidecar) pollWhileHealthy(ctx context.Context) {
 	for ctx.Err() == nil {
-		sleepCtx(ctx, 30*time.Second)
+		sleepCtx(ctx, s.reprobeInterval())
 		if ctx.Err() != nil || s.client.CheckHealth(ctx) != nil {
 			return
 		}
@@ -223,17 +231,25 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
 
-	// Poll health while the process lives. First start can be slow (ONNX
-	// model download); warn at the startup timeout but keep waiting.
+	// Poll health for as long as the process lives. First start can be slow
+	// (ONNX model download); warn at the startup timeout but keep waiting.
+	// Polling must survive the first success: a request that times out while
+	// the engine warms up flips the client unhealthy, and without a re-probe
+	// that verdict would stick for the whole session even though the server
+	// recovers moments later.
 	pollCtx, stopPoll := context.WithCancel(context.Background())
 	defer stopPoll()
 	go func() {
 		deadline := time.Now().Add(time.Duration(s.cfg.StartupTimeoutSecs) * time.Second)
 		warned := false
 		for pollCtx.Err() == nil {
+			wasHealthy := s.client.Healthy()
 			if s.client.CheckHealth(pollCtx) == nil {
-				slog.Info("smrti sidecar healthy")
-				return
+				if !wasHealthy {
+					slog.Info("smrti sidecar healthy")
+				}
+				sleepCtx(pollCtx, s.reprobeInterval())
+				continue
 			}
 			if !warned && s.cfg.StartupTimeoutSecs > 0 && time.Now().After(deadline) {
 				slog.Warn("smrti still not healthy; first run downloads models and can take a while",
