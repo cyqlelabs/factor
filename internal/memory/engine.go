@@ -33,12 +33,23 @@ type Memory struct {
 	Space       string   `json:"space"`
 }
 
+// Source values for RememberRequest. Anything the assistant authored must be
+// marked SourceAgent: smrti extracts those turns conservatively, weights them
+// below what the user said, and lets them decay unless the user picks them up.
+// An unmarked reply is stored as if the user had stated it, so a single
+// suggestion-laden answer mints dozens of permanent entities.
+const (
+	SourceUser  = "user"
+	SourceAgent = "agent"
+)
+
 type RememberRequest struct {
 	Content     string
 	Type        string // episode | belief | goal (default episode)
 	Probability float64
 	Valence     *float64 // nil = smrti auto-estimates from content
 	Evidence    string   // beliefs only
+	Source      string   // user | agent (empty means user)
 }
 
 // Engine is the memory seam. The production implementation talks to smrti;
