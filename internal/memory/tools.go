@@ -24,17 +24,21 @@ type rememberTool struct{ engine Engine }
 
 func (t *rememberTool) Name() string { return "remember" }
 func (t *rememberTool) Description() string {
-	return "Store an important memory, belief, or goal in long-term memory. Resolve pronouns to explicit names, keep it atomic, and use negative valence (-0.5 to -1.0) for errors and things to avoid. Use type=belief with evidence to assert a probabilistic fact."
+	return "Store an important memory, belief, or goal in long-term memory. Memories fade from recall over time unless they come up again — set retention=permanent for facts that must not: the user's identity, family and relationships, where they live, standing preferences. Resolve pronouns to explicit names, keep it atomic, and use negative valence (-0.5 to -1.0) for errors and things to avoid. Use type=belief with evidence to assert a probabilistic fact."
 }
 func (t *rememberTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"content":     map[string]any{"type": "string", "description": "The memory to store"},
-			"type":        map[string]any{"type": "string", "enum": []any{"episode", "belief", "goal"}},
-			"probability": map[string]any{"type": "number", "description": "How true this is (0-1, default 0.8)"},
-			"valence":     map[string]any{"type": "number", "description": "Emotional tone -1..1; omit to auto-estimate"},
-			"evidence":    map[string]any{"type": "string", "description": "Why you believe this (beliefs only)"},
+			"content": map[string]any{"type": "string", "description": "The memory to store"},
+			"type":    map[string]any{"type": "string", "enum": []any{"episode", "belief", "goal"}},
+			"retention": map[string]any{
+				"type":        "string",
+				"enum":        []any{"normal", "permanent"},
+				"description": "permanent: identity facts, relationships, and standing preferences — stored with the engine's strongest durability so they outlive ordinary fading. normal (default): fades from recall unless restated.",
+			},
+			"valence":  map[string]any{"type": "number", "description": "Emotional tone -1..1; omit to auto-estimate"},
+			"evidence": map[string]any{"type": "string", "description": "Why you believe this (normal-retention beliefs only)"},
 			"source": map[string]any{
 				"type":        "string",
 				"enum":        []any{"user", "agent"},
@@ -46,17 +50,38 @@ func (t *rememberTool) Parameters() map[string]any {
 }
 func (t *rememberTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
 	req := RememberRequest{
-		Content:     tools.StringArg(args, "content"),
-		Type:        tools.StringArg(args, "type"),
-		Probability: tools.FloatArg(args, "probability", 0.8),
-		Evidence:    tools.StringArg(args, "evidence"),
-		Source:      tools.StringArg(args, "source"),
+		Content:  tools.StringArg(args, "content"),
+		Type:     tools.StringArg(args, "type"),
+		Evidence: tools.StringArg(args, "evidence"),
+		Source:   tools.StringArg(args, "source"),
 	}
 	if req.Source != SourceUser && req.Source != SourceAgent {
 		req.Source = "" // unrecognised value: store with default user standing
 	}
 	if v, ok := args["valence"].(float64); ok {
 		req.Valence = &v
+	}
+	// Unlike source — where coercing an unrecognised value falls back to the
+	// stronger user standing — silently defaulting a bad retention value
+	// would quietly hand a permanent fact a fading one, so it errors and
+	// lets the model retry.
+	retention := tools.StringArg(args, "retention")
+	if retention != "" && retention != "normal" && retention != "permanent" {
+		return tools.Errorf("unknown retention %q: use \"normal\" or \"permanent\"", retention)
+	}
+	// "permanent" translates entirely client-side into the strongest write
+	// every smrti version already accepts: a plain remember with type=belief
+	// and source=user. That path is born at the engine's highest confidence
+	// and user standing exempts it from pruning. /believe would be weaker,
+	// not stronger — its atoms start lower and duplicate on restatement — so
+	// evidence is dropped to keep permanent facts off that route.
+	if retention == "permanent" {
+		req.Type = "belief"
+		req.Probability = 0.95
+		req.Evidence = ""
+		if req.Source == "" {
+			req.Source = SourceUser
+		}
 	}
 	id, err := t.engine.Remember(ctx, req)
 	if err != nil {
@@ -85,7 +110,10 @@ func (t *recallTool) Parameters() map[string]any {
 	}
 }
 func (t *recallTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
-	mems, err := t.engine.Recall(ctx, tools.StringArg(args, "query"), tools.IntArg(args, "top_k", 10), 0.1)
+	// No confidence floor: an explicit search must reach everything still
+	// stored. A floor here reports "no memories found" for decayed facts the
+	// graph is still holding, which reads as data loss rather than fading.
+	mems, err := t.engine.Recall(ctx, tools.StringArg(args, "query"), tools.IntArg(args, "top_k", 10), 0)
 	if err != nil {
 		return tools.Errorf("recall failed: %v", err)
 	}
