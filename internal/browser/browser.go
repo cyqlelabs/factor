@@ -418,7 +418,7 @@ type screenshotTool struct{ s *Session }
 
 func (t *screenshotTool) Name() string { return "browser_screenshot" }
 func (t *screenshotTool) Description() string {
-	return "Capture the current page to a PNG in the workspace and return its path."
+	return "Capture the current page to a JPEG in the workspace and return its path."
 }
 func (t *screenshotTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
@@ -432,7 +432,9 @@ func (t *screenshotTool) Execute(ctx context.Context, _ map[string]any) *tools.R
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return tools.Errorf("%v", err)
 	}
-	path := filepath.Join(dir, fmt.Sprintf("shot-%d.png", time.Now().Unix()))
+	// FullScreenshot encodes JPEG at any quality below 100, so the file
+	// extension must say so.
+	path := filepath.Join(dir, fmt.Sprintf("shot-%d.jpg", time.Now().Unix()))
 	if err := os.WriteFile(path, buf, 0o644); err != nil {
 		return tools.Errorf("%v", err)
 	}
