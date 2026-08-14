@@ -420,9 +420,13 @@ func TestManagerDeliversAProactiveMessageAsSMS(t *testing.T) {
 	manager := channel.NewManager(b, []channel.Channel{p})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	manager.Start(ctx)
-	defer manager.Stop()
+	// Order matters: the manager's outbound pump only exits when the context
+	// is done, so Stop would block forever if it ran first.
+	defer func() {
+		cancel()
+		manager.Stop()
+	}()
 
 	b.PublishOutbound(bus.OutboundMessage{Channel: "phone", ChatID: "+15550001111", Content: "the report is ready"})
 
