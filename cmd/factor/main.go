@@ -186,6 +186,7 @@ func runChat(configPath, sessionName, message string) error {
 	ui.bar = func() tui.Bar { return chatBar(sessionName, cfg.Provider.Model, a.Memory) }
 	a.Loop.OnActivity(ui.activity)
 	ui.refreshBar()
+	go ui.watchBar(ctx, 2*time.Second)
 
 	con.Printf("factor %s — %s | /quit to exit, /new for a fresh session",
 		version.Version, cfg.Provider.Model)
@@ -309,6 +310,23 @@ func (u *chatUI) start(sessionKey string, onlyWhenIdle bool) {
 func (u *chatUI) refreshBar() {
 	if u.bar != nil {
 		u.con.SetBar(u.bar())
+	}
+}
+
+// watchBar keeps the bar honest while the prompt sits idle: memory health
+// flips asynchronously (sidecar warm-up, outages, recovery) and turn
+// boundaries are the only other repaints. SetBar drops identical repaints,
+// so a tick that changes nothing draws nothing.
+func (u *chatUI) watchBar(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			u.refreshBar()
+		}
 	}
 }
 
