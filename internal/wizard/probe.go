@@ -120,6 +120,99 @@ func CheckTelegram(ctx context.Context, client *http.Client, apiBase, token stri
 	return payload.Result.Username, nil
 }
 
+// CheckTwilio validates carrier credentials and returns the account's name.
+// The auth token rides in an Authorization header, never in the URL, so a
+// transport error cannot leak it.
+func CheckTwilio(ctx context.Context, client *http.Client, apiBase, accountSID, authToken string) (string, error) {
+	if apiBase == "" {
+		apiBase = "https://api.twilio.com"
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	endpoint := fmt.Sprintf("%s/2010-04-01/Accounts/%s.json", strings.TrimSuffix(apiBase, "/"), accountSID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.SetBasicAuth(accountSID, authToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("twilio unreachable: %s", redactSecret(err.Error(), authToken))
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var payload struct {
+		FriendlyName string `json:"friendly_name"`
+		Status       string `json:"status"`
+		Message      string `json:"message"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	if resp.StatusCode != http.StatusOK {
+		if payload.Message != "" {
+			return "", fmt.Errorf("twilio rejected the credentials: %s", payload.Message)
+		}
+		return "", fmt.Errorf("twilio rejected the credentials (HTTP %d)", resp.StatusCode)
+	}
+	if payload.Status != "" && payload.Status != "active" {
+		return "", fmt.Errorf("the Twilio account is %s", payload.Status)
+	}
+	return payload.FriendlyName, nil
+}
+
+// CheckElevenLabs validates a text-to-speech key and returns the plan it is on.
+func CheckElevenLabs(ctx context.Context, client *http.Client, apiBase, apiKey string) (string, error) {
+	if apiBase == "" {
+		apiBase = "https://api.elevenlabs.io"
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(apiBase, "/")+"/v1/user", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("xi-api-key", apiKey)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("elevenlabs unreachable: %s", redactSecret(err.Error(), apiKey))
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("elevenlabs rejected the key (HTTP %d)", resp.StatusCode)
+	}
+	var payload struct {
+		Subscription struct {
+			Tier string `json:"tier"`
+		} `json:"subscription"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	return payload.Subscription.Tier, nil
+}
+
+// CheckSpeechServer verifies a local OpenAI-compatible speech server is
+// answering, so the local voice tiers fail here rather than mid-call.
+func CheckSpeechServer(ctx context.Context, client *http.Client, baseURL string) error {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(baseURL, "/")+"/models", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("%s is not answering: %w", host(baseURL), err)
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func redactSecret(s, secret string) string {
+	if secret == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, secret, "[redacted]")
+}
+
 // DetectLocalProvider probes the well-known local endpoints (Ollama, LM
 // Studio, llama.cpp) so the wizard can offer a free offline fallback.
 func DetectLocalProvider(ctx context.Context, client *http.Client) (config.Candidate, bool) {

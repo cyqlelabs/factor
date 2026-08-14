@@ -151,6 +151,7 @@ func TestWizardHappyPath(t *testing.T) {
 		"y",                // set up telegram
 		"123:secret",       // bot token
 		"12345, 67890",     // allowed senders
+		"n",                // no phone
 		"y",                // restrict to workspace
 		"n",                // browser off
 	)
@@ -196,7 +197,7 @@ func TestWizardHappyPath(t *testing.T) {
 
 func TestWizardKeepsDefaultsOnBlankAnswers(t *testing.T) {
 	// Every answer blank: the user just holds Enter.
-	h := newHarness(t, "", "", "", "", "", "", "", "", "", "", "", "", "", "")
+	h := newHarness(t, "", "", "", "", "", "", "", "", "", "", "", "", "", "", "")
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
@@ -233,6 +234,7 @@ func TestWizardProviderRetryAfterBadKey(t *testing.T) {
 		"sk-test", // correct key
 		"3",       // memory: off, to keep the rest of the run short
 		"n",       // no telegram
+		"n",       // no phone
 		"y", "n",  // restrict, no browser
 	)
 	if err := h.run(); err != nil {
@@ -257,6 +259,7 @@ func TestWizardContinueAnywayWithBrokenProvider(t *testing.T) {
 		"3",    // continue anyway
 		"3",    // memory off
 		"n",    // no telegram
+		"n",    // no phone
 		"", "", // defaults for the tool questions
 	)
 	if err := h.run(); err != nil {
@@ -282,6 +285,7 @@ func TestWizardModelFilterForLongLists(t *testing.T) {
 		"1", "",  // reasoning: xhigh, visible
 		"3", // memory off
 		"n", // no telegram
+		"n", // no phone
 		"", "",
 	)
 	if err := h.run(); err != nil {
@@ -301,7 +305,7 @@ func TestWizardSmrtiInstallFailureIsNotFatal(t *testing.T) {
 		"llama3", // model (no live list)
 		"3",      // continue anyway after the check fails
 		"1", "y", // memory sidecar, install smrti
-		"", "n", "", "",
+		"", "n", "n", "", "",
 	)
 	h.opts.EnsureSmrti = func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
 		return "", false, fmt.Errorf("no Python installer found")
@@ -328,6 +332,7 @@ func TestWizardReasoningOverrides(t *testing.T) {
 		"y",     // keep the reasoning text out of replies
 		"3",     // memory off
 		"n",     // no telegram
+		"n",     // no phone
 		"", "",
 	)
 	if err := h.run(); err != nil {
@@ -344,7 +349,7 @@ func TestWizardReasoningOverrides(t *testing.T) {
 
 func TestWizardReasoningOffAndSkippedForLocalProviders(t *testing.T) {
 	// Ollama: the wizard must not ask about reasoning at all.
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "", "")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "")
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
@@ -357,7 +362,7 @@ func TestWizardReasoningOffAndSkippedForLocalProviders(t *testing.T) {
 
 	// A key-based provider can still turn reasoning off explicitly.
 	provider := fakeProvider(t, "m1")
-	h2 := newHarness(t, "8", provider.URL+"/v1", "sk-test", "1", "5", "3", "n", "", "")
+	h2 := newHarness(t, "8", provider.URL+"/v1", "sk-test", "1", "5", "3", "n", "n", "", "")
 	if err := h2.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h2.out.String())
 	}
@@ -372,6 +377,7 @@ func TestWizardExternalMemory(t *testing.T) {
 		"2", "http://memory.lan:8420", // external smrti
 		"1", // personality
 		"n", // no telegram
+		"n", // no phone
 		"", "",
 	)
 	if err := h.run(); err != nil {
@@ -384,7 +390,7 @@ func TestWizardExternalMemory(t *testing.T) {
 }
 
 func TestWizardDesktopHelpersOffered(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "y", "y", "y", "n")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "y", "y", "y", "n")
 	var installed []string
 	h.opts.Desktop = desktop.Env{
 		GOOS:   "linux",
@@ -418,7 +424,7 @@ func TestWizardDesktopHelpersOffered(t *testing.T) {
 }
 
 func TestWizardDesktopSkippedWhenHeadless(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "y", "y")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "y", "y")
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
@@ -506,5 +512,188 @@ func TestWizardDoesNotPersistEnvironmentSecrets(t *testing.T) {
 	}
 	if strings.Contains(string(data), "sk-from-env") {
 		t.Errorf("the environment key was persisted:\n%s", data)
+	}
+}
+
+// ---- the phone step --------------------------------------------------------
+
+// fakeTelephony serves the credential probes the phone step runs: the carrier
+// account, the voice vendor, and a local speech server.
+func fakeTelephony(t *testing.T) (twilio, elevenlabs, speech *httptest.Server) {
+	t.Helper()
+	twilio = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, _ := r.BasicAuth()
+		if user != "AC-test" || pass != "twilio-secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"Authenticate"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"friendly_name":"Factor","status":"active"}`))
+	}))
+	elevenlabs = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("xi-api-key") != "eleven-secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"subscription":{"tier":"starter"}}`))
+	}))
+	speech = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"Systran/faster-whisper-small"}]}`))
+	}))
+	for _, srv := range []*httptest.Server{twilio, elevenlabs, speech} {
+		t.Cleanup(srv.Close)
+	}
+	return twilio, elevenlabs, speech
+}
+
+// savedPhone reads back the phone section the wizard wrote.
+func savedPhone(t *testing.T, h *harness) phoneSection {
+	t.Helper()
+	raw, ok := h.saved().Channels["phone"]
+	if !ok {
+		t.Fatalf("no phone section was written:\n%s", h.out.String())
+	}
+	var section phoneSection
+	if err := json.Unmarshal(raw, &section); err != nil {
+		t.Fatal(err)
+	}
+	return section
+}
+
+func TestWizardPhoneCloudTier(t *testing.T) {
+	twilio, elevenlabs, _ := fakeTelephony(t)
+	h := newHarness(t,
+		"5", "llama3", "3", // provider: ollama, unchecked
+		"3",               // memory off
+		"n",               // no telegram
+		"y",               // set up the phone
+		"AC-test",         // twilio account sid
+		"twilio-secret",   // twilio auth token
+		"+1 555 000 2222", // the number bought at the carrier
+		"+1 555 000 1111", // the owner's number
+		"",                // language: en
+		"1",               // cloud speech
+		"deepgram-secret", // transcription key
+		"eleven-secret",   // voice key
+		"voice-abc",       // voice id
+		"1",               // proactive: text me
+		"", "",            // tools
+	)
+	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+
+	section := savedPhone(t, h)
+	if section.UserNumber != "+1 555 000 1111" || section.PhoneNumber != "+1 555 000 2222" {
+		t.Errorf("numbers = %+v (the channel normalizes them on load)", section)
+	}
+	if section.TwilioAccountSID != "AC-test" || section.TwilioAuthToken != "twilio-secret" {
+		t.Errorf("carrier credentials = %+v", section)
+	}
+	if section.STT.Provider != "deepgram" || section.STTAPIKey != "deepgram-secret" {
+		t.Errorf("stt = %+v / %q", section.STT, section.STTAPIKey)
+	}
+	if section.TTS.Provider != "elevenlabs" || section.ElevenLabsAPIKey != "eleven-secret" {
+		t.Errorf("tts = %+v / %q", section.TTS, section.ElevenLabsAPIKey)
+	}
+	if section.VoiceID != "voice-abc" || section.Proactive != "sms" {
+		t.Errorf("voice/proactive = %q / %q", section.VoiceID, section.Proactive)
+	}
+
+	out := h.out.String()
+	for _, want := range []string{"Factor", "starter", "cloud speech"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not mention %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "twilio-secret") || strings.Contains(out, "eleven-secret") {
+		t.Errorf("a secret was echoed:\n%s", out)
+	}
+}
+
+func TestWizardPhoneFullyLocalTier(t *testing.T) {
+	twilio, elevenlabs, speech := fakeTelephony(t)
+	h := newHarness(t,
+		"5", "llama3", "3",
+		"3", // memory off
+		"n", // no telegram
+		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
+		"es",                           // language
+		"4",                            // fully local audio
+		speech.URL,                     // local speech server
+		"Systran/faster-whisper-small", // transcription model
+		"es_ES-sharvard-medium",        // voice
+		"2",                            // proactive: call me
+		"", "",
+	)
+	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+
+	section := savedPhone(t, h)
+	if section.STT.Provider != "local-openai" || section.STT.BaseURL != speech.URL {
+		t.Errorf("stt = %+v, want the local server", section.STT)
+	}
+	if section.TTS.Provider != "local-openai" || section.TTS.Voice != "es_ES-sharvard-medium" {
+		t.Errorf("tts = %+v", section.TTS)
+	}
+	if section.STTAPIKey != "" || section.ElevenLabsAPIKey != "" {
+		t.Error("the fully local tier asked for cloud credentials")
+	}
+	if section.Language != "es" || section.Proactive != "call" {
+		t.Errorf("language/proactive = %q / %q", section.Language, section.Proactive)
+	}
+	if !strings.Contains(h.out.String(), "fully local audio") {
+		t.Errorf("the chosen tier is not in the summary:\n%s", h.out.String())
+	}
+}
+
+// A local speech server that is not running yet must not block setup: the
+// channel falls back to the cloud tier until it answers.
+func TestWizardPhoneLocalTierSurvivesAnAbsentServer(t *testing.T) {
+	twilio, elevenlabs, _ := fakeTelephony(t)
+	h := newHarness(t,
+		"5", "llama3", "3", "3", "n",
+		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
+		"",                      // language
+		"2",                     // local speech-to-text only
+		"http://127.0.0.1:1/v1", // nothing listens there
+		"",                      // model: the server's default
+		"eleven-secret",         // voice key (text-to-speech is still cloud)
+		"",                      // default voice
+		"1",                     // proactive: text me
+		"", "",
+	)
+	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	section := savedPhone(t, h)
+	if section.STT.Provider != "local-openai" {
+		t.Errorf("stt = %+v; the choice should stand", section.STT)
+	}
+	if !strings.Contains(h.out.String(), "falls back to the cloud tier") {
+		t.Errorf("the user was not told what happens next:\n%s", h.out.String())
+	}
+}
+
+func TestWizardPhoneSkippedWithoutCarrierCredentials(t *testing.T) {
+	h := newHarness(t,
+		"5", "llama3", "3", "3", "n",
+		"y", // set up the phone
+		"",  // no account sid
+		"",  // no auth token
+		"", "",
+	)
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	if _, configured := h.saved().Channels["phone"]; configured {
+		t.Error("a phone section was written with no carrier credentials")
+	}
+	if !strings.Contains(h.out.String(), "skipping the phone") {
+		t.Errorf("output:\n%s", h.out.String())
 	}
 }
