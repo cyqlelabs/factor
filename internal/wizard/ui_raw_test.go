@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -255,6 +256,40 @@ func TestRawMultiSelectTogglesWithSpace(t *testing.T) {
 	}
 }
 
+// Two keystrokes written in one burst arrive in a single read on the far
+// side. The old fixed-size reader matched reads, not keystrokes, so " \r"
+// came back as two bytes, matched nothing, and both keys were swallowed —
+// the CI flake where MultiSelect never returned.
+func TestRawMultiSelectCoalescedKeystrokes(t *testing.T) {
+	p := newTermPair(t)
+	opts := []Option{{Label: "telegram"}, {Label: "cli"}}
+	done := make(chan struct {
+		sel []bool
+		err error
+	}, 1)
+	go func() {
+		sel, err := p.ui.MultiSelect("channels", opts, nil)
+		done <- struct {
+			sel []bool
+			err error
+		}{sel, err}
+	}()
+	waitForMenu(t, p)
+
+	p.commit(t, " \r") // toggle + accept in one write
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if !got.sel[0] || got.sel[1] {
+			t.Errorf("selection = %v, want telegram only", got.sel)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("MultiSelect never returned on coalesced input")
+	}
+}
+
 func TestRawMultiSelectCtrlCAborts(t *testing.T) {
 	p := newTermPair(t)
 	opts := []Option{{Label: "telegram"}, {Label: "cli"}}
@@ -375,4 +410,44 @@ func waitForMenu(t *testing.T, p *termPair) {
 
 func contains(haystack, needle string) bool {
 	return bytes.Contains([]byte(haystack), []byte(needle))
+}
+
+// chunkReader hands back its chunks one Read at a time, mimicking a terminal
+// splitting an escape sequence across reads.
+type chunkReader struct{ chunks [][]byte }
+
+func (c *chunkReader) Read(p []byte) (int, error) {
+	if len(c.chunks) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, c.chunks[0])
+	if n == len(c.chunks[0]) {
+		c.chunks = c.chunks[1:]
+	} else {
+		c.chunks[0] = c.chunks[0][n:]
+	}
+	return n, nil
+}
+
+func TestKeyReaderDecodesSplitAndCoalescedInput(t *testing.T) {
+	k := &keyReader{in: &chunkReader{chunks: [][]byte{
+		[]byte(" \r"),        // two keys in one read
+		{0x1b}, []byte("[B"), // arrow split across reads
+		[]byte("\x1b[C"),    // unknown CSI: skipped entirely
+		{0x1b}, []byte("x"), // Alt chord: lone ESC dropped, key kept
+		[]byte("\x1b[A\x1b[A"), // two arrows in one read
+		[]byte("\x1b[1;5A"),    // Ctrl-Up: params consumed, still an arrow
+		[]byte("\x1b[15~\r"),   // F5: swallowed whole — '5' must not leak
+		[]byte("\x1bO"), {'B'}, // SS3 arrow split across reads
+	}}}
+	want := []int{' ', '\r', keyDown, 'x', keyUp, keyUp, keyUp, '\r', keyDown}
+	for i, w := range want {
+		got, err := k.next()
+		if err != nil || got != w {
+			t.Fatalf("key %d = %#x, %v; want %#x", i, got, err, w)
+		}
+	}
+	if _, err := k.next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("exhausted reader = %v, want EOF", err)
+	}
 }
