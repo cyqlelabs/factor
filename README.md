@@ -1,8 +1,10 @@
 <!-- Plain <img> on purpose: the GitHub mobile app does not render
-     <picture>/<source>, it drops the element and shows a broken-image icon. -->
+     <picture>/<source>, it drops the element and shows a broken-image icon.
+     The src is an absolute raw URL for the same reason: the mobile app does
+     not resolve repo-relative image paths either. -->
 
 <p align="center">
-  <img src="docs/assets/logo.png" width="128" alt="Factor logo">
+  <img src="https://raw.githubusercontent.com/cyqlelabs/factor/main/docs/assets/logo.png" width="128" alt="Factor logo">
 </p>
 
 <h1 align="center">Factor</h1>
