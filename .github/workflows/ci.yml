@@ -26,6 +26,27 @@ jobs:
         run: go test -tags nobrowser ./...
       - name: coverage gate
         run: make cover
+      # Publish the total from the profile make cover just wrote to the gist the
+      # README's coverage badge reads. Main only: a PR's number isn't the shipped one.
+      - name: coverage percentage
+        id: cov
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: echo "pct=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')" >> "$GITHUB_OUTPUT"
+      - name: coverage badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # Cosmetic: a missing GIST_TOKEN or a gist API hiccup must not fail the
+        # test job, which tag and release both gate on.
+        continue-on-error: true
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: 180b17501295a75b23122fc6c9eca223
+          filename: factor-coverage.json
+          label: coverage
+          message: ${{ steps.cov.outputs.pct }}%
+          valColorRange: ${{ steps.cov.outputs.pct }}
+          minColorRange: 80
+          maxColorRange: 100
 
   lint:
     runs-on: ubuntu-latest
