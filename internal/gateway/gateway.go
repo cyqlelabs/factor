@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/agent"
 	"github.com/cyqlelabs/factor/internal/app"
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/channel"
@@ -79,6 +80,12 @@ func Run(configPath string) error {
 	}
 	manager := channel.NewManager(a.Bus, channels)
 	manager.Start(ctx)
+
+	// Let the chat show that a turn is running: every phase but the last is
+	// still work in progress.
+	a.Loop.OnActivity(func(act agent.Activity) {
+		manager.SetTyping(act.SessionKey, act.Phase != agent.PhaseDone)
+	})
 
 	go a.Cron.Run(ctx)
 
