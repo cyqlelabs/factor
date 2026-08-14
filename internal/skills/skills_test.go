@@ -60,8 +60,74 @@ func TestSummaryProgressiveDisclosure(t *testing.T) {
 	if strings.Contains(summary, "SECRET-BODY-DETAIL") {
 		t.Error("skill body leaked into summary")
 	}
-	if NewLoader(t.TempDir()).Summary() != "" {
-		t.Error("empty roots must produce empty summary")
+	if empty := NewLoader(t.TempDir()).Summary(); !strings.Contains(empty, "skill_write") {
+		t.Errorf("empty catalog must still teach skill_write: %q", empty)
+	}
+}
+
+func TestWriteToolRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	write := &WriteTool{Root: root}
+
+	res := write.Execute(context.Background(), map[string]any{
+		"name": "cast_media", "description": "Cast a video\nto the TV", "content": "Run cast.py",
+	})
+	if res.IsError {
+		t.Fatalf("write: %+v", res)
+	}
+	list := NewLoader(root).List()
+	if len(list) != 1 || list[0].Description != "Cast a video to the TV" {
+		t.Fatalf("written skill not indexed: %+v", list)
+	}
+
+	// update replaces in place
+	res = write.Execute(context.Background(), map[string]any{
+		"name": "cast_media", "description": "Cast media", "content": "Run cast_media.py",
+	})
+	if res.IsError || !strings.Contains(res.ForLLM, "Updated") {
+		t.Fatalf("update: %+v", res)
+	}
+	if list = NewLoader(root).List(); len(list) != 1 || list[0].Description != "Cast media" {
+		t.Fatalf("update did not replace: %+v", list)
+	}
+
+	for _, bad := range []map[string]any{
+		{"name": "../escape", "description": "d", "content": "c"},
+		{"name": "ok", "description": "", "content": "c"},
+		{"name": "ok", "description": "d", "content": "  "},
+	} {
+		if res := write.Execute(context.Background(), bad); !res.IsError {
+			t.Errorf("accepted bad args %v", bad)
+		}
+	}
+}
+
+func TestRemoveTool(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "stale", "---\nname: stale\ndescription: old\n---\n")
+	remove := &RemoveTool{Root: root}
+
+	if res := remove.Execute(context.Background(), map[string]any{"name": "stale"}); res.IsError {
+		t.Fatalf("remove: %+v", res)
+	}
+	if list := NewLoader(root).List(); len(list) != 0 {
+		t.Errorf("skill still listed: %+v", list)
+	}
+	if res := remove.Execute(context.Background(), map[string]any{"name": "stale"}); !res.IsError {
+		t.Error("removing a missing skill must error")
+	}
+	// a non-skill directory under the root is not ours to delete recursively
+	if err := os.MkdirAll(filepath.Join(root, "notaskill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if res := remove.Execute(context.Background(), map[string]any{"name": "notaskill"}); !res.IsError {
+		t.Error("removed a directory with no SKILL.md")
+	}
+	if _, err := os.Stat(filepath.Join(root, "notaskill")); err != nil {
+		t.Error("non-skill directory was deleted")
+	}
+	if res := remove.Execute(context.Background(), map[string]any{"name": "../escape"}); !res.IsError {
+		t.Error("path-traversal name accepted")
 	}
 }
 
