@@ -424,6 +424,79 @@ func TestSkillCatalogInPrompt(t *testing.T) {
 	}
 }
 
+// The prompt is bookended on purpose: identity first, hard rules last, with
+// the unbounded material (workspace files, catalog, recalled memories) in
+// between. Recall is weakest in the middle of a long prompt, so a change that
+// lets the rules drift inward quietly weakens every turn.
+func TestPromptAnchorsRulesAtTheTail(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Workspace = t.TempDir()
+	if err := config.EnsureWorkspace(cfg.Agent.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(cfg.Agent.Workspace, "skills", "weather")
+	_ = os.MkdirAll(skillDir, 0o755)
+	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: weather\ndescription: Fetch weather forecasts\n---\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(cfg.Agent.Workspace, "instructions", "10-style.md"),
+		[]byte("Always answer in haiku."), 0o644)
+
+	cb := NewContextBuilder(cfg, skills.NewLoader(filepath.Join(cfg.Agent.Workspace, "skills")), nil)
+	p := cb.SystemPrompt(context.Background(), nil, "q")
+
+	identity := strings.Index(p, "You are Factor")
+	catalog := strings.Index(p, "weather: Fetch weather forecasts")
+	rules := strings.Index(p, "Rules:")
+	if identity != 0 {
+		t.Errorf("identity starts at %d, want the very top of the prompt", identity)
+	}
+	if catalog < 0 || rules < 0 {
+		t.Fatalf("prompt is missing the catalog (%d) or the rules (%d):\n%s", catalog, rules, p)
+	}
+	if rules < catalog {
+		t.Error("rules appear before the skills catalog; they must close the prompt")
+	}
+	if tail := strings.TrimSpace(p[rules:]); strings.Count(tail, "\n\n") > 0 {
+		t.Errorf("rules are not the final block; %q follows them", tail)
+	}
+}
+
+// Compaction is where an agent forgets what it did. The transcript has to
+// carry the identifiers a tool call produced — the path, the skill name — or
+// the summary records that a file was written and not which one.
+func TestSummarizeArgsKeepsIdentifiersAndBoundsBulk(t *testing.T) {
+	got := summarizeArgs(map[string]any{
+		"path":    "/root/.factor/workspace/skills/cast_media/SKILL.md",
+		"content": strings.Repeat("x", 5000),
+	})
+	if !strings.Contains(got, "/root/.factor/workspace/skills/cast_media/SKILL.md") {
+		t.Errorf("path was lost or truncated: %q", got)
+	}
+	if strings.Count(got, "x") > maxArgChars {
+		t.Errorf("bulk content was not bounded: %d chars of it survived", strings.Count(got, "x"))
+	}
+	if len(got) > maxArgsPerCall+maxArgChars+64 {
+		t.Errorf("rendering is unbounded at %d chars: %q", len(got), got)
+	}
+
+	// Stable ordering, so a summary diff reflects real change, not map order.
+	for range 8 {
+		if again := summarizeArgs(map[string]any{"b": "2", "a": "1", "c": "3"}); again != "(a=1, b=2, c=3)" {
+			t.Fatalf("unstable or malformed rendering: %q", again)
+		}
+	}
+	if got := summarizeArgs(nil); got != "" {
+		t.Errorf("no args should render as nothing, got %q", got)
+	}
+	if got := summarizeArgs(map[string]any{"empty": ""}); got != "" {
+		t.Errorf("empty values should be dropped, got %q", got)
+	}
+	// Newlines would break the one-line-per-call transcript format.
+	if got := summarizeArgs(map[string]any{"cmd": "line one\nline two"}); strings.Contains(got, "\n") {
+		t.Errorf("newline leaked into the transcript line: %q", got)
+	}
+}
+
 func TestCompactionSurvivesConcurrentAppends(t *testing.T) {
 	// Regression: the truncation offset must be absolute. Messages appended
 	// while the summarize LLM call is in flight must stay in live history,

@@ -360,7 +360,8 @@ func TestMouse(t *testing.T) {
 	if res := run(t, byName["mouse"], map[string]any{"action": "move", "x": 5}); !res.IsError {
 		t.Error("x without y should fail")
 	}
-	if res := run(t, byName["mouse"], map[string]any{"action": "fly"}); !res.IsError {
+	// An invented action is refused by the schema, so no command ever runs.
+	if err := tools.ValidateArgs(byName["mouse"].Parameters(), map[string]any{"action": "fly"}); err == nil {
 		t.Error("unknown action should fail")
 	}
 }
@@ -437,7 +438,8 @@ func TestClipboard(t *testing.T) {
 	if res := run(t, byName["clipboard"], map[string]any{"action": "set"}); !res.IsError {
 		t.Error("set without text should fail")
 	}
-	if res := run(t, byName["clipboard"], map[string]any{"action": "paste"}); !res.IsError {
+	// An invented action is refused by the schema, so no command ever runs.
+	if err := tools.ValidateArgs(byName["clipboard"].Parameters(), map[string]any{"action": "paste"}); err == nil {
 		t.Error("unknown action should fail")
 	}
 }

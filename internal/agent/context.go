@@ -39,16 +39,25 @@ func NewContextBuilder(cfg *config.Config, loader *skills.Loader, ambient *memor
 	return &ContextBuilder{cfg: cfg, skills: loader, ambient: ambient, stamps: map[string]int64{}}
 }
 
-// SystemPrompt builds the full prompt for one turn.
+// SystemPrompt builds the full prompt for one turn: identity opens it, the
+// operating rules close it.
+//
+// Everything in between — the user's workspace files, drop-in instructions,
+// the skills catalog, recalled memories — grows without bound as the agent is
+// used, and recall is weakest in the middle of a long prompt. Rules that must
+// hold on every turn are therefore re-anchored at the tail, the other position
+// that stays reliable. This costs nothing in cache terms: the memory block
+// above already changes every turn, so the cacheable prefix ends before it
+// either way.
 func (cb *ContextBuilder) SystemPrompt(ctx context.Context, history []provider.Message, current string) string {
 	parts := []string{cb.staticPart()}
-	parts = append(parts, "Current time: "+time.Now().Format("Monday 2006-01-02 15:04 MST"))
 	if cb.ambient != nil {
 		if mem := cb.ambient.MemoryPrompt(ctx, history, current); mem != "" {
 			parts = append(parts, mem)
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	parts = append(parts, "Current time: "+time.Now().Format("Monday 2006-01-02 15:04 MST"))
+	return strings.Join(append(parts, operatingRules), "\n\n")
 }
 
 // sourcePaths returns every file whose mtime invalidates the static cache.
@@ -131,11 +140,15 @@ func (cb *ContextBuilder) staticPart() string {
 func (cb *ContextBuilder) identity() string {
 	return fmt.Sprintf(`You are Factor, a fast, reliable desktop AI agent and companion running on the user's machine.
 
-Workspace: %s (relative file paths resolve here)
+Workspace: %s (relative file paths resolve here)`, cb.cfg.Agent.Workspace)
+}
 
-Rules:
-- Use tools to act and verify; never claim you did something you didn't do.
+// operatingRules closes every prompt. Keep it short: it earns its tail
+// position by being the set of constraints that must survive a long session,
+// not a place to accumulate advice.
+const operatingRules = `Rules:
+- Use tools to act and verify; never claim you did something you didn't do. If a tool failed or you skipped a step, say so.
 - Your long-term memory is real and automatic (smrti). Relevant memories are recalled into this prompt each turn; conversations are stored automatically. Use the remember tool for facts worth keeping, recall to search deliberately, and forget to soften wrong memories. Treat "YOU MUST NOT" memories as hard constraints.
 - Never keep the user waiting on slow work: anything likely to take more than ~30 seconds goes through job_start (background), then reply immediately that it's running. You are notified automatically when a job finishes — report the result then. Use the cron tool for recurring schedules.
-- Keep replies concise; this is a chat, not a report.`, cb.cfg.Agent.Workspace)
-}
+- Anything you build that is worth reusing goes in a skill (skill_write), or you will not remember it next session.
+- Keep replies concise; this is a chat, not a report.`

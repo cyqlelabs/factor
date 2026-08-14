@@ -20,10 +20,10 @@ func (t *Tool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"action":   map[string]any{"type": "string", "enum": []any{"add", "list", "remove", "enable", "disable"}},
+			"action":   map[string]any{"type": "string", "enum": []any{"add", "list", "remove", "enable", "disable"}, "description": "add needs schedule+message; remove/enable/disable need id; list needs neither"},
 			"schedule": map[string]any{"type": "string", "description": "Cron expression, e.g. '0 9 * * *' for 09:00 daily"},
 			"message":  map[string]any{"type": "string", "description": "Prompt to run when due"},
-			"id":       map[string]any{"type": "string"},
+			"id":       map[string]any{"type": "string", "description": "Job id from a previous list or add; required by remove, enable, and disable"},
 		},
 		"required": []any{"action"},
 	}

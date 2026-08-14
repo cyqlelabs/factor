@@ -129,7 +129,7 @@ func (t *windowControlTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"action": map[string]any{"type": "string", "enum": []any{
+			"action": map[string]any{"type": "string", "description": "What to do to the window; move also needs at least one of x, y, width, height", "enum": []any{
 				"focus", "close", "minimize", "maximize", "restore", "fullscreen", "unfullscreen", "move"}},
 			"window": map[string]any{"type": "string", "description": windowArgDoc},
 			"x":      map[string]any{"type": "integer", "description": "move: left edge"},
@@ -191,12 +191,12 @@ func (t *screenshotTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"target": map[string]any{"type": "string", "enum": []any{"screen", "window", "region"}, "description": "Default screen"},
+			"target": map[string]any{"type": "string", "enum": []any{"screen", "window", "region"}, "description": "What to capture (default screen); region needs x, y, width, and height"},
 			"window": map[string]any{"type": "string", "description": "target=window: " + windowArgDoc},
-			"x":      map[string]any{"type": "integer"},
-			"y":      map[string]any{"type": "integer"},
-			"width":  map[string]any{"type": "integer"},
-			"height": map[string]any{"type": "integer"},
+			"x":      map[string]any{"type": "integer", "description": "target=region: left edge in absolute screen pixels from the top-left"},
+			"y":      map[string]any{"type": "integer", "description": "target=region: top edge in absolute screen pixels from the top-left"},
+			"width":  map[string]any{"type": "integer", "description": "target=region: width in pixels"},
+			"height": map[string]any{"type": "integer", "description": "target=region: height in pixels"},
 			"path":   map[string]any{"type": "string", "description": "Where to save it (default: screenshots/<timestamp>.png in the workspace)"},
 		},
 	}
@@ -265,9 +265,9 @@ func (t *mouseTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"action": map[string]any{"type": "string", "enum": []any{"move", "click", "double_click", "right_click", "middle_click", "scroll_up", "scroll_down"}},
-			"x":      map[string]any{"type": "integer"},
-			"y":      map[string]any{"type": "integer"},
+			"action": map[string]any{"type": "string", "enum": []any{"move", "click", "double_click", "right_click", "middle_click", "scroll_up", "scroll_down"}, "description": "Pointer action to perform at x/y, or at the current position when they are omitted"},
+			"x":      map[string]any{"type": "integer", "description": "Absolute screen pixels from the left edge; omit x and y to act where the pointer already is"},
+			"y":      map[string]any{"type": "integer", "description": "Absolute screen pixels from the top edge; omit x and y to act where the pointer already is"},
 		},
 		"required": []any{"action"},
 	}
@@ -330,7 +330,7 @@ func (t *typeTextTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"text":     map[string]any{"type": "string"},
+			"text":     map[string]any{"type": "string", "description": "Literal text to type; this types characters, it does not send shortcuts (use send_keys for those)"},
 			"delay_ms": map[string]any{"type": "integer", "description": "Per-keystroke delay (default 12)"},
 		},
 		"required": []any{"text"},
@@ -411,7 +411,7 @@ func (t *clipboardTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"action": map[string]any{"type": "string", "enum": []any{"get", "set"}},
+			"action": map[string]any{"type": "string", "enum": []any{"get", "set"}, "description": "get reads the clipboard, set overwrites it with text"},
 			"text":   map[string]any{"type": "string", "description": "action=set: the new clipboard contents"},
 		},
 		"required": []any{"action"},
@@ -459,9 +459,9 @@ func (t *notifyTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"title":   map[string]any{"type": "string"},
-			"message": map[string]any{"type": "string"},
-			"urgency": map[string]any{"type": "string", "enum": []any{"low", "normal", "critical"}},
+			"title":   map[string]any{"type": "string", "description": "Headline, kept short; this is what the user reads first"},
+			"message": map[string]any{"type": "string", "description": "Body text under the title"},
+			"urgency": map[string]any{"type": "string", "enum": []any{"low", "normal", "critical"}, "description": "Default normal; critical notifications stay on screen until dismissed on most desktops"},
 		},
 		"required": []any{"title"},
 	}

@@ -92,8 +92,8 @@ func (t *writeFileTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":    map[string]any{"type": "string"},
-			"content": map[string]any{"type": "string"},
+			"path":    map[string]any{"type": "string", "description": "File path; relative paths resolve against the workspace"},
+			"content": map[string]any{"type": "string", "description": "Full new contents of the file; this replaces the whole file, so include the parts you are keeping"},
 		},
 		"required": []any{"path", "content"},
 	}
@@ -124,10 +124,10 @@ func (t *editFileTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":        map[string]any{"type": "string"},
-			"old_string":  map[string]any{"type": "string"},
-			"new_string":  map[string]any{"type": "string"},
-			"replace_all": map[string]any{"type": "boolean"},
+			"path":        map[string]any{"type": "string", "description": "File path; relative paths resolve against the workspace"},
+			"old_string":  map[string]any{"type": "string", "description": "Exact text to replace, including indentation. Must appear exactly once unless replace_all is true — add surrounding lines to disambiguate"},
+			"new_string":  map[string]any{"type": "string", "description": "Replacement text; empty string deletes the matched text"},
+			"replace_all": map[string]any{"type": "boolean", "description": "Replace every occurrence instead of requiring a unique match (default false)"},
 		},
 		"required": []any{"path", "old_string", "new_string"},
 	}
@@ -171,7 +171,7 @@ func (t *listDirTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path": map[string]any{"type": "string"},
+			"path": map[string]any{"type": "string", "description": "Directory to list; relative paths resolve against the workspace (default the workspace root)"},
 		},
 	}
 }

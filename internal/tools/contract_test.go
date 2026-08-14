@@ -397,6 +397,78 @@ func TestValidateArgsTypes(t *testing.T) {
 	}
 }
 
+func TestValidateArgsEnum(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"action":   map[string]any{"type": "string", "enum": []any{"add", "remove"}},
+			"goStyle":  map[string]any{"type": "string", "enum": []string{"on", "off"}},
+			"freeform": map[string]any{"type": "string"},
+			"count":    map[string]any{"type": "integer", "enum": []any{1, 2}},
+		},
+	}
+	cases := []struct {
+		name    string
+		args    map[string]any
+		wantErr string
+	}{
+		{"declared value passes", map[string]any{"action": "add"}, ""},
+		{"go-style enum is enforced too", map[string]any{"goStyle": "off"}, ""},
+		{"invented value is rejected with the options", map[string]any{"action": "delete"},
+			`argument "action" must be one of [add, remove], got "delete"`},
+		{"enum is case-sensitive", map[string]any{"action": "Add"}, `must be one of [add, remove]`},
+		{"empty string is not a free pass", map[string]any{"action": ""}, `must be one of [add, remove]`},
+		{"property without an enum is unconstrained", map[string]any{"freeform": "anything"}, ""},
+		{"non-string enums are left alone", map[string]any{"count": 3}, ""},
+		{"absent key is not checked", map[string]any{}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateArgs(schema, c.args)
+			switch {
+			case c.wantErr == "" && err != nil:
+				t.Errorf("ValidateArgs(%v) = %v, want nil", c.args, err)
+			case c.wantErr != "" && err == nil:
+				t.Errorf("ValidateArgs(%v) = nil, want %q", c.args, c.wantErr)
+			case c.wantErr != "" && !strings.Contains(err.Error(), c.wantErr):
+				t.Errorf("ValidateArgs(%v) = %q, want it to contain %q", c.args, err, c.wantErr)
+			}
+		})
+	}
+}
+
+// A rejected enum reaches the model as a tool result, so the message has to
+// carry the valid options or it cannot correct itself.
+func TestRegistryEnumErrorReachesTheModelWithOptions(t *testing.T) {
+	r := NewRegistry(nil, nil)
+	r.Register(enumTool{})
+	res := r.Execute(context.Background(), "enum", map[string]any{"mode": "sideways"})
+	if !res.IsError {
+		t.Fatalf("invalid enum value was accepted: %+v", res)
+	}
+	for _, want := range []string{"up", "down", "sideways"} {
+		if !strings.Contains(res.ForLLM, want) {
+			t.Errorf("error %q does not mention %q", res.ForLLM, want)
+		}
+	}
+}
+
+type enumTool struct{}
+
+func (enumTool) Name() string        { return "enum" }
+func (enumTool) Description() string { return "enum fixture" }
+func (enumTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"mode": map[string]any{"type": "string", "enum": []any{"up", "down"}},
+		},
+	}
+}
+func (enumTool) Execute(context.Context, map[string]any) *Result {
+	return Text("should never run")
+}
+
 func TestValidateArgsNilSchemaAcceptsAnything(t *testing.T) {
 	if err := ValidateArgs(nil, map[string]any{"anything": []any{1, 2}}); err != nil {
 		t.Errorf("nil schema rejected args: %v", err)

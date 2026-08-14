@@ -31,7 +31,7 @@ func (t *rememberTool) Parameters() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"content": map[string]any{"type": "string", "description": "The memory to store"},
-			"type":    map[string]any{"type": "string", "enum": []any{"episode", "belief", "goal"}},
+			"type":    map[string]any{"type": "string", "enum": []any{"episode", "belief", "goal"}, "description": "episode (default): something that happened. belief: a probabilistic claim — pair it with evidence. goal: an intention to carry forward."},
 			"retention": map[string]any{
 				"type":        "string",
 				"enum":        []any{"normal", "permanent"},
@@ -103,7 +103,7 @@ func (t *recallTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"query": map[string]any{"type": "string"},
+			"query": map[string]any{"type": "string", "description": "What you are looking for, in plain language; matching is by meaning, not keywords"},
 			"top_k": map[string]any{"type": "integer", "description": "Max results (default 10)"},
 		},
 		"required": []any{"query"},
@@ -138,8 +138,8 @@ func (t *forgetTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"query":  map[string]any{"type": "string"},
-			"reason": map[string]any{"type": "string"},
+			"query":  map[string]any{"type": "string", "description": "Describes the memories to soften; everything matching by meaning is affected, so be specific"},
+			"reason": map[string]any{"type": "string", "description": "Why this is being forgotten (e.g. 'user corrected me: they moved to Berlin')"},
 		},
 		"required": []any{"query"},
 	}

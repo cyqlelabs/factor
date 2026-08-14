@@ -28,6 +28,20 @@ func TestEstimateTokens(t *testing.T) {
 	if withTools <= 8 {
 		t.Errorf("tool calls not counted: %d", withTools)
 	}
+
+	// A write_file payload is real context sent to the provider. Counting the
+	// call but not its arguments undercounts the largest turns, which is
+	// exactly when compaction needs to fire.
+	withPayload := estimateTokens([]provider.Message{{
+		Role: "assistant",
+		ToolCalls: []provider.ToolCall{{
+			Name: "write_file",
+			Args: map[string]any{"path": "notes.md", "content": strings.Repeat("x", 8000)},
+		}},
+	}})
+	if withPayload < 2000 {
+		t.Errorf("tool arguments not counted: %d, want the 8000-char payload to register", withPayload)
+	}
 }
 
 func TestNeedsCompaction(t *testing.T) {

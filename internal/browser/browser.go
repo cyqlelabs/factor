@@ -286,7 +286,7 @@ func (t *navigateTool) Description() string {
 func (t *navigateTool) Parameters() map[string]any {
 	return map[string]any{
 		"type":       "object",
-		"properties": map[string]any{"url": map[string]any{"type": "string"}},
+		"properties": map[string]any{"url": map[string]any{"type": "string", "description": "Absolute URL including the scheme, e.g. https://example.com"}},
 		"required":   []any{"url"},
 	}
 }
@@ -372,9 +372,9 @@ func (t *fillTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"target": map[string]any{"type": "string"},
-			"text":   map[string]any{"type": "string"},
-			"submit": map[string]any{"type": "boolean"},
+			"target": map[string]any{"type": "string", "description": "Ref like e3 from browser_read, or a CSS selector"},
+			"text":   map[string]any{"type": "string", "description": "Text to type into the field; this replaces whatever it already contains"},
+			"submit": map[string]any{"type": "boolean", "description": "Press Enter after typing, submitting the form (default false)"},
 		},
 		"required": []any{"target", "text"},
 	}
@@ -448,7 +448,7 @@ func (t *evalTool) Description() string {
 func (t *evalTool) Parameters() map[string]any {
 	return map[string]any{
 		"type":       "object",
-		"properties": map[string]any{"expression": map[string]any{"type": "string"}},
+		"properties": map[string]any{"expression": map[string]any{"type": "string", "description": "A JavaScript expression that evaluates to a JSON-serializable value; the result is returned, not printed"}},
 		"required":   []any{"expression"},
 	}
 }

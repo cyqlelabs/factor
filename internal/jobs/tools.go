@@ -29,7 +29,7 @@ func (t *startTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"kind":        map[string]any{"type": "string", "enum": []any{"exec", "task"}},
+			"kind":        map[string]any{"type": "string", "enum": []any{"exec", "task"}, "description": "exec runs payload as a shell command; task hands payload to a fresh agent run that can use tools and reason"},
 			"description": map[string]any{"type": "string", "description": "Short human-readable label"},
 			"payload":     map[string]any{"type": "string", "description": "Shell command (exec) or task prompt (task)"},
 		},
@@ -84,7 +84,7 @@ func (t *statusTool) Description() string {
 func (t *statusTool) Parameters() map[string]any {
 	return map[string]any{
 		"type":       "object",
-		"properties": map[string]any{"id": map[string]any{"type": "string"}},
+		"properties": map[string]any{"id": map[string]any{"type": "string", "description": "Job id returned by job_start or job_list"}},
 		"required":   []any{"id"},
 	}
 }
@@ -108,7 +108,7 @@ func (t *cancelTool) Description() string { return "Cancel a running background 
 func (t *cancelTool) Parameters() map[string]any {
 	return map[string]any{
 		"type":       "object",
-		"properties": map[string]any{"id": map[string]any{"type": "string"}},
+		"properties": map[string]any{"id": map[string]any{"type": "string", "description": "Job id returned by job_start or job_list"}},
 		"required":   []any{"id"},
 	}
 }

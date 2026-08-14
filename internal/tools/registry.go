@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/cyqlelabs/factor/internal/provider"
@@ -123,16 +125,17 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 	return res
 }
 
-// ValidateArgs checks required fields and primitive types against a JSON
-// schema fragment. It is intentionally minimal: enough to catch the common
-// LLM mistakes (missing field, wrong type) with clear messages.
+// ValidateArgs checks required fields, primitive types, and string enums
+// against a JSON schema fragment. It is intentionally minimal: enough to catch
+// the common LLM mistakes (missing field, wrong type, invented enum value) with
+// messages the model can act on without another round trip.
 func ValidateArgs(schema, args map[string]any) error {
 	if schema == nil {
 		return nil
 	}
 	// Accept both JSON-decoded ([]any) and hand-written Go ([]string) schemas
 	// so a new tool cannot silently lose required-argument checking.
-	for _, name := range requiredNames(schema["required"]) {
+	for _, name := range SchemaStrings(schema["required"]) {
 		if _, present := args[name]; !present {
 			return fmt.Errorf("missing required argument %q", name)
 		}
@@ -150,11 +153,23 @@ func ValidateArgs(schema, args map[string]any) error {
 		if !typeMatches(want, raw) {
 			return fmt.Errorf("argument %q must be a %s", key, want)
 		}
+		// An unenforced enum is worse than no enum: the bad value reaches the
+		// tool's switch, falls through to a default, and the model never learns
+		// why. Listing the allowed values lets it retry correctly.
+		if allowed := SchemaStrings(spec["enum"]); len(allowed) > 0 {
+			if got, ok := raw.(string); ok && !slices.Contains(allowed, got) {
+				return fmt.Errorf("argument %q must be one of [%s], got %q",
+					key, strings.Join(allowed, ", "), got)
+			}
+		}
 	}
 	return nil
 }
 
-func requiredNames(raw any) []string {
+// SchemaStrings reads a schema's string list (required, enum) from either a
+// JSON-decoded []any or a hand-written Go []string, so a tool cannot silently
+// lose validation by writing its schema in the other shape.
+func SchemaStrings(raw any) []string {
 	switch req := raw.(type) {
 	case []any:
 		out := make([]string, 0, len(req))
