@@ -391,7 +391,7 @@ func TestDestinationPrefersTheSessionsOwnNumber(t *testing.T) {
 
 // A call Factor places has to be remembered, or its outcome has nowhere to go.
 func TestPlaceCallRemembersWhereToReportBack(t *testing.T) {
-	p, _, shell := newTestPhone(t, nil)
+	p, _, _ := newTestPhone(t, nil)
 	id, err := p.placeCall(context.Background(), "+15550001111", "ask about dinner", "hi",
 		origin{Channel: "telegram", ChatID: "42"})
 	if err != nil {
@@ -409,7 +409,6 @@ func TestPlaceCallRemembersWhereToReportBack(t *testing.T) {
 	if info.Goal != "ask about dinner" || info.Direction != directionOutbound {
 		t.Errorf("call info = %+v", info)
 	}
-	_ = shell
 }
 
 // The whole point of the connector: a cron result addressed to a phone session
