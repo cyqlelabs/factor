@@ -19,6 +19,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/agent"
 	"github.com/cyqlelabs/factor/internal/app"
 	"github.com/cyqlelabs/factor/internal/bus"
+	"github.com/cyqlelabs/factor/internal/channel/phone"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/gateway"
@@ -122,6 +123,16 @@ func runStatus(configPath string) error {
 		fmt.Printf("smrti:     %s\n", path)
 	} else {
 		fmt.Printf("smrti:     not installed (it will be installed on demand)\n")
+	}
+
+	if raw, configured := cfg.Channels["phone"]; configured {
+		phoneCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		status := phone.Describe(phoneCtx, raw, config.Home())
+		cancel()
+		fmt.Printf("phone:     %s\n", status.Line())
+		if status.Python == "" && status.Enabled {
+			fmt.Printf("           voice shell not installed (it will be installed on demand)\n")
+		}
 	}
 
 	env := desktop.DefaultEnv()

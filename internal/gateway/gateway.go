@@ -22,6 +22,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/app"
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/channel"
+	_ "github.com/cyqlelabs/factor/internal/channel/phone"    // register connector
 	_ "github.com/cyqlelabs/factor/internal/channel/telegram" // register connector
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/heartbeat"
@@ -77,6 +78,18 @@ func Run(configPath string) error {
 	if len(channels) == 0 {
 		slog.Warn("no channels configured; the gateway is only reachable via cron/heartbeat",
 			"known_connectors", channel.Registered())
+	}
+	// Optional connector capabilities, both daemon-only: a connector whose
+	// conversations are synchronous (the phone) runs turns itself, and one
+	// that brings its own tools contributes them here — so a CLI session never
+	// sees a tool that has no connector behind it.
+	for _, ch := range channels {
+		if runner, ok := ch.(channel.TurnRunner); ok {
+			runner.BindTurnRunner(a.Loop.ProcessDirect)
+		}
+		if provider, ok := ch.(channel.Toolset); ok {
+			a.Registry.Register(provider.Toolset()...)
+		}
 	}
 	manager := channel.NewManager(a.Bus, channels)
 	manager.Start(ctx)
