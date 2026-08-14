@@ -151,10 +151,10 @@ func (s *supervisor) resolveCommand(ctx context.Context) (string, error) {
 		return path, nil
 	}
 	if !s.cfg.autoInstall() {
-		return "", fmt.Errorf("Patter is not installed and channels.phone.auto_install is off (%s)", InstallHint)
+		return "", fmt.Errorf("the Patter voice shell is not installed and channels.phone.auto_install is off (%s)", InstallHint)
 	}
 	if s.installTried.Swap(true) {
-		return "", fmt.Errorf("Patter is not installed and the automatic install already failed this run")
+		return "", fmt.Errorf("the Patter voice shell is not installed and the automatic install already failed this run")
 	}
 	slog.Info("voice shell dependencies missing; installing Patter automatically")
 	path, err := Install(ctx, s.home, func(format string, args ...any) {

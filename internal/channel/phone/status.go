@@ -24,7 +24,10 @@ type Status struct {
 func Describe(ctx context.Context, raw json.RawMessage, home string) Status {
 	var cfg Config
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return Status{Configured: true, Problem: fmt.Sprintf("unreadable section: %v", err)}
+		// Enabled is a guess here — a section that will not parse cannot say
+		// whether it is switched on — but reporting the parse error is the
+		// whole point, and "disabled" would hide it.
+		return Status{Configured: true, Enabled: true, Problem: fmt.Sprintf("unreadable section: %v", err)}
 	}
 	cfg.applyDefaults()
 

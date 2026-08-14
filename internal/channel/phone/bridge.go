@@ -158,8 +158,14 @@ func (b *bridge) port() int {
 	return addr.Port
 }
 
+// authorized checks the shared boot secret. The scheme is required: without
+// it, a bare token in the header would authenticate, and so would a header
+// that merely happened to equal the token.
 func (b *bridge) authorized(r *http.Request) bool {
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	got, hasScheme := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !hasScheme {
+		return false
+	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(b.token)) == 1
 }
 

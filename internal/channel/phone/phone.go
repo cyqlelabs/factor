@@ -105,6 +105,7 @@ func (p *Phone) Toolset() []tools.Tool {
 func (p *Phone) Start(ctx context.Context) error {
 	ctx, p.cancel = context.WithCancel(ctx)
 	if err := p.bridge.listen(p.cfg.BridgePort); err != nil {
+		p.cancel()
 		return err
 	}
 	p.bridge.serve()

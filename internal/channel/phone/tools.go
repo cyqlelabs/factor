@@ -94,11 +94,14 @@ func (t *callTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 	return tools.Textf("Dialling %s now (call %s). You will be told how it went when it ends; reply to the user now.", to, callID)
 }
 
-// target resolves and authorizes a destination, defaulting to the owner.
+// target resolves and authorizes a destination, defaulting to the owner. An
+// unparseable destination is an error, never a silent redirect to the owner:
+// the model asking to reach "the office" must be told it cannot, not have the
+// message quietly sent somewhere else.
 func (p *Phone) target(requested string) (string, error) {
-	to := normalizeNumber(requested)
-	if to == "" {
-		to = p.cfg.UserNumber
+	to := p.cfg.UserNumber
+	if strings.TrimSpace(requested) != "" {
+		to = normalizeNumber(requested)
 	}
 	if !validNumber(to) {
 		return "", errNotE164(requested)

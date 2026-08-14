@@ -186,7 +186,7 @@ func EnsurePatter(ctx context.Context, home string, autoInstall bool, progress P
 		return p, false, nil
 	}
 	if !autoInstall {
-		return "", false, fmt.Errorf("Patter is not installed and auto_install is off — %s", InstallHint)
+		return "", false, fmt.Errorf("the Patter voice shell is not installed and auto_install is off — %s", InstallHint)
 	}
 	p, err := Install(ctx, home, progress)
 	if err != nil {
