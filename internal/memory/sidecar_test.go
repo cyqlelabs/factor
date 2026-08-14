@@ -221,6 +221,34 @@ func TestSidecarKeepAliveLeavesProcessRunning(t *testing.T) {
 	stopFakeSmrti(t, cfg.BaseURL())
 }
 
+// A recall that times out while smrti warms up (first run downloads models)
+// marks the client unhealthy. The supervisor must keep re-probing the live
+// child so the verdict recovers; it used to stop after the first success,
+// leaving "memory ×" stuck for the rest of the session.
+func TestSidecarReprobesAfterHealthPoisoned(t *testing.T) {
+	cfg := sidecarConfig(t, "serve")
+	cfg.KeepAlive = false
+
+	s := &Sidecar{
+		client:        NewClient(cfg.BaseURL(), "", ""),
+		cfg:           cfg,
+		extract:       ExtractSettings{Mode: "local"},
+		probeInterval: 50 * time.Millisecond,
+	}
+	s.start(context.Background())
+	defer func() { _ = s.Close() }()
+
+	if !waitHealthy(t, s, 20*time.Second) {
+		t.Fatal("sidecar never became healthy")
+	}
+	// Simulate the timed-out request: the server is fine, but the client
+	// flagged itself unhealthy.
+	s.client.healthy.Store(false)
+	if !waitHealthy(t, s, 5*time.Second) {
+		t.Error("health verdict never recovered; supervisor stopped probing after the first success")
+	}
+}
+
 func TestSidecarWithoutKeepAliveStopsTheProcess(t *testing.T) {
 	cfg := sidecarConfig(t, "serve")
 	cfg.KeepAlive = false
