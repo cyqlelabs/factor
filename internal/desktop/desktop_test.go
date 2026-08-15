@@ -615,3 +615,38 @@ func TestFieldsN(t *testing.T) {
 		t.Errorf("blank line = %v", got)
 	}
 }
+
+// A setup run over ssh has no DISPLAY of its own while the box in front of
+// the user is running X the whole time.
+func TestMachineHasDisplayFindsAServerThisSessionCannotSee(t *testing.T) {
+	env := Env{
+		GOOS:   "linux",
+		Getenv: func(string) string { return "" },
+		Glob: func(pattern string) ([]string, error) {
+			if pattern == "/tmp/.X11-unix/X*" {
+				return []string{"/tmp/.X11-unix/X0"}, nil
+			}
+			return nil, nil
+		},
+	}
+	if HasDisplay(env) {
+		t.Error("HasDisplay must still answer for this session only")
+	}
+	if !MachineHasDisplay(env) {
+		t.Error("a running X server was not detected")
+	}
+
+	env.Glob = func(string) ([]string, error) { return nil, nil }
+	if MachineHasDisplay(env) {
+		t.Error("reported a display with no session and no server")
+	}
+}
+
+func TestMachineHasDisplayNeedsNoGlobOnDesktopPlatforms(t *testing.T) {
+	for _, goos := range []string{"darwin", "windows"} {
+		env := Env{GOOS: goos, Getenv: func(string) string { return "" }}
+		if !MachineHasDisplay(env) {
+			t.Errorf("%s reported no display", goos)
+		}
+	}
+}
