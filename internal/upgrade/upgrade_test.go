@@ -1,0 +1,462 @@
+package upgrade
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestNewer(t *testing.T) {
+	cases := []struct {
+		have, want string
+		newer      bool
+	}{
+		{"v0.3.0", "v0.4.0", true},
+		{"v0.3.0", "v0.3.1", true},
+		{"v0.3.0", "v1.0.0", true},
+		{"v0.3.0", "v0.3.0", false},
+		{"v0.4.0", "v0.3.0", false},
+		{"0.3.0", "v0.4.0", true},             // the leading v is optional either side
+		{"v0.3.0-4-gabc123", "v0.3.0", false}, // a build past the tag is not behind it
+		{"v0.3.0-4-gabc123", "v0.4.0", true},
+		{"v0.3.0-dirty", "v0.3.0", false},
+		{"dev", "v0.4.0", true},     // no released version to be current at
+		{"unknown", "v0.4.0", true}, //
+		{"", "v0.4.0", true},
+		{"v0.3.0", "dev", false}, // an unparseable candidate is never an upgrade
+		{"v0.3.0", "", false},    //
+		{"v0.3", "v0.3.1", true}, // short versions pad with zeros
+		{"v0.3.0", "v0.3.0.1", false},
+	}
+	for _, c := range cases {
+		if got := Newer(c.have, c.want); got != c.newer {
+			t.Errorf("Newer(%q, %q) = %v, want %v", c.have, c.want, got, c.newer)
+		}
+	}
+}
+
+func TestAssetName(t *testing.T) {
+	cases := []struct{ osName, arch, want string }{
+		{"linux", "amd64", "factor-linux-amd64"},
+		{"linux", "386", "factor-linux-386"},
+		{"linux", "arm64", "factor-linux-arm64"},
+		{"linux", "arm", "factor-linux-armv7"},
+		{"darwin", "arm64", "factor-darwin-arm64"},
+		{"windows", "amd64", "factor-windows-amd64.exe"},
+	}
+	for _, c := range cases {
+		setPlatform(t, c.osName, c.arch)
+		if got := AssetName(); got != c.want {
+			t.Errorf("AssetName() on %s/%s = %q, want %q", c.osName, c.arch, got, c.want)
+		}
+	}
+}
+
+// release serves a GitHub-shaped release plus its assets.
+type release struct {
+	tag    string
+	binary []byte
+	assets []string // asset names to publish; nil means the usual pair
+	sums   string   // SHA256SUMS body; empty means one generated for binary
+}
+
+// start publishes the release and points releaseAPI at it, returning the
+// base URL and the mux so a test can add a misbehaving asset of its own.
+func (r release) start(t *testing.T) (string, *http.ServeMux) {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := httptest.NewUnstartedServer(mux)
+	// The listener exists before Start, so the download URLs the release
+	// index hands out can be built without racing the serving goroutine.
+	base := "http://" + srv.Listener.Addr().String()
+
+	names := r.assets
+	if names == nil {
+		names = []string{AssetName(), "SHA256SUMS"}
+	}
+	sums := r.sums
+	if sums == "" {
+		sums = fmt.Sprintf("%s  %s\n", sha256hex(r.binary), AssetName())
+	}
+
+	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+		var assets []string
+		for _, n := range names {
+			size := len(r.binary)
+			if n == "SHA256SUMS" {
+				size = len(sums)
+			}
+			assets = append(assets, fmt.Sprintf(`{"name":%q,"browser_download_url":"%s/dl/%s","size":%d}`, n, base, n, size))
+		}
+		fmt.Fprintf(w, `{"tag_name":%q,"html_url":"https://example.test/%s","assets":[%s]}`,
+			r.tag, r.tag, strings.Join(assets, ","))
+	})
+	mux.HandleFunc("/dl/SHA256SUMS", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, sums)
+	})
+	mux.HandleFunc("/dl/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(r.binary)
+	})
+
+	srv.Start()
+	t.Cleanup(srv.Close)
+	prev := releaseAPI
+	releaseAPI = base + "/releases/latest"
+	t.Cleanup(func() { releaseAPI = prev })
+	return base, mux
+}
+
+func sha256hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func setPlatform(t *testing.T, osName, arch string) {
+	t.Helper()
+	prevOS, prevArch := goos, goarch
+	goos, goarch = osName, arch
+	t.Cleanup(func() { goos, goarch = prevOS, prevArch })
+}
+
+// stageBinary points executablePath at a throwaway file standing in for the
+// running binary, and returns its path.
+func stageBinary(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "factor")
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := executablePath
+	executablePath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { executablePath = prev })
+	return path
+}
+
+func TestLatest(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+	release{tag: "v0.4.0", binary: []byte("binary")}.start(t)
+
+	rel, err := Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.Version != "v0.4.0" || rel.Asset != "factor-linux-amd64" {
+		t.Fatalf("got %+v", rel)
+	}
+	if rel.URL == "" || rel.SumsURL == "" || rel.Size != 6 {
+		t.Fatalf("release not fully resolved: %+v", rel)
+	}
+	if rel.Notes != "https://example.test/v0.4.0" {
+		t.Errorf("notes = %q", rel.Notes)
+	}
+}
+
+func TestLatestNoBuildForPlatform(t *testing.T) {
+	setPlatform(t, "plan9", "mips")
+	release{tag: "v0.4.0", binary: []byte("binary"), assets: []string{"factor-linux-amd64", "SHA256SUMS"}}.start(t)
+
+	_, err := Latest(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "factor-plan9-mips") {
+		t.Fatalf("err = %v, want it to name the missing build", err)
+	}
+}
+
+func TestLatestFailures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/notfound":
+			http.Error(w, "nope", http.StatusNotFound)
+		case "/garbage":
+			fmt.Fprint(w, "{{{")
+		default:
+			fmt.Fprint(w, `{"tag_name":"","assets":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	for _, c := range []struct{ path, want string }{
+		{"/notfound", "404"},
+		{"/garbage", "reading the factor release index"},
+		{"/untagged", "no tag"},
+	} {
+		prev := releaseAPI
+		releaseAPI = srv.URL + c.path
+		_, err := Latest(context.Background())
+		releaseAPI = prev
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want it to mention %q", c.path, err, c.want)
+		}
+	}
+
+	prev := releaseAPI
+	releaseAPI = "http://127.0.0.1:0/nothing-listening"
+	_, err := Latest(context.Background())
+	releaseAPI = prev
+	if err == nil {
+		t.Error("an unreachable API should be an error")
+	}
+}
+
+func TestApplyReplacesTheBinary(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+	release{tag: "v0.4.0", binary: []byte("the new build")}.start(t)
+	exe := stageBinary(t, "the old build")
+
+	rel, err := Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	path, err := Apply(context.Background(), rel, func(f string, a ...any) {
+		steps = append(steps, fmt.Sprintf(f, a...))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != exe {
+		t.Errorf("replaced %q, want %q", path, exe)
+	}
+	got, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "the new build" {
+		t.Errorf("binary content = %q", got)
+	}
+	info, err := os.Stat(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o100 == 0 {
+		t.Errorf("the installed binary is not executable (%v)", info.Mode())
+	}
+	for _, leftover := range []string{exe + ".new", exe + ".old"} {
+		if _, err := os.Stat(leftover); err == nil {
+			t.Errorf("%s was left behind", filepath.Base(leftover))
+		}
+	}
+	if len(steps) == 0 || !strings.Contains(steps[0], "v0.4.0") {
+		t.Errorf("progress = %v, want it to name the version", steps)
+	}
+}
+
+func TestApplyRejectsAMismatchedChecksum(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+	release{tag: "v0.4.0", binary: []byte("the new build"),
+		sums: "0000000000000000000000000000000000000000000000000000000000000000  " + AssetName() + "\n"}.start(t)
+	exe := stageBinary(t, "the old build")
+
+	rel, err := Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(context.Background(), rel, nil); err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("err = %v, want a checksum complaint", err)
+	}
+	got, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "the old build" {
+		t.Errorf("the running binary was replaced anyway: %q", got)
+	}
+	if _, err := os.Stat(exe + ".new"); err == nil {
+		t.Error("the rejected download was left behind")
+	}
+}
+
+func TestApplyChecksumFailures(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+	stageBinary(t, "the old build")
+
+	t.Run("no sums published", func(t *testing.T) {
+		_, err := Apply(context.Background(), Release{Version: "v0.4.0", Asset: AssetName()}, nil)
+		if err == nil || !strings.Contains(err.Error(), "SHA256SUMS") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("sums omit this asset", func(t *testing.T) {
+		release{tag: "v0.4.0", binary: []byte("x"), sums: "abc  factor-openbsd-riscv\n"}.start(t)
+		rel, err := Latest(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Apply(context.Background(), rel, nil); err == nil || !strings.Contains(err.Error(), "does not cover") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("sums unreachable", func(t *testing.T) {
+		_, err := Apply(context.Background(), Release{Version: "v0.4.0", Asset: AssetName(),
+			SumsURL: "http://127.0.0.1:0/nothing"}, nil)
+		if err == nil || !strings.Contains(err.Error(), "fetching SHA256SUMS") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+func TestApplyDownloadFailure(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+	base, mux := release{tag: "v0.4.0", binary: []byte("the new build")}.start(t)
+	exe := stageBinary(t, "the old build")
+
+	rel, err := Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel.URL = base + "/missing/asset" // resolves, then 404s
+	mux.HandleFunc("/missing/asset", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "gone", http.StatusNotFound)
+	})
+	if _, err := Apply(context.Background(), rel, nil); err == nil || !strings.Contains(err.Error(), "downloading factor") {
+		t.Fatalf("err = %v", err)
+	}
+	got, _ := os.ReadFile(exe)
+	if string(got) != "the old build" {
+		t.Errorf("binary content = %q", got)
+	}
+}
+
+func TestApplyWithoutARunningBinary(t *testing.T) {
+	prev := executablePath
+	executablePath = func() (string, error) { return "", fmt.Errorf("no /proc") }
+	defer func() { executablePath = prev }()
+
+	if _, err := Apply(context.Background(), Release{Version: "v0.4.0"}, nil); err == nil ||
+		!strings.Contains(err.Error(), "finding the running binary") {
+		t.Fatalf("err = %v", err)
+	}
+
+	executablePath = func() (string, error) { return filepath.Join(t.TempDir(), "gone"), nil }
+	if _, err := Apply(context.Background(), Release{Version: "v0.4.0"}, nil); err == nil {
+		t.Fatal("a missing binary should be an error")
+	}
+}
+
+func TestApplyReportsDownloadProgress(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+	release{tag: "v0.4.0", binary: make([]byte, 64*1024)}.start(t)
+	stageBinary(t, "old")
+
+	rel, err := Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	if _, err := Apply(context.Background(), rel, func(f string, a ...any) {
+		steps = append(steps, fmt.Sprintf(f, a...))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var percents int
+	for _, s := range steps {
+		if strings.HasPrefix(s, "downloaded ") {
+			percents++
+		}
+	}
+	if percents == 0 {
+		t.Errorf("no download progress reported: %v", steps)
+	}
+}
+
+func TestWatchReportsEachVersionOnce(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+	release{tag: "v0.4.0", binary: []byte("x")}.start(t)
+
+	seen := watching(t, 10*time.Millisecond, "v0.3.0")
+
+	select {
+	case rel := <-seen:
+		if rel.Version != "v0.4.0" {
+			t.Fatalf("reported %q", rel.Version)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no report")
+	}
+	select {
+	case rel := <-seen:
+		t.Fatalf("reported %q twice", rel.Version)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// watching runs Watch for the duration of one test. Its goroutine is joined
+// before the test's other cleanups restore the seams it reads, which a bare
+// cancel would not guarantee.
+func watching(t *testing.T, every time.Duration, current string) <-chan Release {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	seen := make(chan Release, 4)
+	done := make(chan struct{})
+	go func() {
+		Watch(ctx, every, current, func(r Release) { seen <- r })
+		close(done)
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+	return seen
+}
+
+func TestWatchStaysQuietWhenCurrent(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+	release{tag: "v0.4.0", binary: []byte("x")}.start(t)
+
+	seen := watching(t, 0, "v0.4.0") // 0 falls back to the default interval
+
+	select {
+	case rel := <-seen:
+		t.Fatalf("reported %q while already on it", rel.Version)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestWatchSurvivesAFailedCheck(t *testing.T) {
+	prev := releaseAPI
+	releaseAPI = "http://127.0.0.1:0/nothing-listening"
+	t.Cleanup(func() { releaseAPI = prev })
+
+	seen := watching(t, 10*time.Millisecond, "v0.3.0")
+	select {
+	case rel := <-seen:
+		t.Fatalf("reported %q from a failed check", rel.Version)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestApplyIntoAnUnwritableDirectory(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+	release{tag: "v0.4.0", binary: []byte("the new build")}.start(t)
+
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "factor")
+	if err := os.WriteFile(exe, []byte("the old build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	prev := executablePath
+	executablePath = func() (string, error) { return exe, nil }
+	t.Cleanup(func() { executablePath = prev })
+
+	rel, err := Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Apply(context.Background(), rel, nil)
+	if err == nil || !strings.Contains(err.Error(), "staging the new binary") {
+		t.Fatalf("err = %v, want it to name what could not be written", err)
+	}
+	if got, _ := os.ReadFile(exe); string(got) != "the old build" {
+		t.Errorf("binary content = %q", got)
+	}
+}

@@ -77,7 +77,7 @@ func TestDefaultToolArsenal(t *testing.T) {
 		// background work and scheduling
 		"job_start", "job_status", "job_list", "job_cancel", "cron",
 		// self-management
-		"config_get", "config_set", "pkg_install",
+		"config_get", "config_set", "pkg_install", "upgrade",
 		"skill_install", "skill_write", "skill_remove",
 		"mcp_add", "mcp_remove", "mcp_list",
 		// desktop control

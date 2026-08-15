@@ -25,6 +25,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/gateway"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/tui"
+	"github.com/cyqlelabs/factor/internal/upgrade"
 	"github.com/cyqlelabs/factor/internal/version"
 	"github.com/cyqlelabs/factor/internal/wizard"
 )
@@ -38,12 +39,14 @@ Usage:
   factor gateway         run the daemon (channels, cron, heartbeat)
   factor init            interactive setup wizard (provider, memory, channels)
   factor status          show daemon, provider, and memory status
+  factor upgrade         install the newest release
   factor version         print version
 
 Flags:
   -c PATH      config file (default ~/.factor/config.json)
   -y           init: skip the wizard and accept the defaults
   --no-install init: never install smrti, desktop helpers, or a browser
+  --check      upgrade: report the newest release without installing it
 `
 
 func main() {
@@ -53,6 +56,7 @@ func main() {
 	sessionName := fs.String("s", "main", "session name")
 	yes := fs.Bool("y", false, "init: skip the wizard, accept defaults")
 	noInstall := fs.Bool("no-install", false, "init: never install anything")
+	checkOnly := fs.Bool("check", false, "upgrade: report the newest release without installing it")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 
 	args := os.Args[1:]
@@ -70,6 +74,8 @@ func main() {
 		err = runInit(*configPath, *yes, *noInstall)
 	case "status":
 		err = runStatus(*configPath)
+	case "upgrade":
+		err = runUpgrade(*checkOnly)
 	case "gateway":
 		err = gateway.Run(*configPath)
 	case "":
@@ -101,6 +107,45 @@ func runInit(configPath string, nonInteractive, noInstall bool) error {
 		return nil // the wizard already said so; not a failure
 	}
 	return err
+}
+
+// Seams: an upgrade test must not depend on what GitHub is publishing today.
+var (
+	latestRelease = upgrade.Latest
+	applyRelease  = upgrade.Apply
+)
+
+func runUpgrade(checkOnly bool) error {
+	ctx, cancel := signalContext()
+	defer cancel()
+
+	rel, err := latestRelease(ctx)
+	if err != nil {
+		return err
+	}
+	if !upgrade.Newer(version.Version, rel.Version) {
+		fmt.Printf("factor %s is the newest release.\n", version.Version)
+		return nil
+	}
+	if checkOnly {
+		fmt.Printf("factor %s is available — this one is %s.\n%s\n", rel.Version, version.Version, rel.Notes)
+		return nil
+	}
+
+	path, err := applyRelease(ctx, rel, func(format string, args ...any) {
+		fmt.Printf(format+"\n", args...)
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("installed factor %s at %s\n", rel.Version, path)
+	// The daemon is a separate process that already loaded its code; leaving
+	// the user to discover that from an unchanged `factor status` would be
+	// the one confusing thing about an otherwise finished upgrade.
+	if pid, alive := gateway.ReadPidFile(); alive {
+		fmt.Printf("the gateway is still running %s (pid %d) — restart it to pick this up\n", version.Version, pid)
+	}
+	return nil
 }
 
 func runStatus(configPath string) error {

@@ -23,6 +23,8 @@ import (
 	"github.com/cyqlelabs/factor/internal/session"
 	"github.com/cyqlelabs/factor/internal/skills"
 	"github.com/cyqlelabs/factor/internal/tools"
+	"github.com/cyqlelabs/factor/internal/upgrade"
+	"github.com/cyqlelabs/factor/internal/version"
 )
 
 type App struct {
@@ -87,6 +89,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(&skills.RemoveTool{Root: skillsRoot})
 	registry.Register(tools.NewConfigTools(cfg)...)
 	registry.Register(tools.NewPkgInstallTool())
+	registry.Register(&upgrade.Tool{Current: version.Version})
 
 	// Desktop control: skipped on headless machines, where these tools would
 	// be prompt weight that can only ever fail (desktop.enabled forces it).

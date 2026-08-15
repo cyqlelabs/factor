@@ -28,6 +28,7 @@ type Config struct {
 	Browser       BrowserConfig              `json:"browser"`
 	Heartbeat     HeartbeatConfig            `json:"heartbeat"`
 	Gateway       GatewayConfig              `json:"gateway"`
+	Upgrade       UpgradeConfig              `json:"upgrade"`
 
 	path string
 }
@@ -217,6 +218,15 @@ type GatewayConfig struct {
 	Port int    `json:"port" env:"FACTOR_GATEWAY_PORT"`
 }
 
+// UpgradeConfig controls the release check. The gateway only ever reports a
+// newer version — installing it stays an explicit `factor upgrade` or a
+// request to the agent, so a daemon never swaps its own binary out from
+// under a live conversation.
+type UpgradeConfig struct {
+	Check              bool `json:"check"`
+	CheckIntervalHours int  `json:"check_interval_hours"`
+}
+
 // Home returns $FACTOR_HOME or ~/.factor.
 func Home() string {
 	if h := os.Getenv("FACTOR_HOME"); h != "" {
@@ -295,6 +305,7 @@ func Default() *Config {
 		},
 		Heartbeat: HeartbeatConfig{Enabled: true, IntervalMinutes: 30},
 		Gateway:   GatewayConfig{Host: "127.0.0.1", Port: 8720},
+		Upgrade:   UpgradeConfig{Check: true, CheckIntervalHours: 24},
 	}
 }
 

@@ -8,11 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
+	"github.com/cyqlelabs/factor/internal/upgrade"
 )
 
 func freePort(t *testing.T) int {
@@ -97,6 +100,7 @@ func gatewayConfig(t *testing.T) (*config.Config, string) {
 	cfg.Memory.Mode = "off"
 	cfg.Browser.Enabled = false
 	cfg.Heartbeat.Enabled = false
+	cfg.Upgrade.Check = false // no reaching out to GitHub from a unit test
 	cfg.Gateway.Host = "127.0.0.1"
 	cfg.Gateway.Port = freePort(t)
 	cfg.Provider.APIKey = "test-key"
@@ -236,5 +240,31 @@ func TestRunRejectsUnusableGatewayPort(t *testing.T) {
 	}
 	if _, statErr := os.Stat(pidPath()); !os.IsNotExist(statErr) {
 		t.Error("pid file left behind after a failed start")
+	}
+}
+
+func TestAnnounceRelease(t *testing.T) {
+	var sent []bus.OutboundMessage
+	publish := func(m bus.OutboundMessage) bool { sent = append(sent, m); return true }
+	rel := upgrade.Release{Version: "v0.4.0", Notes: "https://example.test/v0.4.0"}
+
+	// Nobody has spoken to this daemon yet: there is no one to tell.
+	announceRelease(rel, func() (string, string, bool) { return "", "", false }, publish)
+	if len(sent) != 0 {
+		t.Fatalf("announced into the void: %+v", sent)
+	}
+
+	announceRelease(rel, func() (string, string, bool) { return "telegram", "42", true }, publish)
+	if len(sent) != 1 {
+		t.Fatalf("sent %d messages", len(sent))
+	}
+	got := sent[0]
+	if got.Channel != "telegram" || got.ChatID != "42" {
+		t.Errorf("addressed to %s:%s", got.Channel, got.ChatID)
+	}
+	for _, want := range []string{"v0.4.0", "factor upgrade", rel.Notes} {
+		if !strings.Contains(got.Content, want) {
+			t.Errorf("message %q is missing %q", got.Content, want)
+		}
 	}
 }

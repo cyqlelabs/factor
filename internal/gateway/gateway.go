@@ -26,6 +26,7 @@ import (
 	_ "github.com/cyqlelabs/factor/internal/channel/telegram" // register connector
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/heartbeat"
+	"github.com/cyqlelabs/factor/internal/upgrade"
 	"github.com/cyqlelabs/factor/internal/version"
 )
 
@@ -118,6 +119,11 @@ func Run(configPath string) error {
 		go hb.Run(ctx)
 	}
 
+	if cfg.Upgrade.Check {
+		go upgrade.Watch(ctx, time.Duration(cfg.Upgrade.CheckIntervalHours)*time.Hour, version.Version,
+			func(rel upgrade.Release) { announceRelease(rel, a.Loop.LastChannel, a.Bus.PublishOutbound) })
+	}
+
 	healthSrv, err := startHealthServer(cfg, a, manager)
 	if err != nil {
 		return err
@@ -141,6 +147,20 @@ func Run(configPath string) error {
 	a.Jobs.Wait()
 	a.Loop.WaitBackground(30 * time.Second) // in-flight turns, memory stores, compaction
 	return nil
+}
+
+// announceRelease tells the user a newer Factor exists, wherever they last
+// spoke to this one. It is a log line and nothing more when no chat has
+// happened yet: there is no one to tell, and the news keeps.
+func announceRelease(rel upgrade.Release, last func() (string, string, bool), publish func(bus.OutboundMessage) bool) {
+	slog.Info("a newer factor is available", "release", rel.Version, "running", version.Version)
+	ch, chat, ok := last()
+	if !ok {
+		return
+	}
+	publish(bus.OutboundMessage{Channel: ch, ChatID: chat, Content: fmt.Sprintf(
+		"factor %s is out — this one is %s. Ask me to upgrade, or run `factor upgrade`.\n%s",
+		rel.Version, version.Version, rel.Notes)})
 }
 
 func startHealthServer(cfg *config.Config, a *app.App, manager *channel.Manager) (*http.Server, error) {

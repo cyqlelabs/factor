@@ -39,7 +39,7 @@ mistake*.
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications — X11, Wayland, macOS, Windows; auto-registered when a display exists |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed instance, visible by default so you can watch it work — and setup installs one when the machine has none ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills, drop-in instructions — see [Extending](#extending-factor) |
-| 🔧 **Self-managing** | Edits its own config, installs packages (apt/dnf/pip/npm/…), runs cron schedules and `HEARTBEAT.md` checks that cost zero LLM calls when idle |
+| 🔧 **Self-managing** | Edits its own config, installs packages (apt/dnf/pip/npm/…), upgrades itself to the newest release, runs cron schedules and `HEARTBEAT.md` checks that cost zero LLM calls when idle |
 | 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, secrets scrubbed from every tool result — rails, not a sandbox ([Security](#security-model)) |
 
 ## How it works
@@ -87,11 +87,18 @@ factor                                     # interactive chat
 factor -m "what's on my disk?"             # one-shot
 factor gateway                             # daemon: Telegram, phone, cron, heartbeat, jobs
 factor status                              # daemon / provider / memory / phone / desktop health
+factor upgrade                             # replace this binary with the newest release
 ```
 
 Factor spawns and supervises the smrti sidecar automatically, restarts it with
 backoff, and degrades gracefully (empty recalls, dropped writes) when it's down.
 Point `memory.mode: "external"` + `memory.url` at a shared smrti if you run one.
+
+`factor upgrade` downloads the release built for this machine, checks it against the
+published `SHA256SUMS`, and swaps the binary in place; `--check` only reports what's
+out. The gateway looks once a day and tells you in whichever chat you last used —
+it never installs behind your back. Asking Factor to update itself works too: the
+`upgrade` tool is the same code path.
 
 ## Configuration
 
@@ -143,7 +150,8 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
     "headless": false,
     "fast_path": false                       // opt in to the lightweight read-only engine
   },
-  "heartbeat": { "enabled": true, "interval_minutes": 30 }
+  "heartbeat": { "enabled": true, "interval_minutes": 30 },
+  "upgrade": { "check": true, "check_interval_hours": 24 }   // report new releases; never install one unasked
 }
 ```
 
