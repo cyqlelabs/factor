@@ -35,6 +35,7 @@ mistake*.
 | 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations instead of queuing |
 | 🔁 **Provider failover that works** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with error classification, per-candidate cooldowns, and overflow-triggered compaction |
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning` (OpenRouter), `reasoning_effort` (OpenAI/Groq), or a `thinking` budget (Anthropic) |
+| ☎️ **Answers the phone** | A real number: call it and talk to Factor out loud, or have it call and text you — barge-in, voicemail detection, and a fully local speech tier if you want no audio leaving the machine ([Phone](#phone-calls-and-sms)) |
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications — X11, Wayland, macOS, Windows; auto-registered when a display exists |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed instance — visible by default so you can watch it work |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills, drop-in instructions — see [Extending](#extending-factor) |
@@ -47,6 +48,8 @@ mistake*.
 flowchart LR
     TG([Telegram]) <--> BUS
     CLI([CLI]) <--> BUS
+    PH([Phone]) <--> SHELL["voice shell sidecar · speech · barge-in"]
+    SHELL <-->|chat completions on loopback| LOOP
     BUS[message bus] --> LOOP["agent loop · one live turn per session"]
     LOOP <-->|recall · store| MEM[("smrti REST sidecar")]
     LOOP --> PROV["provider chain · failover · cooldowns · compaction"]
@@ -69,7 +72,8 @@ factor init      # interactive setup wizard
 ```
 
 The wizard verifies every step live — the provider with a real completion, the
-model picked from the endpoint's live list, the Telegram token with `getMe` — and
+model picked from the endpoint's live list, the Telegram token with `getMe`, the
+carrier and voice credentials against their own APIs — and
 installs smrti if it's missing (`uv` → `pipx` → `pip --user` → private venv; no
 root needed). `factor init -y` takes the defaults for scripting; `--no-install`
 keeps it from installing anything.
@@ -78,8 +82,8 @@ keeps it from installing anything.
 export FACTOR_PROVIDER_API_KEY=sk-or-...   # OpenRouter by default
 factor                                     # interactive chat
 factor -m "what's on my disk?"             # one-shot
-factor gateway                             # daemon: Telegram, cron, heartbeat, jobs
-factor status                              # daemon / provider / memory health
+factor gateway                             # daemon: Telegram, phone, cron, heartbeat, jobs
+factor status                              # daemon / provider / memory / phone health
 ```
 
 Factor spawns and supervises the smrti sidecar automatically, restarts it with
@@ -110,7 +114,20 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
     "space": "main"
   },
   "channels": {
-    "telegram": { "token": "123:ABC", "allow_from": ["your-telegram-id"] }
+    "telegram": { "token": "123:ABC", "allow_from": ["your-telegram-id"] },
+    "phone": {                                 // optional; absent = nothing runs
+      "user_number": "+15550001111",           // you: the only one who may call in
+      "phone_number": "+15550002222",          // the number you bought
+      "twilio_account_sid": "AC...",
+      "twilio_auth_token": "...",
+      "elevenlabs_api_key": "...",
+      "stt_api_key": "...",                    // Deepgram
+      "language": "en",
+      "stt": { "provider": "deepgram" },       // deepgram | whisper | local-openai
+      "tts": { "provider": "elevenlabs" },     // elevenlabs | local-openai
+      "proactive": "sms",                      // sms | call | off
+      "max_call_minutes": 15
+    }
   },
   "mcp": {
     "servers": { "github": { "command": "github-mcp-server", "args": ["stdio"] } }
@@ -127,6 +144,76 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
 The workspace (`~/.factor/workspace`) is the agent's home: `AGENT.md`, `SOUL.md`,
 `USER.md` shape its identity; `HEARTBEAT.md` lists proactive tasks; `instructions/`,
 `skills/`, `sessions/`, `cron/` do what they say.
+
+## Phone calls and SMS
+
+Give Factor a phone number and it picks up: you talk, it answers out loud, with the
+same memory, tools, and session history it has everywhere else. It can also call or
+text *you* — a finished job, a cron result, or because you asked it to ring someone
+and report back.
+
+```bash
+factor init        # the Channels step walks through the carrier and the speech tier
+factor gateway     # brings the line up
+factor status      # number, speech tier, voice-shell health
+```
+
+The voice shell is [Patter](https://github.com/PatterAI/Patter) running as a
+supervised sidecar — exactly like the smrti memory engine, into its own virtualenv,
+installed on demand. It terminates the carrier's media stream and owns the parts of
+a phone call that are hard: turn-taking, barge-in, voice activity detection,
+answering-machine detection, transcoding. Factor is its brain, plugged in over
+loopback as an OpenAI-compatible endpoint that never leaves `127.0.0.1`.
+
+**Speech tiers** — the one decision with real trade-offs, asked plainly by the wizard:
+
+| Tier | Speech-to-text | Text-to-speech | Extra RAM | When |
+|---|---|---|---|---|
+| **1 · cloud** (default) | Deepgram nova-3 | ElevenLabs flash v2.5 (µ-law 8 kHz, no transcode) | ~150–300 MB | any machine; lowest latency, least to go wrong |
+| **2 · local STT** | your own server | ElevenLabs | +1.5–2.5 GB | ≥8 GB RAM; transcription stays home |
+| **3 · local TTS** | Deepgram | your own server (Piper/Kokoro) | +0.5–2 GB | Piper's ~30–50 ms first audio beats the cloud |
+| **4 · fully local** | your own server | your own server | +2–3 GB | ≥8 GB RAM; no audio leaves the machine, no per-minute audio cost |
+
+Local tiers point `stt.base_url` / `tts.base_url` at any OpenAI-compatible speech
+server you run — [Speaches](https://github.com/speaches-ai/speaches) wraps
+faster-whisper and Piper/Kokoro in one. Factor probes it at startup: if it is not
+answering, it falls back to the cloud tier and says so, rather than failing calls
+(set `local_audio_fallback: false` to have the channel report itself down instead).
+Silero voice-activity detection runs locally in every tier. Spanish is first-class
+throughout — Deepgram and ElevenLabs cover it natively, faster-whisper and Piper's
+`es_ES`/`es_MX` voices cover the local tiers.
+
+Roughly $0.04–0.06 per talk-minute on tier 1 plus your model's tokens, and about
+1.3¢ per SMS segment. Turns are not streamed yet, so a tool-using turn leans on the
+spoken filler while it works; simple questions land in the normal 1.5–3 s range.
+
+<details>
+<summary><b>Getting the line up, and the guardrails on it</b></summary>
+
+Buy a number at a supported carrier (Twilio today; Patter also speaks Telnyx and
+Plivo), then run `factor init`. The wizard verifies the carrier credentials and the
+voice key live before writing anything.
+
+The carrier has to reach the voice shell, so it needs a public URL. `tunnel: "quick"`
+(the default) uses Patter's built-in Cloudflare quick tunnel — fine for trying it
+out, **not** for daily use: the hostname rotates and first legs occasionally drop.
+For real use set `tunnel: "none"` and a stable `webhook_url` from a named tunnel or
+a reverse proxy. Factor's own endpoints — the brain bridge and the shell's control
+API — always bind `127.0.0.1` and share a bearer secret regenerated every boot.
+
+Because a phone number is dialable by anyone and a phone call costs money, the rails
+are closed by default: only `user_number` may call in (add more with `allow_from`, or
+`"*"` for anyone, which logs a security warning), only `user_number` may be dialed
+(add more with `allow_call_to` — there is deliberately no wildcard), calls are cut
+off at `max_call_minutes`, and call transfer is off. A caller who is not allowed is
+hung up at the carrier *and* refused by the bridge.
+
+Two tools appear only when the channel is configured: `phone_sms` sends a text, and
+`phone_call` dials — returning immediately, then reporting the outcome (answered,
+no answer, busy, voicemail) with a transcript tail back into whichever conversation
+asked for the call.
+
+</details>
 
 ## Extending Factor
 
@@ -158,7 +245,9 @@ Factor is a personal agent, not a multi-tenant service. The guardrails (workspac
 restriction, exec deny-patterns, allowlists, secret redaction) protect against
 accidents and casual prompt-injection — they are **not** a security boundary. Run it
 under your own account for yourself; set `channels.telegram.allow_from`; keep
-`restrict_to_workspace` on unless you know why you're turning it off.
+`restrict_to_workspace` on unless you know why you're turning it off. The phone
+channel is the one place where the default is *closed* rather than open — a number
+anyone can dial, and a bill attached to every minute, earn stricter rails.
 
 ## Development
 
@@ -169,10 +258,11 @@ make build-all    # release cross-compile (incl. GOAMD64=v1 for old x86-64)
 make build-tiny   # -tags nobrowser: smallest binary
 ```
 
-The suite runs against fakes — scripted providers, a fake smrti sidecar (spawned
-by re-execing the test binary), a fake Telegram API, a fake MCP server over real
-stdio JSON-RPC, a scripted desktop — plus live headless-Chrome and desktop
-round-trip tests that auto-skip where the machine can't host them.
+The suite runs against fakes — scripted providers, a fake smrti sidecar and a fake
+voice shell (both spawned by re-execing the test binary), a fake Telegram API, a
+fake carrier, a fake MCP server over real stdio JSON-RPC, a scripted desktop — plus
+live headless-Chrome and desktop round-trip tests that auto-skip where the machine
+can't host them.
 
 ## License
 
