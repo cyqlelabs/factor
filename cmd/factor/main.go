@@ -119,9 +119,18 @@ func runStatus(configPath string) error {
 		fmt.Printf("gateway:   not running\n")
 	}
 
+	// The engine is probed before the binary is reported: a smrti running in
+	// Docker or on another box has no local file to find, and printing
+	// "not installed" above a healthy memory is a contradiction the reader
+	// has to go and disprove.
+	memClient := memory.NewClient(cfg.Memory.BaseURL(), cfg.Memory.APIKey, "")
+	memCtx, memCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	memStatus, memErr := memClient.Status(memCtx)
+	memCancel()
+
 	if path, ok := memory.FindSmrti(cfg.Memory.Command, config.Home()); ok {
 		fmt.Printf("smrti:     %s\n", path)
-	} else {
+	} else if memErr != nil && cfg.Memory.Mode == "sidecar" {
 		fmt.Printf("smrti:     not installed (it will be installed on demand)\n")
 	}
 
@@ -156,13 +165,10 @@ func runStatus(configPath string) error {
 		fmt.Println("desktop:   off (no graphical session)")
 	}
 
-	client := memory.NewClient(cfg.Memory.BaseURL(), cfg.Memory.APIKey, "")
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if status, err := client.Status(ctx); err != nil {
-		fmt.Printf("memory:    unreachable at %s (%v)\n", cfg.Memory.BaseURL(), err)
+	if memErr != nil {
+		fmt.Printf("memory:    unreachable at %s (%v)\n", cfg.Memory.BaseURL(), memErr)
 	} else {
-		fmt.Printf("memory:    healthy at %s — %v atoms\n", cfg.Memory.BaseURL(), status["total_atoms"])
+		fmt.Printf("memory:    healthy at %s — %v atoms\n", cfg.Memory.BaseURL(), memStatus["total_atoms"])
 	}
 	return nil
 }

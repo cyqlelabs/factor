@@ -39,7 +39,11 @@ type Options struct {
 	// NoInstall suppresses installing smrti and desktop helpers.
 	NoInstall bool
 
-	EnsureSmrti     func(ctx context.Context, cfg config.MemoryConfig, progress memory.Progress) (path string, installed bool, err error)
+	EnsureSmrti func(ctx context.Context, cfg config.MemoryConfig, progress memory.Progress) (path string, installed bool, err error)
+	// MemoryAnswering reports whether a smrti is already serving. Someone
+	// running one in Docker or on another box has a working memory with no
+	// local binary to find, and must not be offered an install over it.
+	MemoryAnswering func(ctx context.Context, cfg config.MemoryConfig) bool
 	InstallPackages func(ctx context.Context, packages []string) (string, error)
 	Desktop         desktop.Env
 
@@ -71,6 +75,9 @@ func (o *Options) defaults() {
 	}
 	if o.Desktop.Run == nil {
 		o.Desktop = desktop.DefaultEnv()
+	}
+	if o.MemoryAnswering == nil {
+		o.MemoryAnswering = memory.Answering
 	}
 	if o.EnsureSmrti == nil {
 		o.EnsureSmrti = func(ctx context.Context, cfg config.MemoryConfig, progress memory.Progress) (string, bool, error) {
@@ -176,7 +183,10 @@ func (w *wiz) runQuiet(ctx context.Context) error {
 	w.ui.printf("config:    %s\n", w.cfg.Path())
 	w.ui.printf("workspace: %s\n", w.cfg.Agent.Workspace)
 
-	if w.cfg.Memory.Mode != "off" && !w.opts.NoInstall {
+	// Only a sidecar Factor supervises itself needs a local binary: an
+	// external engine is somebody else's process, and installing a second
+	// copy beside it helps nobody.
+	if w.cfg.Memory.Mode == "sidecar" && !w.opts.NoInstall && !w.opts.MemoryAnswering(ctx, w.cfg.Memory) {
 		path, installed, err := w.opts.EnsureSmrti(ctx, w.cfg.Memory, func(format string, args ...any) {
 			w.ui.printf("smrti:     %s\n", fmt.Sprintf(format, args...))
 		})
@@ -597,6 +607,10 @@ func (w *wiz) stepMemory(ctx context.Context) error {
 }
 
 func (w *wiz) ensureSmrti(ctx context.Context) error {
+	if w.opts.MemoryAnswering(ctx, w.cfg.Memory) {
+		w.ui.Success("smrti is already answering at %s", w.cfg.Memory.BaseURL())
+		return nil
+	}
 	if path, ok := memory.FindSmrti(w.cfg.Memory.Command, w.opts.Home); ok {
 		w.ui.Success("smrti found at %s", path)
 		return nil

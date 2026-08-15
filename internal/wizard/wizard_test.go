@@ -87,6 +87,9 @@ func newHarness(t *testing.T, answers ...string) *harness {
 			return filepath.Join(home, "engine", "helium", "helium"), true, nil
 		},
 		VerifyBrowser: func(context.Context, config.BrowserConfig) error { return nil },
+		EnsureFastBrowser: func(context.Context, browser.Progress) (string, bool, error) {
+			return filepath.Join(home, "engine", "lightpanda"), true, nil
+		},
 		// Never touch the network or the machine's Python: tests that care
 		// about the install override this to observe what it was asked for.
 		InstallSpeech: func(_ context.Context, language string, _, needTTS bool,
@@ -495,6 +498,7 @@ func TestQuietRunInstallsAndWrites(t *testing.T) {
 			called = true
 			return "/usr/bin/smrti", true, nil
 		},
+		MemoryAnswering: func(context.Context, config.MemoryConfig) bool { return false },
 		EnsureBrowser: func(context.Context, browser.Progress) (string, bool, error) {
 			return "/usr/bin/chromium", false, nil
 		},
@@ -965,6 +969,7 @@ func TestQuietRunProvisionsBrowser(t *testing.T) {
 		EnsureSmrti: func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
 			return "/usr/bin/smrti", true, nil
 		},
+		MemoryAnswering: func(context.Context, config.MemoryConfig) bool { return false },
 		EnsureBrowser: func(_ context.Context, progress browser.Progress) (string, bool, error) {
 			progress("downloading Helium 9.9.9 (125 MB)")
 			return "/opt/helium/helium", true, nil
@@ -1016,5 +1021,48 @@ func TestWizardKeepsTheBrowserWhenTheLightweightEngineWillNotInstall(t *testing.
 	}
 	if !strings.Contains(h.out.String(), "GLIBC_2.34") {
 		t.Errorf("the reason was not shown:\n%s", h.out.String())
+	}
+}
+
+// A smrti running in Docker or on another box is a working memory. Offering
+// to install one on top of it is how `factor init` ended up asking a user to
+// install something they were already running.
+func TestWizardDoesNotOfferSmrtiOverALiveEngine(t *testing.T) {
+	h := newHarness(t, "5", "llama3", "3", "1", "3", "n", "n", "", "n")
+	h.opts.MemoryAnswering = func(context.Context, config.MemoryConfig) bool { return true }
+	h.opts.EnsureSmrti = func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
+		t.Error("offered to install smrti while one was already answering")
+		return "", false, nil
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	if !strings.Contains(h.out.String(), "already answering") {
+		t.Errorf("the live engine was not reported:\n%s", h.out.String())
+	}
+}
+
+func TestQuietRunLeavesAnExternalEngineAlone(t *testing.T) {
+	home := tempHome(t)
+	path := filepath.Join(home, "config.json")
+	if err := os.WriteFile(path, []byte(`{"memory":{"mode":"external","url":"http://memory.lan:8420"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := Run(context.Background(), path, Options{
+		UI:             NewPlain(strings.NewReader(""), &out),
+		NonInteractive: true,
+		Home:           home,
+		EnsureSmrti: func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
+			t.Error("installed smrti for an engine Factor does not run")
+			return "", false, nil
+		},
+		MemoryAnswering: func(context.Context, config.MemoryConfig) bool { return false },
+		EnsureBrowser: func(context.Context, browser.Progress) (string, bool, error) {
+			return "/usr/bin/chromium", false, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 }
