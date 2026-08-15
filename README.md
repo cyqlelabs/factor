@@ -17,14 +17,16 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/cyqlelabs/factor" alt="MIT license"></a>
 </p>
 
-**A fast, reliable, lightweight desktop AI agent and companion — with a real memory.**
+**A fast, lightweight AI agent that lives on your machine — with hands on your
+desktop, a voice on the phone, and a real memory.**
 
-Factor is a single static Go binary that lives on your machine, talks to you over the
-CLI or Telegram, does real work with real tools, and remembers what matters across
-conversations. Its long-term memory is [smrti](https://github.com/cyqlelabs/smrti) —
-Bayesian truth values, attention economics, emotional valence — so Factor doesn't
-just log what you said: it consolidates, prioritizes, and *never repeats a critical
-mistake*.
+Factor is a single static Go binary. Chat with it in the terminal, message it on
+Telegram, or call its phone number and talk out loud: the same agent picks up every
+time, with the same tools and the same memory. It drives a real browser, works your
+desktop, keeps long tasks running in the background, and calls or texts you when one
+lands. Its long-term memory is [smrti](https://github.com/cyqlelabs/smrti) — Bayesian
+truth values, attention economics, emotional valence — so Factor doesn't just log
+what you said: it consolidates, prioritizes, and *never repeats a critical mistake*.
 
 ## Highlights
 
