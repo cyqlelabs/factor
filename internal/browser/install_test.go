@@ -346,3 +346,80 @@ func TestDisplayAvailableFollowsTheEnvironment(t *testing.T) {
 		t.Error("no display reported under Wayland")
 	}
 }
+
+func TestVersionAtLeast(t *testing.T) {
+	cases := []struct {
+		have, want string
+		ok         bool
+	}{
+		{"2.34", "2.34", true},
+		{"2.39", "2.34", true},
+		{"2.31", "2.34", false},
+		{"3.0", "2.34", true},
+		{"1.9", "2.34", false},
+		{"2", "2.34", false},
+		{"x.y", "2.34", false},
+	}
+	for _, c := range cases {
+		if got := versionAtLeast(c.have, c.want); got != c.ok {
+			t.Errorf("versionAtLeast(%q, %q) = %v", c.have, c.want, got)
+		}
+	}
+}
+
+func TestFastEngineSupportedReadsTheCLibrary(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the C library check is a Linux concern")
+	}
+	old := runCmd
+	t.Cleanup(func() { runCmd = old })
+
+	runCmd = func(context.Context, []string) (string, error) {
+		return "ldd (Ubuntu GLIBC 2.31-0ubuntu9) 2.31\nCopyright (C) 2020\n", nil
+	}
+	ok, why := FastEngineSupported()
+	if ok || !strings.Contains(why, "2.31") {
+		t.Errorf("ok = %v, why = %q, want a refusal naming the version found", ok, why)
+	}
+
+	runCmd = func(context.Context, []string) (string, error) {
+		return "ldd (GNU libc) 2.39\n", nil
+	}
+	if ok, why := FastEngineSupported(); !ok {
+		t.Errorf("glibc 2.39 was refused: %q", why)
+	}
+
+	runCmd = func(context.Context, []string) (string, error) {
+		return "musl libc (x86_64)\nVersion 1.2.4\n", nil
+	}
+	if ok, why := FastEngineSupported(); ok || !strings.Contains(why, "musl") {
+		t.Errorf("ok = %v, why = %q, want musl reported", ok, why)
+	}
+
+	// Undetermined must not block the attempt: the install verifies anyway.
+	runCmd = func(context.Context, []string) (string, error) { return "", fmt.Errorf("no ldd") }
+	if ok, _ := FastEngineSupported(); !ok {
+		t.Error("an unreadable C library version blocked the install")
+	}
+}
+
+func TestEnsureFastEngineRefusesBeforeDownloading(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the C library check is a Linux concern")
+	}
+	old := runCmd
+	runCmd = func(context.Context, []string) (string, error) {
+		return "ldd (Ubuntu GLIBC 2.31-0ubuntu9) 2.31\n", nil
+	}
+	t.Cleanup(func() { runCmd = old })
+
+	oldAPI := releaseAPI
+	releaseAPI = "http://127.0.0.1:1/%s" // any lookup here is a test failure
+	t.Cleanup(func() { releaseAPI = oldAPI })
+
+	home := t.TempDir()
+	_, installed, err := EnsureFastEngine(context.Background(), home, nil)
+	if installed || err == nil || !strings.Contains(err.Error(), "glibc 2.34") {
+		t.Errorf("installed = %v, err = %v, want a refusal before any download", installed, err)
+	}
+}

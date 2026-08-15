@@ -32,3 +32,5 @@ func EnsureEngine(context.Context, string, Progress) (string, bool, error) {
 func EnsureFastEngine(context.Context, string, Progress) (string, bool, error) {
 	return "", false, errStripped
 }
+
+func FastEngineSupported() (bool, string) { return false, errStripped.Error() }

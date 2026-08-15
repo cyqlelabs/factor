@@ -90,6 +90,7 @@ func newHarness(t *testing.T, answers ...string) *harness {
 		EnsureFastBrowser: func(context.Context, browser.Progress) (string, bool, error) {
 			return filepath.Join(home, "engine", "lightpanda"), true, nil
 		},
+		FastBrowserSupported: func() (bool, string) { return true, "" },
 		// Never touch the network or the machine's Python: tests that care
 		// about the install override this to observe what it was asked for.
 		InstallSpeech: func(_ context.Context, language string, _, needTTS bool,
@@ -1097,5 +1098,27 @@ func TestQuietRunKeepsTheConfiguredBrowser(t *testing.T) {
 	}
 	if saved.Browser.Command != existing {
 		t.Errorf("command = %q, want the configured %q", saved.Browser.Command, existing)
+	}
+}
+
+// Offering an engine the machine cannot load costs a 150MB download to say
+// no, on exactly the machines least able to spare it.
+func TestWizardDoesNotOfferAnEngineThisMachineCannotRun(t *testing.T) {
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
+	h.opts.FastBrowserSupported = func() (bool, string) {
+		return false, "the lightweight engine needs glibc 2.34 and this system has 2.31"
+	}
+	h.opts.EnsureFastBrowser = func(context.Context, browser.Progress) (string, bool, error) {
+		t.Error("downloaded an engine this machine cannot run")
+		return "", false, nil
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	if h.saved().Browser.FastPath {
+		t.Error("fast path left on for an engine that cannot load")
+	}
+	if !strings.Contains(h.out.String(), "glibc 2.34") {
+		t.Errorf("the reason was not given:\n%s", h.out.String())
 	}
 }
