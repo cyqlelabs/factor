@@ -91,6 +91,27 @@ func TestDescribeTrustsAHealthySpeechServerOverTheDisk(t *testing.T) {
 	}
 }
 
+// The same contradiction on the voice shell's own interpreter: a command the
+// user named is what it runs in, virtualenv or not.
+func TestDescribeReportsAConfiguredVoiceShellInterpreter(t *testing.T) {
+	shell := newFakeShellAPI(t)
+	raw := json.RawMessage(fmt.Sprintf(`{
+		"user_number": "+15550001111", "phone_number": "+15550002222",
+		"twilio_account_sid": "AC1", "twilio_auth_token": "t",
+		"elevenlabs_api_key": "e", "stt_api_key": "d",
+		"command": "/usr/bin/python3",
+		"control_api_base": %q
+	}`, shell.URL))
+
+	status := Describe(context.Background(), raw, t.TempDir())
+	if status.Python != "/usr/bin/python3" {
+		t.Errorf("Python = %q, want the interpreter named in the config", status.Python)
+	}
+	if !status.Healthy {
+		t.Error("the fake shell is answering; it should be healthy")
+	}
+}
+
 // An interpreter the user named is installed, even with no private virtualenv.
 func TestDescribeCountsAConfiguredInterpreterAsInstalled(t *testing.T) {
 	shell := newFakeShellAPI(t)

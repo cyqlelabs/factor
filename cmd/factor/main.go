@@ -130,7 +130,10 @@ func runStatus(configPath string) error {
 		status := phone.Describe(phoneCtx, raw, config.Home())
 		cancel()
 		fmt.Printf("phone:     %s\n", status.Line())
-		if status.Python == "" && status.Enabled {
+		// Only offer the install when there is nothing to run and nothing
+		// running: saying "not installed" under "healthy" is a contradiction
+		// the reader has to go and disprove.
+		if status.Python == "" && !status.Healthy && status.Enabled {
 			fmt.Printf("           voice shell not installed (it will be installed on demand)\n")
 		}
 	}
