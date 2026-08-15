@@ -76,7 +76,12 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck -scan package ./...
 
+  # The cross-compile gate for pull requests: nothing else here compiles the
+  # Windows, macOS, 386 or ARM paths. On main the tag job cross-compiles the
+  # same set with the release version stamped in, so building here too would
+  # only produce a set of binaries nothing can ship.
   build:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs: [test]
     steps:
@@ -93,11 +98,18 @@ jobs:
           retention-days: 7
 
   # Semantic versioning. Once every check above is green on main, derive the
-  # next version from the Conventional Commits since the last tag and push it.
-  # A no-op when nothing since the last tag warrants a bump (docs:, chore:, …).
+  # next version from the Conventional Commits since the last tag, build the
+  # release set with it, and push the tag. A no-op when nothing since the last
+  # tag warrants a bump (docs:, chore:, …).
+  #
+  # The cross-compile lives in this job rather than its own because the version
+  # is stamped at link time: it is not known until `svu next` runs, and that has
+  # to run inside this serialized job (see the concurrency note below). Building
+  # before the tag push is also what keeps a broken target from leaving a tag
+  # behind with no release attached to it.
   tag:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [test, lint, govulncheck, build]
+    needs: [test, lint, govulncheck]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -128,6 +140,11 @@ jobs:
             exit 0
           fi
           echo "version=$next" >> "$GITHUB_OUTPUT"
+      - name: cross-compile all targets
+        if: steps.next.outputs.version != ''
+        env:
+          TAG: ${{ steps.next.outputs.version }}
+        run: make build-all VERSION="$TAG"
       - name: push tag
         if: steps.next.outputs.version != ''
         env:
@@ -137,6 +154,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "$TAG"
           git push origin "$TAG"
+      # Handed to the release job, which publishes these exact files rather
+      # than building the same tree a second time.
+      - uses: actions/upload-artifact@v4
+        if: steps.next.outputs.version != ''
+        with:
+          name: release-binaries
+          path: dist/
+          retention-days: 7
 
   release:
     needs: tag

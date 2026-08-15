@@ -5,10 +5,15 @@ name: Release
 # GITHUB_TOKEN does not trigger workflows, so the push trigger alone would
 # never fire for an automatic release.
 #
-# `inputs` is empty on the push path, so `inputs.version || github.ref_name`
-# resolves to the tag either way. It is spelled out at each use rather than
-# hoisted into a job-level env because the contexts a job-level env may read
-# are narrower than the ones a step may.
+# The two paths arrive with different work already done, which is what every
+# `if:` below is about. On the call path the tag job has already tested,
+# cross-compiled with the version stamped in, and uploaded the binaries, so
+# there is nothing left to do but publish them. A hand-pushed tag has had none
+# of that and builds here.
+#
+# `inputs` is empty on the push path, which is both how the steps tell the two
+# apart and why `inputs.version || github.ref_name` resolves to the tag either
+# way.
 on:
   push:
     tags: ["v*"]
@@ -27,18 +32,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        if: inputs.version == ''
         with:
           fetch-depth: 0
-          ref: ${{ inputs.version || github.ref_name }}
+          ref: ${{ github.ref_name }}
       - uses: actions/setup-go@v5
+        if: inputs.version == ''
         with:
           go-version-file: go.mod
       - name: test
+        if: inputs.version == ''
         run: go test ./...
       - name: build
+        if: inputs.version == ''
         env:
-          TAG: ${{ inputs.version || github.ref_name }}
+          TAG: ${{ github.ref_name }}
         run: make build-all VERSION="$TAG"
+      - name: binaries from the tag job
+        if: inputs.version != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+          path: dist
       - name: checksums
         run: cd dist && sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
