@@ -386,6 +386,19 @@ func TestSendOffDropsQuietlyWithoutFailingTheManager(t *testing.T) {
 	}
 }
 
+func TestSendIgnoresInProgressNotes(t *testing.T) {
+	p, twilio, shell := newTestPhone(t, nil)
+	err := p.Send(context.Background(), bus.OutboundMessage{
+		Channel: "phone", ChatID: "+15550001111", Content: "Looking that up now.", Interim: true,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(twilio.sent()) != 0 || len(shell.placed()) != 0 {
+		t.Error("an in-progress note reached the carrier; only the answer is worth a text or a call")
+	}
+}
+
 func TestSendRefusesNumbersOutsideTheOutboundAllowlist(t *testing.T) {
 	p, twilio, _ := newTestPhone(t, nil)
 	err := p.Send(context.Background(), bus.OutboundMessage{Channel: "phone", ChatID: "+15559999999", Content: "hi"})

@@ -138,6 +138,26 @@ func TestChatUIReportsWhatTheTurnDid(t *testing.T) {
 	}
 }
 
+func TestChatUIPrintsWhatTheAgentSaysMidTurn(t *testing.T) {
+	ui, output := pipedUI(t)
+
+	ui.begin("cli:main")
+	ui.activity(act(agent.PhaseNotice, "Reading the config first."))
+	if !ui.spin.Running() {
+		t.Error("a mid-turn note should not end the turn it came from")
+	}
+	ui.activity(act(agent.PhaseDone, ""))
+	ui.reply("here you go")
+
+	out := output()
+	if !strings.Contains(out, "Reading the config first.") {
+		t.Errorf("mid-turn note not printed: %q", out)
+	}
+	if strings.Index(out, "Reading the config first.") > strings.Index(out, "here you go") {
+		t.Errorf("the note printed after the answer it introduced: %q", out)
+	}
+}
+
 func TestChatUIAdoptsTurnsNobodyAskedFor(t *testing.T) {
 	ui, output := pipedUI(t)
 

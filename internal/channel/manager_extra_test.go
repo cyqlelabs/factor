@@ -132,6 +132,27 @@ func (c *typingChannel) typingCalls() []string {
 	return append([]string(nil), c.calls...)
 }
 
+// interimChannel is a scriptedChannel that remembers whether each delivery
+// was flagged as an in-progress note.
+type interimChannel struct {
+	scriptedChannel
+	mu    sync.Mutex
+	flags []bool
+}
+
+func (c *interimChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+	c.mu.Lock()
+	c.flags = append(c.flags, msg.Interim)
+	c.mu.Unlock()
+	return c.scriptedChannel.Send(ctx, msg)
+}
+
+func (c *interimChannel) interimFlags() []bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]bool(nil), c.flags...)
+}
+
 func TestSetTypingRoutesSessionKeysToTheirChannel(t *testing.T) {
 	typer := &typingChannel{scriptedChannel: scriptedChannel{name: "telegram"}}
 	plain := &scriptedChannel{name: "sms"} // no Typer: must be skipped, not panic
@@ -163,6 +184,51 @@ func TestSetTypingSplitsOnTheFirstColonOnly(t *testing.T) {
 
 	if got := typer.typingCalls(); len(got) != 1 || got[0] != "-100:99:on" {
 		t.Errorf("typing calls = %v, want the full chat id after the first colon", got)
+	}
+}
+
+func TestInterimPublishesAnInProgressNoteToItsChannel(t *testing.T) {
+	b := bus.New()
+	m := NewManager(b, []Channel{&scriptedChannel{name: "telegram"}})
+
+	m.Interim("telegram:-100:99", "Looking that up now.")
+	m.Interim("ghost:1", "nobody owns this channel")
+	m.Interim("no-chat-id", "no colon, no chat")
+
+	select {
+	case msg := <-b.Outbound():
+		if msg.Channel != "telegram" || msg.ChatID != "-100:99" {
+			t.Errorf("interim routed to %s:%s", msg.Channel, msg.ChatID)
+		}
+		if msg.Content != "Looking that up now." || !msg.Interim {
+			t.Errorf("interim message = %+v, want the note flagged as interim", msg)
+		}
+	default:
+		t.Fatal("nothing published for an owned channel")
+	}
+	select {
+	case msg := <-b.Outbound():
+		t.Errorf("published %+v for a session this manager does not own", msg)
+	default:
+	}
+}
+
+func TestDeliverKeepsChunksOfAnInterimNoteInterim(t *testing.T) {
+	ch := &interimChannel{scriptedChannel: scriptedChannel{name: "telegram", maxLen: 6}}
+	m := NewManager(bus.New(), []Channel{ch})
+
+	m.deliver(context.Background(), bus.OutboundMessage{
+		Channel: "telegram", ChatID: "1", Content: "checking the weather", Interim: true,
+	})
+
+	flags := ch.interimFlags()
+	if len(flags) < 2 {
+		t.Fatalf("interim flags = %v, want one per chunk", flags)
+	}
+	for i, interim := range flags {
+		if !interim {
+			t.Errorf("chunk %d lost the interim flag", i)
+		}
 	}
 }
 

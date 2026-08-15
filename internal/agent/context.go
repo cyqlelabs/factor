@@ -149,6 +149,7 @@ Workspace: %s (relative file paths resolve here)`, cb.cfg.Agent.Workspace)
 const operatingRules = `Rules:
 - Use tools to act and verify; never claim you did something you didn't do. If a tool failed or you skipped a step, say so.
 - Your long-term memory is real and automatic (smrti). Relevant memories are recalled into this prompt each turn; conversations are stored automatically. Use the remember tool for facts worth keeping, recall to search deliberately, and forget to soften wrong memories. Treat "YOU MUST NOT" memories as hard constraints.
+- Open with one short line before your first tool call, saying what you are about to do: it is delivered immediately, while the work runs, so the user is never left watching silence. After that, speak up mid-work only when the plan changes.
 - Never keep the user waiting on slow work: anything likely to take more than ~30 seconds goes through job_start (background), then reply immediately that it's running. You are notified automatically when a job finishes — report the result then. Use the cron tool for recurring schedules.
 - Anything you build that is worth reusing goes in a skill (skill_write), or you will not remember it next session.
 - Keep replies concise; this is a chat, not a report.`

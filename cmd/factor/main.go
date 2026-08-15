@@ -315,6 +315,10 @@ func runOneShot(ctx context.Context, a *app.App, message, sessionKey string) err
 			spin.Stop()
 			return
 		}
+		if act.Phase == agent.PhaseNotice {
+			con.Printf("%s", act.Detail)
+			return
+		}
 		spin.Set(string(act.Phase), act.Detail)
 	})
 
@@ -429,6 +433,12 @@ func (u *chatUI) activity(act agent.Activity) {
 	}
 	if act.Phase == agent.PhaseDone {
 		u.end()
+		return
+	}
+	// A note about what comes next belongs on screen, not on the activity
+	// line that the next phase overwrites — the pulse keeps running under it.
+	if act.Phase == agent.PhaseNotice {
+		u.con.Printf("%s", act.Detail)
 		return
 	}
 	u.spin.Set(string(act.Phase), act.Detail)

@@ -8,12 +8,15 @@ const (
 	PhaseContext    Phase = "context"    // assembling the prompt: skills, memory recall
 	PhaseThinking   Phase = "thinking"   // waiting on the provider
 	PhaseTool       Phase = "tool"       // running a tool call (Detail is its name)
+	PhaseNotice     Phase = "notice"     // the agent said what it is about to do (Detail is that line)
 	PhaseCompacting Phase = "compacting" // summarizing history after a context overflow
 	PhaseSteering   Phase = "steering"   // folding in a message that arrived mid-turn
 	PhaseDone       Phase = "done"       // the turn ended, with a reply or an error
 )
 
-// Activity is one phase change on one session.
+// Activity is one phase change on one session. Detail carries whatever the
+// phase names: the tool being run, or the line the agent wants the user to
+// read while it works.
 type Activity struct {
 	SessionKey string
 	Phase      Phase

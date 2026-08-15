@@ -80,6 +80,22 @@ func (m *Manager) SetTyping(sessionKey string, on bool) {
 	}
 }
 
+// Interim delivers a note from a turn that is still running to the chat it
+// belongs to, so a long turn reads as work in progress rather than silence.
+// It goes through the outbound bus like any reply, keeping it in order with
+// the answer that follows. Sessions of channels this manager does not own
+// (cli, cron, jobs) are ignored.
+func (m *Manager) Interim(sessionKey, content string) {
+	name, chatID, ok := strings.Cut(sessionKey, ":")
+	if !ok {
+		return
+	}
+	if _, owned := m.channels[name]; !owned {
+		return
+	}
+	m.b.PublishOutbound(bus.OutboundMessage{Channel: name, ChatID: chatID, Content: content, Interim: true})
+}
+
 func (m *Manager) deliver(ctx context.Context, msg bus.OutboundMessage) {
 	ch, ok := m.channels[msg.Channel]
 	if !ok {
@@ -87,7 +103,7 @@ func (m *Manager) deliver(ctx context.Context, msg bus.OutboundMessage) {
 		return
 	}
 	for _, chunk := range SplitMessage(msg.Content, ch.MaxMessageLength()) {
-		part := bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: chunk}
+		part := bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: chunk, Interim: msg.Interim}
 		var err error
 		for attempt := 0; attempt < 3; attempt++ {
 			if err = ch.Send(ctx, part); err == nil {

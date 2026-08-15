@@ -20,6 +20,10 @@ type OutboundMessage struct {
 	Channel string
 	ChatID  string
 	Content string
+	// Interim marks a note sent while a turn is still running — what the
+	// agent is about to do, not its answer. Connectors whose delivery is
+	// expensive or interruptive (a phone call) drop these.
+	Interim bool
 }
 
 // SessionKey identifies the conversation a message belongs to.

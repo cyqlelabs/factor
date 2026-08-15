@@ -96,9 +96,13 @@ func Run(configPath string) error {
 	manager.Start(ctx)
 
 	// Let the chat show that a turn is running: every phase but the last is
-	// still work in progress.
+	// still work in progress, and what the agent says on its way to an answer
+	// is sent as it happens rather than held until the turn ends.
 	a.Loop.OnActivity(func(act agent.Activity) {
 		manager.SetTyping(act.SessionKey, act.Phase != agent.PhaseDone)
+		if act.Phase == agent.PhaseNotice {
+			manager.Interim(act.SessionKey, act.Detail)
+		}
 	})
 
 	go a.Cron.Run(ctx)

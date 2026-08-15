@@ -187,6 +187,11 @@ func (p *Phone) Down() string  { return p.shell.Down() }
 // agent wants to say when the user is not on the line. How it arrives is the
 // user's choice: a text (default), a phone call, or nothing at all.
 func (p *Phone) Send(ctx context.Context, msg bus.OutboundMessage) error {
+	// "Let me look that up" is worth a chat bubble, never a text message or a
+	// second call: on this channel the answer alone is worth reaching for.
+	if msg.Interim {
+		return nil
+	}
 	to := p.destination(msg.ChatID)
 	if !p.cfg.outboundAllowed(to) {
 		slog.Warn("refusing to reach a number outside the outbound allowlist", "to", to)

@@ -300,6 +300,14 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 			continue
 		}
 
+		// Text alongside tool calls is the agent saying what it is about to
+		// do. It reaches the user now, while the tools run, instead of after
+		// the whole turn — on a chat channel that is the difference between a
+		// silent minute and a conversation.
+		if notice := strings.TrimSpace(resp.Content); notice != "" && !in.ephemeral {
+			l.emit(in.sessionKey, PhaseNotice, notice)
+		}
+
 		for _, call := range resp.ToolCalls {
 			l.emit(in.sessionKey, PhaseTool, call.Name)
 			result := l.registry.Execute(ctx, call.Name, call.Args)

@@ -67,6 +67,74 @@ func TestActivityReportsEveryPhaseOfAToolTurn(t *testing.T) {
 	}
 }
 
+// preamble is a tool call the agent introduces first, the way it is asked to.
+func preamble(text, name string, args map[string]any) func(*provider.Request) (*provider.Response, error) {
+	return func(*provider.Request) (*provider.Response, error) {
+		return &provider.Response{
+			Content:   text,
+			ToolCalls: []provider.ToolCall{{ID: "tc1", Name: name, Args: args}},
+		}, nil
+	}
+}
+
+func TestActivityNoticesWhatTheAgentSaysBeforeItsTools(t *testing.T) {
+	h := newHarness(t,
+		preamble("  Checking the probe.  ", "probe", map[string]any{"value": "abc"}),
+		final("done"),
+	)
+	seen := collect(t, h)
+
+	if _, err := h.loop.ProcessDirect(context.Background(), "go", "cli:test"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := phases(*seen)
+	if !equalPhases(got, PhaseContext, PhaseThinking, PhaseNotice, PhaseTool, PhaseThinking, PhaseDone) {
+		t.Fatalf("phases = %v, want the notice ahead of the tool", got)
+	}
+	for _, act := range *seen {
+		if act.Phase == PhaseNotice && act.Detail != "Checking the probe." {
+			t.Errorf("notice detail = %q, want the trimmed line", act.Detail)
+		}
+	}
+}
+
+func TestActivitySaysNothingForAToolCallWithoutAPreamble(t *testing.T) {
+	h := newHarness(t,
+		toolCall("probe", map[string]any{"value": "abc"}),
+		final("done"),
+	)
+	seen := collect(t, h)
+
+	if _, err := h.loop.ProcessDirect(context.Background(), "go", "cli:test"); err != nil {
+		t.Fatal(err)
+	}
+	for _, act := range *seen {
+		if act.Phase == PhaseNotice {
+			t.Errorf("notice %q emitted for a silent tool call", act.Detail)
+		}
+	}
+}
+
+// A heartbeat has nobody waiting on it, so its thinking-out-loud must not
+// reach a chat.
+func TestActivitySendsNoNoticesFromAnEphemeralTurn(t *testing.T) {
+	h := newHarness(t,
+		preamble("Let me look around.", "probe", map[string]any{"value": "abc"}),
+		final("all quiet"),
+	)
+	seen := collect(t, h)
+
+	if _, err := h.loop.ProcessEphemeral(context.Background(), "check in"); err != nil {
+		t.Fatal(err)
+	}
+	for _, act := range *seen {
+		if act.Phase == PhaseNotice {
+			t.Errorf("notice %q emitted from a heartbeat turn", act.Detail)
+		}
+	}
+}
+
 func TestActivityReportsDoneWhenATurnFails(t *testing.T) {
 	h := newHarness(t, func(*provider.Request) (*provider.Response, error) {
 		return nil, context.DeadlineExceeded
