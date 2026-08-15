@@ -280,23 +280,30 @@ def build_tts():
 def build_llm():
     """Factor itself, reached over loopback.
 
-    session_id_header is how a request is tied back to its call: Patter stamps
-    every chat completion with `patter-call-<call id>`, and the bridge resolves
-    that to the person on the line from the call-started event."""
-    from getpatter import CustomLLM
+    This release's OpenAI adapter stamps no per-request header, so a turn
+    arrives at the bridge untagged and is matched to the call that is up — the
+    single-live-call path the bridge already keeps for exactly this. The
+    spoken filler for a long turn goes the same way: the adapter has nowhere
+    to put it, so a tool-using turn rides on Patter's own turn-taking."""
+    from getpatter import OpenAILLM
 
-    return build(
-        CustomLLM,
-        base_url=BRIDGE_URL + "/v1",
-        model="factor",
-        api_key=BRIDGE_TOKEN,
-        timeout=120.0,
-        session_id_header="X-Factor-Call-Id",
-        session_id_prefix="patter-call-",
-        # Factor's turns are not streamed, so the filler is the difference
-        # between "thinking" and a line that has gone dead.
-        long_turn_message=CFG.get("long_turn_message", ""),
-    )
+    # Patter's OpenAI provider builds its own client and takes no endpoint, so
+    # the bridge is bound onto the client afterwards. This is not optional
+    # politeness: an unbound client points at api.openai.com, which would send
+    # the caller's words to a third party under a key that is not one.
+    llm = build(OpenAILLM, api_key=BRIDGE_TOKEN, model="factor")
+    client = getattr(llm, "_client", None) or getattr(llm, "client", None)
+    if client is None or not hasattr(client, "base_url"):
+        die(
+            "this Patter release exposes no endpoint override on its OpenAI LLM adapter, so "
+            "the agent cannot be reached over loopback. The phone channel cannot run safely "
+            "against it — pin the release Factor was built for."
+        )
+    client.base_url = BRIDGE_URL + "/v1"
+    if not str(client.base_url).startswith(BRIDGE_URL):
+        die(f"the LLM adapter kept {client.base_url} instead of the bridge at {BRIDGE_URL}")
+    log("bridge wired", base_url=str(client.base_url))
+    return llm
 
 
 # ------------------------------------------------------------------ call state
