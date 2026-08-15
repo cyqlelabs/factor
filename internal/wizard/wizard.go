@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cyqlelabs/factor/internal/browser"
 	"github.com/cyqlelabs/factor/internal/channel/phone"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/desktop"
@@ -47,6 +48,12 @@ type Options struct {
 	// homework, so the wizard does this rather than telling the user to.
 	InstallSpeech func(ctx context.Context, language string, needSTT, needTTS bool,
 		progress phone.Progress) (phone.SpeechChoices, error)
+
+	// EnsureBrowser puts a browser on the machine, and VerifyBrowser proves
+	// the configured one really drives. Same reasoning as speech: enabling
+	// the browser tools is a request to browse, not a request for homework.
+	EnsureBrowser func(ctx context.Context, progress browser.Progress) (path string, installed bool, err error)
+	VerifyBrowser func(ctx context.Context, cfg config.BrowserConfig) error
 }
 
 func (o *Options) defaults() {
@@ -73,6 +80,14 @@ func (o *Options) defaults() {
 			return phone.InstallSpeech(ctx, o.Home, language, phone.SpeechConfig{}, needSTT, needTTS, progress)
 		}
 	}
+	if o.EnsureBrowser == nil {
+		o.EnsureBrowser = func(ctx context.Context, progress browser.Progress) (string, bool, error) {
+			return browser.EnsureEngine(ctx, o.Home, progress)
+		}
+	}
+	if o.VerifyBrowser == nil {
+		o.VerifyBrowser = browser.Verify
+	}
 	if o.InstallPackages == nil {
 		o.InstallPackages = func(ctx context.Context, packages []string) (string, error) {
 			args := make([]any, 0, len(packages))
@@ -87,6 +102,10 @@ func (o *Options) defaults() {
 		}
 	}
 }
+
+// geteuid is a seam: the root check decides a config value, so tests need to
+// drive both sides of it without running as root.
+var geteuid = os.Geteuid
 
 const totalSteps = 5
 
@@ -162,10 +181,33 @@ func (w *wiz) runQuiet(ctx context.Context) error {
 			w.ui.printf("smrti:     found at %s\n", path)
 		}
 	}
+	if w.cfg.Browser.Enabled && !w.opts.NoInstall {
+		if err := w.quietBrowser(ctx); err != nil {
+			return err
+		}
+	}
 	if w.cfg.Provider.APIKey == "" && os.Getenv("FACTOR_PROVIDER_API_KEY") == "" {
 		w.ui.printf("provider:  no API key — export FACTOR_PROVIDER_API_KEY or run `factor init` interactively\n")
 	}
 	return nil
+}
+
+// quietBrowser gives the scriptable path the same browser the interactive one
+// gets: an unattended install is exactly where nobody is watching to fix it.
+func (w *wiz) quietBrowser(ctx context.Context) error {
+	if geteuid() == 0 {
+		w.cfg.Browser.NoSandbox = true
+	}
+	path, _, err := w.opts.EnsureBrowser(ctx, func(format string, args ...any) {
+		w.ui.printf("browser:   %s\n", fmt.Sprintf(format, args...))
+	})
+	if err != nil {
+		w.ui.printf("browser:   NOT installed — %v\n", err)
+		return nil
+	}
+	w.cfg.Browser.Command = path
+	w.ui.printf("browser:   %s\n", path)
+	return w.cfg.Save()
 }
 
 // ---- step 1: provider ------------------------------------------------------
@@ -1039,13 +1081,80 @@ func (w *wiz) stepDesktop(ctx context.Context) error {
 		w.ui.Warn("file tools can now read and write anywhere your user can")
 	}
 
-	browserDefault := w.cfg.Browser.Enabled
-	browser, err := w.ui.Confirm("Enable the browser tools (real Chrome/Chromium via DevTools)?", browserDefault)
+	return w.setupBrowser(ctx, env)
+}
+
+// setupBrowser leaves the machine with a browser the agent can actually
+// drive. Asking "enable the browser tools?" and taking yes for an answer was
+// how users ended up with the tools registered and no browser to register
+// them against — the question is now the start of the work, not all of it.
+func (w *wiz) setupBrowser(ctx context.Context, env desktop.Env) error {
+	enable, err := w.ui.Confirm("Enable the browser tools (a real browser the agent drives over DevTools)?", w.cfg.Browser.Enabled)
 	if err != nil {
 		return err
 	}
-	w.cfg.Browser.Enabled = browser
+	w.cfg.Browser.Enabled = enable
+	if !enable {
+		return nil
+	}
+
+	// Chrome refuses to start as root without --no-sandbox: not something
+	// anyone should have to learn from a failed tool call. The other way a
+	// working browser still fails to start — no display — depends on what
+	// launches Factor later, so the browser decides that one itself.
+	if geteuid() == 0 {
+		w.cfg.Browser.NoSandbox = true
+	}
+	if !desktop.HasDisplay(env) {
+		w.ui.Note("no display here — the browser runs headless unless whatever starts Factor has one")
+	}
+
+	path, err := browser.FindBrowserBinary(w.cfg.Browser.Command)
+	if err != nil {
+		if path, err = w.provisionBrowser(ctx); err != nil {
+			return err
+		}
+		if path == "" {
+			return nil
+		}
+	}
+	w.cfg.Browser.Command = path
+	w.ui.Success("browser: %s", path)
+
+	if err := w.ui.Task("loading a test page", func() error {
+		return w.opts.VerifyBrowser(ctx, w.cfg.Browser)
+	}); err != nil {
+		w.ui.Note("the browser is configured but did not finish a page here; `factor status` will retry")
+	}
 	return nil
+}
+
+// provisionBrowser installs one, returning "" when the machine is left
+// without a browser for a reason the user already heard about.
+func (w *wiz) provisionBrowser(ctx context.Context) (string, error) {
+	w.ui.Warn("no browser found — the agent cannot browse without one")
+	if w.opts.NoInstall {
+		return "", nil
+	}
+	install, err := w.ui.Confirm("Install Helium (privacy-patched Chromium, ~125 MB, no root needed)?", true)
+	if err != nil {
+		return "", err
+	}
+	if !install {
+		w.ui.Note("the tools stay on and will pick up a browser as soon as one is installed")
+		return "", nil
+	}
+	progress := w.ui.Progress()
+	var path string
+	if err := w.ui.Task("installing Helium", func() error {
+		p, _, err := w.opts.EnsureBrowser(ctx, progress)
+		path = p
+		return err
+	}); err != nil {
+		w.ui.Note("install Chrome, Chromium, or Helium (https://helium.computer) and re-run factor init")
+		return "", nil
+	}
+	return path, nil
 }
 
 func (w *wiz) installDesktopHelpers(ctx context.Context, env desktop.Env, ctl desktop.Controller) error {

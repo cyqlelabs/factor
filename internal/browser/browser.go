@@ -3,8 +3,10 @@
 // Package browser gives the agent a real browser via the Chrome DevTools
 // Protocol (chromedp): it attaches to the user's running Chrome/Chromium/
 // Brave when a DevTools port is open, otherwise launches a managed instance
-// — visible by default, so the user can watch the agent work. Build with
-// -tags nobrowser to strip the whole suite from the binary.
+// — visible by default, so the user can watch the agent work. When the
+// machine has no Chromium-family browser at all, `factor init` provisions one
+// (see install.go). Build with -tags nobrowser to strip the whole suite from
+// the binary.
 package browser
 
 import (
@@ -15,10 +17,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 
 	"github.com/cyqlelabs/factor/internal/config"
@@ -41,9 +45,11 @@ func NewSession(cfg config.BrowserConfig, workspace string) *Session {
 	return &Session{cfg: cfg, workspace: workspace, refs: map[string]string{}}
 }
 
-var chromeCandidates = []string{"chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser", "chrome"}
+var chromeCandidates = []string{"helium", "chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser", "microsoft-edge", "chrome"}
 
-// FindBrowserBinary locates a Chromium-family binary.
+// FindBrowserBinary locates a Chromium-family binary: first on PATH, then in
+// the fixed locations PATH never covers — where macOS and Windows keep their
+// browsers, and where Factor installs the one it provisions itself.
 func FindBrowserBinary(configured string) (string, error) {
 	if configured != "" {
 		return exec.LookPath(configured)
@@ -53,7 +59,67 @@ func FindBrowserBinary(configured string) (string, error) {
 			return path, nil
 		}
 	}
+	for _, path := range wellKnownBrowsers() {
+		if executable(path) {
+			return path, nil
+		}
+	}
 	return "", fmt.Errorf("no Chromium-family browser found (looked for %s)", strings.Join(chromeCandidates, ", "))
+}
+
+// frugalFlags cut what a browser does when nobody is looking at it. Factor
+// drives one tab on machines with a couple of slow cores and a few gigabytes
+// of RAM, so background networking, component updates, sync and the media
+// router are pure overhead. --disable-dev-shm-usage matters most of all on
+// the small distributions: their /dev/shm is tiny, and a renderer that fills
+// it dies mid-page.
+var frugalFlags = []chromedp.ExecAllocatorOption{
+	chromedp.Flag("disable-background-networking", true),
+	chromedp.Flag("disable-component-update", true),
+	chromedp.Flag("disable-default-apps", true),
+	chromedp.Flag("disable-sync", true),
+	chromedp.Flag("disable-dev-shm-usage", true),
+	chromedp.Flag("metrics-recording-only", true),
+	chromedp.Flag("no-pings", true),
+	chromedp.Flag("disable-features", "Translate,MediaRouter,OptimizationHints,InterestFeedContentSuggestions"),
+	chromedp.Flag("renderer-process-limit", "2"),
+}
+
+// stealthJS runs before any page script and removes the tells that mark a
+// browser as driven: navigator.webdriver, the empty plugin list a headless
+// profile reports, the missing window.chrome object, and a Notification
+// permission that answers "prompt" while the page is not focused.
+//
+// This is the client-side half of staying unremarkable. The other half — that
+// attaching a CDP client calls Runtime.enable, which detectors watch for — is
+// not fixable from here without patching chromedp itself.
+const stealthJS = `
+delete Object.getPrototypeOf(navigator).webdriver;
+if (!window.chrome) { window.chrome = { runtime: {} }; }
+if (navigator.plugins.length === 0) {
+  Object.defineProperty(navigator, 'plugins', {
+    get: () => [1, 2, 3].map(i => ({ name: 'Chromium PDF Plugin ' + i })),
+  });
+}
+const query = navigator.permissions.query.bind(navigator.permissions);
+navigator.permissions.query = (p) =>
+  p && p.name === 'notifications'
+    ? Promise.resolve({ state: Notification.permission, name: p.name, onchange: null })
+    : query(p);
+`
+
+// displayAvailable reports whether this process could open a window at all.
+// A visible browser is the default — watching the agent work is half the
+// point — but a gateway started from an ssh shell or a service manager has no
+// display to open one on, and a headful Chrome there does not degrade
+// gracefully: it refuses to start. Deciding this at launch rather than at
+// setup also means `factor init` over ssh does not condemn a desktop machine
+// to headless browsing forever.
+func displayAvailable() bool {
+	if runtime.GOOS != "linux" {
+		return true
+	}
+	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
 }
 
 func devtoolsAlive(url string) bool {
@@ -95,12 +161,13 @@ func (s *Session) ensure() (context.Context, error) {
 			chromedp.NoDefaultBrowserCheck,
 			chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		}
+		opts = append(opts, frugalFlags...)
 		if s.cfg.UserDataDir != "" {
 			if err := os.MkdirAll(s.cfg.UserDataDir, 0o755); err == nil {
 				opts = append(opts, chromedp.UserDataDir(s.cfg.UserDataDir))
 			}
 		}
-		if s.cfg.Headless {
+		if s.cfg.Headless || !displayAvailable() {
 			opts = append(opts, chromedp.Headless, chromedp.Flag("disable-gpu", true))
 		}
 		// Chrome refuses to start as root, and distros that restrict
@@ -125,7 +192,12 @@ func (s *Session) ensure() (context.Context, error) {
 	// lifetime binds to the context of that first call, so a timeout
 	// wrapper here would kill the browser the moment it fired/cancelled.
 	done := make(chan error, 1)
-	go func() { done <- chromedp.Run(s.tabCtx) }()
+	go func() {
+		done <- chromedp.Run(s.tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(stealthJS).Do(ctx)
+			return err
+		}))
+	}()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -266,6 +338,25 @@ func formatRead(r *pageRead) string {
 		fmt.Fprintf(&b, "  %s <%s> %q\n", el.Ref, kind, el.Label)
 	}
 	return b.String()
+}
+
+// Verify launches the configured browser and drives one round-trip through
+// it, so `factor init` can report a browser that actually works rather than
+// one that merely exists on disk. Every other wizard step checks itself the
+// same way.
+func Verify(ctx context.Context, cfg config.BrowserConfig) error {
+	s := NewSession(cfg, "")
+	defer s.Close()
+	var state string
+	if err := s.run(ctx, 90*time.Second,
+		chromedp.Navigate("about:blank"),
+		chromedp.Evaluate(`document.readyState`, &state)); err != nil {
+		return err
+	}
+	if state != "complete" {
+		return fmt.Errorf("the browser started but never finished a page (readyState %q)", state)
+	}
+	return nil
 }
 
 // NewTools returns the browser tool suite sharing one session.
