@@ -340,6 +340,9 @@ func formatRead(r *pageRead) string {
 	return b.String()
 }
 
+// Available reports whether this build carries the browser suite at all.
+func Available() bool { return true }
+
 // Verify launches the configured browser and drives one round-trip through
 // it, so `factor init` can report a browser that actually works rather than
 // one that merely exists on disk. Every other wizard step checks itself the

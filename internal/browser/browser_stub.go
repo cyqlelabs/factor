@@ -21,6 +21,8 @@ type Progress func(format string, args ...any)
 
 var errStripped = errors.New("this build was made with -tags nobrowser: the browser suite is not included")
 
+func Available() bool { return false }
+
 func FindBrowserBinary(string) (string, error) { return "", errStripped }
 
 func Verify(context.Context, config.BrowserConfig) error { return errStripped }
