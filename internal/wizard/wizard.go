@@ -1202,7 +1202,7 @@ func (w *wiz) setupBrowser(ctx context.Context, env desktop.Env) error {
 	if err := w.ui.Task("loading a test page", func() error {
 		return w.opts.VerifyBrowser(ctx, w.cfg.Browser)
 	}); err != nil {
-		w.ui.Note("the browser is configured but did not finish a page here; `factor status` will retry")
+		w.ui.Note("the browser is configured but did not finish a page here; the tools will try again on their first call")
 	}
 	return w.setupFastBrowser(ctx)
 }
