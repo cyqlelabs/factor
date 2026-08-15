@@ -134,7 +134,10 @@ func TestPkgInstallAsRootSkipsSudo(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("res = %+v", res)
 	}
-	if captured[0][0] != "pkg" {
+	// Puppy's `pkg install` only unpacks an already-downloaded file, and it
+	// reads a trailing flag as a package name — so both the verb and the
+	// order are load-bearing.
+	if strings.Join(captured[0], " ") != "pkg -f get nano" {
 		t.Errorf("root install argv = %v", captured[0])
 	}
 }
