@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cyqlelabs/factor/internal/channel/phone"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/memory"
@@ -40,6 +41,12 @@ type Options struct {
 	EnsureSmrti     func(ctx context.Context, cfg config.MemoryConfig, progress memory.Progress) (path string, installed bool, err error)
 	InstallPackages func(ctx context.Context, packages []string) (string, error)
 	Desktop         desktop.Env
+
+	// InstallSpeech puts the local speech engines and their models on the
+	// machine. Choosing a local tier is a request for local speech, not for
+	// homework, so the wizard does this rather than telling the user to.
+	InstallSpeech func(ctx context.Context, language string, needSTT, needTTS bool,
+		progress phone.Progress) (phone.SpeechChoices, error)
 }
 
 func (o *Options) defaults() {
@@ -58,6 +65,12 @@ func (o *Options) defaults() {
 	if o.EnsureSmrti == nil {
 		o.EnsureSmrti = func(ctx context.Context, cfg config.MemoryConfig, progress memory.Progress) (string, bool, error) {
 			return memory.EnsureSmrti(ctx, cfg.Command, o.Home, true, progress)
+		}
+	}
+	if o.InstallSpeech == nil {
+		o.InstallSpeech = func(ctx context.Context, language string, needSTT, needTTS bool,
+			progress phone.Progress) (phone.SpeechChoices, error) {
+			return phone.InstallSpeech(ctx, o.Home, language, phone.SpeechConfig{}, needSTT, needTTS, progress)
 		}
 	}
 	if o.InstallPackages == nil {
@@ -675,6 +688,18 @@ type phoneSection struct {
 	STTAPIKey        string       `json:"stt_api_key,omitempty"`
 	TTS              audioSection `json:"tts,omitempty"`
 	Proactive        string       `json:"proactive,omitempty"`
+
+	// SpeechServer records what the installer chose for this machine and
+	// language. It is a pointer so a cloud tier writes no section at all.
+	SpeechServer *speechSection `json:"speech_server,omitempty"`
+}
+
+// speechSection mirrors channels.phone.speech_server.
+type speechSection struct {
+	WhisperModel   string `json:"whisper_model,omitempty"`
+	WhisperDevice  string `json:"whisper_device,omitempty"`
+	WhisperCompute string `json:"whisper_compute,omitempty"`
+	PiperVoice     string `json:"piper_voice,omitempty"`
 }
 
 func phoneConfig(cfg *config.Config) phoneSection {
@@ -690,9 +715,17 @@ func phoneConfig(cfg *config.Config) phoneSection {
 // machine free, and the local tiers trade RAM for privacy and per-minute cost.
 var voiceTiers = []Option{
 	{Label: "Cloud speech (recommended)", Hint: "lowest latency, most reliable, runs on any machine · ~$0.03/min"},
-	{Label: "Local speech-to-text", Hint: "transcription never leaves the machine · needs ≥8 GB RAM + a local server"},
-	{Label: "Local text-to-speech", Hint: "fastest first audio on a decent CPU · needs a local server"},
-	{Label: "Fully local audio", Hint: "no audio leaves the machine, no per-minute audio cost · needs ≥8 GB RAM"},
+	{Label: "Local speech-to-text", Hint: "transcription never leaves the machine · installs ~700 MB"},
+	{Label: "Local text-to-speech", Hint: "fastest first audio on a decent CPU · installs ~600 MB"},
+	{Label: "Fully local audio", Hint: "no audio leaves the machine, no per-minute audio cost · installs ~700 MB"},
+}
+
+// Where the local tiers run. Factor's own server is the default because it is
+// the one that needs nothing from the user; the escape hatch is for a machine
+// that already has Speaches or the like answering.
+var speechHosts = []Option{
+	{Label: "Let Factor install it (recommended)", Hint: "downloads the engines and the models for your language, once"},
+	{Label: "I already run a speech server", Hint: "any OpenAI-compatible endpoint — Speaches, whisper-server, …"},
 }
 
 const defaultSpeechServer = "http://127.0.0.1:8000/v1"
@@ -790,31 +823,8 @@ func (w *wiz) askVoiceTier(ctx context.Context, section *phoneSection, existing 
 	localTTS := idx == 2 || idx == 3
 
 	if localSTT || localTTS {
-		w.ui.Note("run an OpenAI-compatible speech server (Speaches wraps faster-whisper and Piper/Kokoro)")
-		base, err := w.ui.Input("Local speech server base URL",
-			firstNonEmpty(existing.STT.BaseURL, existing.TTS.BaseURL, defaultSpeechServer))
-		if err != nil {
+		if err := w.setUpLocalSpeech(ctx, section, existing, localSTT, localTTS); err != nil {
 			return err
-		}
-		base = strings.TrimSpace(base)
-		if err := w.ui.Task("checking the local speech server", func() error {
-			return CheckSpeechServer(ctx, w.opts.HTTP, base)
-		}); err != nil {
-			w.ui.Note("start it before the first call — Factor falls back to the cloud tier until it answers")
-		}
-		if localSTT {
-			model, err := w.ui.Input("Speech-to-text model (blank = the server's default)", existing.STT.Model)
-			if err != nil {
-				return err
-			}
-			section.STT = audioSection{Provider: "local-openai", BaseURL: base, Model: strings.TrimSpace(model)}
-		}
-		if localTTS {
-			voice, err := w.ui.Input("Voice (blank = the server's default)", existing.TTS.Voice)
-			if err != nil {
-				return err
-			}
-			section.TTS = audioSection{Provider: "local-openai", BaseURL: base, Voice: strings.TrimSpace(voice)}
 		}
 	}
 
@@ -858,6 +868,105 @@ func (w *wiz) askVoiceTier(ctx context.Context, section *phoneSection, existing 
 		}
 	}
 	return nil
+}
+
+// setUpLocalSpeech gets the local half of the pipeline actually working before
+// the wizard moves on: the engines installed, the models for this language on
+// disk, and the endpoints pointed at whatever will serve them. The one thing
+// it will not do is leave the user with a config that only works once they go
+// and start something themselves.
+func (w *wiz) setUpLocalSpeech(ctx context.Context, section *phoneSection, existing phoneSection,
+	localSTT, localTTS bool) error {
+
+	byo := existing.STT.BaseURL != "" || existing.TTS.BaseURL != ""
+	host, err := w.ui.Select("Where should local speech run?", speechHosts, boolIndex(byo))
+	if err != nil {
+		return err
+	}
+
+	if host == 0 {
+		return w.installLocalSpeech(ctx, section, localSTT, localTTS)
+	}
+
+	base, err := w.ui.Input("Local speech server base URL",
+		firstNonEmpty(existing.STT.BaseURL, existing.TTS.BaseURL, defaultSpeechServer))
+	if err != nil {
+		return err
+	}
+	base = strings.TrimSpace(base)
+	if err := w.ui.Task("checking the local speech server", func() error {
+		return CheckSpeechServer(ctx, w.opts.HTTP, base)
+	}); err != nil {
+		w.ui.Note("start it before the first call — Factor falls back to the cloud tier until it answers")
+	}
+	if localSTT {
+		model, err := w.ui.Input("Speech-to-text model (blank = the server's default)", existing.STT.Model)
+		if err != nil {
+			return err
+		}
+		section.STT = audioSection{Provider: "local-openai", BaseURL: base, Model: strings.TrimSpace(model)}
+	}
+	if localTTS {
+		voice, err := w.ui.Input("Voice (blank = the server's default)", existing.TTS.Voice)
+		if err != nil {
+			return err
+		}
+		section.TTS = audioSection{Provider: "local-openai", BaseURL: base, Voice: strings.TrimSpace(voice)}
+	}
+	return nil
+}
+
+// installLocalSpeech puts the engines and the models on the machine and
+// records what the installer picked, so the first call finds the weights
+// already there and the choices already made.
+func (w *wiz) installLocalSpeech(ctx context.Context, section *phoneSection, localSTT, localTTS bool) error {
+	// The endpoints stay blank on purpose: that is what marks the server as
+	// Factor's own, and it lets the port move later without rewriting them.
+	if localSTT {
+		section.STT = audioSection{Provider: "local-openai"}
+	}
+	if localTTS {
+		section.TTS = audioSection{Provider: "local-openai"}
+	}
+
+	w.ui.Note("Factor installs the speech engines into their own virtualenv and downloads the models for %q",
+		section.Language)
+	if w.opts.NoInstall {
+		w.ui.Note("skipping the download; Factor installs it on the first start instead")
+		return nil
+	}
+
+	var choices phone.SpeechChoices
+	err := w.ui.Task("installing local speech (this takes a few minutes the first time)", func() error {
+		var installErr error
+		choices, installErr = w.opts.InstallSpeech(ctx, section.Language, localSTT, localTTS, w.ui.Progress())
+		return installErr
+	})
+	if err != nil {
+		// A failed install is not a failed setup: the config is already
+		// correct, and the gateway retries the install when it starts.
+		w.ui.Warn("the local speech install did not finish — Factor will try again when the gateway starts")
+		return nil
+	}
+
+	section.SpeechServer = &speechSection{
+		WhisperModel:   choices.WhisperModel,
+		WhisperDevice:  choices.WhisperDevice,
+		WhisperCompute: choices.WhisperCompute,
+		PiperVoice:     choices.PiperVoice,
+	}
+	w.ui.Success("local speech ready — %s", choices.Summary())
+	if choices.Warning != "" {
+		w.ui.Warn("%s", choices.Warning)
+	}
+	return nil
+}
+
+func boolIndex(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // tierIndex maps an existing section back onto the tier menu.

@@ -28,6 +28,13 @@ func TestMain(m *testing.M) {
 	case "hang":
 		select {} // never becomes healthy: exercises the unhealthy path
 	}
+	switch os.Getenv("FACTOR_TEST_SPEECH_MODE") {
+	case "serve":
+		fakeSpeechServer()
+		os.Exit(0)
+	case "exit":
+		os.Exit(3)
+	}
 	os.Exit(m.Run())
 }
 

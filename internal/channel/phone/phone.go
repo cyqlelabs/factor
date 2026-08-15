@@ -38,7 +38,12 @@ type Phone struct {
 	token  string
 	bridge *bridge
 	shell  *supervisor
+	speech *speechSupervisor // nil unless a local tier runs on Factor's own server
 	twilio *twilioClient
+
+	// speechWait is how long the voice shell holds for the speech server to
+	// load its models before giving up and letting the tier fall back.
+	speechWait time.Duration
 
 	cancel context.CancelFunc
 
@@ -57,14 +62,19 @@ func New(cfg Config, b *bus.MessageBus) (*Phone, error) {
 		publish = b.PublishInbound
 	}
 	p := &Phone{
-		cfg:       cfg,
-		home:      config.Home(),
-		token:     newBridgeToken(),
-		twilio:    newTwilioClient(cfg),
-		effective: cfg,
+		cfg:        cfg,
+		home:       config.Home(),
+		token:      newBridgeToken(),
+		twilio:     newTwilioClient(cfg),
+		effective:  cfg,
+		speechWait: speechReadyTimeout,
 	}
 	p.bridge = newBridge(p.token, cfg.inboundAllowed, publish)
 	p.shell = newSupervisor(cfg, p.home, p.token, p.shellConfig)
+	if cfg.managedSpeech() {
+		p.speech = newSpeechSupervisor(cfg.SpeechServer, p.home, cfg.Language, p.token,
+			cfg.localSTT(), cfg.localTTS())
+	}
 
 	if cfg.allowAnyCaller() {
 		slog.Warn("SECURITY: channels.phone.allow_from is \"*\" — anyone who dials this number reaches this agent; list the numbers instead")
@@ -109,6 +119,12 @@ func (p *Phone) Start(ctx context.Context) error {
 		return err
 	}
 	p.bridge.serve()
+	// The speech server goes up first: the voice shell probes it as it starts,
+	// and a probe that arrives before the models have loaded would read as an
+	// unreachable server and quietly demote the call to the cloud tier.
+	if p.speech != nil {
+		p.speech.start(ctx)
+	}
 	p.shell.start(ctx)
 	slog.Info("phone channel ready",
 		"number", p.cfg.PhoneNumber, "tier", p.cfg.TierLabel(),
@@ -121,6 +137,9 @@ func (p *Phone) Stop() error {
 		p.cancel()
 	}
 	p.shell.stop()
+	if p.speech != nil {
+		p.speech.stop()
+	}
 	p.bridge.shutdown()
 	return nil
 }
@@ -129,6 +148,17 @@ func (p *Phone) Stop() error {
 // local speech servers each time: one that was down at boot and has since come
 // up is picked up on the next restart, with no config change.
 func (p *Phone) shellConfig() (shellConfig, error) {
+	// Loading a transcription model takes tens of seconds, so give Factor's own
+	// speech server that long to answer before deciding the local tier is
+	// unreachable. This runs on the shell supervisor's goroutine, which has
+	// nothing else to do until the speech it depends on is up.
+	if p.speech != nil {
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), p.speechWait)
+		if !p.speech.waitHealthy(waitCtx, p.speechWait) {
+			slog.Warn("the local speech server is not ready yet", "reason", p.speech.Down())
+		}
+		waitCancel()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	effective, err := resolveAudioTier(ctx, p.cfg)

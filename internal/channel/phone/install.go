@@ -46,7 +46,14 @@ const (
 var (
 	lookPath = exec.LookPath
 	runCmd   = func(ctx context.Context, argv []string) (string, error) {
+		return runCmdEnv(ctx, argv, nil)
+	}
+	// runCmdEnv is the same, with an environment — the speech installer takes
+	// its configuration the way every other child does, through the env, so no
+	// secret is visible in argv.
+	runCmdEnv = func(ctx context.Context, argv []string, env []string) (string, error) {
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		cmd.Env = env
 		cmd.WaitDelay = 5 * time.Second
 		out, err := cmd.CombinedOutput()
 		return string(out), err
@@ -200,14 +207,20 @@ func EnsurePatter(ctx context.Context, home string, autoInstall bool, progress P
 // Patter-facing surface in the whole channel, so keeping it on disk also makes
 // it inspectable when a call misbehaves.
 func WriteScript(path string) error {
-	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, voiceShellScript) {
+	return writeScript(path, voiceShellScript)
+}
+
+// writeScript materializes an embedded script, leaving an unchanged one alone
+// so an upgrade does not disturb a file a running child is reading.
+func writeScript(path string, content []byte) error {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, content) {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, voiceShellScript, 0o600); err != nil {
-		return fmt.Errorf("write voice shell script: %w", err)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
 	}
 	return nil
 }
