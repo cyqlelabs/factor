@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
 import inspect
 import json
 import os
@@ -164,13 +165,27 @@ def build(factory, **kwargs):
 # than by forking the SDK.
 _BASE_URL_ATTRS = ("base_url", "_base_url", "api_base", "_api_base", "endpoint", "_endpoint")
 
+# Where each adapter keeps its endpoint when it keeps it nowhere else: as of
+# getpatter 0.6.2 both REST speech adapters post to a module-level constant and
+# hold no endpoint on the instance at all, so the last resort is to rebind the
+# constant. The provider reads it out of module globals on every request, which
+# is what makes this work rather than merely typecheck.
+# The only transcription model name Patter's adapter accepts without argument.
+# It names the protocol, not the weights.
+_OPENAI_STT_MODEL = "whisper-1"
+
+_URL_CONSTANTS = {
+    "stt": ("getpatter.providers.whisper_stt", "OPENAI_TRANSCRIPTION_URL", "/audio/transcriptions"),
+    "tts": ("getpatter.providers.openai_tts", "OPENAI_TTS_URL", "/audio/speech"),
+}
+
 
 def build_local(factory, base_url: str, what: str, **kwargs):
     """Construct a speech provider aimed at a local OpenAI-compatible server.
 
-    The constructor is tried with base_url first, since a future Patter release
-    may well accept it; only a constructor that rejects the keyword outright
-    falls back to setting the attribute."""
+    Three strategies, weakest binding last: a constructor that accepts base_url
+    (which a future Patter release may well), an endpoint attribute on the
+    instance, and finally the module constant the adapter posts to."""
     try:
         return factory(base_url=base_url, **kwargs)
     except TypeError:
@@ -181,6 +196,17 @@ def build_local(factory, base_url: str, what: str, **kwargs):
             setattr(provider, attr, base_url)
             log("local audio server wired", stage=what, base_url=base_url, via=attr)
             return provider
+
+    module_name, constant, path = _URL_CONSTANTS[what]
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError:
+        module = None
+    if module is not None and hasattr(module, constant):
+        setattr(module, constant, base_url + path)
+        log("local audio server wired", stage=what, base_url=base_url, via=f"{module_name}.{constant}")
+        return provider
+
     die(
         f"this Patter release exposes no endpoint override on its {what} adapter, so the local "
         f"tier cannot be wired ({base_url}). Point channels.phone.{what}.provider at a cloud "
@@ -205,7 +231,18 @@ def build_stt():
             "language": stt.get("language"),
         }
         if provider == "local-openai":
-            return build_local(whisper.STT, stt["base_url"], "stt", **kwargs)
+            # Patter's adapter validates the model against OpenAI's own names
+            # and raises — not a TypeError, so build() would not catch it — for
+            # anything else, including None. A local server's model ids are its
+            # own (faster-whisper sizes, Hugging Face repos), so construct with
+            # a name the adapter accepts and put the real one back afterwards:
+            # it is read off the instance on every request.
+            wanted = kwargs.pop("model")
+            adapter = build_local(whisper.STT, stt["base_url"], "stt",
+                                  model=_OPENAI_STT_MODEL, **kwargs)
+            if wanted:
+                adapter.model = wanted
+            return adapter
         return build(whisper.STT, **kwargs)
     die(f"unknown stt provider {provider!r}")
 
@@ -224,14 +261,19 @@ def build_tts():
     if provider == "local-openai":
         from getpatter.tts import openai as openai_tts
 
-        # 8 kHz is the phone band: rendering above it only costs a resample.
-        return build_local(
+        adapter = build_local(
             openai_tts.TTS, tts["base_url"], "tts",
             api_key=tts.get("api_key") or "local",
             model=tts.get("model") or None,
             voice=tts.get("voice") or None,
-            target_sample_rate=8000,
         )
+        # 8 kHz is the phone band: rendering above it only costs a resample.
+        # Patter's documented constructor takes no sample rate — it is a
+        # keyword on the provider underneath — so it is set here, where the
+        # adapter reads it on every utterance anyway.
+        if getattr(adapter, "target_sample_rate", None) in (8000, 16000):
+            adapter.target_sample_rate = 8000
+        return adapter
     die(f"unknown tts provider {provider!r}")
 
 
