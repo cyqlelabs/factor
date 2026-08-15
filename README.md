@@ -174,33 +174,62 @@ loopback as an OpenAI-compatible endpoint that never leaves `127.0.0.1`.
 | **3 · local TTS** | Deepgram | Piper | +0.3 GB | Piper's ~100 ms render beats the cloud, on any CPU |
 | **4 · fully local** | faster-whisper | Piper | +1–2 GB | no audio leaves the machine, no per-minute audio cost |
 
-Pick a local tier and Factor installs it: the engines go into their own virtualenv
-and the models for your language are downloaded before setup finishes, so the first
-call finds everything already on disk. Nothing to install, no server to start, no
-model names to choose. `factor status` reports what it built.
+A tier picks who serves each half of the speech pipeline. Everything else is the same call:
 
-**Languages** — transcription covers everything Whisper does (~99 languages), and
-the voice comes from Piper's catalogue: **49 languages**, resolved from your
-`language` setting, preferring the exact locale (`es-MX` gets a Mexican voice, not a
-Castilian one) and falling back to the language at large. Spanish is first-class on
-every tier.
+```mermaid
+flowchart LR
+    SHELL["voice shell · Patter"] -->|hears with| STT{{speech-to-text}}
+    SHELL -->|speaks with| TTS{{text-to-speech}}
+    subgraph LOCAL ["Factor's own speech server · 127.0.0.1"]
+        WH["faster-whisper"]
+        PI[Piper]
+    end
+    subgraph CLOUD [audio leaves the machine]
+        DG[Deepgram]
+        EL[ElevenLabs]
+    end
+    STT -.->|tiers 2, 4| WH
+    TTS -.->|tiers 3, 4| PI
+    STT -.->|tiers 1, 3| DG
+    TTS -.->|tiers 1, 2| EL
+```
 
-**A note on hardware.** Whisper decodes a fixed 30-second window however little
-audio it is handed, and the phone pipeline hands it about a second at a time — so
-cost is per chunk, not per second of speech. Measured here: `small` takes ~2.4 s per
-chunk on a CPU (it falls behind, and the backlog grows for as long as you keep
-talking) versus ~0.14 s on CUDA. So local transcription picks `small` on a GPU and
-drops to `base` on a CPU, which keeps up at ~0.9 s but mishears more — the wizard
-says so when it happens. Tier 3 is the better trade on a machine with no GPU: Piper
-renders in ~100 ms on any CPU, and transcription stays in the cloud.
+**Pick a local tier and Factor installs it.** The engines go into their own
+virtualenv and your language's models download before setup finishes — so the first
+call finds everything on disk. No server to start, no model names to choose.
+`factor status` reports what it built.
+
+**Languages.** Transcription covers everything Whisper does, about 99 languages.
+Voices come from Piper's catalogue: **49 languages**, resolved from your `language`
+setting. The exact locale wins where it exists — `es-MX` gets a Mexican voice, not a
+Castilian one — then the language at large. Spanish is first-class on every tier.
+
+<details>
+<summary><b>Why a GPU changes which tier to pick</b></summary>
+
+Whisper decodes a fixed 30-second window however little audio it gets, and the phone
+pipeline feeds it about a second at a time. Cost is therefore per chunk, not per
+second of speech. Measured on this design:
+
+| Model | Device | Per 1 s chunk | Verdict |
+|---|---|---|---|
+| `small` | CUDA | ~0.14 s | keeps up comfortably |
+| `base` | CPU | ~0.9 s | keeps up, mishears more |
+| `small` | CPU | ~2.4 s | falls behind; the backlog grows while you talk |
+
+So local transcription runs `small` on a GPU and drops to `base` on a CPU, and the
+wizard says so when it does. **On a machine with no GPU, tier 3 is the better
+trade**: Piper renders in ~100 ms on any CPU, and transcription stays in the cloud.
+
+</details>
 
 You can still point `stt.base_url` / `tts.base_url` at a speech server you run
-yourself — [Speaches](https://github.com/speaches-ai/speaches) and anything else
+yourself — [Speaches](https://github.com/speaches-ai/speaches), or anything else
 OpenAI-compatible — and Factor will leave it alone and use it. Either way it probes
-at startup: if the server is not answering, it falls back to the cloud tier and says
-so rather than failing calls (set `local_audio_fallback: false` to have the channel
-report itself down instead). Silero voice-activity detection runs locally in every
-tier.
+at startup. If the server is not answering, Factor falls back to the cloud tier and
+says so rather than failing calls; set `local_audio_fallback: false` to have the
+channel report itself down instead. Silero voice-activity detection runs locally in
+every tier.
 
 Roughly $0.04–0.06 per talk-minute on tier 1 plus your model's tokens, and about
 1.3¢ per SMS segment. Turns are not streamed yet, so a tool-using turn leans on the
