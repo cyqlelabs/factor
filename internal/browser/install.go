@@ -120,7 +120,7 @@ func installHelium(ctx context.Context, home string, progress Progress) (string,
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		return "", err
 	}
-	defer os.RemoveAll(staging)
+	defer func() { _ = os.RemoveAll(staging) }()
 
 	archive := filepath.Join(staging, asset.Name)
 	progress("downloading Helium %s (%d MB)", version, asset.Size>>20)
@@ -148,7 +148,7 @@ func installHelium(ctx context.Context, home string, progress Progress) (string,
 	binary := EngineBinary(home)
 	out, err := runCmd(ctx, []string{binary, "--version"})
 	if err != nil {
-		return "", fmt.Errorf("Helium was installed but will not run here: %v: %s", err, strings.TrimSpace(out))
+		return "", fmt.Errorf("the Helium just installed will not run here: %v: %s", err, strings.TrimSpace(out))
 	}
 	progress("installed %s", strings.TrimSpace(out))
 	return binary, nil
@@ -242,7 +242,7 @@ func EnsureFastEngine(ctx context.Context, home string, progress Progress) (stri
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		return "", false, err
 	}
-	defer os.RemoveAll(staging)
+	defer func() { _ = os.RemoveAll(staging) }()
 
 	tmp := filepath.Join(staging, asset.Name)
 	progress("downloading Lightpanda %s (%d MB)", version, asset.Size>>20)
@@ -260,8 +260,8 @@ func EnsureFastEngine(ctx context.Context, home string, progress Progress) (stri
 	}
 	out, err := runCmd(ctx, []string{binary, "version"})
 	if err != nil {
-		os.Remove(binary)
-		return "", false, fmt.Errorf("Lightpanda will not run here: %v: %s", err, firstLine(out))
+		_ = os.Remove(binary)
+		return "", false, fmt.Errorf("the Lightpanda build for this machine will not run: %v: %s", err, firstLine(out))
 	}
 	progress("installed Lightpanda %s", strings.TrimSpace(out))
 	return binary, true, nil
