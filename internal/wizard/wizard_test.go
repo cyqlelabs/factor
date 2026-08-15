@@ -1066,3 +1066,36 @@ func TestQuietRunLeavesAnExternalEngineAlone(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 }
+
+// A configured browser is a browser: the scriptable path must not pull down
+// a second one over it.
+func TestQuietRunKeepsTheConfiguredBrowser(t *testing.T) {
+	home := tempHome(t)
+	existing := fakeBrowserOnPath(t, home)
+	path := filepath.Join(home, "config.json")
+	cfg := fmt.Sprintf(`{"memory":{"mode":"off"},"browser":{"enabled":true,"command":%q}}`, existing)
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := Run(context.Background(), path, Options{
+		UI:             NewPlain(strings.NewReader(""), &out),
+		NonInteractive: true,
+		Home:           home,
+		EnsureBrowser: func(context.Context, browser.Progress) (string, bool, error) {
+			t.Error("downloaded a browser over the configured one")
+			return "", false, nil
+		},
+		MemoryAnswering: func(context.Context, config.MemoryConfig) bool { return false },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	saved, err := config.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Browser.Command != existing {
+		t.Errorf("command = %q, want the configured %q", saved.Browser.Command, existing)
+	}
+}
