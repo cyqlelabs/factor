@@ -1122,3 +1122,80 @@ func TestWizardDoesNotOfferAnEngineThisMachineCannotRun(t *testing.T) {
 		t.Errorf("the reason was not given:\n%s", h.out.String())
 	}
 }
+
+// Setting Factor up over ssh must still provision the desktop the box runs:
+// deciding from this session's environment is how xdotool never got installed
+// on a machine with a screen in front of it.
+func TestWizardSetsUpTheDesktopWhenOnlyTheSessionIsHeadless(t *testing.T) {
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "y", "y", "y", "n")
+	h.opts.Desktop = desktop.Env{
+		GOOS:   "linux",
+		Run:    func(context.Context, string, ...string) (string, error) { return "", nil },
+		Has:    func(string) bool { return false },
+		Getenv: func(string) string { return "" }, // ssh: no DISPLAY here
+		Glob: func(pattern string) ([]string, error) {
+			if pattern == "/tmp/.X11-unix/X*" {
+				return []string{"/tmp/.X11-unix/X0"}, nil
+			}
+			return nil, nil
+		},
+	}
+	var installed []string
+	h.opts.InstallPackages = func(_ context.Context, pkgs []string) (string, error) {
+		installed = pkgs
+		return "ok", nil
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	out := h.out.String()
+	if strings.Contains(out, "no graphical session detected") {
+		t.Errorf("the running X server was ignored:\n%s", out)
+	}
+	if !strings.Contains(out, "missing desktop helpers") {
+		t.Errorf("helpers were never offered:\n%s", out)
+	}
+	if cfg := h.saved(); cfg.Desktop.Enabled == nil || !*cfg.Desktop.Enabled {
+		t.Error("desktop control was left off on a machine with a display")
+	}
+	if len(installed) > 0 && !strings.Contains(strings.Join(installed, " "), "xdotool") {
+		t.Errorf("installed %v, want the missing helpers", installed)
+	}
+}
+
+func TestQuietRunInstallsDesktopHelpers(t *testing.T) {
+	home := tempHome(t)
+	var out bytes.Buffer
+	err := Run(context.Background(), filepath.Join(home, "config.json"), Options{
+		UI:             NewPlain(strings.NewReader(""), &out),
+		NonInteractive: true,
+		Home:           home,
+		Desktop: desktop.Env{
+			GOOS:   "linux",
+			Run:    func(context.Context, string, ...string) (string, error) { return "", nil },
+			Has:    func(string) bool { return false },
+			Getenv: func(string) string { return "" },
+			Glob: func(pattern string) ([]string, error) {
+				if pattern == "/tmp/.X11-unix/X*" {
+					return []string{"/tmp/.X11-unix/X0"}, nil
+				}
+				return nil, nil
+			},
+		},
+		EnsureSmrti: func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
+			return "/usr/bin/smrti", false, nil
+		},
+		MemoryAnswering: func(context.Context, config.MemoryConfig) bool { return false },
+		EnsureBrowser: func(context.Context, browser.Progress) (string, bool, error) {
+			return "/usr/bin/chromium", false, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Either it installed them or it said why it could not; silently
+	// skipping the machine's dependencies is the failure being guarded here.
+	if !strings.Contains(out.String(), "desktop:") {
+		t.Errorf("the scriptable path ignored the desktop helpers:\n%s", out.String())
+	}
+}

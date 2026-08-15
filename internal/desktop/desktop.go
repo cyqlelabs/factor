@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -31,6 +32,7 @@ type Env struct {
 	Run    Runner
 	Has    func(bin string) bool
 	Getenv func(key string) string
+	Glob   func(pattern string) ([]string, error)
 	GOOS   string
 }
 
@@ -40,7 +42,13 @@ const defaultRunnerTimeout = 30 * time.Second
 
 // DefaultEnv wires Env to the real machine.
 func DefaultEnv() Env {
-	return Env{Run: execRunner(defaultRunnerTimeout), Has: hasBinary, Getenv: os.Getenv, GOOS: runtime.GOOS}
+	return Env{
+		Run:    execRunner(defaultRunnerTimeout),
+		Has:    hasBinary,
+		Getenv: os.Getenv,
+		Glob:   filepath.Glob,
+		GOOS:   runtime.GOOS,
+	}
 }
 
 func (e Env) has(bin string) bool {
@@ -204,6 +212,33 @@ func HasDisplay(env Env) bool {
 	default:
 		return env.env("DISPLAY") != "" || env.env("WAYLAND_DISPLAY") != ""
 	}
+}
+
+// MachineHasDisplay reports whether this machine drives a screen, which is
+// not the same question as whether this process can reach it. A setup run
+// over ssh has no DISPLAY of its own while the box in front of the user is
+// running X the whole time — and deciding from the environment alone is how
+// `factor init` came to skip the desktop step, and its dependencies, on
+// exactly the desktop machines that needed them.
+func MachineHasDisplay(env Env) bool {
+	if HasDisplay(env) {
+		return true
+	}
+	if env.GOOS == "darwin" || env.GOOS == "windows" {
+		return true
+	}
+	if env.Glob == nil {
+		return false
+	}
+	for _, pattern := range []string{"/tmp/.X11-unix/X*", filepath.Join(env.env("XDG_RUNTIME_DIR"), "wayland-*")} {
+		if pattern == "wayland-*" {
+			continue // no XDG_RUNTIME_DIR: the pattern would match the cwd
+		}
+		if matches, err := env.Glob(pattern); err == nil && len(matches) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // MissingHelpers lists helpers the controller wants but cannot find.

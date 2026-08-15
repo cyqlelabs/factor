@@ -204,6 +204,9 @@ func (w *wiz) runQuiet(ctx context.Context) error {
 			w.ui.printf("smrti:     found at %s\n", path)
 		}
 	}
+	if !w.opts.NoInstall {
+		w.quietDesktopHelpers(ctx)
+	}
 	if w.cfg.Browser.Enabled && !w.opts.NoInstall {
 		if err := w.quietBrowser(ctx); err != nil {
 			return err
@@ -213,6 +216,38 @@ func (w *wiz) runQuiet(ctx context.Context) error {
 		w.ui.printf("provider:  no API key — export FACTOR_PROVIDER_API_KEY or run `factor init` interactively\n")
 	}
 	return nil
+}
+
+// quietDesktopHelpers installs the desktop helpers without asking. Setup is
+// where dependencies get met, whether or not a human is watching it happen.
+func (w *wiz) quietDesktopHelpers(ctx context.Context) {
+	env := w.opts.Desktop
+	if !desktop.MachineHasDisplay(env) {
+		return
+	}
+	missing := desktop.MissingHelpers(env, desktop.NewController(env))
+	if len(missing) == 0 {
+		return
+	}
+	manager := tools.DetectSystemManager()
+	if manager == "" {
+		w.ui.printf("desktop:   missing %s and no package manager to install them\n", helperNames(missing))
+		return
+	}
+	packages := desktop.PackagesFor(missing, manager)
+	if _, err := w.opts.InstallPackages(ctx, packages); err != nil {
+		w.ui.printf("desktop:   %s NOT installed — %v\n", strings.Join(packages, " "), err)
+		return
+	}
+	w.ui.printf("desktop:   installed %s\n", strings.Join(packages, " "))
+}
+
+func helperNames(helpers []desktop.Helper) string {
+	names := make([]string, 0, len(helpers))
+	for _, h := range helpers {
+		names = append(names, h.Bin)
+	}
+	return strings.Join(names, ", ")
 }
 
 // quietBrowser gives the scriptable path the same browser the interactive one
@@ -1089,10 +1124,13 @@ func (w *wiz) stepDesktop(ctx context.Context) error {
 
 	env := w.opts.Desktop
 	ctl := desktop.NewController(env)
-	if !desktop.HasDisplay(env) {
+	if !desktop.MachineHasDisplay(env) {
 		w.ui.Note("no graphical session detected — desktop tools stay off (desktop.enabled forces them on)")
 	} else {
 		w.ui.Info("desktop backend: %s", ctl.Backend())
+		if !desktop.HasDisplay(env) {
+			w.ui.Note("this session has no DISPLAY, but the machine is running one — setting the tools up for it")
+		}
 		enable, err := w.ui.Confirm("Enable desktop control (windows, screenshots, mouse, keyboard, clipboard)?", true)
 		if err != nil {
 			return err
