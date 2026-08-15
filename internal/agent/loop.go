@@ -218,6 +218,15 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn) (st
 	return reply, err
 }
 
+// Idle reports whether every session has finished its turn. The gateway
+// asks before restarting itself: a reload mid-turn is an answer the user
+// never gets.
+func (l *Loop) Idle() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.active) == 0
+}
+
 // WaitBackground blocks until async work (memory stores, compaction) drains,
 // or the timeout passes. One-shot mode calls this so memory writes are not
 // lost to process exit.

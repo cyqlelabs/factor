@@ -40,6 +40,9 @@ type App struct {
 	Jobs     *jobs.Engine
 	Cron     *cron.Service
 	MCP      *mcp.Manager
+	// Restart is how the upgrade tool reloads this process into the release
+	// it just installed. Only a daemon fills it in.
+	Restart *upgrade.Restarter
 
 	closeBrowser func()
 }
@@ -89,7 +92,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(&skills.RemoveTool{Root: skillsRoot})
 	registry.Register(tools.NewConfigTools(cfg)...)
 	registry.Register(tools.NewPkgInstallTool())
-	registry.Register(&upgrade.Tool{Current: version.Version})
+	restarter := &upgrade.Restarter{}
+	registry.Register(&upgrade.Tool{Current: version.Version, Restart: restarter})
 
 	// Desktop control: skipped on headless machines, where these tools would
 	// be prompt weight that can only ever fail (desktop.enabled forces it).
@@ -165,6 +169,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Jobs:     jobEngine,
 		Cron:     cronService,
 		MCP:      mcpManager,
+		Restart:  restarter,
 
 		closeBrowser: closeBrowser,
 	}, nil

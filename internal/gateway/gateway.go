@@ -55,14 +55,33 @@ func writePidFile() error {
 	return os.WriteFile(pidPath(), []byte(strconv.Itoa(os.Getpid())), 0o600)
 }
 
-// Run starts the daemon and blocks until SIGINT/SIGTERM.
+// A seam: a test must not exec away the process running it.
+var relaunch = upgrade.Relaunch
+
+// Run starts the daemon and blocks until SIGINT/SIGTERM — or until an
+// upgrade asks it to reload, in which case it shuts down cleanly and then
+// execs the binary now on disk. The exec happens out here, after serve has
+// closed the sidecars and dropped the pid file, so the new process inherits
+// nothing the old one was still holding.
 func Run(configPath string) error {
-	cfg, err := config.Load(configPath)
-	if err != nil {
+	reloading, err := serve(configPath)
+	if err != nil || !reloading {
 		return err
 	}
+	slog.Info("restarting into the newly installed factor")
+	if err := relaunch(); err != nil {
+		return fmt.Errorf("restarting into the new factor: %w", err)
+	}
+	return nil
+}
+
+func serve(configPath string) (bool, error) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return false, err
+	}
 	if err := writePidFile(); err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = os.Remove(pidPath()) }()
 
@@ -71,9 +90,21 @@ func Run(configPath string) error {
 
 	a, err := app.New(ctx, cfg)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer a.Close()
+
+	// Both ways of asking for a reload land here: the upgrade tool mid
+	// conversation, and a SIGHUP from `factor upgrade` in a terminal.
+	restart := make(chan string, 1)
+	request := func(reason string) {
+		select {
+		case restart <- reason:
+		default: // one request is all it takes
+		}
+	}
+	a.Restart.Set(request)
+	notifyReload(ctx, request)
 
 	channels := channel.Build(cfg.Channels, a.Bus)
 	if len(channels) == 0 {
@@ -130,7 +161,7 @@ func Run(configPath string) error {
 
 	healthSrv, err := startHealthServer(cfg, a, manager)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
 		shutdownCtx, done := context.WithTimeout(context.Background(), 3*time.Second)
@@ -145,12 +176,56 @@ func Run(configPath string) error {
 		"channels", manager.Names(),
 		"health", fmt.Sprintf("http://%s:%d/health", cfg.Gateway.Host, cfg.Gateway.Port))
 
-	<-ctx.Done()
+	reloading := false
+	select {
+	case <-ctx.Done():
+	case reason := <-restart:
+		slog.Info("restart requested", "reason", reason)
+		settle(ctx, a.Loop.Idle, a.Bus.PendingOutbound)
+		// A stop that lands while the answer is still going out wins: the
+		// user asked for this process to end, not to come back.
+		reloading = ctx.Err() == nil
+		cancel()
+	}
 	slog.Info("shutting down")
 	manager.Stop()
 	a.Jobs.Wait()
 	a.Loop.WaitBackground(30 * time.Second) // in-flight turns, memory stores, compaction
-	return nil
+	return reloading, nil
+}
+
+// Restart pacing, as variables so a test does not sit through a real
+// conversation.
+var (
+	settleTimeout = 60 * time.Second
+	settlePoll    = 200 * time.Millisecond
+	settleGrace   = 2 * time.Second
+)
+
+// settle waits for the conversation that asked for the restart to be
+// answered: every turn ends, its reply drains off the outbound queue, and
+// the connector gets a moment to hand that reply to the network. Reloading
+// any earlier is a restart that eats its own explanation.
+func settle(ctx context.Context, idle func() bool, pending func() int) {
+	deadline := time.Now().Add(settleTimeout)
+	for time.Now().Before(deadline) && (!idle() || pending() > 0) {
+		if !pause(ctx, settlePoll) {
+			return
+		}
+	}
+	pause(ctx, settleGrace) // the last send is still on the wire
+}
+
+// pause waits out d, or gives up the moment ctx ends.
+func pause(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // announceRelease tells the user a newer Factor exists, wherever they last

@@ -44,6 +44,11 @@ func New() *MessageBus {
 func (b *MessageBus) Inbound() <-chan InboundMessage   { return b.inbound }
 func (b *MessageBus) Outbound() <-chan OutboundMessage { return b.outbound }
 
+// PendingOutbound counts replies waiting for a connector to deliver them.
+// The gateway waits for zero before restarting: a queued message dies with
+// the process that holds it.
+func (b *MessageBus) PendingOutbound() int { return len(b.outbound) }
+
 // PublishInbound enqueues without blocking; a full queue drops the message
 // loudly rather than wedging a connector.
 func (b *MessageBus) PublishInbound(msg InboundMessage) bool {

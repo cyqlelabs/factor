@@ -111,8 +111,9 @@ func runInit(configPath string, nonInteractive, noInstall bool) error {
 
 // Seams: an upgrade test must not depend on what GitHub is publishing today.
 var (
-	latestRelease = upgrade.Latest
-	applyRelease  = upgrade.Apply
+	latestRelease  = upgrade.Latest
+	applyRelease   = upgrade.Apply
+	restartGateway = gateway.SignalRestart
 )
 
 func runUpgrade(checkOnly bool) error {
@@ -139,11 +140,16 @@ func runUpgrade(checkOnly bool) error {
 		return err
 	}
 	fmt.Printf("installed factor %s at %s\n", rel.Version, path)
-	// The daemon is a separate process that already loaded its code; leaving
-	// the user to discover that from an unchanged `factor status` would be
-	// the one confusing thing about an otherwise finished upgrade.
+	// The daemon is a separate process that already loaded its code, so the
+	// upgrade is only half done until it reloads. It restarts itself once the
+	// conversation it is in the middle of has been answered.
 	if pid, alive := gateway.ReadPidFile(); alive {
-		fmt.Printf("the gateway is still running %s (pid %d) — restart it to pick this up\n", version.Version, pid)
+		if err := restartGateway(pid); err != nil {
+			fmt.Printf("the gateway is still running %s (pid %d) — restart it to pick this up (%v)\n",
+				version.Version, pid, err)
+		} else {
+			fmt.Printf("the running gateway (pid %d) will restart into %s once it is idle\n", pid, rel.Version)
+		}
 	}
 	return nil
 }

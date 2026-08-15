@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -72,6 +75,64 @@ func TestUpgradeInstalls(t *testing.T) {
 	}
 	if !strings.Contains(out, "installed factor v0.4.0 at /usr/local/bin/factor") {
 		t.Errorf("output = %q", out)
+	}
+}
+
+// stubGateway pretends a daemon holds the pid file, and reports what the
+// upgrade asked of it.
+func stubGateway(t *testing.T, signalErr error) *[]int {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("FACTOR_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "factor.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var signalled []int
+	prev := restartGateway
+	restartGateway = func(pid int) error {
+		signalled = append(signalled, pid)
+		return signalErr
+	}
+	t.Cleanup(func() { restartGateway = prev })
+	return &signalled
+}
+
+func TestUpgradeRestartsTheRunningGateway(t *testing.T) {
+	stubUpgrade(t, "v0.3.0", published(upgrade.Release{Version: "v0.4.0"}),
+		func(context.Context, upgrade.Release, upgrade.Progress) (string, error) {
+			return "/usr/local/bin/factor", nil
+		})
+	signalled := stubGateway(t, nil)
+
+	out, err := captureStdout(t, func() error { return runUpgrade(false) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*signalled) != 1 || (*signalled)[0] != os.Getpid() {
+		t.Errorf("signalled %v, want the running gateway's pid %d", *signalled, os.Getpid())
+	}
+	if !strings.Contains(out, "will restart into v0.4.0") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+func TestUpgradeFallsBackWhenTheGatewayCannotBeSignalled(t *testing.T) {
+	stubUpgrade(t, "v0.3.0", published(upgrade.Release{Version: "v0.4.0"}),
+		func(context.Context, upgrade.Release, upgrade.Progress) (string, error) {
+			return "/usr/local/bin/factor", nil
+		})
+	stubGateway(t, errors.New("operation not permitted"))
+
+	out, err := captureStdout(t, func() error { return runUpgrade(false) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The install still succeeded; only the reload has to be done by hand.
+	if !strings.Contains(out, "installed factor v0.4.0") || !strings.Contains(out, "restart it to pick this up") {
+		t.Errorf("output = %q", out)
+	}
+	if !strings.Contains(out, "operation not permitted") {
+		t.Errorf("output hides why the restart failed: %q", out)
 	}
 }
 

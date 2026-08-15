@@ -41,7 +41,7 @@ what you said: it consolidates, prioritizes, and *never repeats a critical mista
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications — X11, Wayland, macOS, Windows; auto-registered when a display exists |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed instance, visible by default so you can watch it work — and setup installs one when the machine has none ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills, drop-in instructions — see [Extending](#extending-factor) |
-| 🔧 **Self-managing** | Edits its own config, installs packages (apt/dnf/pip/npm/…), upgrades itself to the newest release, runs cron schedules and `HEARTBEAT.md` checks that cost zero LLM calls when idle |
+| 🔧 **Self-managing** | Edits its own config, installs packages (apt/dnf/pip/npm/…), upgrades and restarts itself into the newest release, runs cron schedules and `HEARTBEAT.md` checks that cost zero LLM calls when idle |
 | 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, secrets scrubbed from every tool result — rails, not a sandbox ([Security](#security-model)) |
 
 ## How it works
@@ -98,9 +98,11 @@ Point `memory.mode: "external"` + `memory.url` at a shared smrti if you run one.
 
 `factor upgrade` downloads the release built for this machine, checks it against the
 published `SHA256SUMS`, and swaps the binary in place; `--check` only reports what's
-out. The gateway looks once a day and tells you in whichever chat you last used —
-it never installs behind your back. Asking Factor to update itself works too: the
-`upgrade` tool is the same code path.
+out. A running gateway then restarts itself into the new binary — once it has
+finished answering, and without changing pid, so systemd never sees it stop. It
+looks for releases once a day and tells you in whichever chat you last used, but
+never installs behind your back. Asking Factor to upgrade itself is the same path:
+it installs, says goodbye, and is back a few seconds later.
 
 ## Configuration
 

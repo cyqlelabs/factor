@@ -221,6 +221,26 @@ func TestMaybeCompactAsyncRunsWhenOverThreshold(t *testing.T) {
 	}
 }
 
+func TestIdleTracksLiveTurns(t *testing.T) {
+	h := newHarness(t)
+	if !h.loop.Idle() {
+		t.Error("a loop with no turns reported busy")
+	}
+
+	// A live turn is what stops the gateway from restarting underneath it.
+	turn, claimed := h.loop.claim("telegram:1", nil)
+	if !claimed {
+		t.Fatal("the first claim on a free session failed")
+	}
+	if h.loop.Idle() {
+		t.Error("a loop mid-turn reported idle")
+	}
+	h.loop.release("telegram:1", turn)
+	if !h.loop.Idle() {
+		t.Error("the loop stayed busy after its turn was released")
+	}
+}
+
 func TestWaitBackgroundTimesOut(t *testing.T) {
 	h := newHarness(t)
 	block := make(chan struct{})

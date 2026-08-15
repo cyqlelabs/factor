@@ -80,6 +80,23 @@ func TestPublishDropsWhenFullInsteadOfBlocking(t *testing.T) {
 	}
 }
 
+func TestPendingOutbound(t *testing.T) {
+	b := New()
+	if b.PendingOutbound() != 0 {
+		t.Fatalf("a fresh bus has %d replies waiting", b.PendingOutbound())
+	}
+	b.PublishOutbound(OutboundMessage{Channel: "telegram", ChatID: "1", Content: "restarting"})
+	b.PublishOutbound(OutboundMessage{Channel: "telegram", ChatID: "1", Content: "back"})
+	if b.PendingOutbound() != 2 {
+		t.Errorf("PendingOutbound() = %d, want 2", b.PendingOutbound())
+	}
+	<-b.Outbound()
+	<-b.Outbound()
+	if b.PendingOutbound() != 0 {
+		t.Errorf("PendingOutbound() = %d after both were delivered", b.PendingOutbound())
+	}
+}
+
 func TestQueuesAreIndependent(t *testing.T) {
 	b := New()
 	for range defaultBuffer {

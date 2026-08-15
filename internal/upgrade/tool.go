@@ -10,13 +10,14 @@ import (
 // which is how the upgrade reaches a box the user only ever talks to over
 // Telegram.
 type Tool struct {
-	Current string // the running build, from internal/version
+	Current string     // the running build, from internal/version
+	Restart *Restarter // how this process reloads, when it can (the gateway)
 }
 
 func (t *Tool) Name() string { return "upgrade" }
 
 func (t *Tool) Description() string {
-	return "Check whether a newer Factor release exists and install it. action=check reports what is available; action=install downloads that release, verifies its published checksum, and replaces this binary. An install takes effect when Factor next starts — say so rather than claiming the new version is already running."
+	return "Check whether a newer Factor release exists and install it. action=check reports what is available; action=install downloads that release, verifies its published checksum, and replaces this binary. Read the install result before describing it: it says whether the new version is loading now or waits for the next start."
 }
 
 func (t *Tool) Parameters() map[string]any {
@@ -46,6 +47,12 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) *tools.Result {
 	path, err := Apply(ctx, rel, nil)
 	if err != nil {
 		return tools.Errorf("upgrading to factor %s: %v", rel.Version, err)
+	}
+	// The restart waits for this turn to be answered, so the reply below is
+	// the user's warning that Factor is about to go quiet for a moment.
+	if t.Restart.Request("installed factor " + rel.Version) {
+		return tools.Textf("Installed factor %s at %s, replacing %s. Restarting into it as soon as this answer reaches you — say goodbye briefly; you will be back in a few seconds.",
+			rel.Version, path, t.Current)
 	}
 	return tools.Textf("Installed factor %s at %s, replacing %s. It takes effect on the next start.",
 		rel.Version, path, t.Current)
