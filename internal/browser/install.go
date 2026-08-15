@@ -34,8 +34,9 @@ import (
 // nothing outside that family offers both.
 
 const (
-	heliumRepo = "imputnet/helium-linux"
-	heliumHome = "https://helium.computer"
+	heliumRepo     = "imputnet/helium-linux"
+	heliumHome     = "https://helium.computer"
+	lightpandaRepo = "lightpanda-io/browser"
 
 	// InstallTimeout bounds one provisioning attempt. The tarball is ~125MB
 	// and the machines that need it most are the ones on slow links.
@@ -159,6 +160,33 @@ type ghRelease struct {
 	Assets []ghAsset `json:"assets"`
 }
 
+// latestAsset finds the newest release asset named for this machine.
+func latestAsset(ctx context.Context, repo, name, want string) (ghAsset, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf(releaseAPI, repo), nil)
+	if err != nil {
+		return ghAsset{}, "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return ghAsset{}, "", fmt.Errorf("looking up the latest %s release: %w", name, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ghAsset{}, "", fmt.Errorf("looking up the latest %s release: %s", name, resp.Status)
+	}
+	var rel ghRelease
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rel); err != nil {
+		return ghAsset{}, "", fmt.Errorf("reading the %s release index: %w", name, err)
+	}
+	for _, a := range rel.Assets {
+		if strings.HasSuffix(a.Name, want) {
+			return a, rel.Tag, nil
+		}
+	}
+	return ghAsset{}, "", fmt.Errorf("the latest %s release has no %s build", name, want)
+}
+
 // heliumAsset picks the portable tarball for this architecture. The tarball
 // is preferred over the AppImage because it needs no FUSE, which the small
 // distributions Factor targets often lack.
@@ -167,30 +195,74 @@ func heliumAsset(ctx context.Context) (ghAsset, string, error) {
 	if arch == "" {
 		return ghAsset{}, "", fmt.Errorf("no Helium build for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf(releaseAPI, heliumRepo), nil)
+	return latestAsset(ctx, heliumRepo, "Helium", arch+"_linux.tar.xz")
+}
+
+// FastEngineBinary is the provisioned lightweight engine.
+func FastEngineBinary(home string) string {
+	return filepath.Join(home, "engine", "lightpanda")
+}
+
+// EnsureFastEngine installs Lightpanda: a browser written from scratch for
+// automation, with a CDP server and no renderer at all. It reads pages for a
+// fraction of Chromium's memory, which is worth a second engine on a small
+// box — but only reads them, so it supplements the real browser instead of
+// replacing it. Its builds need glibc 2.34, which older distributions do not
+// have; the version check below is what turns that into a clear answer.
+func EnsureFastEngine(ctx context.Context, home string, progress Progress) (string, bool, error) {
+	if progress == nil {
+		progress = func(string, ...any) {}
+	}
+	binary := FastEngineBinary(home)
+	if executable(binary) {
+		return binary, false, nil
+	}
+	arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
+	osName := map[string]string{"linux": "linux", "darwin": "macos"}[runtime.GOOS]
+	if arch == "" || osName == "" {
+		return "", false, fmt.Errorf("no Lightpanda build for %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	asset, version, err := latestAsset(ctx, lightpandaRepo, "Lightpanda", "lightpanda-"+arch+"-"+osName)
 	if err != nil {
-		return ghAsset{}, "", err
+		return "", false, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := httpClient.Do(req)
+
+	staging := filepath.Join(home, "engine", ".staging-fast")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		return "", false, err
+	}
+	defer os.RemoveAll(staging)
+
+	tmp := filepath.Join(staging, asset.Name)
+	progress("downloading Lightpanda %s (%d MB)", version, asset.Size>>20)
+	if err := download(ctx, asset.URL, tmp, asset.Size, progress); err != nil {
+		return "", false, err
+	}
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		return "", false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		return "", false, err
+	}
+	if err := os.Rename(tmp, binary); err != nil {
+		return "", false, fmt.Errorf("installing Lightpanda into %s: %w", binary, err)
+	}
+	out, err := runCmd(ctx, []string{binary, "version"})
 	if err != nil {
-		return ghAsset{}, "", fmt.Errorf("looking up the latest Helium release: %w", err)
+		os.Remove(binary)
+		return "", false, fmt.Errorf("Lightpanda will not run here: %v: %s", err, firstLine(out))
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ghAsset{}, "", fmt.Errorf("looking up the latest Helium release: %s", resp.Status)
+	progress("installed Lightpanda %s", strings.TrimSpace(out))
+	return binary, true, nil
+}
+
+// firstLine keeps a loader's complaint readable: the dynamic linker prints
+// one line per missing symbol version, and they all say the same thing.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i])
 	}
-	var rel ghRelease
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rel); err != nil {
-		return ghAsset{}, "", fmt.Errorf("reading the Helium release index: %w", err)
-	}
-	suffix := arch + "_linux.tar.xz"
-	for _, a := range rel.Assets {
-		if strings.HasSuffix(a.Name, suffix) {
-			return a, rel.Tag, nil
-		}
-	}
-	return ghAsset{}, "", fmt.Errorf("the latest Helium release has no %s build", suffix)
+	return strings.TrimSpace(s)
 }
 
 func download(ctx context.Context, url, dest string, size int64, progress Progress) error {

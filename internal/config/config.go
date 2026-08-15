@@ -199,6 +199,12 @@ type BrowserConfig struct {
 	Headless    bool   `json:"headless"`
 	NoSandbox   bool   `json:"no_sandbox"` // needed as root, in containers, and where user namespaces are restricted
 	UserDataDir string `json:"user_data_dir,omitempty"`
+
+	// FastPath adds a second, much lighter engine that only reads pages.
+	// Off unless asked for: it is a whole extra browser to install, and the
+	// full suite already reads pages perfectly well.
+	FastPath    bool   `json:"fast_path"`
+	FastCommand string `json:"fast_command,omitempty"`
 }
 
 type HeartbeatConfig struct {

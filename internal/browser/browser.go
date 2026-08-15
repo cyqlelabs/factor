@@ -362,10 +362,18 @@ func Verify(ctx context.Context, cfg config.BrowserConfig) error {
 // NewTools returns the browser tool suite sharing one session.
 func NewTools(cfg config.BrowserConfig, workspace string) ([]tools.Tool, func()) {
 	s := NewSession(cfg, workspace)
-	return []tools.Tool{
+	suite := []tools.Tool{
 		&navigateTool{s}, &readTool{s}, &clickTool{s}, &fillTool{s},
 		&screenshotTool{s}, &evalTool{s}, &backTool{s},
-	}, s.Close
+	}
+	if !cfg.FastPath {
+		return suite, s.Close
+	}
+	f := newFastSession(cfg)
+	return append(suite, &fetchTool{f}), func() {
+		s.Close()
+		f.Close()
+	}
 }
 
 type navigateTool struct{ s *Session }

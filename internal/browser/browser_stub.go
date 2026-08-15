@@ -28,3 +28,7 @@ func Verify(context.Context, config.BrowserConfig) error { return errStripped }
 func EnsureEngine(context.Context, string, Progress) (string, bool, error) {
 	return "", false, errStripped
 }
+
+func EnsureFastEngine(context.Context, string, Progress) (string, bool, error) {
+	return "", false, errStripped
+}
