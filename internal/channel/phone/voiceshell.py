@@ -103,28 +103,129 @@ def notify(payload: dict) -> None:
 # ------------------------------------------------------------- carrier control
 
 
+TELNYX_API = "https://api.telnyx.com"
+
+
+def telnyx_request(path: str, payload: dict | None = None, method: str = "POST"):
+    """Build an authenticated Telnyx REST request. A payload of None sends no
+    body, which is what the reads want."""
+    data = None if payload is None else json.dumps(payload).encode()
+    request = urllib.request.Request(TELNYX_API + path, data=data, method=method)
+    request.add_header("Authorization", "Bearer " + CARRIER.get("api_key", ""))
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+    return request
+
+
+def twilio_hangup_request(call_sid: str):
+    account = urllib.parse.quote(CARRIER["account_sid"], safe="")
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{account}/Calls/{urllib.parse.quote(call_sid, safe='')}.json"
+    request = urllib.request.Request(
+        url, data=urllib.parse.urlencode({"Status": "completed"}).encode(), method="POST")
+    credentials = f"{CARRIER['account_sid']}:{CARRIER['auth_token']}".encode()
+    request.add_header("Authorization", "Basic " + base64.b64encode(credentials).decode())
+    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    return request
+
+
 def carrier_hangup(call_sid: str) -> None:
     """End a call at the carrier.
 
     Used for callers who are not allowed to reach the agent and for calls that
     have run past max_call_minutes — Patter exposes no hook for either, so the
-    carrier's own API is the lever. call_sid is Patter's call id, which on
-    Twilio is the Call SID; a mismatch is logged rather than raised, since
-    neither guardrail is worth dropping a live call over."""
-    if CARRIER.get("name") != "twilio" or not call_sid:
+    carrier's own API is the lever. call_sid is Patter's call id, which is the
+    Call SID on Twilio and the call control id on Telnyx; a mismatch is logged
+    rather than raised, since neither guardrail is worth dropping a live call
+    over."""
+    if not call_sid:
         return
-    account = urllib.parse.quote(CARRIER["account_sid"], safe="")
-    url = f"https://api.twilio.com/2010-04-01/Accounts/{account}/Calls/{urllib.parse.quote(call_sid, safe='')}.json"
-    data = urllib.parse.urlencode({"Status": "completed"}).encode()
-    request = urllib.request.Request(url, data=data, method="POST")
-    credentials = f"{CARRIER['account_sid']}:{CARRIER['auth_token']}".encode()
-    request.add_header("Authorization", "Basic " + base64.b64encode(credentials).decode())
-    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    name = CARRIER.get("name")
+    if name == "twilio":
+        request = twilio_hangup_request(call_sid)
+    elif name == "telnyx":
+        request = telnyx_request(
+            f"/v2/calls/{urllib.parse.quote(call_sid, safe='')}/actions/hangup", {})
+    else:
+        log("cannot hang up: this shell does not speak the configured carrier", carrier=name)
+        return
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             response.read()
     except Exception as exc:  # noqa: BLE001
         log("carrier hangup failed", call=call_sid, error=repr(exc))
+
+
+def bind_telnyx_number() -> None:
+    """Attach the number to the Call Control Application.
+
+    Patter does this for Twilio on every start and for Telnyx never, so Factor
+    does it: a number that answers to no application rings nowhere."""
+    number = urllib.parse.quote(CARRIER.get("phone_number", ""), safe="")
+    try:
+        with urllib.request.urlopen(
+            telnyx_request(f"/v2/phone_numbers/{number}/voice",
+                           {"connection_id": CARRIER.get("connection_id", "")}, method="PATCH"),
+            timeout=10,
+        ) as response:
+            response.read()
+    except Exception as exc:  # noqa: BLE001
+        # Not fatal: a number already assigned in the portal works fine, and
+        # this is the one call that fails when it is assigned to something else
+        # on purpose.
+        log("could not attach the number to the telnyx application", error=repr(exc))
+
+
+def point_telnyx_webhook(url: str) -> None:
+    """Point the Call Control Application at this shell.
+
+    Telnyx keeps the webhook URL on the application rather than on the number,
+    and Patter only auto-configures Twilio — so nothing else would ever tell
+    the carrier where a freshly-tunnelled shell is answering."""
+    app = urllib.parse.quote(CARRIER.get("connection_id", ""), safe="")
+    path = f"/v2/call_control_applications/{app}"
+    try:
+        with urllib.request.urlopen(telnyx_request(path, method="GET"), timeout=10) as response:
+            current = json.loads(response.read() or b"{}").get("data") or {}
+    except Exception as exc:  # noqa: BLE001
+        log("could not read the telnyx call control application", error=repr(exc))
+        return
+    if current.get("webhook_event_url") == url:
+        return
+    try:
+        with urllib.request.urlopen(
+            # Telnyx requires the name on every update, so it is read back and
+            # sent unchanged rather than invented here.
+            telnyx_request(path, {
+                "application_name": current.get("application_name") or "Factor",
+                "webhook_event_url": url,
+            }, method="PATCH"),
+            timeout=10,
+        ) as response:
+            response.read()
+    except Exception as exc:  # noqa: BLE001
+        log("could not point the telnyx webhook at this shell", url=url, error=repr(exc))
+        return
+    log("telnyx webhook set", url=url)
+
+
+async def register_telnyx_webhook(phone) -> None:
+    """Wait for the public hostname, then hand it to the carrier.
+
+    tunnel_ready resolves as soon as the hostname is known — immediately for a
+    static webhook_url, once cloudflared answers for a quick tunnel — which is
+    exactly when the carrier can be told where to knock."""
+    ready = getattr(phone, "tunnel_ready", None)
+    if ready is None:
+        log("this patter release exposes no tunnel_ready; set the telnyx webhook by hand")
+        return
+    try:
+        hostname = await ready
+    except Exception as exc:  # noqa: BLE001
+        log("the tunnel never came up; leaving the telnyx webhook alone", error=repr(exc))
+        return
+    host = str(hostname).split("://", 1)[-1].strip("/")
+    await asyncio.to_thread(bind_telnyx_number)
+    await asyncio.to_thread(point_telnyx_webhook, f"https://{host}/webhooks/telnyx/voice")
 
 
 def caller_allowed(number: str) -> bool:
@@ -253,27 +354,25 @@ def build_tts():
     if provider == "elevenlabs":
         from getpatter import ElevenLabsWebSocketTTS
 
-        # for_twilio emits mu-law at 8 kHz, which is exactly what the carrier
-        # wants: no transcode, and roughly 50 ms less latency per utterance.
-        factory = getattr(ElevenLabsWebSocketTTS, "for_twilio", ElevenLabsWebSocketTTS)
+        # Each factory emits what its carrier negotiates — mu-law at 8 kHz for
+        # Twilio, linear PCM at 16 kHz for Telnyx. Matching it is what lets
+        # Patter skip the transcode, worth roughly 50 ms per utterance.
+        wanted = "for_telnyx" if CARRIER.get("name") == "telnyx" else "for_twilio"
+        factory = getattr(ElevenLabsWebSocketTTS, wanted, ElevenLabsWebSocketTTS)
         return build(factory, api_key=tts.get("api_key"), voice_id=tts.get("voice") or None,
                      model_id=tts.get("model") or None)
     if provider == "local-openai":
         from getpatter.tts import openai as openai_tts
 
-        adapter = build_local(
+        # The rate stays at Patter's 16 kHz default: both carriers' senders
+        # resample 16 kHz down to the phone band themselves, and handing them
+        # 8 kHz instead is read as 16 kHz — audio at half speed, an octave low.
+        return build_local(
             openai_tts.TTS, tts["base_url"], "tts",
             api_key=tts.get("api_key") or "local",
             model=tts.get("model") or None,
             voice=tts.get("voice") or None,
         )
-        # 8 kHz is the phone band: rendering above it only costs a resample.
-        # Patter's documented constructor takes no sample rate — it is a
-        # keyword on the provider underneath — so it is set here, where the
-        # adapter reads it on every utterance anyway.
-        if getattr(adapter, "target_sample_rate", None) in (8000, 16000):
-            adapter.target_sample_rate = 8000
-        return adapter
     die(f"unknown tts provider {provider!r}")
 
 
@@ -592,13 +691,26 @@ SYSTEM_PROMPT = (
 )
 
 
+def build_carrier():
+    """The carrier Patter dials through. Factor's config layer refuses anything
+    other than these two long before the shell starts."""
+    name = CARRIER.get("name")
+    if name == "twilio":
+        from getpatter import Twilio
+
+        return build(Twilio, account_sid=CARRIER["account_sid"], auth_token=CARRIER["auth_token"])
+    if name == "telnyx":
+        from getpatter import Telnyx
+
+        return build(Telnyx, api_key=CARRIER["api_key"], connection_id=CARRIER["connection_id"],
+                     public_key=CARRIER.get("public_key", ""))
+    die(f"carrier {name!r} is not wired in this shell")
+
+
 async def main() -> None:
-    from getpatter import Patter, Twilio
+    from getpatter import Patter
 
-    if CARRIER.get("name") != "twilio":
-        die(f"carrier {CARRIER.get('name')!r} is not wired in this shell")
-
-    carrier = build(Twilio, account_sid=CARRIER["account_sid"], auth_token=CARRIER["auth_token"])
+    carrier = build_carrier()
     quick_tunnel = CFG.get("tunnel") == "quick"
     phone = build(
         Patter,
@@ -621,6 +733,10 @@ async def main() -> None:
     )
 
     serve_control(asyncio.get_running_loop(), phone, agent)
+    if CARRIER.get("name") == "telnyx":
+        # Started before serve(), which does not return: it waits on the same
+        # hostname serve() is about to publish.
+        spawn(register_telnyx_webhook(phone))
     log("starting patter", tier=CFG.get("tier"), tunnel=CFG.get("tunnel"), port=CFG.get("webhook_port"))
     await build(
         phone.serve,

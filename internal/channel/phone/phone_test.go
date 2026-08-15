@@ -176,17 +176,18 @@ func TestSecretsInThePhoneSectionAreScrubbed(t *testing.T) {
 		"phone": json.RawMessage(`{
 			"user_number": "+15550001111",
 			"twilio_auth_token": "twilio-secret",
+			"telnyx_api_key": "telnyx-secret",
 			"elevenlabs_api_key": "eleven-secret",
 			"stt_api_key": "deepgram-secret"
 		}`),
 	}
 	secrets := strings.Join(cfg.SecretValues(), " ")
-	for _, want := range []string{"twilio-secret", "eleven-secret", "deepgram-secret"} {
+	for _, want := range []string{"twilio-secret", "telnyx-secret", "eleven-secret", "deepgram-secret"} {
 		if !strings.Contains(secrets, want) {
 			t.Errorf("SecretValues() is missing %q — it would not be redacted from tool output", want)
 		}
 	}
-	filtered := cfg.FilterSecrets("token=twilio-secret key=eleven-secret stt=deepgram-secret")
+	filtered := cfg.FilterSecrets("token=twilio-secret carrier=telnyx-secret key=eleven-secret stt=deepgram-secret")
 	if strings.Contains(filtered, "secret") {
 		t.Errorf("FilterSecrets left credentials behind: %q", filtered)
 	}
@@ -409,6 +410,151 @@ func TestSendSurfacesCarrierRejections(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "twilio-secret") {
 		t.Errorf("the carrier token leaked into an error: %q", err)
+	}
+}
+
+// ---- the other carrier -----------------------------------------------------
+
+// fakeTelnyx stands in for Telnyx's REST API, which speaks JSON and a bearer
+// token where Twilio speaks form posts and basic auth.
+type fakeTelnyx struct {
+	*httptest.Server
+	mu       sync.Mutex
+	messages []map[string]string
+	auth     []string
+	status   int
+	body     string
+}
+
+func newFakeTelnyx(t *testing.T) *fakeTelnyx {
+	t.Helper()
+	f := &fakeTelnyx{status: http.StatusOK, body: `{"data":{"id":"msg-1","record_type":"message"}}`}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/messages" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var msg map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&msg)
+		f.mu.Lock()
+		f.messages = append(f.messages, msg)
+		f.auth = append(f.auth, r.Header.Get("Authorization"))
+		status, body := f.status, f.body
+		f.mu.Unlock()
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(f.Close)
+	return f
+}
+
+func (f *fakeTelnyx) sent() []map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]string{}, f.messages...)
+}
+
+func (f *fakeTelnyx) sentAuth() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.auth...)
+}
+
+func (f *fakeTelnyx) fail(status int, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.status, f.body = status, body
+}
+
+// newTelnyxPhone is newTestPhone against the other carrier.
+func newTelnyxPhone(t *testing.T) (*Phone, *fakeTelnyx) {
+	t.Helper()
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	carrier := newFakeTelnyx(t)
+
+	cfg := validConfig()
+	telnyxConfig(&cfg)
+	cfg.APIBase = carrier.URL
+	cfg.ControlAPIBase = newFakeShellAPI(t).URL
+	cfg.SidecarPort = freePort(t)
+	cfg.BridgePort = freePort(t)
+	p, err := New(cfg, bus.New())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return p, carrier
+}
+
+func TestSendTextsThroughTelnyx(t *testing.T) {
+	p, carrier := newTelnyxPhone(t)
+	if err := p.Send(context.Background(), bus.OutboundMessage{
+		Channel: "phone", ChatID: "+15550001111", Content: "the backup finished",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	sent := carrier.sent()
+	if len(sent) != 1 {
+		t.Fatalf("telnyx received %d messages, want 1", len(sent))
+	}
+	want := map[string]string{"to": "+15550001111", "from": "+15550002222", "text": "the backup finished"}
+	for key, value := range want {
+		if sent[0][key] != value {
+			t.Errorf("%s = %q, want %q", key, sent[0][key], value)
+		}
+	}
+	if got := carrier.sentAuth()[0]; got != "Bearer telnyx-secret" {
+		t.Errorf("Authorization = %q, want a bearer token", got)
+	}
+}
+
+func TestTelnyxRejectionsSurfaceWithoutTheKey(t *testing.T) {
+	p, carrier := newTelnyxPhone(t)
+	carrier.fail(http.StatusUnprocessableEntity,
+		`{"errors":[{"title":"Invalid destination","detail":"to is not a valid phone number"}]}`)
+
+	err := p.Send(context.Background(), bus.OutboundMessage{Channel: "phone", ChatID: "+15550001111", Content: "hi"})
+	if err == nil {
+		t.Fatal("a rejected message was reported as sent")
+	}
+	if !strings.Contains(err.Error(), "to is not a valid phone number") {
+		t.Errorf("error = %q, want the carrier's own detail", err)
+	}
+	if strings.Contains(p.redact(err).Error(), "telnyx-secret") {
+		t.Errorf("the carrier key leaked into an error: %q", err)
+	}
+}
+
+// Whatever the carrier answers, a message that did not go out has to come back
+// as an error rather than a message id.
+func TestTelnyxSMSFailureModes(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr string
+	}{
+		{"an error with only a title", http.StatusForbidden, `{"errors":[{"title":"Number not owned"}]}`, "Number not owned"},
+		{"an answer that is not json", http.StatusBadGateway, `<html>gateway down</html>`, "gateway down"},
+		{"an empty error array", http.StatusBadRequest, `{"errors":[]}`, "HTTP 400"},
+		{"accepted but unidentified", http.StatusOK, `{"data":{}}`, "returned no id"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(c.status)
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer srv.Close()
+
+			client := newTelnyxClient(Config{Carrier: carrierTelnyx, APIBase: srv.URL, TelnyxAPIKey: "telnyx-secret"})
+			_, err := client.sendSMS(context.Background(), "+15550002222", "+15550001111", "hi")
+			if err == nil {
+				t.Fatal("a message that never went out was reported as sent")
+			}
+			if !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("error = %q, want it to mention %q", err, c.wantErr)
+			}
+		})
 	}
 }
 

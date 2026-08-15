@@ -141,6 +141,38 @@ func TestRenderShellConfigCoversEveryTier(t *testing.T) {
 	}
 }
 
+// Each carrier gets its own credentials and its own wire format; handing the
+// shell the other one's would fail on the first call, not at startup.
+func TestRenderShellConfigPerCarrier(t *testing.T) {
+	twilio := renderShellConfig(prepared(t, nil), 1, "tok")
+	if twilio.Carrier.Name != carrierTwilio || twilio.Carrier.AccountSID != "AC0123456789" ||
+		twilio.Carrier.AuthToken != "twilio-secret" {
+		t.Errorf("twilio carrier = %+v", twilio.Carrier)
+	}
+	if twilio.Carrier.APIKey != "" || twilio.Carrier.ConnectionID != "" || twilio.Carrier.PublicKey != "" {
+		t.Errorf("twilio carried Telnyx fields: %+v", twilio.Carrier)
+	}
+	if twilio.TTS.Format != telephonyFormat {
+		t.Errorf("twilio tts format = %q, want %q", twilio.TTS.Format, telephonyFormat)
+	}
+
+	telnyx := renderShellConfig(prepared(t, telnyxConfig), 1, "tok")
+	if telnyx.Carrier.Name != carrierTelnyx || telnyx.Carrier.APIKey != "telnyx-secret" ||
+		telnyx.Carrier.ConnectionID != "2851234567890" || telnyx.Carrier.PublicKey != "telnyx-public-key" {
+		t.Errorf("telnyx carrier = %+v", telnyx.Carrier)
+	}
+	if telnyx.Carrier.AccountSID != "" || telnyx.Carrier.AuthToken != "" {
+		t.Errorf("telnyx carried Twilio fields: %+v", telnyx.Carrier)
+	}
+	if telnyx.Carrier.PhoneNumber != "+15550002222" {
+		t.Errorf("telnyx phone number = %q", telnyx.Carrier.PhoneNumber)
+	}
+	// Telnyx negotiates linear PCM; μ-law bytes would arrive as noise.
+	if telnyx.TTS.Format != telnyxFormat {
+		t.Errorf("telnyx tts format = %q, want %q", telnyx.TTS.Format, telnyxFormat)
+	}
+}
+
 func TestRenderShellConfigCarriesGuardrails(t *testing.T) {
 	cfg := prepared(t, func(c *Config) {
 		c.MaxCallMinutes = 7

@@ -18,6 +18,16 @@ func validConfig() Config {
 	}
 }
 
+// telnyxConfig swaps a section over to the other carrier: Telnyx credentials
+// in, Twilio's out, so a test cannot pass on the ones it meant to drop.
+func telnyxConfig(c *Config) {
+	c.Carrier = carrierTelnyx
+	c.TwilioAccountSID, c.TwilioAuthToken = "", ""
+	c.TelnyxAPIKey = "telnyx-secret"
+	c.TelnyxConnectionID = "2851234567890"
+	c.TelnyxPublicKey = "telnyx-public-key"
+}
+
 func prepared(t *testing.T, mutate func(*Config)) Config {
 	t.Helper()
 	cfg := validConfig()
@@ -97,9 +107,12 @@ func TestValidateRejectsBrokenSections(t *testing.T) {
 		{"missing carrier number", func(c *Config) { c.PhoneNumber = "" }, "phone_number"},
 		{"bad inbound allowlist entry", func(c *Config) { c.AllowFrom = []string{"nope"} }, "allow_from"},
 		{"no wildcard for dialling out", func(c *Config) { c.AllowCallTo = []string{anyCaller} }, "allow_call_to"},
-		{"unwired carrier", func(c *Config) { c.Carrier = "telnyx" }, "not wired yet"},
+		{"unknown carrier", func(c *Config) { c.Carrier = "vonage" }, "unknown carrier"},
 		{"missing twilio sid", func(c *Config) { c.TwilioAccountSID = "" }, "twilio_account_sid"},
 		{"missing twilio token", func(c *Config) { c.TwilioAuthToken = "" }, "twilio_auth_token"},
+		{"telnyx without a key", func(c *Config) { telnyxConfig(c); c.TelnyxAPIKey = "" }, "telnyx_api_key"},
+		{"telnyx without a connection", func(c *Config) { telnyxConfig(c); c.TelnyxConnectionID = "" }, "telnyx_connection_id"},
+		{"telnyx without a public key", func(c *Config) { telnyxConfig(c); c.TelnyxPublicKey = "" }, "telnyx_public_key"},
 		{"deepgram without a key", func(c *Config) { c.STTAPIKey = "" }, "stt_api_key"},
 		{"whisper without a key", func(c *Config) {
 			c.STT.Provider = providerWhisper
@@ -138,6 +151,19 @@ func TestValidateRejectsBrokenSections(t *testing.T) {
 				t.Errorf("validate error = %q, want it to mention %q", err, c.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateAcceptsTelnyx(t *testing.T) {
+	cfg := prepared(t, func(c *Config) {
+		telnyxConfig(c)
+		c.Carrier = " Telnyx "
+	})
+	if cfg.Carrier != carrierTelnyx {
+		t.Fatalf("carrier = %q, want it normalized to %q", cfg.Carrier, carrierTelnyx)
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("a Telnyx section was rejected: %v", err)
 	}
 }
 

@@ -31,6 +31,7 @@ type Options struct {
 	Home       string // FACTOR_HOME (defaults to config.Home())
 	Telegram   string // Telegram API base (defaults to the real one)
 	Twilio     string // Twilio API base (defaults to the real one)
+	Telnyx     string // Telnyx API base (defaults to the real one)
 	ElevenLabs string // ElevenLabs API base (defaults to the real one)
 
 	// NonInteractive skips every prompt: defaults are kept, smrti is
@@ -787,10 +788,16 @@ type audioSection struct {
 }
 
 type phoneSection struct {
-	UserNumber       string       `json:"user_number"`
-	PhoneNumber      string       `json:"phone_number"`
-	TwilioAccountSID string       `json:"twilio_account_sid"`
-	TwilioAuthToken  string       `json:"twilio_auth_token"`
+	UserNumber       string `json:"user_number"`
+	PhoneNumber      string `json:"phone_number"`
+	Carrier          string `json:"carrier,omitempty"`
+	TwilioAccountSID string `json:"twilio_account_sid,omitempty"`
+	TwilioAuthToken  string `json:"twilio_auth_token,omitempty"`
+
+	TelnyxAPIKey       string `json:"telnyx_api_key,omitempty"`
+	TelnyxConnectionID string `json:"telnyx_connection_id,omitempty"`
+	TelnyxPublicKey    string `json:"telnyx_public_key,omitempty"`
+
 	ElevenLabsAPIKey string       `json:"elevenlabs_api_key,omitempty"`
 	VoiceID          string       `json:"voice_id,omitempty"`
 	Language         string       `json:"language,omitempty"`
@@ -875,31 +882,37 @@ func (w *wiz) stepPhone(ctx context.Context) error {
 	return nil
 }
 
+// The two carriers the voice shell speaks. They differ in what they cost and
+// in how much setup they need, which is the whole of the choice.
+var carrierChoices = []Option{
+	{Label: "Twilio (recommended)", Hint: "least setup: Factor points the number at itself on every start"},
+	{Label: "Telnyx", Hint: "cheaper per minute and per text · needs a Call Control Application"},
+}
+
+const (
+	carrierTwilio = "twilio"
+	carrierTelnyx = "telnyx"
+)
+
 // askCarrier collects and verifies the telephony credentials. A nil section
 // means the user backed out.
 func (w *wiz) askCarrier(ctx context.Context, existing phoneSection) (*phoneSection, error) {
-	w.ui.Note("buy a number at twilio.com, then paste the account SID and auth token from its console")
-	sid, err := w.ui.Input("Twilio account SID", existing.TwilioAccountSID)
+	idx, err := w.ui.Select("Which carrier is the number at?", carrierChoices, carrierIndex(existing))
 	if err != nil {
 		return nil, err
 	}
-	token, err := w.ui.Secret("Twilio auth token", existing.TwilioAuthToken)
-	if err != nil {
+	section := &phoneSection{Carrier: carrierTwilio}
+	if idx == 1 {
+		section.Carrier = carrierTelnyx
+	}
+
+	if section.Carrier == carrierTelnyx {
+		err = w.askTelnyx(ctx, section, existing)
+	} else {
+		err = w.askTwilio(ctx, section, existing)
+	}
+	if err != nil || section.Carrier == "" {
 		return nil, err
-	}
-	sid, token = strings.TrimSpace(sid), strings.TrimSpace(token)
-	if sid == "" || token == "" {
-		w.ui.Warn("no carrier credentials — skipping the phone")
-		return nil, nil
-	}
-	var account string
-	_ = w.ui.Task("verifying the Twilio credentials", func() error {
-		var err error
-		account, err = CheckTwilio(ctx, w.opts.HTTP, w.opts.Twilio, sid, token)
-		return err
-	})
-	if account != "" {
-		w.ui.Success("connected to the %q account", account)
 	}
 
 	number, err := w.ui.Input("The number you bought, in E.164 (e.g. +15550001234)", existing.PhoneNumber)
@@ -910,12 +923,93 @@ func (w *wiz) askCarrier(ctx context.Context, existing phoneSection) (*phoneSect
 	if err != nil {
 		return nil, err
 	}
-	return &phoneSection{
-		UserNumber:       strings.TrimSpace(mine),
-		PhoneNumber:      strings.TrimSpace(number),
-		TwilioAccountSID: sid,
-		TwilioAuthToken:  token,
-	}, nil
+	section.PhoneNumber = strings.TrimSpace(number)
+	section.UserNumber = strings.TrimSpace(mine)
+	return section, nil
+}
+
+// carrierIndex preselects the carrier already configured.
+func carrierIndex(existing phoneSection) int {
+	if existing.Carrier == carrierTelnyx {
+		return 1
+	}
+	return 0
+}
+
+// askTwilio fills in the Twilio half. Clearing the section's carrier is how it
+// says the user gave no credentials and the phone should be skipped.
+func (w *wiz) askTwilio(ctx context.Context, section *phoneSection, existing phoneSection) error {
+	w.ui.Note("buy a number at twilio.com, then paste the account SID and auth token from its console")
+	sid, err := w.ui.Input("Twilio account SID", existing.TwilioAccountSID)
+	if err != nil {
+		return err
+	}
+	token, err := w.ui.Secret("Twilio auth token", existing.TwilioAuthToken)
+	if err != nil {
+		return err
+	}
+	sid, token = strings.TrimSpace(sid), strings.TrimSpace(token)
+	if sid == "" || token == "" {
+		w.ui.Warn("no carrier credentials — skipping the phone")
+		section.Carrier = ""
+		return nil
+	}
+	var account string
+	_ = w.ui.Task("verifying the Twilio credentials", func() error {
+		var err error
+		account, err = CheckTwilio(ctx, w.opts.HTTP, w.opts.Twilio, sid, token)
+		return err
+	})
+	if account != "" {
+		w.ui.Success("connected to the %q account", account)
+	}
+	section.TwilioAccountSID, section.TwilioAuthToken = sid, token
+	return nil
+}
+
+// askTelnyx fills in the Telnyx half. The public key is not optional here: the
+// voice shell refuses webhooks it cannot verify, so a call without one never
+// connects.
+func (w *wiz) askTelnyx(ctx context.Context, section *phoneSection, existing phoneSection) error {
+	w.ui.Note("in the Telnyx portal: create a Call Control Application and buy a number — Factor attaches the two itself")
+	w.ui.Note("the API key is under Auth → API Keys; the public key is on the same page, and the connection id is the application's")
+	key, err := w.ui.Secret("Telnyx API key", existing.TelnyxAPIKey)
+	if err != nil {
+		return err
+	}
+	connection, err := w.ui.Input("Telnyx connection id (the Call Control Application's id)", existing.TelnyxConnectionID)
+	if err != nil {
+		return err
+	}
+	key, connection = strings.TrimSpace(key), strings.TrimSpace(connection)
+	if key == "" || connection == "" {
+		w.ui.Warn("no carrier credentials — skipping the phone")
+		section.Carrier = ""
+		return nil
+	}
+	var application string
+	_ = w.ui.Task("verifying the Telnyx credentials", func() error {
+		var err error
+		application, err = CheckTelnyx(ctx, w.opts.HTTP, w.opts.Telnyx, key, connection)
+		return err
+	})
+	if application != "" {
+		w.ui.Success("connected to the %q application", application)
+	}
+
+	public, err := w.ui.Secret("Telnyx public key (Auth → API Keys → Public Key)", existing.TelnyxPublicKey)
+	if err != nil {
+		return err
+	}
+	public = strings.TrimSpace(public)
+	if public == "" {
+		w.ui.Warn("without the public key the shell refuses every call webhook — skipping the phone")
+		section.Carrier = ""
+		return nil
+	}
+	section.TelnyxAPIKey, section.TelnyxConnectionID, section.TelnyxPublicKey = key, connection, public
+	w.ui.Note("Factor points the application's webhook at itself on every start, so the tunnel can move")
+	return nil
 }
 
 func (w *wiz) askVoiceTier(ctx context.Context, section *phoneSection, existing phoneSection) error {

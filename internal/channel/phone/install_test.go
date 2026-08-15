@@ -2,11 +2,16 @@ package phone
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -390,5 +395,164 @@ func TestEmbeddedScriptIsValidPython(t *testing.T) {
 	out, err := exec.Command(python, "-m", "py_compile", path).CombinedOutput()
 	if err != nil {
 		t.Errorf("the embedded script does not compile: %v\n%s", err, out)
+	}
+}
+
+// carrierCall is one request the fake carrier saw.
+type carrierCall struct {
+	method string
+	path   string
+	body   map[string]string
+	auth   string
+}
+
+// runShellFunc executes the embedded script against a fake carrier and calls
+// one of its functions. The script's imports of Patter all sit inside
+// functions, so it loads on a machine that has never installed it.
+func runShellFunc(t *testing.T, carrierBase, snippet string) string {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed on this machine")
+	}
+	path := filepath.Join(t.TempDir(), "voiceshell.py")
+	if err := WriteScript(path); err != nil {
+		t.Fatal(err)
+	}
+	driver := `
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("voiceshell", os.environ["SCRIPT"])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.TELNYX_API = os.environ["CARRIER_BASE"]
+` + snippet
+	cmd := exec.Command(python, "-c", driver)
+	cmd.Env = append(os.Environ(),
+		"SCRIPT="+path,
+		"CARRIER_BASE="+carrierBase,
+		`FACTOR_VOICE_CONFIG={"bridge_url":"http://127.0.0.1:1","bridge_token":"tok",`+
+			`"carrier":{"name":"telnyx","api_key":"telnyx-secret","connection_id":"285123",`+
+			`"phone_number":"+15550002222"}}`)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the shell script failed: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+// The Telnyx webhook is the one piece of carrier setup Patter does not do
+// itself, so it is exercised for real rather than trusted: the script has to
+// read the application back before updating it, because Telnyx rejects an
+// update that drops the name.
+func TestScriptPointsTheTelnyxWebhookAtThisShell(t *testing.T) {
+	var mu sync.Mutex
+	var seen []carrierCall
+	current := "https://stale.example/webhooks/telnyx/voice"
+
+	carrier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := map[string]string{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		seen = append(seen, carrierCall{r.Method, r.URL.EscapedPath(), body, r.Header.Get("Authorization")})
+		reply := fmt.Sprintf(`{"data":{"application_name":"factor-voice","webhook_event_url":%q}}`, current)
+		mu.Unlock()
+		_, _ = w.Write([]byte(reply))
+	}))
+	defer carrier.Close()
+
+	const wanted = "https://tunnel.example/webhooks/telnyx/voice"
+	runShellFunc(t, carrier.URL, fmt.Sprintf("mod.point_telnyx_webhook(%q)", wanted))
+
+	mu.Lock()
+	got := append([]carrierCall{}, seen...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("the carrier saw %d requests, want a read then an update: %+v", len(got), got)
+	}
+	if got[0].method != http.MethodGet || got[0].path != "/v2/call_control_applications/285123" {
+		t.Errorf("first request = %s %s, want a read of the call control application", got[0].method, got[0].path)
+	}
+	if got[1].method != http.MethodPatch {
+		t.Errorf("second request = %s, want PATCH", got[1].method)
+	}
+	if got[1].body["webhook_event_url"] != wanted {
+		t.Errorf("webhook_event_url = %q, want %q", got[1].body["webhook_event_url"], wanted)
+	}
+	// Telnyx requires the name on every update, and inventing one would rename
+	// the user's application.
+	if got[1].body["application_name"] != "factor-voice" {
+		t.Errorf("application_name = %q, want the name it already had", got[1].body["application_name"])
+	}
+	for _, call := range got {
+		if call.auth != "Bearer telnyx-secret" {
+			t.Errorf("%s %s went out with auth %q", call.method, call.path, call.auth)
+		}
+	}
+
+	// A webhook that is already right is left alone: every gateway restart
+	// would otherwise write to the carrier for nothing.
+	mu.Lock()
+	seen, current = nil, wanted
+	mu.Unlock()
+	runShellFunc(t, carrier.URL, fmt.Sprintf("mod.point_telnyx_webhook(%q)", wanted))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 || seen[0].method != http.MethodGet {
+		t.Errorf("an unchanged webhook was rewritten: %+v", seen)
+	}
+}
+
+// Patter attaches the number to Factor on Twilio and not on Telnyx, so the
+// shell does it — a number bound to no application rings nowhere.
+func TestScriptBindsTheTelnyxNumberToTheApplication(t *testing.T) {
+	var mu sync.Mutex
+	var seen []carrierCall
+	carrier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := map[string]string{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		seen = append(seen, carrierCall{r.Method, r.URL.EscapedPath(), body, r.Header.Get("Authorization")})
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer carrier.Close()
+
+	runShellFunc(t, carrier.URL, "mod.bind_telnyx_number()")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 {
+		t.Fatalf("the carrier saw %d requests, want 1: %+v", len(seen), seen)
+	}
+	if seen[0].method != http.MethodPatch || seen[0].path != "/v2/phone_numbers/%2B15550002222/voice" {
+		t.Errorf("bind = %s %s", seen[0].method, seen[0].path)
+	}
+	if seen[0].body["connection_id"] != "285123" {
+		t.Errorf("connection_id = %q", seen[0].body["connection_id"])
+	}
+}
+
+// The hangup is what enforces the call-length cap and turns away callers who
+// are not on the allowlist, so it has to reach the right carrier.
+func TestScriptHangsUpAtTelnyx(t *testing.T) {
+	var mu sync.Mutex
+	var seen []carrierCall
+	carrier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, carrierCall{method: r.Method, path: r.URL.EscapedPath(), auth: r.Header.Get("Authorization")})
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer carrier.Close()
+
+	runShellFunc(t, carrier.URL, `mod.carrier_hangup("v3:call-control-id")`)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 {
+		t.Fatalf("the carrier saw %d requests, want 1: %+v", len(seen), seen)
+	}
+	if seen[0].method != http.MethodPost || seen[0].path != "/v2/calls/v3%3Acall-control-id/actions/hangup" {
+		t.Errorf("hangup = %s %s", seen[0].method, seen[0].path)
 	}
 }

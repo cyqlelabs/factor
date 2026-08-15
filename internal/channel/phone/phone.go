@@ -33,13 +33,13 @@ func init() {
 // The bus is still used for the one thing that is genuinely asynchronous — a
 // finished outbound call reporting back to whoever asked for it.
 type Phone struct {
-	cfg    Config
-	home   string
-	token  string
-	bridge *bridge
-	shell  *supervisor
-	speech *speechSupervisor // nil unless a local tier runs on Factor's own server
-	twilio *twilioClient
+	cfg     Config
+	home    string
+	token   string
+	bridge  *bridge
+	shell   *supervisor
+	speech  *speechSupervisor // nil unless a local tier runs on Factor's own server
+	carrier carrierClient
 
 	// speechWait is how long the voice shell holds for the speech server to
 	// load its models before giving up and letting the tier fall back.
@@ -65,7 +65,7 @@ func New(cfg Config, b *bus.MessageBus) (*Phone, error) {
 		cfg:        cfg,
 		home:       config.Home(),
 		token:      newBridgeToken(),
-		twilio:     newTwilioClient(cfg),
+		carrier:    newCarrierClient(cfg),
 		effective:  cfg,
 		speechWait: speechReadyTimeout,
 	}
@@ -221,11 +221,11 @@ func (p *Phone) destination(chatID string) string {
 }
 
 func (p *Phone) sendSMS(ctx context.Context, to, body string) error {
-	sid, err := p.twilio.sendSMS(ctx, p.cfg.PhoneNumber, to, body)
+	id, err := p.carrier.sendSMS(ctx, p.cfg.PhoneNumber, to, body)
 	if err != nil {
 		return err
 	}
-	slog.Info("sms sent", "to", to, "sid", sid)
+	slog.Info("sms sent", "to", to, "id", id)
 	return nil
 }
 
@@ -251,7 +251,8 @@ func (p *Phone) redact(err error) error {
 		return nil
 	}
 	msg := err.Error()
-	for _, secret := range []string{p.cfg.TwilioAuthToken, p.cfg.ElevenLabsAPIKey, p.cfg.STTAPIKey, p.token} {
+	for _, secret := range []string{p.cfg.TwilioAuthToken, p.cfg.TelnyxAPIKey,
+		p.cfg.ElevenLabsAPIKey, p.cfg.STTAPIKey, p.token} {
 		if secret != "" {
 			msg = strings.ReplaceAll(msg, secret, "[redacted]")
 		}

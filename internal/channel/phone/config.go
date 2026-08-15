@@ -30,6 +30,13 @@ const (
 	maxMessageLength = 1500
 )
 
+// Carrier identifiers. Twilio is the default; Telnyx is the other carrier the
+// voice shell speaks, and the two are configured with different credentials.
+const (
+	carrierTwilio = "twilio"
+	carrierTelnyx = "telnyx"
+)
+
 // Audio provider identifiers. "local-openai" is any OpenAI-compatible server
 // the user runs themselves (Speaches, whisper-server, …) reached over base_url.
 const (
@@ -72,6 +79,15 @@ type Config struct {
 	TwilioAccountSID string `json:"twilio_account_sid"`
 	TwilioAuthToken  string `json:"twilio_auth_token"`
 
+	// Telnyx credentials. TelnyxConnectionID is the Call Control Application
+	// the number belongs to — Factor points its webhook at wherever the voice
+	// shell is reachable on every boot. TelnyxPublicKey verifies the carrier's
+	// webhooks; the shell refuses unsigned ones, so a call without it never
+	// connects.
+	TelnyxAPIKey       string `json:"telnyx_api_key"`
+	TelnyxConnectionID string `json:"telnyx_connection_id"`
+	TelnyxPublicKey    string `json:"telnyx_public_key"`
+
 	ElevenLabsAPIKey string `json:"elevenlabs_api_key"`
 	VoiceID          string `json:"voice_id,omitempty"`
 	Language         string `json:"language"`
@@ -104,7 +120,7 @@ type Config struct {
 	Command     string `json:"command,omitempty"`
 	AutoInstall *bool  `json:"auto_install,omitempty"`
 
-	// Test overrides, following the Telegram precedent: the Twilio REST base
+	// Test overrides, following the Telegram precedent: the carrier's REST base
 	// and the voice shell's control API. A control_api_base skips spawning the
 	// sidecar entirely and talks to whatever is already listening there.
 	APIBase        string `json:"api_base,omitempty"`
@@ -156,8 +172,9 @@ func (c *Config) applyDefaults() {
 	for i, n := range c.AllowCallTo {
 		c.AllowCallTo[i] = normalizeNumber(n)
 	}
+	c.Carrier = strings.ToLower(strings.TrimSpace(c.Carrier))
 	if c.Carrier == "" {
-		c.Carrier = "twilio"
+		c.Carrier = carrierTwilio
 	}
 	if c.Language == "" {
 		c.Language = defaultLanguage
@@ -220,11 +237,23 @@ func (c Config) validate() error {
 			return fmt.Errorf("allow_call_to entry %q is not E.164", n)
 		}
 	}
-	if c.Carrier != "twilio" {
-		return fmt.Errorf("carrier %q is not wired yet (only twilio is)", c.Carrier)
-	}
-	if c.TwilioAccountSID == "" || c.TwilioAuthToken == "" {
-		return fmt.Errorf("twilio_account_sid and twilio_auth_token are required")
+	switch c.Carrier {
+	case carrierTwilio:
+		if c.TwilioAccountSID == "" || c.TwilioAuthToken == "" {
+			return fmt.Errorf("twilio_account_sid and twilio_auth_token are required")
+		}
+	case carrierTelnyx:
+		if c.TelnyxAPIKey == "" || c.TelnyxConnectionID == "" {
+			return fmt.Errorf("telnyx_api_key and telnyx_connection_id are required")
+		}
+		// Patter serves Telnyx webhooks only when it can verify their
+		// signature, so a missing public key is not a degraded call — it is
+		// every call failing at the carrier, which is worth refusing here.
+		if c.TelnyxPublicKey == "" {
+			return fmt.Errorf("telnyx_public_key is required: the voice shell refuses webhooks it cannot verify, so calls would never connect")
+		}
+	default:
+		return fmt.Errorf("unknown carrier %q (want %s or %s)", c.Carrier, carrierTwilio, carrierTelnyx)
 	}
 	switch c.STT.Provider {
 	case providerDeepgram, providerWhisper:

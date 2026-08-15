@@ -128,8 +128,10 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
     "phone": {                                 // optional; absent = nothing runs
       "user_number": "+15550001111",           // you: the only one who may call in
       "phone_number": "+15550002222",          // the number you bought
-      "twilio_account_sid": "AC...",
+      "carrier": "twilio",                     // twilio | telnyx
+      "twilio_account_sid": "AC...",           // twilio: these two
       "twilio_auth_token": "...",
+      // telnyx instead: "telnyx_api_key", "telnyx_connection_id", "telnyx_public_key"
       "elevenlabs_api_key": "...",
       "stt_api_key": "...",                    // Deepgram
       "language": "en",
@@ -278,9 +280,21 @@ spoken filler while it works; simple questions land in the normal 1.5–3 s rang
 <details>
 <summary><b>Getting the line up, and the guardrails on it</b></summary>
 
-Buy a number at a supported carrier (Twilio today; Patter also speaks Telnyx and
-Plivo), then run `factor init`. The wizard verifies the carrier credentials and the
-voice key live before writing anything.
+Buy a number at Twilio or Telnyx, then run `factor init`. The wizard asks which one,
+takes the credentials it needs, and verifies them — along with the voice key — live
+before writing anything.
+
+| | Twilio | Telnyx |
+|---|---|---|
+| Credentials | account SID + auth token | API key + connection id + public key |
+| Setup at the carrier | buy a number | buy a number, create a Call Control Application |
+| Cost | the baseline above | lower per minute and per text |
+
+The connection id is that application's. On every start Factor attaches the number to
+it and points its webhook at wherever the shell is answering, so a rotating tunnel
+keeps working and there is nothing to click in the portal. Telnyx signs its webhooks
+and the shell refuses ones it cannot verify, which is why the public key is required
+rather than optional.
 
 The carrier has to reach the voice shell, so it needs a public URL. `tunnel: "quick"`
 (the default) uses Patter's built-in Cloudflare quick tunnel — fine for trying it

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -157,6 +158,54 @@ func CheckTwilio(ctx context.Context, client *http.Client, apiBase, accountSID, 
 		return "", fmt.Errorf("the Twilio account is %s", payload.Status)
 	}
 	return payload.FriendlyName, nil
+}
+
+// CheckTelnyx validates carrier credentials and returns the name of the Call
+// Control Application the number belongs to. Reading that application proves
+// both halves at once: a bad key is rejected, and a connection id that is not
+// an application of this account is not found.
+func CheckTelnyx(ctx context.Context, client *http.Client, apiBase, apiKey, connectionID string) (string, error) {
+	if apiBase == "" {
+		apiBase = "https://api.telnyx.com"
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	endpoint := fmt.Sprintf("%s/v2/call_control_applications/%s",
+		strings.TrimSuffix(apiBase, "/"), url.PathEscape(connectionID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("telnyx unreachable: %s", redactSecret(err.Error(), apiKey))
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var payload struct {
+		Data struct {
+			ApplicationName string `json:"application_name"`
+			Active          *bool  `json:"active"`
+		} `json:"data"`
+		Errors []struct {
+			Detail string `json:"detail"`
+			Title  string `json:"title"`
+		} `json:"errors"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	if resp.StatusCode != http.StatusOK {
+		for _, e := range payload.Errors {
+			if detail := strings.TrimSpace(firstNonEmpty(e.Detail, e.Title)); detail != "" {
+				return "", fmt.Errorf("telnyx rejected the credentials: %s", detail)
+			}
+		}
+		return "", fmt.Errorf("telnyx rejected the credentials (HTTP %d)", resp.StatusCode)
+	}
+	if payload.Data.Active != nil && !*payload.Data.Active {
+		return "", fmt.Errorf("the Telnyx call control application %q is inactive", payload.Data.ApplicationName)
+	}
+	return payload.Data.ApplicationName, nil
 }
 
 // CheckElevenLabs validates a text-to-speech key and returns the plan it is on.

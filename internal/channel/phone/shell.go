@@ -14,11 +14,18 @@ import (
 // reach the bridge. Rendering it here — in Go, with tests — keeps the Python
 // side a thin, dumb executor of decisions Factor already made.
 
+// shellCarrier carries whichever credentials the chosen carrier needs; the
+// other carrier's fields are left out entirely rather than sent empty.
 type shellCarrier struct {
 	Name        string `json:"name"`
-	AccountSID  string `json:"account_sid"`
-	AuthToken   string `json:"auth_token"`
 	PhoneNumber string `json:"phone_number"`
+
+	AccountSID string `json:"account_sid,omitempty"`
+	AuthToken  string `json:"auth_token,omitempty"`
+
+	APIKey       string `json:"api_key,omitempty"`
+	ConnectionID string `json:"connection_id,omitempty"`
+	PublicKey    string `json:"public_key,omitempty"`
 }
 
 type shellSTT struct {
@@ -71,14 +78,16 @@ type shellConfig struct {
 	Tier int `json:"tier"`
 }
 
-// Speech defaults. flash_v2_5 is ElevenLabs' lowest-latency model and ulaw_8000
-// is the telephony codec, so the shell hands the carrier bytes it can send
-// without transcoding.
+// Speech defaults. flash_v2_5 is ElevenLabs' lowest-latency model, and the
+// format is whatever the carrier negotiates, so the shell hands it bytes it can
+// send without transcoding: Twilio media streams are μ-law at 8 kHz, Telnyx
+// takes linear PCM at 16 kHz.
 const (
 	deepgramModel   = "nova-3"
 	whisperModel    = "whisper-1"
 	elevenLabsModel = "eleven_flash_v2_5"
 	telephonyFormat = "ulaw_8000"
+	telnyxFormat    = "pcm_16000"
 
 	// The local tier's wire format is headerless PCM, because that is what
 	// Patter's OpenAI adapter requests and resamples.
@@ -124,7 +133,7 @@ func renderShellConfig(cfg Config, bridgePort int, bridgeToken string) shellConf
 	switch cfg.TTS.Provider {
 	case providerElevenLabs:
 		tts.APIKey = cfg.ElevenLabsAPIKey
-		tts.Format = telephonyFormat
+		tts.Format = carrierAudioFormat(cfg.Carrier)
 		if tts.Model == "" {
 			tts.Model = elevenLabsModel
 		}
@@ -146,17 +155,12 @@ func renderShellConfig(cfg Config, bridgePort int, bridgeToken string) shellConf
 	}
 
 	return shellConfig{
-		ControlHost: "127.0.0.1",
-		ControlPort: cfg.SidecarPort,
-		WebhookPort: cfg.webhookPort(),
-		BridgeURL:   fmt.Sprintf("http://127.0.0.1:%d", bridgePort),
-		BridgeToken: bridgeToken,
-		Carrier: shellCarrier{
-			Name:        cfg.Carrier,
-			AccountSID:  cfg.TwilioAccountSID,
-			AuthToken:   cfg.TwilioAuthToken,
-			PhoneNumber: cfg.PhoneNumber,
-		},
+		ControlHost:        "127.0.0.1",
+		ControlPort:        cfg.SidecarPort,
+		WebhookPort:        cfg.webhookPort(),
+		BridgeURL:          fmt.Sprintf("http://127.0.0.1:%d", bridgePort),
+		BridgeToken:        bridgeToken,
+		Carrier:            renderCarrier(cfg),
 		STT:                stt,
 		TTS:                tts,
 		Language:           cfg.Language,
@@ -175,6 +179,29 @@ func renderShellConfig(cfg Config, bridgePort int, bridgeToken string) shellConf
 		Dashboard: false,
 		Tier:      cfg.Tier(),
 	}
+}
+
+// renderCarrier hands the shell the credentials its carrier actually uses.
+func renderCarrier(cfg Config) shellCarrier {
+	carrier := shellCarrier{Name: cfg.Carrier, PhoneNumber: cfg.PhoneNumber}
+	if cfg.Carrier == carrierTelnyx {
+		carrier.APIKey = cfg.TelnyxAPIKey
+		carrier.ConnectionID = cfg.TelnyxConnectionID
+		carrier.PublicKey = cfg.TelnyxPublicKey
+		return carrier
+	}
+	carrier.AccountSID = cfg.TwilioAccountSID
+	carrier.AuthToken = cfg.TwilioAuthToken
+	return carrier
+}
+
+// carrierAudioFormat is the wire format the carrier negotiates, which is what
+// the speech synthesiser should emit so nothing has to transcode it on the way.
+func carrierAudioFormat(carrier string) string {
+	if carrier == carrierTelnyx {
+		return telnyxFormat
+	}
+	return telephonyFormat
 }
 
 // outboundAllowlist is who the agent may dial, owner first.

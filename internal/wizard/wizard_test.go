@@ -611,6 +611,7 @@ func TestWizardPhoneCloudTier(t *testing.T) {
 		"3",               // memory off
 		"n",               // no telegram
 		"y",               // set up the phone
+		"1",               // carrier: twilio
 		"AC-test",         // twilio account sid
 		"twilio-secret",   // twilio auth token
 		"+1 555 000 2222", // the number bought at the carrier
@@ -662,7 +663,7 @@ func TestWizardPhoneFullyLocalTier(t *testing.T) {
 		"5", "llama3", "3",
 		"3", // memory off
 		"n", // no telegram
-		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
+		"y", "1", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"es",                           // language
 		"4",                            // fully local audio
 		"2",                            // a speech server the user runs
@@ -701,7 +702,7 @@ func TestWizardPhoneLocalTierSurvivesAnAbsentServer(t *testing.T) {
 	twilio, elevenlabs, _ := fakeTelephony(t)
 	h := newHarness(t,
 		"5", "llama3", "3", "3", "n",
-		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
+		"y", "1", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"",                      // language
 		"2",                     // local speech-to-text only
 		"2",                     // a speech server the user runs
@@ -732,7 +733,7 @@ func TestWizardPhoneLocalTierInstallsEverything(t *testing.T) {
 	twilio, elevenlabs, _ := fakeTelephony(t)
 	h := newHarness(t,
 		"5", "llama3", "3", "3", "n",
-		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
+		"y", "1", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"es-MX", // language
 		"4",     // fully local audio
 		"1",     // let Factor install it
@@ -790,7 +791,7 @@ func TestWizardPhoneLocalTierSurvivesAFailedInstall(t *testing.T) {
 	twilio, elevenlabs, _ := fakeTelephony(t)
 	h := newHarness(t,
 		"5", "llama3", "3", "3", "n",
-		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
+		"y", "1", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"en", "4", "1", "1", "", "", "",
 	)
 	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
@@ -819,7 +820,7 @@ func TestWizardLocalVoiceOnlyDoesNotInstallTranscription(t *testing.T) {
 	twilio, elevenlabs, _ := fakeTelephony(t)
 	h := newHarness(t,
 		"5", "llama3", "3", "3", "n",
-		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
+		"y", "1", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"en",
 		"3",               // local text-to-speech only
 		"1",               // let Factor install it
@@ -846,10 +847,97 @@ func TestWizardLocalVoiceOnlyDoesNotInstallTranscription(t *testing.T) {
 	}
 }
 
+func TestWizardPhoneOnTelnyx(t *testing.T) {
+	_, elevenlabs, _ := fakeTelephony(t)
+	var probed string
+	telnyx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer telnyx-secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"errors":[{"detail":"Authentication failed"}]}`))
+			return
+		}
+		probed = r.URL.Path
+		_, _ = w.Write([]byte(`{"data":{"application_name":"factor-voice","active":true}}`))
+	}))
+	t.Cleanup(telnyx.Close)
+
+	h := newHarness(t,
+		"5", "llama3", "3", "3", "n",
+		"y",                 // set up the phone
+		"2",                 // carrier: telnyx
+		"telnyx-secret",     // api key
+		"285123",            // connection id
+		"telnyx-public-key", // public key
+		"+15550002222",      // the number bought at the carrier
+		"+15550001111",      // the owner's number
+		"",                  // language: en
+		"1",                 // cloud speech
+		"deepgram-secret",   // transcription key
+		"eleven-secret",     // voice key
+		"",                  // voice id: the default
+		"1",                 // proactive: text me
+		"", "", "",
+	)
+	h.opts.Telnyx, h.opts.ElevenLabs = telnyx.URL, elevenlabs.URL
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+
+	section := savedPhone(t, h)
+	if section.Carrier != carrierTelnyx {
+		t.Errorf("carrier = %q, want %q", section.Carrier, carrierTelnyx)
+	}
+	if section.TelnyxAPIKey != "telnyx-secret" || section.TelnyxConnectionID != "285123" ||
+		section.TelnyxPublicKey != "telnyx-public-key" {
+		t.Errorf("telnyx credentials = %+v", section)
+	}
+	if section.TwilioAccountSID != "" || section.TwilioAuthToken != "" {
+		t.Errorf("a Telnyx section carries Twilio credentials: %+v", section)
+	}
+	// The probe has to read the application, which is what proves the
+	// connection id belongs to this account.
+	if probed != "/v2/call_control_applications/285123" {
+		t.Errorf("the wizard probed %q", probed)
+	}
+	if !strings.Contains(h.out.String(), "factor-voice") {
+		t.Errorf("the verified application is not in the output:\n%s", h.out.String())
+	}
+	if strings.Contains(h.out.String(), "telnyx-secret") {
+		t.Errorf("a secret was echoed:\n%s", h.out.String())
+	}
+}
+
+// The public key is what lets the shell verify the carrier's webhooks; without
+// it every call would fail at the carrier, so the section is not worth writing.
+func TestWizardPhoneSkippedWithoutTheTelnyxPublicKey(t *testing.T) {
+	telnyx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"application_name":"factor-voice","active":true}}`))
+	}))
+	t.Cleanup(telnyx.Close)
+
+	h := newHarness(t,
+		"5", "llama3", "3", "3", "n",
+		"y", "2", "telnyx-secret", "285123",
+		"", // no public key
+		"", "", "",
+	)
+	h.opts.Telnyx = telnyx.URL
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	if _, configured := h.saved().Channels["phone"]; configured {
+		t.Error("a phone section was written that could never take a call")
+	}
+	if !strings.Contains(h.out.String(), "skipping the phone") {
+		t.Errorf("output:\n%s", h.out.String())
+	}
+}
+
 func TestWizardPhoneSkippedWithoutCarrierCredentials(t *testing.T) {
 	h := newHarness(t,
 		"5", "llama3", "3", "3", "n",
 		"y", // set up the phone
+		"1", // carrier: twilio
 		"",  // no account sid
 		"",  // no auth token
 		"", "", "",
