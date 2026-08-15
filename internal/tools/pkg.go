@@ -22,11 +22,14 @@ var managerSpecs = map[string]managerSpec{
 	"dnf":    {probe: "dnf", install: []string{"dnf", "install", "-y"}, system: true},
 	"pacman": {probe: "pacman", install: []string{"pacman", "-S", "--noconfirm"}, system: true},
 	"xbps":   {probe: "xbps-install", install: []string{"xbps-install", "-y"}, system: true},
-	"pkg":    {probe: "pkg", install: []string{"pkg", "install"}, system: true}, // Puppy Linux woof-CE
-	"pip":    {probe: "pip", install: []string{"pip", "install"}},
-	"pipx":   {probe: "pipx", install: []string{"pipx", "install"}},
-	"uv":     {probe: "uv", install: []string{"uv", "tool", "install"}},
-	"npm":    {probe: "npm", install: []string{"npm", "install", "-g"}},
+	// Puppy Linux woof-CE. Its `install` verb only unpacks something already
+	// downloaded — `get` is the one that fetches and installs — and the flag
+	// has to precede the verb or it is read as a package name.
+	"pkg":  {probe: "pkg", install: []string{"pkg", "-f", "get"}, system: true},
+	"pip":  {probe: "pip", install: []string{"pip", "install"}},
+	"pipx": {probe: "pipx", install: []string{"pipx", "install"}},
+	"uv":   {probe: "uv", install: []string{"uv", "tool", "install"}},
+	"npm":  {probe: "npm", install: []string{"npm", "install", "-g"}},
 }
 
 // autoOrder is the probe order for system managers in auto mode.
