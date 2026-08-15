@@ -292,11 +292,11 @@ func TestWizardContinueAnywayWithBrokenProvider(t *testing.T) {
 		"sk-x",
 		"some-model", // no model list: free-text entry
 		"1", "",      // reasoning: xhigh, visible
-		"3",    // continue anyway
-		"3",    // memory off
-		"n",    // no telegram
-		"n",    // no phone
-		"", "", // defaults for the tool questions
+		"3",        // continue anyway
+		"3",        // memory off
+		"n",        // no telegram
+		"n",        // no phone
+		"", "", "", // defaults for the tool questions
 	)
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
@@ -322,7 +322,7 @@ func TestWizardModelFilterForLongLists(t *testing.T) {
 		"3", // memory off
 		"n", // no telegram
 		"n", // no phone
-		"", "",
+		"", "", "",
 	)
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
@@ -341,7 +341,7 @@ func TestWizardSmrtiInstallFailureIsNotFatal(t *testing.T) {
 		"llama3", // model (no live list)
 		"3",      // continue anyway after the check fails
 		"1", "y", // memory sidecar, install smrti
-		"", "n", "n", "", "",
+		"", "n", "n", "", "", "",
 	)
 	h.opts.EnsureSmrti = func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
 		return "", false, fmt.Errorf("no Python installer found")
@@ -369,7 +369,7 @@ func TestWizardReasoningOverrides(t *testing.T) {
 		"3",     // memory off
 		"n",     // no telegram
 		"n",     // no phone
-		"", "",
+		"", "", "",
 	)
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
@@ -385,7 +385,7 @@ func TestWizardReasoningOverrides(t *testing.T) {
 
 func TestWizardReasoningOffAndSkippedForLocalProviders(t *testing.T) {
 	// Ollama: the wizard must not ask about reasoning at all.
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "", "")
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
@@ -398,7 +398,7 @@ func TestWizardReasoningOffAndSkippedForLocalProviders(t *testing.T) {
 
 	// A key-based provider can still turn reasoning off explicitly.
 	provider := fakeProvider(t, "m1")
-	h2 := newHarness(t, "8", provider.URL+"/v1", "sk-test", "1", "5", "3", "n", "n", "", "")
+	h2 := newHarness(t, "8", provider.URL+"/v1", "sk-test", "1", "5", "3", "n", "n", "", "", "")
 	if err := h2.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h2.out.String())
 	}
@@ -414,7 +414,7 @@ func TestWizardExternalMemory(t *testing.T) {
 		"1", // personality
 		"n", // no telegram
 		"n", // no phone
-		"", "",
+		"", "", "",
 	)
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
@@ -460,7 +460,7 @@ func TestWizardDesktopHelpersOffered(t *testing.T) {
 }
 
 func TestWizardDesktopSkippedWhenHeadless(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "y", "y")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "y", "y", "n")
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
@@ -616,7 +616,7 @@ func TestWizardPhoneCloudTier(t *testing.T) {
 		"eleven-secret",   // voice key
 		"voice-abc",       // voice id
 		"1",               // proactive: text me
-		"", "",            // tools
+		"", "", "",        // tools
 	)
 	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
 	if err := h.run(); err != nil {
@@ -665,7 +665,7 @@ func TestWizardPhoneFullyLocalTier(t *testing.T) {
 		"Systran/faster-whisper-small", // transcription model
 		"es_ES-sharvard-medium",        // voice
 		"2",                            // proactive: call me
-		"", "",
+		"", "", "",
 	)
 	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
 	if err := h.run(); err != nil {
@@ -705,7 +705,7 @@ func TestWizardPhoneLocalTierSurvivesAnAbsentServer(t *testing.T) {
 		"eleven-secret",         // voice key (text-to-speech is still cloud)
 		"",                      // default voice
 		"1",                     // proactive: text me
-		"", "",
+		"", "", "",
 	)
 	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
 	if err := h.run(); err != nil {
@@ -732,7 +732,7 @@ func TestWizardPhoneLocalTierInstallsEverything(t *testing.T) {
 		"4",     // fully local audio
 		"1",     // let Factor install it
 		"2",     // proactive: call me
-		"", "",
+		"", "", "",
 	)
 	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
 
@@ -786,7 +786,7 @@ func TestWizardPhoneLocalTierSurvivesAFailedInstall(t *testing.T) {
 	h := newHarness(t,
 		"5", "llama3", "3", "3", "n",
 		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
-		"en", "4", "1", "1", "", "",
+		"en", "4", "1", "1", "", "", "",
 	)
 	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
 	h.opts.InstallSpeech = func(context.Context, string, bool, bool, phone.Progress) (phone.SpeechChoices, error) {
@@ -819,7 +819,7 @@ func TestWizardLocalVoiceOnlyDoesNotInstallTranscription(t *testing.T) {
 		"3",               // local text-to-speech only
 		"1",               // let Factor install it
 		"deepgram-secret", // transcription is still cloud
-		"1", "", "",
+		"1", "", "", "",
 	)
 	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
 
@@ -847,7 +847,7 @@ func TestWizardPhoneSkippedWithoutCarrierCredentials(t *testing.T) {
 		"y", // set up the phone
 		"",  // no account sid
 		"",  // no auth token
-		"", "",
+		"", "", "",
 	)
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
@@ -863,7 +863,7 @@ func TestWizardPhoneSkippedWithoutCarrierCredentials(t *testing.T) {
 // The browser step is the one that used to lie: it asked "enable the browser
 // tools?", took yes for an answer, and left the machine with no browser.
 func TestWizardInstallsBrowserWhenMissing(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y", "n")
 	if err := os.Remove(filepath.Join(h.home, "bin", "chromium")); err != nil {
 		t.Fatal(err)
 	}
@@ -882,7 +882,7 @@ func TestWizardInstallsBrowserWhenMissing(t *testing.T) {
 }
 
 func TestWizardKeepsBrowserToolsWhenInstallDeclined(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n", "n")
 	if err := os.Remove(filepath.Join(h.home, "bin", "chromium")); err != nil {
 		t.Fatal(err)
 	}
@@ -900,7 +900,7 @@ func TestWizardKeepsBrowserToolsWhenInstallDeclined(t *testing.T) {
 }
 
 func TestWizardUsesTheBrowserAlreadyInstalled(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n")
 	h.opts.EnsureBrowser = func(context.Context, browser.Progress) (string, bool, error) {
 		t.Error("EnsureBrowser called with a browser already on PATH")
 		return "", false, nil
@@ -926,7 +926,7 @@ func TestWizardUsesTheBrowserAlreadyInstalled(t *testing.T) {
 // installed browser still refuses to start; the other, no display, is decided
 // at launch instead of here.
 func TestWizardConfiguresBrowserForRoot(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n")
 	old := geteuid
 	geteuid = func() int { return 0 }
 	t.Cleanup(func() { geteuid = old })
@@ -943,7 +943,7 @@ func TestWizardConfiguresBrowserForRoot(t *testing.T) {
 }
 
 func TestWizardReportsABrowserThatWillNotDrive(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n")
 	h.opts.VerifyBrowser = func(context.Context, config.BrowserConfig) error {
 		return errors.New("chrome exited before the socket appeared")
 	}
@@ -982,5 +982,39 @@ func TestQuietRunProvisionsBrowser(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "downloading Helium") {
 		t.Errorf("install progress was swallowed:\n%s", out.String())
+	}
+}
+
+func TestWizardAddsTheLightweightEngineWhenAskedTo(t *testing.T) {
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y")
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	cfg := h.saved()
+	want := filepath.Join(h.home, "engine", "lightpanda")
+	if !cfg.Browser.FastPath || cfg.Browser.FastCommand != want {
+		t.Errorf("browser = %+v, want the fast path on and pointed at %s", cfg.Browser, want)
+	}
+}
+
+// The second engine is a convenience; failing to install it must not cost the
+// user the browser they already have.
+func TestWizardKeepsTheBrowserWhenTheLightweightEngineWillNotInstall(t *testing.T) {
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y")
+	h.opts.EnsureFastBrowser = func(context.Context, browser.Progress) (string, bool, error) {
+		return "", false, errors.New("Lightpanda will not run here: GLIBC_2.34 not found")
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	cfg := h.saved()
+	if cfg.Browser.FastPath || cfg.Browser.FastCommand != "" {
+		t.Errorf("browser = %+v, want the fast path left off", cfg.Browser)
+	}
+	if !cfg.Browser.Enabled || cfg.Browser.Command == "" {
+		t.Errorf("browser = %+v, want the real browser untouched", cfg.Browser)
+	}
+	if !strings.Contains(h.out.String(), "GLIBC_2.34") {
+		t.Errorf("the reason was not shown:\n%s", h.out.String())
 	}
 }

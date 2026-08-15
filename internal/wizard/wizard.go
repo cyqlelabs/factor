@@ -54,6 +54,9 @@ type Options struct {
 	// the browser tools is a request to browse, not a request for homework.
 	EnsureBrowser func(ctx context.Context, progress browser.Progress) (path string, installed bool, err error)
 	VerifyBrowser func(ctx context.Context, cfg config.BrowserConfig) error
+
+	// EnsureFastBrowser installs the optional read-only engine.
+	EnsureFastBrowser func(ctx context.Context, progress browser.Progress) (path string, installed bool, err error)
 }
 
 func (o *Options) defaults() {
@@ -87,6 +90,11 @@ func (o *Options) defaults() {
 	}
 	if o.VerifyBrowser == nil {
 		o.VerifyBrowser = browser.Verify
+	}
+	if o.EnsureFastBrowser == nil {
+		o.EnsureFastBrowser = func(ctx context.Context, progress browser.Progress) (string, bool, error) {
+			return browser.EnsureFastEngine(ctx, o.Home, progress)
+		}
 	}
 	if o.InstallPackages == nil {
 		o.InstallPackages = func(ctx context.Context, packages []string) (string, error) {
@@ -1126,6 +1134,37 @@ func (w *wiz) setupBrowser(ctx context.Context, env desktop.Env) error {
 	}); err != nil {
 		w.ui.Note("the browser is configured but did not finish a page here; `factor status` will retry")
 	}
+	return w.setupFastBrowser(ctx)
+}
+
+// setupFastBrowser offers the second engine. It stays off unless asked for:
+// it is another browser to download, it cannot click or screenshot, and the
+// real one already reads pages — it just costs far more memory to do it.
+func (w *wiz) setupFastBrowser(ctx context.Context) error {
+	if w.opts.NoInstall {
+		return nil
+	}
+	add, err := w.ui.Confirm("Also add a lightweight read-only engine for cheap page reads (Lightpanda, ~150 MB)?", w.cfg.Browser.FastPath)
+	if err != nil {
+		return err
+	}
+	if !add {
+		w.cfg.Browser.FastPath = false
+		return nil
+	}
+	progress := w.ui.Progress()
+	var path string
+	if err := w.ui.Task("installing Lightpanda", func() error {
+		p, _, err := w.opts.EnsureFastBrowser(ctx, progress)
+		path = p
+		return err
+	}); err != nil {
+		w.cfg.Browser.FastPath = false
+		w.ui.Note("the full browser handles page reads on its own; nothing else changes")
+		return nil
+	}
+	w.cfg.Browser.FastPath = true
+	w.cfg.Browser.FastCommand = path
 	return nil
 }
 
