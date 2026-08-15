@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cyqlelabs/factor/internal/bus"
 )
@@ -574,10 +575,16 @@ func TestOutcomeReportDistinguishesEveryStatus(t *testing.T) {
 }
 
 func TestOutcomeReportBoundsTheTranscript(t *testing.T) {
-	long := strings.Repeat("a", transcriptTailLimit*2)
+	// Multi-byte on purpose: cutting a Spanish transcript by bytes would put
+	// invalid UTF-8 in front of the model.
+	long := strings.Repeat("¿qué tal? ", transcriptTailLimit)
 	report := outcomeReport("+15550003333", "completed", long)
-	if len(report) > transcriptTailLimit+400 {
-		t.Errorf("report is %d chars; an unbounded transcript would flood the next turn", len(report))
+	if utf8.RuneCountInString(report) > transcriptTailLimit+400 {
+		t.Errorf("report is %d runes; an unbounded transcript would flood the next turn",
+			utf8.RuneCountInString(report))
+	}
+	if !utf8.ValidString(report) {
+		t.Error("truncation sliced through a multi-byte character")
 	}
 	if !strings.Contains(report, "…") {
 		t.Error("a truncated transcript should say so")

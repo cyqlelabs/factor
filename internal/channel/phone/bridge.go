@@ -537,8 +537,10 @@ func outcomeReport(to, status, transcript string) string {
 		fmt.Fprintf(&b, "ended with status %q.", status)
 	}
 	if tail := strings.TrimSpace(transcript); tail != "" {
-		if len(tail) > transcriptTailLimit {
-			tail = "…" + tail[len(tail)-transcriptTailLimit:]
+		// Cut on runes, not bytes: a byte-slice through a multi-byte character
+		// would put invalid UTF-8 in front of the model.
+		if runes := []rune(tail); len(runes) > transcriptTailLimit {
+			tail = "…" + string(runes[len(runes)-transcriptTailLimit:])
 		}
 		b.WriteString("\nTranscript tail:\n")
 		b.WriteString(tail)

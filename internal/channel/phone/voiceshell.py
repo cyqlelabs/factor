@@ -103,9 +103,13 @@ def notify(payload: dict) -> None:
 
 
 def carrier_hangup(call_sid: str) -> None:
-    """End a call at the carrier. Used for callers who are not allowed to reach
-    the agent and for calls that have run past max_call_minutes — Patter has no
-    hook for either, so the carrier's own API is the lever."""
+    """End a call at the carrier.
+
+    Used for callers who are not allowed to reach the agent and for calls that
+    have run past max_call_minutes — Patter exposes no hook for either, so the
+    carrier's own API is the lever. call_sid is Patter's call id, which on
+    Twilio is the Call SID; a mismatch is logged rather than raised, since
+    neither guardrail is worth dropping a live call over."""
     if CARRIER.get("name") != "twilio" or not call_sid:
         return
     account = urllib.parse.quote(CARRIER["account_sid"], safe="")
@@ -161,10 +165,17 @@ def build(factory, **kwargs):
 _BASE_URL_ATTRS = ("base_url", "_base_url", "api_base", "_api_base", "endpoint", "_endpoint")
 
 
-def repoint(provider, base_url: str, what: str):
-    """Aim a provider at a local OpenAI-compatible server."""
-    if not base_url:
-        return provider
+def build_local(factory, base_url: str, what: str, **kwargs):
+    """Construct a speech provider aimed at a local OpenAI-compatible server.
+
+    The constructor is tried with base_url first, since a future Patter release
+    may well accept it; only a constructor that rejects the keyword outright
+    falls back to setting the attribute."""
+    try:
+        return factory(base_url=base_url, **kwargs)
+    except TypeError:
+        pass
+    provider = build(factory, **kwargs)
     for attr in _BASE_URL_ATTRS:
         if hasattr(provider, attr):
             setattr(provider, attr, base_url)
@@ -172,7 +183,7 @@ def repoint(provider, base_url: str, what: str):
             return provider
     die(
         f"this Patter release exposes no endpoint override on its {what} adapter, so the local "
-        f"tier cannot be wired ({base_url}). Set channels.phone.{what}.provider back to a cloud "
+        f"tier cannot be wired ({base_url}). Point channels.phone.{what}.provider at a cloud "
         f"provider, or keep local_audio_fallback on so Factor degrades instead of failing calls."
     )
 
@@ -188,12 +199,14 @@ def build_stt():
     if provider in ("whisper", "local-openai"):
         from getpatter.stt import whisper
 
-        built = build(whisper.STT, api_key=stt.get("api_key") or "local",
-                      model=stt.get("model") or None, language=stt.get("language"),
-                      base_url=stt.get("base_url") or None)
-        if provider == "local-openai" and not _took_base_url(built, stt.get("base_url")):
-            built = repoint(built, stt["base_url"], "stt")
-        return built
+        kwargs = {
+            "api_key": stt.get("api_key") or "local",
+            "model": stt.get("model") or None,
+            "language": stt.get("language"),
+        }
+        if provider == "local-openai":
+            return build_local(whisper.STT, stt["base_url"], "stt", **kwargs)
+        return build(whisper.STT, **kwargs)
     die(f"unknown stt provider {provider!r}")
 
 
@@ -211,20 +224,15 @@ def build_tts():
     if provider == "local-openai":
         from getpatter.tts import openai as openai_tts
 
-        built = build(openai_tts.TTS, api_key=tts.get("api_key") or "local",
-                      model=tts.get("model") or None, voice=tts.get("voice") or None,
-                      target_sample_rate=8000, base_url=tts.get("base_url") or None)
-        if not _took_base_url(built, tts.get("base_url")):
-            built = repoint(built, tts["base_url"], "tts")
-        return built
+        # 8 kHz is the phone band: rendering above it only costs a resample.
+        return build_local(
+            openai_tts.TTS, tts["base_url"], "tts",
+            api_key=tts.get("api_key") or "local",
+            model=tts.get("model") or None,
+            voice=tts.get("voice") or None,
+            target_sample_rate=8000,
+        )
     die(f"unknown tts provider {provider!r}")
-
-
-def _took_base_url(provider, base_url: str | None) -> bool:
-    """Report whether the constructor already accepted the override."""
-    if not base_url:
-        return True
-    return any(getattr(provider, attr, None) == base_url for attr in _BASE_URL_ATTRS)
 
 
 def build_llm():

@@ -34,6 +34,9 @@ func Describe(ctx context.Context, raw json.RawMessage, home string) Status {
 		Number:     cfg.PhoneNumber,
 		Tier:       cfg.TierLabel(),
 	}
+	if !status.Enabled {
+		return status
+	}
 	if err := cfg.validate(); err != nil {
 		status.Problem = err.Error()
 		return status
