@@ -37,7 +37,7 @@ mistake*.
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning` (OpenRouter), `reasoning_effort` (OpenAI/Groq), or a `thinking` budget (Anthropic) |
 | ☎️ **Answers the phone** | A real number: call it and talk to Factor out loud, or have it call and text you — barge-in, voicemail detection, and a fully local speech tier if you want no audio leaving the machine ([Phone](#phone-calls-and-sms)) |
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications — X11, Wayland, macOS, Windows; auto-registered when a display exists |
-| 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed instance — visible by default so you can watch it work |
+| 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed instance, visible by default so you can watch it work — and setup installs one when the machine has none ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills, drop-in instructions — see [Extending](#extending-factor) |
 | 🔧 **Self-managing** | Edits its own config, installs packages (apt/dnf/pip/npm/…), runs cron schedules and `HEARTBEAT.md` checks that cost zero LLM calls when idle |
 | 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, secrets scrubbed from every tool result — rails, not a sandbox ([Security](#security-model)) |
@@ -71,19 +71,22 @@ go install github.com/cyqlelabs/factor/cmd/factor@latest
 factor init      # interactive setup wizard
 ```
 
-The wizard verifies every step live — the provider with a real completion, the
-model picked from the endpoint's live list, the Telegram token with `getMe`, the
-carrier and voice credentials against their own APIs — and
-installs smrti if it's missing (`uv` → `pipx` → `pip --user` → private venv; no
-root needed). `factor init -y` takes the defaults for scripting; `--no-install`
-keeps it from installing anything.
+The wizard verifies every step live: the provider with a real completion, the model
+picked from the endpoint's live list, the Telegram token with `getMe`, the carrier
+and voice credentials against their own APIs, the browser with a real page load.
+Then it installs what's missing instead of handing you a list — smrti (`uv` →
+`pipx` → `pip --user` → private venv, no root needed), a browser, the helpers your
+desktop backend wants. It looks for that desktop on the machine rather than in this
+shell, so `factor init` over ssh still sets up the desktop the box is running.
+`factor init -y` takes the defaults for scripting; `--no-install` keeps it from
+installing anything.
 
 ```bash
 export FACTOR_PROVIDER_API_KEY=sk-or-...   # OpenRouter by default
 factor                                     # interactive chat
 factor -m "what's on my disk?"             # one-shot
 factor gateway                             # daemon: Telegram, phone, cron, heartbeat, jobs
-factor status                              # daemon / provider / memory / phone health
+factor status                              # daemon / provider / memory / phone / desktop health
 ```
 
 Factor spawns and supervises the smrti sidecar automatically, restarts it with
@@ -134,7 +137,12 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
   },
   "tools": { "disabled": [], "restrict_to_workspace": true },
   "desktop": { "enabled": null },            // null = on when a display exists
-  "browser": { "enabled": true, "headless": false },
+  "browser": {
+    "enabled": true,
+    "command": "",                           // "" = find one; init records what it installed
+    "headless": false,
+    "fast_path": false                       // opt in to the lightweight read-only engine
+  },
   "heartbeat": { "enabled": true, "interval_minutes": 30 }
 }
 ```
@@ -144,6 +152,30 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
 The workspace (`~/.factor/workspace`) is the agent's home: `AGENT.md`, `SOUL.md`,
 `USER.md` shape its identity; `HEARTBEAT.md` lists proactive tasks; `instructions/`,
 `skills/`, `sessions/`, `cron/` do what they say.
+
+## Browser
+
+Factor drives a real browser over DevTools: it attaches to your running
+Chrome/Chromium/Brave, or launches a managed instance that stays visible so you can
+watch it work. A machine with no browser gets one — `factor init` installs
+[Helium](https://helium.computer) under `~/.factor/engine`, from a portable tarball
+that needs no package manager and no root. Helium is ungoogled-chromium with the
+telemetry stripped, the anti-fingerprinting patches in, and uBlock Origin bundled,
+which is what actually keeps a tab's memory down on a small box.
+
+Reading a page and driving a page cost wildly different amounts, so you can add a
+second engine for the cheap half:
+
+| Engine | Tools | Renders | Good for |
+|---|---|---|---|
+| **Chromium** — Helium, or the browser you already run | `browser_navigate` · `_read` · `_click` · `_fill` · `_screenshot` · `_eval` · `_back` | yes | anything interactive |
+| **Lightpanda** — opt-in, `browser.fast_path` | `browser_fetch` — title, text, links | never | reading a page for a fraction of the memory |
+
+Lightpanda runs the same JavaScript against a DOM and never starts a renderer, a GPU
+process, or a compositor. It cannot click, fill, or screenshot and it keeps no
+session, so it supplements the real browser instead of replacing it — the agent
+picks whichever the job needs. The wizard offers it only where it runs: its builds
+need glibc 2.34, and the check happens before the 150 MB download, not after.
 
 ## Phone calls and SMS
 
