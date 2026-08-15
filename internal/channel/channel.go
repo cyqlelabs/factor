@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/cyqlelabs/factor/internal/bus"
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 // Channel is one chat connector. Start must be non-blocking (spawn your own
@@ -26,6 +27,25 @@ type Channel interface {
 // worked on. Connectors whose protocol has no such signal simply omit it.
 type Typer interface {
 	SetTyping(chatID string, on bool)
+}
+
+// TurnFunc runs one synchronous turn and returns the reply
+// (wired to Loop.ProcessDirect).
+type TurnFunc func(ctx context.Context, content, sessionKey string) (string, error)
+
+// TurnRunner is the optional capability of a connector that runs turns itself
+// instead of publishing them onto the bus. A phone call is synchronous — the
+// caller is waiting on the line, and hanging up must cancel the turn — so the
+// bus's fire-and-forget shape does not fit it.
+type TurnRunner interface {
+	BindTurnRunner(run TurnFunc)
+}
+
+// Toolset is the optional capability of contributing tools that only make
+// sense where the connector is configured, so a machine without it never sees
+// a tool that could only fail.
+type Toolset interface {
+	Toolset() []tools.Tool
 }
 
 // Factory builds a channel from its raw config section.
