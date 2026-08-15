@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/config"
 )
 
 // smrti is not optional garnish — it is the agent's long-term memory — so
@@ -264,6 +266,17 @@ func Install(ctx context.Context, home string, progress Progress) (path, method 
 	default:
 		return "", "", fmt.Errorf("could not install %s: no Python installer found (need one of uv, pipx, pip, or python3)", PackageName)
 	}
+}
+
+// Answering reports whether a smrti is already serving at the configured
+// endpoint. An engine somebody runs in Docker, in a venv, or on another box
+// is a working memory whatever this filesystem holds, so nothing should
+// offer to install one on top of it — the same reasoning the phone status
+// applies to a live speech server.
+func Answering(ctx context.Context, cfg config.MemoryConfig) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return NewClient(cfg.BaseURL(), cfg.APIKey, "").CheckHealth(ctx) == nil
 }
 
 // EnsureSmrti returns the smrti path, installing it when missing and allowed.
