@@ -79,7 +79,15 @@ const (
 	whisperModel    = "whisper-1"
 	elevenLabsModel = "eleven_flash_v2_5"
 	telephonyFormat = "ulaw_8000"
-	localAudioFmt   = "wav"
+
+	// The local tier's wire format is headerless PCM, because that is what
+	// Patter's OpenAI adapter requests and resamples.
+	localAudioFmt = "pcm"
+
+	// localTTSModel names the protocol rather than the weights: the voice is
+	// chosen on the speech server, and this only has to be a model id the
+	// OpenAI dialect accepts.
+	localTTSModel = "tts-1"
 
 	// bargeInThresholdMs is Patter's default: long enough that a cough does
 	// not cut the agent off, short enough that talking over it feels natural.
@@ -101,11 +109,15 @@ func renderShellConfig(cfg Config, bridgePort int, bridgeToken string) shellConf
 			stt.Model = whisperModel
 		}
 	case providerLocalOpenAI:
-		// A local server needs no key — and must not be handed the cloud one
-		// kept for fallback. Its model ids are its own (faster-whisper sizes,
-		// Hugging Face repo names), so pass through whatever the user
-		// configured and let the server default otherwise.
+		// A local server must never be handed the cloud key kept for fallback.
+		// Factor's own gets this boot's secret, the way the bridge does; a
+		// server the user pointed us at gets nothing. Model ids are the
+		// server's own (faster-whisper sizes, Hugging Face repo names), so
+		// pass through whatever was configured and let it default otherwise.
 		stt.BaseURL = cfg.STT.BaseURL
+		if cfg.managedSpeech() {
+			stt.APIKey = bridgeToken
+		}
 	}
 
 	tts := shellTTS{Provider: cfg.TTS.Provider, Model: cfg.TTS.Model, Voice: cfg.TTS.Voice}
@@ -121,7 +133,16 @@ func renderShellConfig(cfg Config, bridgePort int, bridgeToken string) shellConf
 		}
 	case providerLocalOpenAI:
 		tts.BaseURL = cfg.TTS.BaseURL
+		// Patter's OpenAI adapter asks for "pcm" and resamples 24 kHz down to
+		// the phone band, whatever this says; the field is here so the shell
+		// config records what actually crosses the wire.
 		tts.Format = localAudioFmt
+		if tts.Model == "" {
+			tts.Model = localTTSModel
+		}
+		if cfg.managedSpeech() {
+			tts.APIKey = bridgeToken
+		}
 	}
 
 	return shellConfig{

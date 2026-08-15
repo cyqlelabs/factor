@@ -17,6 +17,14 @@ type Status struct {
 	Python     string // interpreter the voice shell runs in; "" when not installed
 	Healthy    bool
 	Problem    string
+
+	// Speech describes the local speech stack when Factor runs one: what is
+	// installed, and whether it is answering. A local tier whose server is
+	// down still takes calls — on the cloud tier — so this is the difference
+	// between "quieter than you asked for" and "broken".
+	Speech          string
+	SpeechInstalled bool
+	SpeechHealthy   bool
 }
 
 // Describe reads a channels.phone section and probes the voice shell. It never
@@ -47,6 +55,9 @@ func Describe(ctx context.Context, raw json.RawMessage, home string) Status {
 	if path, ok := FindVoiceShellPython(home); ok {
 		status.Python = path
 	}
+	if cfg.managedSpeech() {
+		status.describeSpeech(ctx, cfg, home)
+	}
 	base := cfg.ControlAPIBase
 	if base == "" {
 		base = fmt.Sprintf("http://127.0.0.1:%d", cfg.SidecarPort)
@@ -59,6 +70,22 @@ func Describe(ctx context.Context, raw json.RawMessage, home string) Status {
 	return status
 }
 
+// describeSpeech reports the speech server Factor runs itself: what the
+// installer left on disk, and whether it is answering now.
+func (s *Status) describeSpeech(ctx context.Context, cfg Config, home string) {
+	_, s.SpeechInstalled = FindSpeechPython(home)
+	s.Speech = SpeechChoices{
+		WhisperModel:  cfg.SpeechServer.WhisperModel,
+		WhisperDevice: cfg.SpeechServer.WhisperDevice,
+		PiperVoice:    cfg.SpeechServer.PiperVoice,
+	}.Summary()
+	if !s.SpeechInstalled {
+		return
+	}
+	client := newControlClient(fmt.Sprintf("http://127.0.0.1:%d", speechPort(cfg.SpeechServer)))
+	s.SpeechHealthy = client.health(ctx) == nil
+}
+
 // Line renders the status as one terminal line.
 func (s Status) Line() string {
 	switch {
@@ -67,8 +94,23 @@ func (s Status) Line() string {
 	case s.Problem != "":
 		return fmt.Sprintf("%s · %s — %s", s.Number, s.Tier, s.Problem)
 	case s.Healthy:
-		return fmt.Sprintf("%s · %s — voice shell healthy", s.Number, s.Tier)
+		return fmt.Sprintf("%s · %s — voice shell healthy%s", s.Number, s.Tier, s.speechSuffix())
 	default:
-		return fmt.Sprintf("%s · %s — voice shell not running", s.Number, s.Tier)
+		return fmt.Sprintf("%s · %s — voice shell not running%s", s.Number, s.Tier, s.speechSuffix())
+	}
+}
+
+// speechSuffix says where the local speech stack stands, and only when there
+// is one: a cloud tier has nothing to report.
+func (s Status) speechSuffix() string {
+	switch {
+	case s.Speech == "":
+		return ""
+	case !s.SpeechInstalled:
+		return " · speech not installed yet"
+	case !s.SpeechHealthy:
+		return fmt.Sprintf(" · speech (%s) not answering", s.Speech)
+	default:
+		return fmt.Sprintf(" · speech %s", s.Speech)
 	}
 }

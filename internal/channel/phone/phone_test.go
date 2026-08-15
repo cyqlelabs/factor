@@ -221,6 +221,56 @@ func TestStartAndStopAreClean(t *testing.T) {
 	}
 }
 
+// A cloud tier runs no speech server, and the shell config is rendered without
+// waiting on one.
+func TestShellConfigOnTheCloudTier(t *testing.T) {
+	p, _, _ := newTestPhone(t, nil)
+	if p.speech != nil {
+		t.Fatal("a cloud tier should not supervise a speech server")
+	}
+	shell, err := p.shellConfig()
+	if err != nil {
+		t.Fatalf("shellConfig: %v", err)
+	}
+	if shell.Tier != 1 || shell.STT.Provider != providerDeepgram {
+		t.Errorf("shell config = tier %d / %+v", shell.Tier, shell.STT)
+	}
+}
+
+// A managed local tier whose server never comes up must not hang the gateway:
+// it degrades to the cloud tier and says so, rather than failing every call.
+func TestShellConfigFallsBackWhenTheSpeechServerNeverStarts(t *testing.T) {
+	p, _, _ := newTestPhone(t, func(c *Config) {
+		c.STT.Provider = providerLocalOpenAI
+		c.SpeechServer.Port = freePort(t)
+	})
+	if p.speech == nil {
+		t.Fatal("a managed local tier should supervise a speech server")
+	}
+	// Nothing is listening and nothing will start: the wait has to give up.
+	p.speech.probeInterval = 20 * time.Millisecond
+	p.speechWait = 200 * time.Millisecond
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		shell, err := p.shellConfig()
+		if err != nil {
+			t.Errorf("shellConfig: %v", err)
+			return
+		}
+		if shell.STT.Provider != providerDeepgram {
+			t.Errorf("stt = %+v, want the cloud fallback", shell.STT)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("shellConfig never returned")
+	}
+}
+
 func TestStartReportsAPortClash(t *testing.T) {
 	taken := freePort(t)
 	first, _, _ := newTestPhone(t, func(c *Config) { c.BridgePort = taken })

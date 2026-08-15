@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cyqlelabs/factor/internal/channel/phone"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/memory"
@@ -62,6 +64,18 @@ func newHarness(t *testing.T, answers ...string) *harness {
 		},
 		InstallPackages: func(_ context.Context, pkgs []string) (string, error) {
 			return "installed " + strings.Join(pkgs, " "), nil
+		},
+		// Never touch the network or the machine's Python: tests that care
+		// about the install override this to observe what it was asked for.
+		InstallSpeech: func(_ context.Context, language string, _, needTTS bool,
+			_ phone.Progress) (phone.SpeechChoices, error) {
+			choices := phone.SpeechChoices{
+				WhisperModel: "base", WhisperDevice: "cpu", WhisperCompute: "int8",
+			}
+			if needTTS {
+				choices.PiperVoice = language + "-test-medium"
+			}
+			return choices, nil
 		},
 	}
 	return h
@@ -621,6 +635,7 @@ func TestWizardPhoneFullyLocalTier(t *testing.T) {
 		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"es",                           // language
 		"4",                            // fully local audio
+		"2",                            // a speech server the user runs
 		speech.URL,                     // local speech server
 		"Systran/faster-whisper-small", // transcription model
 		"es_ES-sharvard-medium",        // voice
@@ -659,6 +674,7 @@ func TestWizardPhoneLocalTierSurvivesAnAbsentServer(t *testing.T) {
 		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"",                      // language
 		"2",                     // local speech-to-text only
+		"2",                     // a speech server the user runs
 		"http://127.0.0.1:1/v1", // nothing listens there
 		"",                      // model: the server's default
 		"eleven-secret",         // voice key (text-to-speech is still cloud)
@@ -676,6 +692,127 @@ func TestWizardPhoneLocalTierSurvivesAnAbsentServer(t *testing.T) {
 	}
 	if !strings.Contains(h.out.String(), "falls back to the cloud tier") {
 		t.Errorf("the user was not told what happens next:\n%s", h.out.String())
+	}
+}
+
+// Choosing a local tier has to leave a working setup, not a to-do list: the
+// wizard installs the engines and the models itself and asks the user nothing
+// about servers, ports, or model names.
+func TestWizardPhoneLocalTierInstallsEverything(t *testing.T) {
+	twilio, elevenlabs, _ := fakeTelephony(t)
+	h := newHarness(t,
+		"5", "llama3", "3", "3", "n",
+		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
+		"es-MX", // language
+		"4",     // fully local audio
+		"1",     // let Factor install it
+		"2",     // proactive: call me
+		"", "",
+	)
+	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
+
+	var gotLanguage string
+	var gotSTT, gotTTS bool
+	h.opts.InstallSpeech = func(_ context.Context, language string, needSTT, needTTS bool,
+		_ phone.Progress) (phone.SpeechChoices, error) {
+		gotLanguage, gotSTT, gotTTS = language, needSTT, needTTS
+		return phone.SpeechChoices{
+			WhisperModel: "small", WhisperDevice: "cuda", WhisperCompute: "float16",
+			PiperVoice: "es_MX-ald-medium",
+		}, nil
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+
+	if gotLanguage != "es-MX" || !gotSTT || !gotTTS {
+		t.Errorf("installer called with language=%q stt=%v tts=%v", gotLanguage, gotSTT, gotTTS)
+	}
+
+	section := savedPhone(t, h)
+	// A blank base_url is what marks the server as Factor's own.
+	if section.STT.Provider != "local-openai" || section.STT.BaseURL != "" {
+		t.Errorf("stt = %+v, want Factor's own server", section.STT)
+	}
+	if section.TTS.Provider != "local-openai" || section.TTS.BaseURL != "" {
+		t.Errorf("tts = %+v, want Factor's own server", section.TTS)
+	}
+	if section.SpeechServer == nil {
+		t.Fatal("what the installer chose was not written to the config")
+	}
+	if section.SpeechServer.PiperVoice != "es_MX-ald-medium" {
+		t.Errorf("voice = %q, want the Mexican Spanish one", section.SpeechServer.PiperVoice)
+	}
+	if section.SpeechServer.WhisperDevice != "cuda" || section.SpeechServer.WhisperModel != "small" {
+		t.Errorf("hardware choices lost: %+v", section.SpeechServer)
+	}
+	if section.STTAPIKey != "" || section.ElevenLabsAPIKey != "" {
+		t.Error("the fully local tier asked for cloud credentials")
+	}
+	if !strings.Contains(h.out.String(), "es_MX-ald-medium") {
+		t.Errorf("the user was not told what was installed:\n%s", h.out.String())
+	}
+}
+
+// An install that fails must not strand the user mid-setup: the config it was
+// going to write is already right, and the gateway retries on start.
+func TestWizardPhoneLocalTierSurvivesAFailedInstall(t *testing.T) {
+	twilio, elevenlabs, _ := fakeTelephony(t)
+	h := newHarness(t,
+		"5", "llama3", "3", "3", "n",
+		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
+		"en", "4", "1", "1", "", "",
+	)
+	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
+	h.opts.InstallSpeech = func(context.Context, string, bool, bool, phone.Progress) (phone.SpeechChoices, error) {
+		return phone.SpeechChoices{}, errors.New("no space left on device")
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+
+	section := savedPhone(t, h)
+	if section.STT.Provider != "local-openai" || section.TTS.Provider != "local-openai" {
+		t.Errorf("the tier choice should stand: stt=%+v tts=%+v", section.STT, section.TTS)
+	}
+	if section.SpeechServer != nil {
+		t.Errorf("a failed install should record no choices: %+v", section.SpeechServer)
+	}
+	if !strings.Contains(h.out.String(), "try again when the gateway starts") {
+		t.Errorf("the user was not told what happens next:\n%s", h.out.String())
+	}
+}
+
+// A tier that keeps one half in the cloud must not download the other half's
+// models — a local-voice machine has no use for a transcription model.
+func TestWizardLocalVoiceOnlyDoesNotInstallTranscription(t *testing.T) {
+	twilio, elevenlabs, _ := fakeTelephony(t)
+	h := newHarness(t,
+		"5", "llama3", "3", "3", "n",
+		"y", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
+		"en",
+		"3",               // local text-to-speech only
+		"1",               // let Factor install it
+		"deepgram-secret", // transcription is still cloud
+		"1", "", "",
+	)
+	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
+
+	var gotSTT, gotTTS bool
+	h.opts.InstallSpeech = func(_ context.Context, _ string, needSTT, needTTS bool,
+		_ phone.Progress) (phone.SpeechChoices, error) {
+		gotSTT, gotTTS = needSTT, needTTS
+		return phone.SpeechChoices{WhisperModel: "base", PiperVoice: "en_US-lessac-medium"}, nil
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	if gotSTT || !gotTTS {
+		t.Errorf("installer asked for stt=%v tts=%v, want the voice only", gotSTT, gotTTS)
+	}
+	section := savedPhone(t, h)
+	if section.STT.Provider != "deepgram" || section.STTAPIKey != "deepgram-secret" {
+		t.Errorf("stt = %+v / %q, want the cloud half kept", section.STT, section.STTAPIKey)
 	}
 }
 

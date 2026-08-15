@@ -80,6 +80,11 @@ type Config struct {
 	STTAPIKey string        `json:"stt_api_key"`
 	TTS       AudioEndpoint `json:"tts"`
 
+	// SpeechServer tunes the local speech server Factor runs itself. It is
+	// what an empty base_url on a local tier resolves to: choosing a local
+	// tier is a request for local speech, not for a server to go and install.
+	SpeechServer SpeechConfig `json:"speech_server,omitempty"`
+
 	// LocalAudioFallback falls back to the cloud tier when a configured local
 	// speech server is unreachable at startup, instead of failing every call.
 	// nil means enabled.
@@ -180,6 +185,16 @@ func (c *Config) applyDefaults() {
 	}
 	c.STT.BaseURL = strings.TrimSuffix(strings.TrimSpace(c.STT.BaseURL), "/")
 	c.TTS.BaseURL = strings.TrimSuffix(strings.TrimSpace(c.TTS.BaseURL), "/")
+	// A local tier with no server named is Factor's own, which is the case the
+	// wizard writes: pointing the endpoints at it here means everything
+	// downstream — validation, the startup probe, the shell config — goes on
+	// treating it as any other OpenAI-compatible server.
+	if c.STT.Provider == providerLocalOpenAI && c.STT.BaseURL == "" {
+		c.STT.BaseURL = speechBaseURL(c.SpeechServer)
+	}
+	if c.TTS.Provider == providerLocalOpenAI && c.TTS.BaseURL == "" {
+		c.TTS.BaseURL = speechBaseURL(c.SpeechServer)
+	}
 	c.APIBase = strings.TrimSuffix(strings.TrimSpace(c.APIBase), "/")
 	c.ControlAPIBase = strings.TrimSuffix(strings.TrimSpace(c.ControlAPIBase), "/")
 	c.WebhookURL = strings.TrimSuffix(strings.TrimSpace(c.WebhookURL), "/")
@@ -256,7 +271,35 @@ func (c Config) validate() error {
 		return fmt.Errorf("bridge_port %d collides with the voice shell's control port %d or its webhook port %d",
 			c.BridgePort, c.SidecarPort, c.webhookPort())
 	}
+	if c.managedSpeech() {
+		speech := speechPort(c.SpeechServer)
+		for _, taken := range [](struct {
+			port int
+			name string
+		}){
+			{c.SidecarPort, "the voice shell's control port"},
+			{c.webhookPort(), "the voice shell's webhook port"},
+			{c.BridgePort, "bridge_port"},
+		} {
+			if speech == taken.port {
+				return fmt.Errorf("speech_server.port %d collides with %s", speech, taken.name)
+			}
+		}
+	}
 	return nil
+}
+
+// localSTT and localTTS report which halves of the pipeline run on this
+// machine, which is what decides the weights the speech server has to load.
+func (c Config) localSTT() bool { return c.STT.Provider == providerLocalOpenAI }
+func (c Config) localTTS() bool { return c.TTS.Provider == providerLocalOpenAI }
+
+// managedSpeech reports whether a local tier is served by the speech server
+// Factor runs itself, rather than one the user pointed it at. Only the managed
+// one is installed, supervised, and handed this boot's secret.
+func (c Config) managedSpeech() bool {
+	managed := speechBaseURL(c.SpeechServer)
+	return (c.localSTT() && c.STT.BaseURL == managed) || (c.localTTS() && c.TTS.BaseURL == managed)
 }
 
 // webhookPort is where Patter's own server listens — the port the carrier

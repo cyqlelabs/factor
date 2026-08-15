@@ -105,10 +105,8 @@ func TestValidateRejectsBrokenSections(t *testing.T) {
 			c.STT.Provider = providerWhisper
 			c.STTAPIKey = ""
 		}, "stt_api_key"},
-		{"local stt without a base url", func(c *Config) { c.STT.Provider = providerLocalOpenAI }, "stt.base_url"},
 		{"unknown stt provider", func(c *Config) { c.STT.Provider = "vosk" }, "unknown stt.provider"},
 		{"elevenlabs without a key", func(c *Config) { c.ElevenLabsAPIKey = "" }, "elevenlabs_api_key"},
-		{"local tts without a base url", func(c *Config) { c.TTS.Provider = providerLocalOpenAI }, "tts.base_url"},
 		{"unknown tts provider", func(c *Config) { c.TTS.Provider = "festival" }, "unknown tts.provider"},
 		{"unknown proactive mode", func(c *Config) { c.Proactive = "carrier-pigeon" }, "unknown proactive"},
 		{"unknown tunnel mode", func(c *Config) { c.Tunnel = "ssh" }, "unknown tunnel"},
@@ -121,6 +119,14 @@ func TestValidateRejectsBrokenSections(t *testing.T) {
 			c.SidecarPort = 9000
 			c.BridgePort = 9001
 		}, "collides"},
+		{"managed speech port on the bridge port", func(c *Config) {
+			c.STT.Provider = providerLocalOpenAI
+			c.SpeechServer.Port = defaultBridgePort
+		}, "speech_server.port"},
+		{"managed speech port on the control port", func(c *Config) {
+			c.TTS.Provider = providerLocalOpenAI
+			c.SpeechServer.Port = defaultSidecarPort
+		}, "speech_server.port"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
