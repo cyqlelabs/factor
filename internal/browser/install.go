@@ -75,7 +75,9 @@ func EngineBinary(home string) string {
 
 // EnsureEngine returns a Chromium-family binary the browser suite can drive,
 // downloading Helium when the machine has none. The bool reports whether this
-// call installed it.
+// call installed it. Callers holding a configured browser.command should
+// resolve that with FindBrowserBinary first — this function only knows about
+// the machine, not the config.
 func EnsureEngine(ctx context.Context, home string, progress Progress) (string, bool, error) {
 	if progress == nil {
 		progress = func(string, ...any) {}

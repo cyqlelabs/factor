@@ -216,12 +216,18 @@ func (w *wiz) quietBrowser(ctx context.Context) error {
 	if geteuid() == 0 {
 		w.cfg.Browser.NoSandbox = true
 	}
-	path, _, err := w.opts.EnsureBrowser(ctx, func(format string, args ...any) {
-		w.ui.printf("browser:   %s\n", fmt.Sprintf(format, args...))
-	})
+	// The configured browser comes first: a machine that already has one
+	// must not be made to download another.
+	path, err := browser.FindBrowserBinary(w.cfg.Browser.Command)
 	if err != nil {
-		w.ui.printf("browser:   NOT installed — %v\n", err)
-		return nil
+		var installErr error
+		path, _, installErr = w.opts.EnsureBrowser(ctx, func(format string, args ...any) {
+			w.ui.printf("browser:   %s\n", fmt.Sprintf(format, args...))
+		})
+		if installErr != nil {
+			w.ui.printf("browser:   NOT installed — %v\n", installErr)
+			return nil
+		}
 	}
 	w.cfg.Browser.Command = path
 	w.ui.printf("browser:   %s\n", path)
