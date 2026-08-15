@@ -73,17 +73,26 @@ func Describe(ctx context.Context, raw json.RawMessage, home string) Status {
 // describeSpeech reports the speech server Factor runs itself: what the
 // installer left on disk, and whether it is answering now.
 func (s *Status) describeSpeech(ctx context.Context, cfg Config, home string) {
-	_, s.SpeechInstalled = FindSpeechPython(home)
 	s.Speech = SpeechChoices{
 		WhisperModel:  cfg.SpeechServer.WhisperModel,
 		WhisperDevice: cfg.SpeechServer.WhisperDevice,
 		PiperVoice:    cfg.SpeechServer.PiperVoice,
 	}.Summary()
-	if !s.SpeechInstalled {
-		return
+
+	// An interpreter named in the config counts as installed: the user pointed
+	// Factor at one, so reporting the private virtualenv as missing would be
+	// answering a question nobody asked.
+	if _, found := FindSpeechPython(home); found || cfg.SpeechServer.Command != "" {
+		s.SpeechInstalled = true
 	}
+
+	// Health is the ground truth, so it is probed either way. A server that is
+	// answering is working, whatever this process can find on disk.
 	client := newControlClient(fmt.Sprintf("http://127.0.0.1:%d", speechPort(cfg.SpeechServer)))
-	s.SpeechHealthy = client.health(ctx) == nil
+	if client.health(ctx) == nil {
+		s.SpeechHealthy = true
+		s.SpeechInstalled = true
+	}
 }
 
 // Line renders the status as one terminal line.
