@@ -5,13 +5,16 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -224,6 +227,12 @@ func EnsureFastEngine(ctx context.Context, home string, progress Progress) (stri
 	if arch == "" || osName == "" {
 		return "", false, fmt.Errorf("no Lightpanda build for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
+	// Ask before downloading. Finding out from the dynamic linker costs
+	// 150MB and several minutes on exactly the slow machines least able to
+	// spare either.
+	if ok, why := FastEngineSupported(); !ok {
+		return "", false, errors.New(why)
+	}
 	asset, version, err := latestAsset(ctx, lightpandaRepo, "Lightpanda", "lightpanda-"+arch+"-"+osName)
 	if err != nil {
 		return "", false, err
@@ -256,6 +265,69 @@ func EnsureFastEngine(ctx context.Context, home string, progress Progress) (stri
 	}
 	progress("installed Lightpanda %s", strings.TrimSpace(out))
 	return binary, true, nil
+}
+
+// lightpandaMinGlibc is the floor its official builds link against. Anything
+// older cannot load them, whatever the architecture says.
+const lightpandaMinGlibc = "2.34"
+
+// FastEngineSupported reports whether this machine can run the lightweight
+// engine, and why not when it cannot.
+func FastEngineSupported() (bool, string) {
+	if runtime.GOOS != "linux" {
+		return true, ""
+	}
+	have := glibcVersion()
+	switch {
+	case have == "musl":
+		return false, "the lightweight engine is built against glibc and this system uses musl"
+	case have == "":
+		return true, "" // undetermined: let the install try and report for itself
+	case !versionAtLeast(have, lightpandaMinGlibc):
+		return false, fmt.Sprintf("the lightweight engine needs glibc %s and this system has %s", lightpandaMinGlibc, have)
+	}
+	return true, ""
+}
+
+// glibcVersion reads the C library version from ldd, returning "musl" for
+// musl systems and "" when it cannot tell.
+func glibcVersion() string {
+	out, err := runCmd(context.Background(), []string{"ldd", "--version"})
+	if err != nil && out == "" {
+		return ""
+	}
+	line := firstLine(out)
+	if strings.Contains(strings.ToLower(line), "musl") {
+		return "musl"
+	}
+	// "ldd (Ubuntu GLIBC 2.31-0ubuntu9) 2.31" — the trailing field is the
+	// plain version, so the last match is the one to take.
+	matches := versionPattern.FindAllString(line, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	return matches[len(matches)-1]
+}
+
+var versionPattern = regexp.MustCompile(`\d+\.\d+`)
+
+// versionAtLeast compares dotted major.minor versions.
+func versionAtLeast(have, want string) bool {
+	h, w := strings.SplitN(have, ".", 2), strings.SplitN(want, ".", 2)
+	if len(h) < 2 || len(w) < 2 {
+		return false
+	}
+	hMaj, err1 := strconv.Atoi(h[0])
+	hMin, err2 := strconv.Atoi(h[1])
+	wMaj, err3 := strconv.Atoi(w[0])
+	wMin, err4 := strconv.Atoi(w[1])
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return false
+	}
+	if hMaj != wMaj {
+		return hMaj > wMaj
+	}
+	return hMin >= wMin
 }
 
 // firstLine keeps a loader's complaint readable: the dynamic linker prints

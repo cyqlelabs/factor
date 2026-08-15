@@ -59,8 +59,10 @@ type Options struct {
 	EnsureBrowser func(ctx context.Context, progress browser.Progress) (path string, installed bool, err error)
 	VerifyBrowser func(ctx context.Context, cfg config.BrowserConfig) error
 
-	// EnsureFastBrowser installs the optional read-only engine.
-	EnsureFastBrowser func(ctx context.Context, progress browser.Progress) (path string, installed bool, err error)
+	// EnsureFastBrowser installs the optional read-only engine, and
+	// FastBrowserSupported reports whether this machine could run it at all.
+	EnsureFastBrowser    func(ctx context.Context, progress browser.Progress) (path string, installed bool, err error)
+	FastBrowserSupported func() (bool, string)
 }
 
 func (o *Options) defaults() {
@@ -97,6 +99,9 @@ func (o *Options) defaults() {
 	}
 	if o.VerifyBrowser == nil {
 		o.VerifyBrowser = browser.Verify
+	}
+	if o.FastBrowserSupported == nil {
+		o.FastBrowserSupported = browser.FastEngineSupported
 	}
 	if o.EnsureFastBrowser == nil {
 		o.EnsureFastBrowser = func(ctx context.Context, progress browser.Progress) (string, bool, error) {
@@ -1162,6 +1167,13 @@ func (w *wiz) setupBrowser(ctx context.Context, env desktop.Env) error {
 // real one already reads pages — it just costs far more memory to do it.
 func (w *wiz) setupFastBrowser(ctx context.Context) error {
 	if w.opts.NoInstall {
+		return nil
+	}
+	// Do not offer what this machine cannot run: the answer would cost a
+	// 150MB download to reach.
+	if ok, why := w.opts.FastBrowserSupported(); !ok {
+		w.cfg.Browser.FastPath = false
+		w.ui.Note("%s — skipping it; the full browser reads pages fine", why)
 		return nil
 	}
 	add, err := w.ui.Confirm("Also add a lightweight read-only engine for cheap page reads (Lightpanda, ~150 MB)?", w.cfg.Browser.FastPath)
