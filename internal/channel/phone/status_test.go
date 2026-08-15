@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -62,6 +64,66 @@ func TestDescribeReportsTheLocalSpeechStack(t *testing.T) {
 	if !strings.Contains(status.Speech, "es_ES-davefx-medium") {
 		t.Errorf("Speech = %q, want the installed voice named", status.Speech)
 	}
+}
+
+// A speech server that is answering is working, whatever this process can find
+// on disk — reporting "not installed yet" next to a healthy server is a
+// contradiction the user has to debug.
+func TestDescribeTrustsAHealthySpeechServerOverTheDisk(t *testing.T) {
+	speech := newFakeShellAPI(t)
+	port := portOf(t, speech.URL)
+	shell := newFakeShellAPI(t)
+	raw := json.RawMessage(fmt.Sprintf(`{
+		"user_number": "+15550001111", "phone_number": "+15550002222",
+		"twilio_account_sid": "AC1", "twilio_auth_token": "t",
+		"stt": {"provider": "local-openai"}, "tts": {"provider": "local-openai"},
+		"speech_server": {"port": %d, "whisper_model": "base", "piper_voice": "en_US-lessac-medium"},
+		"control_api_base": %q
+	}`, port, shell.URL))
+
+	status := Describe(context.Background(), raw, t.TempDir())
+	if !status.SpeechHealthy || !status.SpeechInstalled {
+		t.Errorf("healthy=%v installed=%v, want a live server reported as both",
+			status.SpeechHealthy, status.SpeechInstalled)
+	}
+	if strings.Contains(status.Line(), "not installed") {
+		t.Errorf("Line() = %q, want no contradiction with a healthy server", status.Line())
+	}
+}
+
+// An interpreter the user named is installed, even with no private virtualenv.
+func TestDescribeCountsAConfiguredInterpreterAsInstalled(t *testing.T) {
+	shell := newFakeShellAPI(t)
+	raw := json.RawMessage(fmt.Sprintf(`{
+		"user_number": "+15550001111", "phone_number": "+15550002222",
+		"twilio_account_sid": "AC1", "twilio_auth_token": "t",
+		"elevenlabs_api_key": "e",
+		"stt": {"provider": "local-openai"},
+		"speech_server": {"command": "/usr/bin/python3", "port": 1, "whisper_model": "base"},
+		"control_api_base": %q
+	}`, shell.URL))
+
+	status := Describe(context.Background(), raw, t.TempDir())
+	if !status.SpeechInstalled {
+		t.Error("an interpreter named in the config should count as installed")
+	}
+	if status.SpeechHealthy {
+		t.Error("nothing is listening on that port; it should not be healthy")
+	}
+}
+
+// portOf pulls the port out of a test server URL.
+func portOf(t *testing.T, rawURL string) int {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
 }
 
 // A cloud tier has no local stack, and must not grow a line about one.
