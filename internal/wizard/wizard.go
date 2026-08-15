@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -22,11 +23,13 @@ import (
 // drive the whole flow without touching the network, the package manager, or
 // the user's Python installation.
 type Options struct {
-	UI       *UI
-	Version  string
-	HTTP     *http.Client
-	Home     string // FACTOR_HOME (defaults to config.Home())
-	Telegram string // Telegram API base (defaults to the real one)
+	UI         *UI
+	Version    string
+	HTTP       *http.Client
+	Home       string // FACTOR_HOME (defaults to config.Home())
+	Telegram   string // Telegram API base (defaults to the real one)
+	Twilio     string // Twilio API base (defaults to the real one)
+	ElevenLabs string // ElevenLabs API base (defaults to the real one)
 
 	// NonInteractive skips every prompt: defaults are kept, smrti is
 	// installed when missing, and the config is written as-is.
@@ -573,6 +576,13 @@ func (w *wiz) stepChannels(ctx context.Context) error {
 	w.ui.Step(3, totalSteps, "Channels")
 	w.ui.Note("the CLI always works; add Telegram to talk to Factor from your phone")
 
+	if err := w.stepTelegram(ctx); err != nil {
+		return err
+	}
+	return w.stepPhone(ctx)
+}
+
+func (w *wiz) stepTelegram(ctx context.Context) error {
 	existing := telegramConfig(w.cfg)
 	want, err := w.ui.Confirm("Set up Telegram now?", existing.Token != "")
 	if err != nil {
@@ -642,6 +652,250 @@ func telegramConfig(cfg *config.Config) telegramSection {
 		_ = json.Unmarshal(raw, &section)
 	}
 	return section
+}
+
+// ---- step 3b: the phone ----------------------------------------------------
+
+type audioSection struct {
+	Provider string `json:"provider,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Voice    string `json:"voice,omitempty"`
+}
+
+type phoneSection struct {
+	UserNumber       string       `json:"user_number"`
+	PhoneNumber      string       `json:"phone_number"`
+	TwilioAccountSID string       `json:"twilio_account_sid"`
+	TwilioAuthToken  string       `json:"twilio_auth_token"`
+	ElevenLabsAPIKey string       `json:"elevenlabs_api_key,omitempty"`
+	VoiceID          string       `json:"voice_id,omitempty"`
+	Language         string       `json:"language,omitempty"`
+	STT              audioSection `json:"stt,omitempty"`
+	STTAPIKey        string       `json:"stt_api_key,omitempty"`
+	TTS              audioSection `json:"tts,omitempty"`
+	Proactive        string       `json:"proactive,omitempty"`
+}
+
+func phoneConfig(cfg *config.Config) phoneSection {
+	var section phoneSection
+	if raw, ok := cfg.Channels["phone"]; ok {
+		_ = json.Unmarshal(raw, &section)
+	}
+	return section
+}
+
+// The speech tier is the one voice decision with real trade-offs, so it is
+// asked plainly: cloud is the reliable, low-latency default that keeps this
+// machine free, and the local tiers trade RAM for privacy and per-minute cost.
+var voiceTiers = []Option{
+	{Label: "Cloud speech (recommended)", Hint: "lowest latency, most reliable, runs on any machine · ~$0.03/min"},
+	{Label: "Local speech-to-text", Hint: "transcription never leaves the machine · needs ≥8 GB RAM + a local server"},
+	{Label: "Local text-to-speech", Hint: "fastest first audio on a decent CPU · needs a local server"},
+	{Label: "Fully local audio", Hint: "no audio leaves the machine, no per-minute audio cost · needs ≥8 GB RAM"},
+}
+
+const defaultSpeechServer = "http://127.0.0.1:8000/v1"
+
+func (w *wiz) stepPhone(ctx context.Context) error {
+	w.ui.Note("Factor can also answer the phone and text you — a real number, your voice, its memory")
+	existing := phoneConfig(w.cfg)
+	want, err := w.ui.Confirm("Set up phone calls and SMS?", existing.PhoneNumber != "")
+	if err != nil {
+		return err
+	}
+	if !want {
+		return nil
+	}
+
+	section, err := w.askCarrier(ctx, existing)
+	if err != nil || section == nil {
+		return err
+	}
+	if err := w.askVoiceTier(ctx, section, existing); err != nil {
+		return err
+	}
+	if err := w.askProactive(section, existing); err != nil {
+		return err
+	}
+
+	raw, err := json.Marshal(section)
+	if err != nil {
+		return err
+	}
+	if w.cfg.Channels == nil {
+		w.cfg.Channels = map[string]json.RawMessage{}
+	}
+	w.cfg.Channels["phone"] = raw
+	w.ui.Note("only %s can reach the agent by phone; add more with channels.phone.allow_from", section.UserNumber)
+	w.ui.Note("the voice shell (Patter) installs itself into its own virtualenv on first start")
+	return nil
+}
+
+// askCarrier collects and verifies the telephony credentials. A nil section
+// means the user backed out.
+func (w *wiz) askCarrier(ctx context.Context, existing phoneSection) (*phoneSection, error) {
+	w.ui.Note("buy a number at twilio.com, then paste the account SID and auth token from its console")
+	sid, err := w.ui.Input("Twilio account SID", existing.TwilioAccountSID)
+	if err != nil {
+		return nil, err
+	}
+	token, err := w.ui.Secret("Twilio auth token", existing.TwilioAuthToken)
+	if err != nil {
+		return nil, err
+	}
+	sid, token = strings.TrimSpace(sid), strings.TrimSpace(token)
+	if sid == "" || token == "" {
+		w.ui.Warn("no carrier credentials — skipping the phone")
+		return nil, nil
+	}
+	var account string
+	_ = w.ui.Task("verifying the Twilio credentials", func() error {
+		var err error
+		account, err = CheckTwilio(ctx, w.opts.HTTP, w.opts.Twilio, sid, token)
+		return err
+	})
+	if account != "" {
+		w.ui.Success("connected to the %q account", account)
+	}
+
+	number, err := w.ui.Input("The number you bought, in E.164 (e.g. +15550001234)", existing.PhoneNumber)
+	if err != nil {
+		return nil, err
+	}
+	mine, err := w.ui.Input("Your own number, in E.164 — the only one allowed to call in", existing.UserNumber)
+	if err != nil {
+		return nil, err
+	}
+	return &phoneSection{
+		UserNumber:       strings.TrimSpace(mine),
+		PhoneNumber:      strings.TrimSpace(number),
+		TwilioAccountSID: sid,
+		TwilioAuthToken:  token,
+	}, nil
+}
+
+func (w *wiz) askVoiceTier(ctx context.Context, section *phoneSection, existing phoneSection) error {
+	language, err := w.ui.Input("Language on the call (BCP-47, e.g. en or es)", firstNonEmpty(existing.Language, "en"))
+	if err != nil {
+		return err
+	}
+	section.Language = strings.TrimSpace(language)
+
+	idx, err := w.ui.Select("How should speech be handled?", voiceTiers, tierIndex(existing))
+	if err != nil {
+		return err
+	}
+	localSTT := idx == 1 || idx == 3
+	localTTS := idx == 2 || idx == 3
+
+	if localSTT || localTTS {
+		w.ui.Note("run an OpenAI-compatible speech server (Speaches wraps faster-whisper and Piper/Kokoro)")
+		base, err := w.ui.Input("Local speech server base URL",
+			firstNonEmpty(existing.STT.BaseURL, existing.TTS.BaseURL, defaultSpeechServer))
+		if err != nil {
+			return err
+		}
+		base = strings.TrimSpace(base)
+		if err := w.ui.Task("checking the local speech server", func() error {
+			return CheckSpeechServer(ctx, w.opts.HTTP, base)
+		}); err != nil {
+			w.ui.Note("start it before the first call — Factor falls back to the cloud tier until it answers")
+		}
+		if localSTT {
+			model, err := w.ui.Input("Speech-to-text model (blank = the server's default)", existing.STT.Model)
+			if err != nil {
+				return err
+			}
+			section.STT = audioSection{Provider: "local-openai", BaseURL: base, Model: strings.TrimSpace(model)}
+		}
+		if localTTS {
+			voice, err := w.ui.Input("Voice (blank = the server's default)", existing.TTS.Voice)
+			if err != nil {
+				return err
+			}
+			section.TTS = audioSection{Provider: "local-openai", BaseURL: base, Voice: strings.TrimSpace(voice)}
+		}
+	}
+
+	if !localSTT {
+		w.ui.Note("transcription runs on Deepgram (nova-3, ~$0.008/min); get a key at console.deepgram.com")
+		key, err := w.ui.Secret("Deepgram API key", existing.STTAPIKey)
+		if err != nil {
+			return err
+		}
+		section.STT = audioSection{Provider: "deepgram"}
+		section.STTAPIKey = strings.TrimSpace(key)
+		if section.STTAPIKey == "" {
+			w.ui.Warn("without a transcription key the agent cannot hear anything")
+		}
+	}
+	if !localTTS {
+		w.ui.Note("the voice is ElevenLabs flash v2.5 (~75 ms to first audio); get a key at elevenlabs.io")
+		key, err := w.ui.Secret("ElevenLabs API key", existing.ElevenLabsAPIKey)
+		if err != nil {
+			return err
+		}
+		section.TTS = audioSection{Provider: "elevenlabs"}
+		section.ElevenLabsAPIKey = strings.TrimSpace(key)
+		if section.ElevenLabsAPIKey == "" {
+			w.ui.Warn("without a voice key the agent cannot speak")
+		} else {
+			var plan string
+			_ = w.ui.Task("verifying the ElevenLabs key", func() error {
+				var err error
+				plan, err = CheckElevenLabs(ctx, w.opts.HTTP, w.opts.ElevenLabs, section.ElevenLabsAPIKey)
+				return err
+			})
+			if plan != "" {
+				w.ui.Info("ElevenLabs plan: %s", plan)
+			}
+			voice, err := w.ui.Input("Voice id (blank = the default voice)", existing.VoiceID)
+			if err != nil {
+				return err
+			}
+			section.VoiceID = strings.TrimSpace(voice)
+		}
+	}
+	return nil
+}
+
+// tierIndex maps an existing section back onto the tier menu.
+func tierIndex(existing phoneSection) int {
+	localSTT := existing.STT.Provider == "local-openai"
+	localTTS := existing.TTS.Provider == "local-openai"
+	switch {
+	case localSTT && localTTS:
+		return 3
+	case localTTS:
+		return 2
+	case localSTT:
+		return 1
+	default:
+		return 0
+	}
+}
+
+var proactiveModes = []Option{
+	{Label: "Text me", Hint: "an SMS — quiet, cheap, and it waits for you (default)"},
+	{Label: "Call me", Hint: "it rings you; falls back to a text if the call cannot be placed"},
+	{Label: "Stay quiet", Hint: "nothing reaches you by phone unless you call in"},
+}
+
+func (w *wiz) askProactive(section *phoneSection, existing phoneSection) error {
+	def := 0
+	switch existing.Proactive {
+	case "call":
+		def = 1
+	case "off":
+		def = 2
+	}
+	idx, err := w.ui.Select("When Factor needs you and you are not in a chat, it should…", proactiveModes, def)
+	if err != nil {
+		return err
+	}
+	section.Proactive = []string{"sms", "call", "off"}[idx]
+	return nil
 }
 
 // ---- step 4: desktop and tools --------------------------------------------
@@ -764,11 +1018,20 @@ func (w *wiz) memorySummary() string {
 }
 
 func (w *wiz) channelSummary() string {
-	names := []string{"cli"}
+	names := make([]string, 0, len(w.cfg.Channels))
 	for name := range w.cfg.Channels {
+		if name == "phone" {
+			name += " · " + voiceTierSummary(phoneConfig(w.cfg))
+		}
 		names = append(names, name)
 	}
-	return strings.Join(names, ", ")
+	sort.Strings(names) // map order would otherwise reshuffle the summary each run
+	return strings.Join(append([]string{"cli"}, names...), ", ")
+}
+
+// voiceTierSummary names the speech tier in the words the tier menu used.
+func voiceTierSummary(section phoneSection) string {
+	return strings.ToLower(voiceTiers[tierIndex(section)].Label)
 }
 
 func (w *wiz) desktopSummary() string {
