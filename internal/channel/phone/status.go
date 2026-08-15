@@ -54,6 +54,10 @@ func Describe(ctx context.Context, raw json.RawMessage, home string) Status {
 	}
 	if path, ok := FindVoiceShellPython(home); ok {
 		status.Python = path
+	} else if cfg.Command != "" {
+		// An interpreter named in the config is the one the shell runs in,
+		// whether or not Factor ever built the private virtualenv.
+		status.Python = cfg.Command
 	}
 	if cfg.managedSpeech() {
 		status.describeSpeech(ctx, cfg, home)
