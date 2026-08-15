@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The macOS and Windows controllers shell out to osascript and PowerShell, so
@@ -240,5 +241,27 @@ func TestExecRunnerSeparatesStreams(t *testing.T) {
 	if _, err := run(context.Background(), "", "factor-no-such-binary"); err == nil ||
 		!strings.Contains(err.Error(), "not installed") {
 		t.Errorf("missing binary error = %v", err)
+	}
+}
+
+// TestExecRunnerIgnoresADetachedChild guards the clipboard: xclip, xsel and
+// wl-copy all fork and stay resident to own the selection, so a runner that
+// waited for the inherited output stream to close would turn every
+// successful clipboard write into a two-second WaitDelay failure.
+func TestExecRunnerIgnoresADetachedChild(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no shell")
+	}
+	run := execRunner(defaultRunnerTimeout)
+	started := time.Now()
+	out, err := run(context.Background(), "", "sh", "-c", "sleep 5 & echo done")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.TrimSpace(out) != "done" {
+		t.Errorf("output = %q", out)
+	}
+	if waited := time.Since(started); waited > 1500*time.Millisecond {
+		t.Errorf("waited %v on a child that had already detached", waited)
 	}
 }

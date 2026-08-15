@@ -11,9 +11,9 @@
 package desktop
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,19 +96,60 @@ func execRunner(timeout time.Duration) Runner {
 			cmd.Stdin = strings.NewReader(stdin)
 		}
 		// Separate streams: stderr noise must not corrupt parsed output
-		// (clipboard contents, window tables).
-		var out, errb bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &out, &errb
-		cmd.WaitDelay = 2 * time.Second
-		if err := cmd.Run(); err != nil {
-			detail := strings.TrimSpace(errb.String())
-			if detail != "" {
-				return out.String(), fmt.Errorf("%s: %v: %s", argv[0], err, firstLine(detail))
-			}
-			return out.String(), fmt.Errorf("%s: %v", argv[0], err)
+		// (clipboard contents, window tables). Files rather than buffers,
+		// because a buffer makes os/exec build a pipe and wait for every
+		// writer to close it — and the clipboard helpers (xclip, xsel,
+		// wl-copy) must fork and stay resident to own the X selection. That
+		// resident child inherits the pipe, so Wait blocks until WaitDelay
+		// kills it, turning every successful clipboard write into a
+		// two-second failure. A file descriptor costs it nothing.
+		out, errf, cleanup, err := captureFiles()
+		if err != nil {
+			return "", err
 		}
-		return out.String(), nil
+		defer cleanup()
+		cmd.Stdout, cmd.Stderr = out, errf
+		cmd.WaitDelay = 2 * time.Second
+		runErr := cmd.Run()
+		stdout := readCapture(out)
+		if runErr != nil {
+			if detail := strings.TrimSpace(readCapture(errf)); detail != "" {
+				return stdout, fmt.Errorf("%s: %v: %s", argv[0], runErr, firstLine(detail))
+			}
+			return stdout, fmt.Errorf("%s: %v", argv[0], runErr)
+		}
+		return stdout, nil
 	}
+}
+
+// captureFiles returns two throwaway files to collect a helper's output,
+// along with the func that closes and removes them.
+func captureFiles() (stdout, stderr *os.File, cleanup func(), err error) {
+	if stdout, err = os.CreateTemp("", "factor-helper-out"); err != nil {
+		return nil, nil, nil, err
+	}
+	if stderr, err = os.CreateTemp("", "factor-helper-err"); err != nil {
+		_ = stdout.Close()
+		_ = os.Remove(stdout.Name())
+		return nil, nil, nil, err
+	}
+	return stdout, stderr, func() {
+		for _, f := range []*os.File{stdout, stderr} {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+		}
+	}, nil
+}
+
+func readCapture(f *os.File) string {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // Window is one on-screen window.
