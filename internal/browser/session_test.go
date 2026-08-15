@@ -65,7 +65,7 @@ func TestFindBrowserBinaryAutoDetectsAChromiumFamilyBrowser(t *testing.T) {
 }
 
 func TestFindBrowserBinaryReportsTheCandidatesItLookedFor(t *testing.T) {
-	fakeBrowserOnPath(t) // empty PATH directory
+	noBrowserAnywhere(t)
 	_, err := FindBrowserBinary("")
 	if err == nil {
 		t.Fatal("expected an error with no browser on PATH")

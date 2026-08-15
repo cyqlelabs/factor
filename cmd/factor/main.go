@@ -43,7 +43,7 @@ Usage:
 Flags:
   -c PATH      config file (default ~/.factor/config.json)
   -y           init: skip the wizard and accept the defaults
-  --no-install init: never install smrti or desktop helpers
+  --no-install init: never install smrti, desktop helpers, or a browser
 `
 
 func main() {
