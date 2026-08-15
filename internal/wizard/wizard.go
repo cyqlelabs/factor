@@ -207,7 +207,7 @@ func (w *wiz) runQuiet(ctx context.Context) error {
 	if !w.opts.NoInstall {
 		w.quietDesktopHelpers(ctx)
 	}
-	if w.cfg.Browser.Enabled && !w.opts.NoInstall {
+	if w.cfg.Browser.Enabled && !w.opts.NoInstall && browser.Available() {
 		if err := w.quietBrowser(ctx); err != nil {
 			return err
 		}
@@ -1160,6 +1160,13 @@ func (w *wiz) stepDesktop(ctx context.Context) error {
 // how users ended up with the tools registered and no browser to register
 // them against — the question is now the start of the work, not all of it.
 func (w *wiz) setupBrowser(ctx context.Context, env desktop.Env) error {
+	// A -tags nobrowser build has no suite to enable, so asking about one —
+	// let alone offering to download 120MB for it — would be theatre.
+	if !browser.Available() {
+		w.cfg.Browser.Enabled = false
+		w.ui.Note("this build was made without the browser suite (-tags nobrowser)")
+		return nil
+	}
 	enable, err := w.ui.Confirm("Enable the browser tools (a real browser the agent drives over DevTools)?", w.cfg.Browser.Enabled)
 	if err != nil {
 		return err
