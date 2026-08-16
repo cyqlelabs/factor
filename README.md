@@ -33,7 +33,7 @@ what you said: it consolidates, prioritizes, and *never repeats a critical mista
 | | |
 |---|---|
 | 🧠 **Memory as the soul** | Salience-ranked recall every turn; past failures become hard constraints; consolidation decays, promotes, and prunes — plus deliberate `remember` / `recall` / `forget` / `reflect` tools |
-| ⚡ **Never keeps you waiting** | Long work runs as background jobs — Factor acks instantly and proactively messages you when the result lands, even mid-conversation |
+| ⚡ **Never keeps you waiting** | A turn opens with a line on what Factor is about to do, sent while the tools are still running — and long work becomes a background job it acks instantly, then messages you when the result lands, even mid-conversation |
 | 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations instead of queuing |
 | 🔁 **Provider failover that works** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with error classification, per-candidate cooldowns, and overflow-triggered compaction |
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning` (OpenRouter), `reasoning_effort` (OpenAI/Groq), or a `thinking` budget (Anthropic) |
