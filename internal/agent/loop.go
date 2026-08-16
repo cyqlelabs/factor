@@ -56,15 +56,16 @@ type Loop struct {
 func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry *tools.Registry,
 	sessions *session.Store, builder *ContextBuilder, ambient *memory.Ambient) *Loop {
 	return &Loop{
-		cfg:      cfg,
-		bus:      b,
-		chat:     chat,
-		registry: registry,
-		sessions: sessions,
-		builder:  builder,
-		ambient:  ambient,
-		active:   map[string]*turn{},
-		sem:      make(chan struct{}, cfg.Agent.MaxConcurrentTurns),
+		cfg:         cfg,
+		bus:         b,
+		chat:        chat,
+		registry:    registry,
+		sessions:    sessions,
+		builder:     builder,
+		ambient:     ambient,
+		active:      map[string]*turn{},
+		sem:         make(chan struct{}, cfg.Agent.MaxConcurrentTurns),
+		lastChannel: loadLastChannel(),
 	}
 }
 
@@ -422,16 +423,21 @@ func (l *Loop) drainSteering(in turnInput, t *turn) []provider.Message {
 }
 
 func (l *Loop) recordLastChannel(msg bus.InboundMessage) {
-	if msg.Channel == "cli" || msg.Channel == "system" {
+	if !bus.External(msg.Channel) {
 		return
 	}
 	l.lastMu.Lock()
+	moved := l.lastChannel.Channel != msg.Channel || l.lastChannel.ChatID != msg.ChatID
 	l.lastChannel = msg
 	l.lastMu.Unlock()
+	if moved {
+		saveLastChannel(msg)
+	}
 }
 
 // LastChannel returns the most recent external channel/chat, for heartbeat
-// and cron delivery. ok is false before any external message arrived.
+// and cron delivery. It survives a restart — the address is on disk — so
+// ok is false only until the user's first ever message.
 func (l *Loop) LastChannel() (channel, chatID string, ok bool) {
 	l.lastMu.Lock()
 	defer l.lastMu.Unlock()

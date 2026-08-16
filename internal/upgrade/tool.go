@@ -49,8 +49,10 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) *tools.Result {
 		return tools.Errorf("upgrading to factor %s: %v", rel.Version, err)
 	}
 	// The restart waits for this turn to be answered, so the reply below is
-	// the user's warning that Factor is about to go quiet for a moment.
-	if t.Restart.Request("installed factor " + rel.Version) {
+	// the user's warning that Factor is about to go quiet for a moment — and
+	// the chat it is being sent to is where the new process reports back in.
+	tc := tools.ToolContextFrom(ctx)
+	if t.Restart.Request("installed factor "+rel.Version, Target{Channel: tc.Channel, ChatID: tc.ChatID}) {
 		return tools.Textf("Installed factor %s at %s, replacing %s. Restarting into it as soon as this answer reaches you — say goodbye briefly; you will be back in a few seconds.",
 			rel.Version, path, t.Current)
 	}

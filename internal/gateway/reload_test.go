@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/bus"
+	"github.com/cyqlelabs/factor/internal/config"
 )
 
 // fastSettle shrinks the restart pacing so a test does not wait out a real
@@ -100,6 +104,14 @@ func TestRunRestartsIntoTheNewBinary(t *testing.T) {
 	relaunch = func() error { relaunched.Store(true); return nil }
 	t.Cleanup(func() { relaunch = prev })
 
+	// The chat the user last spoke in, as an earlier process recorded it. The
+	// filename is the agent package's; a gateway that cannot read what the
+	// loop wrote has no one to report back to after the restart.
+	if err := os.WriteFile(filepath.Join(config.Home(), "last-channel.json"),
+		[]byte(`{"channel":"telegram","chat_id":"42"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- Run(path) }()
 
@@ -127,6 +139,12 @@ func TestRunRestartsIntoTheNewBinary(t *testing.T) {
 	// left behind would stop the new process from starting at all.
 	if _, err := os.Stat(pidPath()); !os.IsNotExist(err) {
 		t.Errorf("pid file survived the restart: %v", err)
+	}
+	// The one thing it does leave: who is waiting to hear that it came back.
+	var sent []bus.OutboundMessage
+	announceRestart(collector(&sent))
+	if len(sent) != 1 || sent[0].Channel != "telegram" || sent[0].ChatID != "42" {
+		t.Errorf("the restart left no notice for the last active chat: %+v", sent)
 	}
 }
 

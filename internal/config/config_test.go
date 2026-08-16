@@ -148,10 +148,18 @@ func TestEnsureWorkspaceCarriesForwardDefaults(t *testing.T) {
 	if err := EnsureWorkspace(ws); err != nil {
 		t.Fatal(err)
 	}
-	// a file left at a default this build superseded is brought forward
+	// a file left at any default this build superseded is brought forward
 	soul := filepath.Join(ws, "SOUL.md")
-	if err := os.WriteFile(soul, []byte(supersededTemplates["SOUL.md"][0]), 0o644); err != nil {
-		t.Fatal(err)
+	for i, old := range supersededTemplates["SOUL.md"] {
+		if err := os.WriteFile(soul, []byte(old), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnsureWorkspace(ws); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := os.ReadFile(soul); string(got) != workspaceTemplates["SOUL.md"] {
+			t.Errorf("superseded SOUL.md %d not carried forward: %q", i, got)
+		}
 	}
 	// one the user rewrote is not, even when its name has superseded versions
 	user := filepath.Join(ws, "USER.md")
@@ -168,9 +176,6 @@ func TestEnsureWorkspaceCarriesForwardDefaults(t *testing.T) {
 
 	if err := EnsureWorkspace(ws); err != nil {
 		t.Fatal(err)
-	}
-	if got, _ := os.ReadFile(soul); string(got) != workspaceTemplates["SOUL.md"] {
-		t.Errorf("superseded SOUL.md not carried forward: %q", got)
 	}
 	if got, _ := os.ReadFile(user); string(got) != "# User\n\nNico, Buenos Aires.\n" {
 		t.Errorf("edited USER.md was overwritten: %q", got)

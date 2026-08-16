@@ -11,11 +11,20 @@ import (
 // the process is gone before the new binary could matter.
 type Restarter struct {
 	mu sync.Mutex
-	fn func(reason string)
+	fn func(reason string, target Target)
+}
+
+// Target is the chat that asked for the restart, carried through so the
+// process that comes up next knows who is waiting to hear that it is back.
+// It is empty when nothing asked in a conversation — a SIGHUP from a
+// terminal — and the restart then reports to the last chat the user used.
+type Target struct {
+	Channel string
+	ChatID  string
 }
 
 // Set registers what performs the restart.
-func (r *Restarter) Set(fn func(reason string)) {
+func (r *Restarter) Set(fn func(reason string, target Target)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.fn = fn
@@ -24,7 +33,7 @@ func (r *Restarter) Set(fn func(reason string)) {
 // Request asks for a restart and reports whether anything is there to do it.
 // The restart is asynchronous by necessity: the caller is inside the turn
 // that has to be answered before the process may go.
-func (r *Restarter) Request(reason string) bool {
+func (r *Restarter) Request(reason string, target Target) bool {
 	if r == nil {
 		return false
 	}
@@ -34,7 +43,7 @@ func (r *Restarter) Request(reason string) bool {
 	if fn == nil {
 		return false
 	}
-	fn(reason)
+	fn(reason, target)
 	return true
 }
 

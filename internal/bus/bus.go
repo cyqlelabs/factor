@@ -29,6 +29,14 @@ type OutboundMessage struct {
 // SessionKey identifies the conversation a message belongs to.
 func (m InboundMessage) SessionKey() string { return m.Channel + ":" + m.ChatID }
 
+// External reports whether a channel is a conversation that outlives this
+// process, and so is somewhere Factor can reach the user on its own
+// initiative. The CLI is one process's stdin and system is Factor talking to
+// itself: neither is an address a heartbeat or a restart notice can use.
+func External(channel string) bool {
+	return channel != "" && channel != "cli" && channel != "system"
+}
+
 type MessageBus struct {
 	inbound  chan InboundMessage
 	outbound chan OutboundMessage

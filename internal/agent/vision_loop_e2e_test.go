@@ -354,6 +354,7 @@ func newVisionRig(t *testing.T, straightToClick bool) *visionRig {
 	srv := httptest.NewServer(http.HandlerFunc(model.serve))
 	t.Cleanup(srv.Close)
 
+	t.Setenv("FACTOR_HOME", t.TempDir()) // the loop records the last chat under it
 	cfg := config.Default()
 	cfg.Agent.Workspace = t.TempDir()
 	cfg.Agent.MaxToolIterations = 8

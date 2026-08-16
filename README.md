@@ -163,9 +163,11 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
 
 </details>
 
-The workspace (`~/.factor/workspace`) is the agent's home: `AGENT.md`, `SOUL.md`,
-`USER.md` shape its identity; `HEARTBEAT.md` lists proactive tasks; `instructions/`,
-`skills/`, `sessions/`, `cron/` do what they say.
+The workspace (`~/.factor/workspace`) is the agent's home. Its persona is built into
+the binary, so an upgrade improves it everywhere at once; `SOUL.md` layers your own
+on top, `USER.md` holds what Factor should always know about you, and `AGENT.md`
+tunes how it works. `HEARTBEAT.md` lists proactive tasks; `instructions/`, `skills/`,
+`sessions/`, `cron/` do what they say.
 
 ## Browser
 

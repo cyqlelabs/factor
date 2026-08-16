@@ -100,6 +100,7 @@ type harness struct {
 
 func newHarness(t *testing.T, script ...func(req *provider.Request) (*provider.Response, error)) *harness {
 	t.Helper()
+	t.Setenv("FACTOR_HOME", t.TempDir()) // the loop records the last chat under it
 	cfg := config.Default()
 	cfg.Agent.Workspace = t.TempDir()
 	cfg.Agent.MaxToolIterations = 5
@@ -402,6 +403,34 @@ func TestContextBuilderCachingAndInstructions(t *testing.T) {
 	p2 := cb.SystemPrompt(context.Background(), nil, "q")
 	if !strings.Contains(p2, "Always answer in prose.") {
 		t.Error("stale cache after instruction edit")
+	}
+}
+
+// The persona ships in the binary, so a SOUL.md the user rewrote adds to it
+// instead of replacing it — and lands after it, where an addendum belongs.
+func TestCorePersonaSurvivesSoulEdits(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Workspace = t.TempDir()
+	if err := config.EnsureWorkspace(cfg.Agent.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	soul := filepath.Join(cfg.Agent.Workspace, "SOUL.md")
+	if err := os.WriteFile(soul, []byte("Be flippant. Never bother verifying."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := NewContextBuilder(cfg, nil, nil)
+	p := cb.SystemPrompt(context.Background(), nil, "q")
+
+	core := strings.Index(p, "## Rigor")
+	if core < 0 {
+		t.Fatal("core persona missing from the prompt")
+	}
+	own := strings.Index(p, "Be flippant.")
+	if own < 0 {
+		t.Fatal("SOUL.md was not included")
+	}
+	if own < core {
+		t.Errorf("SOUL.md precedes the core soul (core=%d, file=%d)", core, own)
 	}
 }
 

@@ -96,15 +96,16 @@ func serve(configPath string) (bool, error) {
 
 	// Both ways of asking for a reload land here: the upgrade tool mid
 	// conversation, and a SIGHUP from `factor upgrade` in a terminal.
-	restart := make(chan string, 1)
-	request := func(reason string) {
+	restart := make(chan restartRequest, 1)
+	request := func(reason string, target upgrade.Target) {
 		select {
-		case restart <- reason:
+		case restart <- restartRequest{reason: reason, target: target}:
 		default: // one request is all it takes
 		}
 	}
 	a.Restart.Set(request)
-	notifyReload(ctx, request)
+	// A SIGHUP asks from a terminal, with no conversation behind it.
+	notifyReload(ctx, func(reason string) { request(reason, upgrade.Target{}) })
 
 	channels := channel.Build(cfg.Channels, a.Bus)
 	if len(channels) == 0 {
@@ -125,6 +126,10 @@ func serve(configPath string) (bool, error) {
 	}
 	manager := channel.NewManager(a.Bus, channels)
 	manager.Start(ctx)
+
+	// If the last process went down on purpose, say so: an upgrade asked over
+	// Telegram is only finished once the new binary answers in that chat.
+	announceRestart(a.Bus.PublishOutbound)
 
 	// Let the chat show that a turn is running: every phase but the last is
 	// still work in progress, and what the agent says on its way to an answer
@@ -179,12 +184,15 @@ func serve(configPath string) (bool, error) {
 	reloading := false
 	select {
 	case <-ctx.Done():
-	case reason := <-restart:
-		slog.Info("restart requested", "reason", reason)
+	case req := <-restart:
+		slog.Info("restart requested", "reason", req.reason)
 		settle(ctx, a.Loop.Idle, a.Bus.PendingOutbound)
 		// A stop that lands while the answer is still going out wins: the
 		// user asked for this process to end, not to come back.
 		reloading = ctx.Err() == nil
+		if reloading {
+			noteRestart(req, a.Loop.LastChannel)
+		}
 		cancel()
 	}
 	slog.Info("shutting down")

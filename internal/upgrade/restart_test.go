@@ -7,26 +7,37 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 func TestRestarterRequest(t *testing.T) {
 	var nilRestarter *Restarter
-	if nilRestarter.Request("no one is listening") {
+	if nilRestarter.Request("no one is listening", Target{}) {
 		t.Error("a nil Restarter claimed it would restart")
 	}
 
 	r := &Restarter{}
-	if r.Request("nothing registered yet") {
+	if r.Request("nothing registered yet", Target{}) {
 		t.Error("an unset Restarter claimed it would restart")
 	}
 
 	var got []string
-	r.Set(func(reason string) { got = append(got, reason) })
-	if !r.Request("installed factor v0.4.0") {
+	var targets []Target
+	r.Set(func(reason string, target Target) {
+		got = append(got, reason)
+		targets = append(targets, target)
+	})
+	if !r.Request("installed factor v0.4.0", Target{Channel: "telegram", ChatID: "42"}) {
 		t.Error("Request returned false with a restart registered")
 	}
 	if !reflect.DeepEqual(got, []string{"installed factor v0.4.0"}) {
 		t.Errorf("restart reasons = %q", got)
+	}
+	// Who asked has to reach the restart: it is the address the next process
+	// reports back to.
+	if !reflect.DeepEqual(targets, []Target{{Channel: "telegram", ChatID: "42"}}) {
+		t.Errorf("restart targets = %+v", targets)
 	}
 }
 
@@ -90,9 +101,15 @@ func TestToolRestartsAfterInstalling(t *testing.T) {
 
 	restarter := &Restarter{}
 	var reasons []string
-	restarter.Set(func(reason string) { reasons = append(reasons, reason) })
+	var targets []Target
+	restarter.Set(func(reason string, target Target) {
+		reasons = append(reasons, reason)
+		targets = append(targets, target)
+	})
 
-	res := (&Tool{Current: "v0.3.0", Restart: restarter}).Execute(context.Background(),
+	ctx := tools.WithToolContext(context.Background(),
+		tools.ToolContext{Channel: "telegram", ChatID: "42", SessionKey: "telegram:42"})
+	res := (&Tool{Current: "v0.3.0", Restart: restarter}).Execute(ctx,
 		map[string]any{"action": "install"})
 	if res.IsError {
 		t.Fatalf("install failed: %+v", res)
@@ -102,6 +119,11 @@ func TestToolRestartsAfterInstalling(t *testing.T) {
 	}
 	if len(reasons) != 1 || !strings.Contains(reasons[0], "v0.4.0") {
 		t.Errorf("restart reasons = %q", reasons)
+	}
+	// The chat that asked for the upgrade is the one the restart reports
+	// back to, so the tool has to hand its turn's chat to the restarter.
+	if !reflect.DeepEqual(targets, []Target{{Channel: "telegram", ChatID: "42"}}) {
+		t.Errorf("restart targets = %+v", targets)
 	}
 }
 
