@@ -7,6 +7,8 @@ package tools
 import (
 	"context"
 	"fmt"
+
+	"github.com/cyqlelabs/factor/internal/provider"
 )
 
 // Tool is the single seam every capability implements.
@@ -22,6 +24,11 @@ type Result struct {
 	ForLLM  string // fed back into the model (secret-filtered by the registry)
 	ForUser string // optional direct user-visible note
 	IsError bool
+	// Images are shown to the model alongside ForLLM (an annotated
+	// screenshot from screen_view, say). The agent loop attaches them to
+	// the in-flight turn only: pruned once newer frames arrive, never
+	// persisted to session history.
+	Images []provider.ImagePart
 }
 
 func Text(s string) *Result             { return &Result{ForLLM: s} }

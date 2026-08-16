@@ -10,6 +10,16 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	// Images attach to user messages only — the one placement every
+	// vision-capable wire dialect accepts. They live in the in-flight turn,
+	// not in persisted history (the agent loop strips them before storage).
+	Images []ImagePart `json:"images,omitempty"`
+}
+
+// ImagePart is one attached image, wire-format neutral.
+type ImagePart struct {
+	MediaType string `json:"media_type"` // e.g. "image/png"
+	Data      string `json:"data"`       // base64 payload, no data: URI prefix
 }
 
 type ToolCall struct {

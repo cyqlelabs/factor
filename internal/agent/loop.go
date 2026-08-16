@@ -329,12 +329,59 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 				return "", err
 			}
 			messages = append(messages, toolMsg)
+
+			// A tool result carrying images (screen_view's annotated
+			// screenshot) rides a follow-up user message — the one placement
+			// every vision dialect accepts. Only the placeholder is persisted:
+			// session files stay small, replay stays valid on any model, and
+			// a stale frame is worthless next turn anyway.
+			if len(result.Images) > 0 {
+				if err := l.persist(in, provider.Message{Role: "user", Content: imagePruned(call.Name)}); err != nil {
+					return "", err
+				}
+				messages = append(messages, provider.Message{
+					Role:    "user",
+					Content: fmt.Sprintf("[Attached: image output of the %s tool. This is tool output, not a message from the user.]", call.Name),
+					Images:  result.Images,
+				})
+				pruneImages(messages)
+			}
 		}
 		messages = append(messages, l.drainSteering(in, t)...)
 	}
 
 	l.maybeCompactAsync(in)
 	return "I hit the tool-iteration limit for this turn without reaching a final answer. Ask me to continue if you want me to keep going.", nil
+}
+
+// maxImagesInContext bounds how many attached images ride one in-flight turn.
+// Screenshots are the token heavyweight of a desktop session; only the newest
+// frames still inform the next action, so older ones collapse to a note.
+const maxImagesInContext = 2
+
+func imagePruned(toolName string) string {
+	return fmt.Sprintf("[An image from the %s tool was attached here and has been dropped to save space. Re-run the tool for a fresh view.]", toolName)
+}
+
+// pruneImages strips image payloads from all but the newest
+// maxImagesInContext image-bearing messages, in place.
+func pruneImages(messages []provider.Message) {
+	withImages := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if len(messages[i].Images) == 0 {
+			continue
+		}
+		withImages++
+		if withImages <= maxImagesInContext {
+			continue
+		}
+		name := "screen_view"
+		if _, after, ok := strings.Cut(messages[i].Content, "image output of the "); ok {
+			name, _, _ = strings.Cut(after, " ")
+		}
+		messages[i].Images = nil
+		messages[i].Content = imagePruned(name)
+	}
 }
 
 // assemble builds the request message list: system, optional summary, history.
