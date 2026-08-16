@@ -20,6 +20,11 @@ make build-tiny                             # -tags nobrowser strips the CDP bro
 
 The coverage gate is real: new code needs tests or `make check` fails. Live tests (real headless Chrome, real desktop round-trip) auto-skip in `-short` mode or when the machine can't host them; the rest of the suite runs against fakes — scripted providers, a fake smrti sidecar (spawned by re-execing the test binary), a fake Telegram API, a fake MCP server over real stdio JSON-RPC, and a scripted desktop backend.
 
+Grid vision is covered end to end at two levels, both of which locate the target and read the grid **out of the rendered pixels** rather than from the grid code, so an overlay or translation that is wrong cannot agree with the test:
+
+- `internal/desktop/grid_live_test.go` — a private Xvfb with solid-color blocks at known screen positions; the real helpers capture and the real `xdotool` moves the pointer, which must land inside the block. Covers coarse pointing, a small target only the zoom pass can hit, region zoom, a downscaled frame on a big screen, and re-grounding after the screen changes. Needs Xvfb, scrot, xdotool and xlogo (CI installs them; missing helpers skip).
+- `internal/agent/vision_loop_e2e_test.go` — the whole turn with no display: real loop, registry, desktop tools and provider over a local HTTP server, with a fake vision model that decodes the PNG that actually crossed the wire, names a cell, and clicks it. Runs everywhere, so the CI boxes where the live tests skip still cover the path.
+
 ## Architecture
 
 Factor is a single static Go binary (`cmd/factor`): a desktop AI agent with long-term memory, reachable over CLI or Telegram. `internal/app` is the composition root — it wires everything below into one `App` shared by the CLI modes and the `factor gateway` daemon (`internal/gateway`, which adds PID-file management, cron, and heartbeat).
