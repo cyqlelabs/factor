@@ -16,6 +16,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # The desktop grid-vision tests drive a real X server end to end. Without
+      # these helpers they skip themselves, so a hiccup here costs coverage,
+      # not a red build.
+      - name: install desktop test helpers
+        continue-on-error: true
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb scrot xdotool x11-apps
       - name: gofmt
         run: test -z "$(gofmt -l .)"
       - name: vet
