@@ -38,7 +38,7 @@ what you said: it consolidates, prioritizes, and *never repeats a critical mista
 | 🔁 **Provider failover that works** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with error classification, per-candidate cooldowns, and overflow-triggered compaction |
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning` (OpenRouter), `reasoning_effort` (OpenAI/Groq), or a `thinking` budget (Anthropic) |
 | ☎️ **Answers the phone** | A real number: call it and talk to Factor out loud, or have it call and text you — barge-in, voicemail detection, and a fully local speech tier if you want no audio leaving the machine ([Phone](#phone-calls-and-sms)) |
-| 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications — X11, Wayland, macOS, Windows; auto-registered when a display exists |
+| 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications — X11, Wayland, macOS, Windows; auto-registered when a display exists — plus **grid vision**: a vision model sees the screen under a coordinate grid, zooms a cell, and clicks it by name ([Desktop](#desktop)) |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed instance, visible by default so you can watch it work — and setup installs one when the machine has none ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills, drop-in instructions — see [Extending](#extending-factor) |
 | 🔧 **Self-managing** | Edits its own config, installs packages (apt/dnf/pip/npm/…), upgrades and restarts itself into the newest release, runs cron schedules and `HEARTBEAT.md` checks that cost zero LLM calls when idle |
@@ -190,6 +190,34 @@ process, or a compositor. It cannot click, fill, or screenshot and it keeps no
 session, so it supplements the real browser instead of replacing it — the agent
 picks whichever the job needs. The wizard offers it only where it runs: its builds
 need glibc 2.34, and the check happens before the 150 MB download, not after.
+
+## Desktop
+
+Factor works the graphical session through the desktop's own helper programs
+(xdotool, wmctrl, scrot and friends on X11; grim/wtype on Wayland; osascript on
+macOS; PowerShell on Windows) — no CGO bindings, so the binary stays static and the
+tools cost nothing on a headless box, where they simply don't register.
+
+On top of the plain window/mouse/keyboard/clipboard tools sits **grid vision**, a
+two-pass pointing loop for vision-capable models:
+
+1. `screen_view` captures the screen and attaches it with a battleship coordinate
+   grid overlaid — columns A, B, C…, rows 1, 2, 3… The model doesn't guess pixel
+   coordinates (which vision models are famously bad at); it names the cell it can
+   see: "the icon is in D4".
+2. `screen_zoom cell=D4` magnifies that cell (or any pixel region, e.g. a window's
+   geometry from `window_list`) under a finer sub-grid, taking precision from
+   ~cell-size down to ~10px in one more look.
+3. `mouse action=click cell=B3` clicks the named cell's center — cells resolve back
+   to native screen pixels automatically, on either view.
+
+Everything is pure Go image math: no OpenCV, no OCR models, no extra helpers beyond
+the screenshot program already required. Frames sent to the model are capped at
+1568px on the longest side (clicks still land at native resolution), only the two
+newest frames stay in context, and image bytes never touch session history — so a
+long desktop session stays cheap in tokens and in disk, which is the point on a
+small box. Non-vision models can keep the rest of the desktop suite and disable the
+two vision tools via `tools.disabled`.
 
 ## Phone calls and SMS
 
