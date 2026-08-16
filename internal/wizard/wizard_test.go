@@ -79,6 +79,9 @@ func newHarness(t *testing.T, answers ...string) *harness {
 		EnsureSmrti: func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
 			return filepath.Join(home, "venv", "bin", "smrti"), true, nil
 		},
+		// Never probe the developer's own port: a Factor running on the machine
+		// would otherwise answer, and the install paths would never be reached.
+		MemoryAnswering: func(context.Context, config.MemoryConfig) bool { return false },
 		InstallPackages: func(_ context.Context, pkgs []string) (string, error) {
 			return "installed " + strings.Join(pkgs, " "), nil
 		},
