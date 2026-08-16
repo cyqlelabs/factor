@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -88,7 +89,48 @@ reply exactly HEARTBEAT_OK.
 `,
 }
 
+// supersededTemplates holds bootstrap files as earlier versions of Factor
+// shipped them. A file still matching one of these has never been edited, so
+// an upgrade may bring it forward; anything else is the user's own writing.
+var supersededTemplates = map[string][]string{
+	"AGENT.md": {`# Factor
+
+You are Factor, a fast, reliable desktop agent and companion.
+
+- Be direct and concise. Do the task; don't narrate it.
+- Use your tools when they help; don't guess when you can check.
+- Your memory is real: recall before assuming, remember what matters.
+- When something fails, remember the failure so you never repeat it.
+`},
+	"SOUL.md": {`# Soul
+
+Curious, dependable, quietly witty. You live on this machine and you take
+care of it and its human. You have persistent memory — act like it.
+`},
+	"USER.md": {`# User
+
+(Describe the user here: name, preferences, timezone, ongoing projects.)
+`},
+}
+
+// untouched reports whether a bootstrap file still holds a default this binary
+// has superseded — the test for "the user never edited it".
+func untouched(name string, content []byte) bool {
+	for _, old := range supersededTemplates[name] {
+		if string(content) == old {
+			return true
+		}
+	}
+	return false
+}
+
 // EnsureWorkspace creates the workspace layout and default bootstrap files.
+//
+// Bootstrap files belong to the user, so an upgrade must not clobber a persona
+// or an instruction set someone wrote by hand. It may, however, carry an
+// improved default to an install that never edited the old one: a file whose
+// bytes still match a superseded default is replaced, everything else is left
+// exactly as it is.
 func EnsureWorkspace(workspace string) error {
 	for _, dir := range append([]string{""}, workspaceDirs...) {
 		if err := os.MkdirAll(filepath.Join(workspace, dir), 0o755); err != nil {
@@ -97,10 +139,19 @@ func EnsureWorkspace(workspace string) error {
 	}
 	for name, content := range workspaceTemplates {
 		path := filepath.Join(workspace, name)
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-				return err
-			}
+		existing, readErr := os.ReadFile(path)
+		exists := readErr == nil
+		if !exists && !os.IsNotExist(readErr) {
+			continue // unreadable: leave whatever is there alone
+		}
+		if exists && !untouched(name, existing) {
+			continue // the user's own writing
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return err
+		}
+		if exists {
+			slog.Info("workspace file carried forward to the current default", "file", name)
 		}
 	}
 	return nil

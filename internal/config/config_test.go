@@ -143,6 +143,43 @@ func TestEnsureWorkspace(t *testing.T) {
 	}
 }
 
+func TestEnsureWorkspaceCarriesForwardDefaults(t *testing.T) {
+	ws := filepath.Join(t.TempDir(), "workspace")
+	if err := EnsureWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	// a file left at a default this build superseded is brought forward
+	soul := filepath.Join(ws, "SOUL.md")
+	if err := os.WriteFile(soul, []byte(supersededTemplates["SOUL.md"][0]), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// one the user rewrote is not, even when its name has superseded versions
+	user := filepath.Join(ws, "USER.md")
+	if err := os.WriteFile(user, []byte("# User\n\nNico, Buenos Aires.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// an unreadable path is left as it is rather than failing the boot
+	if err := os.Remove(filepath.Join(ws, "HEARTBEAT.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(ws, "HEARTBEAT.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(soul); string(got) != workspaceTemplates["SOUL.md"] {
+		t.Errorf("superseded SOUL.md not carried forward: %q", got)
+	}
+	if got, _ := os.ReadFile(user); string(got) != "# User\n\nNico, Buenos Aires.\n" {
+		t.Errorf("edited USER.md was overwritten: %q", got)
+	}
+	if info, err := os.Stat(filepath.Join(ws, "HEARTBEAT.md")); err != nil || !info.IsDir() {
+		t.Errorf("unreadable HEARTBEAT.md was not left alone: %v", err)
+	}
+}
+
 func TestIsToolEnabled(t *testing.T) {
 	tc := ToolsConfig{Disabled: []string{"exec"}}
 	if tc.IsToolEnabled("exec") {
