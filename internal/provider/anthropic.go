@@ -48,13 +48,21 @@ func (p *Anthropic) Model() string { return p.model }
 func (p *Anthropic) Name() string  { return "anthropic:" + p.model }
 
 type anthContent struct {
-	Type      string         `json:"type"`
-	Text      string         `json:"text,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Input     map[string]any `json:"input,omitempty"`
-	ToolUseID string         `json:"tool_use_id,omitempty"`
-	Content   string         `json:"content,omitempty"`
+	Type      string           `json:"type"`
+	Text      string           `json:"text,omitempty"`
+	ID        string           `json:"id,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	Input     map[string]any   `json:"input,omitempty"`
+	ToolUseID string           `json:"tool_use_id,omitempty"`
+	Content   string           `json:"content,omitempty"`
+	Source    *anthImageSource `json:"source,omitempty"`
+}
+
+// anthImageSource is the Messages API image block payload.
+type anthImageSource struct {
+	Type      string `json:"type"` // "base64"
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type anthMessage struct {
@@ -113,7 +121,13 @@ func toAnthropic(messages []Message) (system string, out []anthMessage) {
 			}
 			system += m.Content
 		case "user":
-			out = append(out, anthMessage{Role: "user", Content: []anthContent{{Type: "text", Text: m.Content}}})
+			blocks := []anthContent{{Type: "text", Text: m.Content}}
+			for _, img := range m.Images {
+				blocks = append(blocks, anthContent{Type: "image", Source: &anthImageSource{
+					Type: "base64", MediaType: img.MediaType, Data: img.Data,
+				}})
+			}
+			out = append(out, anthMessage{Role: "user", Content: blocks})
 		case "assistant":
 			var blocks []anthContent
 			if m.Content != "" {

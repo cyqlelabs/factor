@@ -41,11 +41,32 @@ func NewOpenAI(apiBase, apiKey, model string) *OpenAI {
 func (p *OpenAI) Model() string { return p.model }
 func (p *OpenAI) Name() string  { return "openai:" + p.model }
 
+// oaMessage's Content is a string for plain text and a content-parts array
+// ([{type:"text"},{type:"image_url"}]) when a user message carries images —
+// the multimodal form every OpenAI-compatible endpoint understands.
 type oaMessage struct {
 	Role       string       `json:"role"`
-	Content    string       `json:"content"`
+	Content    any          `json:"content"`
 	ToolCalls  []oaToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
+}
+
+// oaContent builds the content field: plain string normally, parts with images.
+func oaContent(m Message) any {
+	if len(m.Images) == 0 || m.Role != "user" {
+		return m.Content
+	}
+	parts := make([]map[string]any, 0, len(m.Images)+1)
+	if m.Content != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+	}
+	for _, img := range m.Images {
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": "data:" + img.MediaType + ";base64," + img.Data},
+		})
+	}
+	return parts
 }
 
 type oaToolCall struct {
@@ -78,10 +99,17 @@ type oaTool struct {
 	} `json:"function"`
 }
 
+// oaRespMessage keeps response decoding strict: models reply with string
+// content, never parts.
+type oaRespMessage struct {
+	Content   string       `json:"content"`
+	ToolCalls []oaToolCall `json:"tool_calls"`
+}
+
 type oaResponse struct {
 	Choices []struct {
-		Message      oaMessage `json:"message"`
-		FinishReason string    `json:"finish_reason"`
+		Message      oaRespMessage `json:"message"`
+		FinishReason string        `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -104,7 +132,7 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 		body.Temperature = &t
 	}
 	for _, m := range req.Messages {
-		om := oaMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		om := oaMessage{Role: m.Role, Content: oaContent(m), ToolCallID: m.ToolCallID}
 		for _, tc := range m.ToolCalls {
 			args, err := json.Marshal(tc.Args)
 			if err != nil {

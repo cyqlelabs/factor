@@ -551,8 +551,8 @@ func TestRunnerErrorsSurface(t *testing.T) {
 func TestToolSchemasAreWellFormed(t *testing.T) {
 	m := newMachine("linux")
 	byName, _ := newTools(t, m)
-	if len(byName) != 10 {
-		t.Fatalf("registered %d tools, want 10", len(byName))
+	if len(byName) != 12 {
+		t.Fatalf("registered %d tools, want 12", len(byName))
 	}
 	for name, tool := range byName {
 		if tool.Description() == "" {

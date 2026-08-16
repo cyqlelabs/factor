@@ -17,11 +17,13 @@ import (
 // workspace like every other file-producing tool.
 func NewTools(env Env, guard *tools.PathGuard, screenshotDir string) []tools.Tool {
 	c := NewController(env)
-	d := &deps{env: env, ctl: c, guard: guard, shotDir: screenshotDir}
+	d := &deps{env: env, ctl: c, guard: guard, shotDir: screenshotDir, vision: &visionState{}}
 	return []tools.Tool{
 		&windowListTool{d},
 		&windowControlTool{d},
 		&screenshotTool{d},
+		&screenViewTool{d},
+		&screenZoomTool{d},
 		&mouseTool{d},
 		&typeTextTool{d},
 		&pressKeyTool{d},
@@ -37,6 +39,7 @@ type deps struct {
 	ctl     Controller
 	guard   *tools.PathGuard
 	shotDir string
+	vision  *visionState
 }
 
 // resolveWindow turns a tool argument into a window: "active", a window id,
@@ -259,15 +262,16 @@ type mouseTool struct{ *deps }
 
 func (t *mouseTool) Name() string { return "mouse" }
 func (t *mouseTool) Description() string {
-	return "Control the pointer: move it, or click at a position (or wherever it currently is). Coordinates are absolute screen pixels from the top-left; desktop_info reports the screen size."
+	return "Control the pointer: move it, or click at a position (or wherever it currently is). Target either a grid cell from the latest screen_view/screen_zoom image (cell=D4), or absolute screen pixels from the top-left (x/y); desktop_info reports the screen size."
 }
 func (t *mouseTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"action": map[string]any{"type": "string", "enum": []any{"move", "click", "double_click", "right_click", "middle_click", "scroll_up", "scroll_down"}, "description": "Pointer action to perform at x/y, or at the current position when they are omitted"},
-			"x":      map[string]any{"type": "integer", "description": "Absolute screen pixels from the left edge; omit x and y to act where the pointer already is"},
-			"y":      map[string]any{"type": "integer", "description": "Absolute screen pixels from the top edge; omit x and y to act where the pointer already is"},
+			"action": map[string]any{"type": "string", "enum": []any{"move", "click", "double_click", "right_click", "middle_click", "scroll_up", "scroll_down"}, "description": "Pointer action to perform at cell or x/y, or at the current position when all are omitted"},
+			"cell":   map[string]any{"type": "string", "description": "Grid cell on the latest screen_view or screen_zoom image, e.g. D4; acts at the cell's center. Zoom first for small targets"},
+			"x":      map[string]any{"type": "integer", "description": "Absolute screen pixels from the left edge; omit cell and x/y to act where the pointer already is"},
+			"y":      map[string]any{"type": "integer", "description": "Absolute screen pixels from the top edge; omit cell and x/y to act where the pointer already is"},
 		},
 		"required": []any{"action"},
 	}
@@ -278,20 +282,32 @@ func (t *mouseTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 	_, hasX := args["x"]
 	_, hasY := args["y"]
 	var at *Point
+	var resolved string
 	if hasX && hasY {
 		at = &Point{X: tools.IntArg(args, "x", 0), Y: tools.IntArg(args, "y", 0)}
 	} else if hasX != hasY {
 		return tools.Errorf("x and y must be given together")
 	}
+	if cell := strings.TrimSpace(tools.StringArg(args, "cell")); cell != "" {
+		if at != nil {
+			return tools.Errorf("give either cell or x/y, not both")
+		}
+		p, view, err := t.vision.resolveCell(cell)
+		if err != nil {
+			return tools.Errorf("%v", err)
+		}
+		at = &Point{X: p.X, Y: p.Y}
+		resolved = fmt.Sprintf(" (%s %s → %d,%d)", view, strings.ToUpper(cell), p.X, p.Y)
+	}
 
 	if action == "move" {
 		if at == nil {
-			return tools.Errorf("move needs x and y")
+			return tools.Errorf("move needs cell or x and y")
 		}
 		if err := t.ctl.MoveMouse(ctx, at.X, at.Y); err != nil {
 			return tools.Errorf("%v", err)
 		}
-		return tools.Textf("Moved the pointer to %d,%d.", at.X, at.Y)
+		return tools.Textf("Moved the pointer to %d,%d%s.", at.X, at.Y, resolved)
 	}
 
 	button, count := "left", 1
@@ -313,9 +329,9 @@ func (t *mouseTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 	}
 	where := "at the current position"
 	if at != nil {
-		where = fmt.Sprintf("at %d,%d", at.X, at.Y)
+		where = fmt.Sprintf("at %d,%d%s", at.X, at.Y, resolved)
 	}
-	return tools.Textf("%s %s.", action, where)
+	return tools.Textf("%s %s. The screen may have changed — screen_view to verify the result.", action, where)
 }
 
 // ---- type_text / press_key -------------------------------------------------
