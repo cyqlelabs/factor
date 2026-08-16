@@ -309,6 +309,13 @@ func TestCronTargetFallback(t *testing.T) {
 	if ch, chat := cronTarget("cli", "main", telegram); ch != "telegram" || chat != "77" {
 		t.Errorf("cli origin not rerouted: %s:%s", ch, chat)
 	}
+	// a job scheduled during a heartbeat, or by another cron job, belongs to
+	// no chat either: it follows the user the same way
+	for _, origin := range []string{"system", "cron"} {
+		if ch, chat := cronTarget(origin, "heartbeat", telegram); ch != "telegram" || chat != "77" {
+			t.Errorf("%s origin not rerouted: %s:%s", origin, ch, chat)
+		}
+	}
 }
 
 func TestCloseIsIdempotent(t *testing.T) {

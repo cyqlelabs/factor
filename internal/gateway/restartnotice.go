@@ -25,9 +25,9 @@ type restartRequest struct {
 // to come back, let alone who is waiting to hear that it did — and the user
 // who asked over Telegram is owed that line. Written once the conversation
 // that asked has been answered, read and deleted on the way up.
-func restartNotePath() string { return filepath.Join(config.Home(), "restart-notice.json") }
+func restartNoticePath() string { return filepath.Join(config.Home(), "restart-notice.json") }
 
-type restartNote struct {
+type restartNotice struct {
 	Channel string    `json:"channel"`
 	ChatID  string    `json:"chat_id"`
 	Reason  string    `json:"reason"`
@@ -38,14 +38,15 @@ type restartNote struct {
 // How long coming back is still news. A note older than this belongs to a
 // restart the user has long stopped waiting on — the machine was off, or the
 // exec failed and someone started Factor again days later.
-var restartNoteTTL = 15 * time.Minute
+const restartNoticeTTL = 15 * time.Minute
 
-// noteRestart records who to report back to. The chat that asked wins; a
-// SIGHUP from a terminal asked from nowhere, so the news follows the user to
-// the chat they last used.
-func noteRestart(req restartRequest, last func() (string, string, bool)) {
+// noteRestart records who to report back to. The chat that asked wins, as
+// long as a connector can reach it: a SIGHUP asked from a terminal, and a
+// cron job asked from a session that is nobody's inbox. Those follow the
+// user to the chat they last used.
+func noteRestart(req restartRequest, last func() (string, string, bool), serves func(string) bool) {
 	target := req.target
-	if !bus.External(target.Channel) {
+	if !serves(target.Channel) {
 		ch, chat, ok := last()
 		if !ok {
 			slog.Info("restarting with no one to report back to", "reason", req.reason)
@@ -53,14 +54,14 @@ func noteRestart(req restartRequest, last func() (string, string, bool)) {
 		}
 		target = upgrade.Target{Channel: ch, ChatID: chat}
 	}
-	data, _ := json.Marshal(restartNote{
+	data, _ := json.Marshal(restartNotice{
 		Channel: target.Channel,
 		ChatID:  target.ChatID,
 		Reason:  req.reason,
 		From:    version.Version,
 		At:      time.Now(),
 	})
-	if err := os.WriteFile(restartNotePath(), data, 0o600); err != nil {
+	if err := os.WriteFile(restartNoticePath(), data, 0o600); err != nil {
 		slog.Warn("leaving a restart notice for the next process", "error", err)
 	}
 }
@@ -68,14 +69,14 @@ func noteRestart(req restartRequest, last func() (string, string, bool)) {
 // announceRestart delivers the note the previous process left behind, and
 // clears it either way: being back is news exactly once.
 func announceRestart(publish func(bus.OutboundMessage) bool) {
-	data, err := os.ReadFile(restartNotePath())
+	data, err := os.ReadFile(restartNoticePath())
 	if err != nil {
 		return // the ordinary start: nobody asked for this one
 	}
-	if err := os.Remove(restartNotePath()); err != nil {
+	if err := os.Remove(restartNoticePath()); err != nil {
 		slog.Warn("clearing the restart notice", "error", err)
 	}
-	var note restartNote
+	var note restartNotice
 	if err := json.Unmarshal(data, &note); err != nil {
 		slog.Warn("ignoring an unreadable restart notice", "error", err)
 		return
@@ -83,7 +84,7 @@ func announceRestart(publish func(bus.OutboundMessage) bool) {
 	if !bus.External(note.Channel) {
 		return
 	}
-	if age := time.Since(note.At); age > restartNoteTTL {
+	if age := time.Since(note.At); age > restartNoticeTTL {
 		slog.Info("skipping a stale restart notice", "age", age.Round(time.Second), "reason", note.Reason)
 		return
 	}
@@ -91,7 +92,7 @@ func announceRestart(publish func(bus.OutboundMessage) bool) {
 	publish(bus.OutboundMessage{Channel: note.Channel, ChatID: note.ChatID, Content: restartMessage(note)})
 }
 
-func restartMessage(note restartNote) string {
+func restartMessage(note restartNotice) string {
 	if note.From != "" && note.From != version.Version {
 		return fmt.Sprintf("Back up — factor %s → %s.", note.From, version.Version)
 	}

@@ -16,6 +16,21 @@ func TestSessionKey(t *testing.T) {
 	}
 }
 
+func TestExternalChannels(t *testing.T) {
+	for _, name := range []string{"telegram", "phone"} {
+		if !External(name) {
+			t.Errorf("External(%q) = false, want true", name)
+		}
+	}
+	// Nowhere Factor can reach the user on its own initiative: one process's
+	// stdin, itself, and a schedule.
+	for _, name := range []string{"", "cli", "system", "cron"} {
+		if External(name) {
+			t.Errorf("External(%q) = true, want false", name)
+		}
+	}
+}
+
 func TestPublishAndReceive(t *testing.T) {
 	b := New()
 	in := InboundMessage{Channel: "cli", ChatID: "main", Content: "hello", Time: time.Now()}

@@ -36,6 +36,13 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 	}
 }
 
+// Serves reports whether a connector is running for this channel — whether
+// a message addressed to it can actually reach the user.
+func (m *Manager) Serves(name string) bool {
+	_, ok := m.channels[name]
+	return ok
+}
+
 func (m *Manager) Names() []string {
 	names := make([]string, 0, len(m.channels))
 	for n := range m.channels {

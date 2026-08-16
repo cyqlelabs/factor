@@ -31,10 +31,15 @@ func (m InboundMessage) SessionKey() string { return m.Channel + ":" + m.ChatID 
 
 // External reports whether a channel is a conversation that outlives this
 // process, and so is somewhere Factor can reach the user on its own
-// initiative. The CLI is one process's stdin and system is Factor talking to
-// itself: neither is an address a heartbeat or a restart notice can use.
+// initiative. The CLI is one process's stdin, system is Factor talking to
+// itself, and cron is a schedule rather than an inbox: none of them is an
+// address a heartbeat, a job result or a restart notice can be sent to.
 func External(channel string) bool {
-	return channel != "" && channel != "cli" && channel != "system"
+	switch channel {
+	case "", "cli", "system", "cron":
+		return false
+	}
+	return true
 }
 
 type MessageBus struct {

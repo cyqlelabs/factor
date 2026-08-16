@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,11 @@ func collector(sent *[]bus.OutboundMessage) func(bus.OutboundMessage) bool {
 
 func nobodySpoke() (string, string, bool) { return "", "", false }
 
+// serving stands in for the connectors a daemon is actually running.
+func serving(names ...string) func(string) bool {
+	return func(name string) bool { return slices.Contains(names, name) }
+}
+
 func TestRestartReportsBackToTheChatThatAsked(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
 
@@ -30,7 +36,7 @@ func TestRestartReportsBackToTheChatThatAsked(t *testing.T) {
 	noteRestart(restartRequest{
 		reason: "installed factor v9.9.9",
 		target: upgrade.Target{Channel: "telegram", ChatID: "42"},
-	}, func() (string, string, bool) { return "telegram", "7", true })
+	}, func() (string, string, bool) { return "telegram", "7", true }, serving("telegram"))
 
 	var sent []bus.OutboundMessage
 	announceRestart(collector(&sent))
@@ -52,18 +58,24 @@ func TestRestartReportsBackToTheChatThatAsked(t *testing.T) {
 	}
 }
 
-func TestRestartFollowsTheUserWhenNobodyAsked(t *testing.T) {
+func TestRestartFollowsTheUserWhenTheAskerCannotBeReached(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
+	lastChat := func() (string, string, bool) { return "telegram", "7", true }
 
-	// `factor upgrade` in a terminal: the SIGHUP carries no conversation, so
-	// the news follows the user to the chat they last used.
-	noteRestart(restartRequest{reason: "SIGHUP"},
-		func() (string, string, bool) { return "telegram", "7", true })
+	// `factor upgrade` in a terminal carries no conversation at all, and a
+	// cron session is nobody's inbox: both follow the user to the chat they
+	// last used rather than announcing into a void.
+	for _, req := range []restartRequest{
+		{reason: "SIGHUP"},
+		{reason: "installed factor v9.9.9", target: upgrade.Target{Channel: "cron", ChatID: "job-3"}},
+	} {
+		noteRestart(req, lastChat, serving("telegram"))
 
-	var sent []bus.OutboundMessage
-	announceRestart(collector(&sent))
-	if len(sent) != 1 || sent[0].ChatID != "7" {
-		t.Fatalf("restart notices sent = %+v", sent)
+		var sent []bus.OutboundMessage
+		announceRestart(collector(&sent))
+		if len(sent) != 1 || sent[0].Channel != "telegram" || sent[0].ChatID != "7" {
+			t.Fatalf("restart notices for %+v = %+v", req, sent)
+		}
 	}
 }
 
@@ -72,10 +84,11 @@ func TestRestartWithNoOneToTellLeavesNoNote(t *testing.T) {
 
 	// A box that has never been spoken to has nowhere to report back to, and
 	// a CLI chat is gone with the process that held it.
-	noteRestart(restartRequest{reason: "SIGHUP"}, nobodySpoke)
-	noteRestart(restartRequest{reason: "SIGHUP", target: upgrade.Target{Channel: "cli", ChatID: "main"}}, nobodySpoke)
+	noteRestart(restartRequest{reason: "SIGHUP"}, nobodySpoke, serving("telegram"))
+	noteRestart(restartRequest{reason: "SIGHUP", target: upgrade.Target{Channel: "cli", ChatID: "main"}},
+		nobodySpoke, serving("telegram"))
 
-	if _, err := os.Stat(restartNotePath()); !os.IsNotExist(err) {
+	if _, err := os.Stat(restartNoticePath()); !os.IsNotExist(err) {
 		t.Errorf("a restart with no audience left a note: %v", err)
 	}
 	var sent []bus.OutboundMessage
@@ -85,21 +98,21 @@ func TestRestartWithNoOneToTellLeavesNoNote(t *testing.T) {
 	}
 }
 
-// writeNote plants a note as some earlier process would have left it.
-func writeNote(t *testing.T, note restartNote) {
+// writeNotice plants a notice as some earlier process would have left it.
+func writeNotice(t *testing.T, note restartNotice) {
 	t.Helper()
 	data, err := json.Marshal(note)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(restartNotePath(), data, 0o600); err != nil {
+	if err := os.WriteFile(restartNoticePath(), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestRestartNoticeNamesBothVersions(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
-	writeNote(t, restartNote{Channel: "telegram", ChatID: "42", From: "v0.0.1", At: time.Now()})
+	writeNotice(t, restartNotice{Channel: "telegram", ChatID: "42", From: "v0.0.1", At: time.Now()})
 
 	var sent []bus.OutboundMessage
 	announceRestart(collector(&sent))
@@ -115,7 +128,7 @@ func TestStaleAndUnusableRestartNoticesAreDropped(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
 
 	// The machine was off for a week: nobody is still waiting on that restart.
-	writeNote(t, restartNote{Channel: "telegram", ChatID: "42", At: time.Now().Add(-restartNoteTTL - time.Minute)})
+	writeNotice(t, restartNotice{Channel: "telegram", ChatID: "42", At: time.Now().Add(-restartNoticeTTL - time.Minute)})
 	var sent []bus.OutboundMessage
 	announceRestart(collector(&sent))
 	if len(sent) != 0 {
@@ -123,7 +136,7 @@ func TestStaleAndUnusableRestartNoticesAreDropped(t *testing.T) {
 	}
 
 	for _, bad := range []string{"{not json", `{"channel":"cli","chat_id":"main"}`} {
-		if err := os.WriteFile(restartNotePath(), []byte(bad), 0o600); err != nil {
+		if err := os.WriteFile(restartNoticePath(), []byte(bad), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		announceRestart(collector(&sent))

@@ -191,7 +191,7 @@ func serve(configPath string) (bool, error) {
 		// user asked for this process to end, not to come back.
 		reloading = ctx.Err() == nil
 		if reloading {
-			noteRestart(req, a.Loop.LastChannel)
+			noteRestart(req, a.Loop.LastChannel, manager.Serves)
 		}
 		cancel()
 	}

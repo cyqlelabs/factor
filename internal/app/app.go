@@ -176,10 +176,11 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 }
 
 // cronTarget resolves where a scheduled job's result should go. A job
-// created from the CLI has no live channel under the gateway, so it follows
+// created outside a real conversation — from the CLI, from a heartbeat, from
+// another cron job — has no chat of its own under the gateway, so it follows
 // the user to the last external chat they used.
 func cronTarget(channelName, chatID string, last func() (string, string, bool)) (string, string) {
-	if channelName != "cli" {
+	if bus.External(channelName) {
 		return channelName, chatID
 	}
 	if ch, chat, ok := last(); ok {

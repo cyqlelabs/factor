@@ -102,7 +102,7 @@ out. A running gateway then restarts itself into the new binary — once it has
 finished answering, and without changing pid, so systemd never sees it stop. It
 looks for releases once a day and tells you in whichever chat you last used, but
 never installs behind your back. Asking Factor to upgrade itself is the same path:
-it installs, says goodbye, and is back a few seconds later.
+it installs, says goodbye, and messages you from the new binary a few seconds later.
 
 ## Configuration
 

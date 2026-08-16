@@ -76,6 +76,15 @@ func TestManagerNamesListsEveryChannel(t *testing.T) {
 	if names := NewManager(bus.New(), nil).Names(); len(names) != 0 {
 		t.Errorf("Names() with no channels = %v, want empty", names)
 	}
+
+	// Serves answers the question a proactive sender has to ask before
+	// addressing a message: is anyone running who can deliver this?
+	if !m.Serves("alpha") {
+		t.Error("Serves said no to a running channel")
+	}
+	if m.Serves("cron") || m.Serves("") {
+		t.Error("Serves claimed a channel it never started")
+	}
 }
 
 func TestManagerStopStopsEveryChannelDespiteAnError(t *testing.T) {
