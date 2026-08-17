@@ -298,6 +298,7 @@ func (s *Sidecar) Recall(ctx context.Context, query string, topK int, minConfide
 func (s *Sidecar) Forget(ctx context.Context, query, reason, space string) error {
 	return s.client.Forget(ctx, query, reason, space)
 }
+func (s *Sidecar) SpaceSupport() (bool, string)                        { return s.client.SpaceSupport() }
 func (s *Sidecar) Reflect(ctx context.Context) (map[string]any, error) { return s.client.Reflect(ctx) }
 func (s *Sidecar) Status(ctx context.Context) (map[string]any, error)  { return s.client.Status(ctx) }
 func (s *Sidecar) Enabled() bool                                       { return !s.binaryMissing.Load() }

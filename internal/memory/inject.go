@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/provider"
@@ -105,6 +106,7 @@ type Ambient struct {
 	InjectMaxChars int
 	Spaces         SpacePolicy
 	ignore         []*regexp.Regexp
+	skewOnce       sync.Once
 }
 
 func NewAmbient(engine Engine, topK int, minConfidence float64, queryMsgs, queryMaxChars, injectMaxChars int, ignorePatterns []string, spaces SpacePolicy) *Ambient {
@@ -125,6 +127,23 @@ func NewAmbient(engine Engine, topK int, minConfidence float64, queryMsgs, query
 		}
 	}
 	return a
+}
+
+// scope resolves the turn's space scope, saying once why routing is off when
+// the engine writes somewhere other than the configured space — otherwise the
+// split silently does nothing and the config looks like it took effect.
+func (a *Ambient) scope(channel string) Scope {
+	scope := scopeFor(a.Engine, a.Spaces, channel)
+	if scope.Space == "" && a.Spaces.Strategy != "single" && a.Spaces.Main != "" {
+		if ok, engineSpace := a.Engine.SpaceSupport(); ok && engineSpace != a.Spaces.Main {
+			a.skewOnce.Do(func() {
+				slog.Warn("memory space routing disabled: the engine writes to a different space",
+					"engine_space", engineSpace, "configured", a.Spaces.Main,
+					"fix", "set memory.space to the engine's space")
+			})
+		}
+	}
+	return scope
 }
 
 func (a *Ambient) ignored(content string) bool {
@@ -150,8 +169,7 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 	defer cancel()
 	// The loop stamps the turn's ToolContext on ctx before building the
 	// system prompt, so the channel is already here — no signature change.
-	scope := a.Spaces.Scope(tools.ToolContextFrom(ctx).Channel)
-	mems, err := a.Engine.Recall(ctx, query, a.TopK, a.MinConfidence, scope)
+	mems, err := a.Engine.Recall(ctx, query, a.TopK, a.MinConfidence, a.scope(tools.ToolContextFrom(ctx).Channel))
 	if err != nil {
 		slog.Warn("memory recall failed", "error", err)
 		return ""
@@ -185,7 +203,7 @@ func (a *Ambient) StoreExchange(channel, userText, assistantText string) {
 	// content. A prefix is invisible to smrti's scoring and decay — it reads as
 	// ordinary text — so both sides of the turn used to be stored with equal
 	// standing. It is also untranslated text injected into a multilingual graph.
-	space := a.Spaces.Scope(channel).Space
+	space := a.scope(channel).Space
 	store := func(source, text string) {
 		text = strings.TrimSpace(text)
 		if text == "" || a.ignored(text) {

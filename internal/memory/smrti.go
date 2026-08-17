@@ -21,11 +21,18 @@ type Client struct {
 	extractKey string
 	http       *http.Client
 	healthy    atomic.Bool
-	// spacesOK is refreshed by every /status response: a `spaces` key is the
+	// routing is refreshed by every /status response: a `spaces` key is the
 	// engine advertising per-request space routing. Old engines silently drop
 	// unknown fields — the memory would land in the wrong space, not error —
 	// so space fields are only ever sent once the engine has proved support.
-	spacesOK atomic.Bool
+	routing atomic.Pointer[spaceRouting]
+}
+
+// spaceRouting is what the last status probe said about spaces: whether the
+// engine routes them, and the space it writes to when a request stays silent.
+type spaceRouting struct {
+	ok    bool
+	space string
 }
 
 func NewClient(baseURL, apiKey, extractKey string) *Client {
@@ -124,9 +131,18 @@ func (c *Client) Remember(ctx context.Context, req RememberRequest) (string, err
 // and the engine has advertised space routing, so payloads to older engines
 // stay byte-identical to pre-space builds.
 func (c *Client) addSpace(body map[string]any, space string) {
-	if space != "" && c.spacesOK.Load() {
+	if ok, _ := c.SpaceSupport(); space != "" && ok {
 		body["space"] = space
 	}
+}
+
+// SpaceSupport reports what the last status probe said about space routing.
+func (c *Client) SpaceSupport() (bool, string) {
+	r := c.routing.Load()
+	if r == nil {
+		return false, ""
+	}
+	return r.ok, r.space
 }
 
 func (c *Client) Recall(ctx context.Context, query string, topK int, minConfidence float64, scope Scope) ([]Memory, error) {
@@ -141,7 +157,7 @@ func (c *Client) Recall(ctx context.Context, query string, topK int, minConfiden
 	}
 	body := map[string]any{"query": query, "top_k": topK, "min_confidence": minConfidence}
 	c.addSpace(body, scope.Space)
-	if len(scope.ReadSpaces) > 0 && c.spacesOK.Load() {
+	if ok, _ := c.SpaceSupport(); len(scope.ReadSpaces) > 0 && ok {
 		body["read_spaces"] = scope.ReadSpaces
 	}
 	if err := c.do(ctx, http.MethodPost, "/recall", body, &out); err != nil {
@@ -173,7 +189,8 @@ func (c *Client) Status(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	_, ok := out["spaces"]
-	c.spacesOK.Store(ok)
+	space, _ := out["space"].(string)
+	c.routing.Store(&spaceRouting{ok: ok, space: space})
 	return out, nil
 }
 

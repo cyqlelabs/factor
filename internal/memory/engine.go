@@ -88,6 +88,20 @@ func (p SpacePolicy) Scope(channel string) Scope {
 	}
 }
 
+// scopeFor resolves a turn's scope against what the engine can actually do.
+// Splitting spaces is only safe when the engine both routes them and already
+// writes to the space this policy calls Main: an engine writing elsewhere
+// (an external smrti configured with its own SMRTI_SPACE) would see every
+// routed write land beside the graph it has been building, so the split is
+// abandoned in favour of the engine's own space.
+func scopeFor(engine Engine, p SpacePolicy, channel string) Scope {
+	ok, engineSpace := engine.SpaceSupport()
+	if !ok || engineSpace != p.Main {
+		return Scope{}
+	}
+	return p.Scope(channel)
+}
+
 // Engine is the memory seam. The production implementation talks to smrti;
 // tests use fakes; "off" mode uses Noop.
 type Engine interface {
@@ -98,6 +112,12 @@ type Engine interface {
 	Status(ctx context.Context) (map[string]any, error)
 	Enabled() bool // false only for the disabled (off-mode) engine
 	Healthy() bool // reachable right now
+	// SpaceSupport reports whether the engine routes per-request memory
+	// spaces and, when it does, the space it writes to by default. Both come
+	// from the last status probe, so before the first probe it reads as no
+	// support — space fields are then omitted and behavior matches an engine
+	// that never had them.
+	SpaceSupport() (bool, string)
 	Close() error
 }
 
@@ -113,6 +133,7 @@ func (Noop) Reflect(context.Context) (map[string]any, error)      { return map[s
 func (Noop) Status(context.Context) (map[string]any, error) {
 	return map[string]any{"mode": "off"}, nil
 }
-func (Noop) Enabled() bool { return false }
-func (Noop) Healthy() bool { return false }
-func (Noop) Close() error  { return nil }
+func (Noop) Enabled() bool                { return false }
+func (Noop) Healthy() bool                { return false }
+func (Noop) SpaceSupport() (bool, string) { return false, "" }
+func (Noop) Close() error                 { return nil }

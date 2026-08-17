@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	statusWithSpaces    = `{"total_atoms":1,"by_type":{},"personality":{},"spaces":["main"],"version":"0.9.0"}`
+	statusWithSpaces    = `{"total_atoms":1,"by_type":{},"personality":{},"spaces":["main"],"space":"main","version":"0.9.0"}`
+	statusOtherSpace    = `{"total_atoms":1,"by_type":{},"personality":{},"spaces":["default"],"space":"default","version":"0.9.0"}`
 	statusWithoutSpaces = `{"total_atoms":1,"by_type":{},"personality":{}}`
 )
 
@@ -202,10 +203,20 @@ func TestSpacePolicyScopes(t *testing.T) {
 type scopeEngine struct {
 	Noop
 	mu          sync.Mutex
+	spacesOK    bool
+	engineSpace string
 	recallScope Scope
 	forgotSpace string
 	remembered  []RememberRequest
 }
+
+// newScopeEngine is an engine that routes spaces and writes where testPolicy
+// expects — the configuration the space split is designed for.
+func newScopeEngine() *scopeEngine {
+	return &scopeEngine{spacesOK: true, engineSpace: "main"}
+}
+
+func (e *scopeEngine) SpaceSupport() (bool, string) { return e.spacesOK, e.engineSpace }
 
 func (e *scopeEngine) Recall(_ context.Context, _ string, _ int, _ float64, scope Scope) ([]Memory, error) {
 	e.mu.Lock()
@@ -235,8 +246,41 @@ func testPolicy() SpacePolicy {
 	return SpacePolicy{Strategy: "origin", Main: "main", System: "system"}
 }
 
-func TestMemoryPromptScopesRecallByTurnChannel(t *testing.T) {
+// A skewed engine is the external-mode upgrade hazard: if the engine writes to
+// a different space than the config names, routing would move every write off
+// the graph Factor has been building. It must fall back to the engine's own
+// space — exactly the pre-space behavior — rather than split.
+func TestSkewedEngineSpaceDisablesRouting(t *testing.T) {
+	eng := &scopeEngine{spacesOK: true, engineSpace: "default"}
+	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy())
+
+	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "telegram", ChatID: "5"})
+	a.MemoryPrompt(ctx, nil, "hola")
+	if !reflect.DeepEqual(eng.recallScope, Scope{}) {
+		t.Errorf("recall scope = %+v, want zero against a skewed engine", eng.recallScope)
+	}
+
+	a.StoreExchange("telegram", "hola", "hola, Nico")
+	for i, req := range eng.remembered {
+		if req.Space != "" {
+			t.Errorf("remembered[%d].Space = %q, want empty against a skewed engine", i, req.Space)
+		}
+	}
+}
+
+func TestEngineWithoutSpaceSupportDisablesRouting(t *testing.T) {
 	eng := &scopeEngine{}
+	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy())
+	a.StoreExchange("cron", "job output", "noted")
+	for i, req := range eng.remembered {
+		if req.Space != "" {
+			t.Errorf("remembered[%d].Space = %q, want empty against an old engine", i, req.Space)
+		}
+	}
+}
+
+func TestMemoryPromptScopesRecallByTurnChannel(t *testing.T) {
+	eng := newScopeEngine()
 	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy())
 
 	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "cron", ChatID: "job1"})
@@ -257,7 +301,7 @@ func TestMemoryPromptScopesRecallByTurnChannel(t *testing.T) {
 }
 
 func TestStoreExchangeWritesToTheChannelSpace(t *testing.T) {
-	eng := &scopeEngine{}
+	eng := newScopeEngine()
 	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy())
 
 	a.StoreExchange("cron", "job output", "noted")
@@ -277,7 +321,7 @@ func TestStoreExchangeWritesToTheChannelSpace(t *testing.T) {
 }
 
 func TestMemoryToolsDefaultToTheTurnScope(t *testing.T) {
-	eng := &scopeEngine{}
+	eng := newScopeEngine()
 	set := NewTools(eng, testPolicy())
 	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "cron", ChatID: "digest"})
 
@@ -305,7 +349,7 @@ func TestMemoryToolsDefaultToTheTurnScope(t *testing.T) {
 }
 
 func TestMemoryToolsHonorAnExplicitSpace(t *testing.T) {
-	eng := &scopeEngine{}
+	eng := newScopeEngine()
 	set := NewTools(eng, testPolicy())
 	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "telegram", ChatID: "5"})
 
@@ -327,7 +371,7 @@ func TestMemoryToolsHonorAnExplicitSpace(t *testing.T) {
 }
 
 func TestRecallToolShowsTheMemorySpace(t *testing.T) {
-	eng := &scopeEngine{}
+	eng := newScopeEngine()
 	set := NewTools(eng, testPolicy())
 	res := toolByName(t, set, "recall").Execute(context.Background(), map[string]any{"query": "jobs"})
 	if res.IsError || !strings.Contains(res.ForLLM, "system") {

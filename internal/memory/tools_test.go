@@ -75,7 +75,8 @@ func (s *stubEngine) Status(context.Context) (map[string]any, error) {
 	}
 	return map[string]any{"total_atoms": 42}, nil
 }
-func (s *stubEngine) Enabled() bool { return s.enabled }
+func (s *stubEngine) SpaceSupport() (bool, string) { return true, "" }
+func (s *stubEngine) Enabled() bool                { return s.enabled }
 func (s *stubEngine) Healthy() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
