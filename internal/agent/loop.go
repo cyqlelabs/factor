@@ -351,8 +351,41 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		messages = append(messages, l.drainSteering(in, t)...)
 	}
 
+	reply := l.wrapUp(ctx, in, messages)
 	l.maybeCompactAsync(in)
-	return "I hit the tool-iteration limit for this turn without reaching a final answer. Ask me to continue if you want me to keep going.", nil
+	return reply, nil
+}
+
+// wrapUp buys back a turn that ran out of tool iterations. Those iterations
+// hold real findings, and spending them to arrive at an apology is the worst
+// answer available: one more pass with the tools withheld turns the work into
+// something the user can act on. If even that fails, say what happened.
+func (l *Loop) wrapUp(ctx context.Context, in turnInput, messages []provider.Message) string {
+	const stalled = "I hit the tool-iteration limit for this turn without reaching a final answer. Ask me to continue if you want me to keep going."
+	slog.Warn("tool-iteration limit reached; asking for a final answer with no tools", "session", in.sessionKey)
+
+	nudge := provider.Message{Role: "user", Content: "You have used every tool iteration this turn allows, so no further tool calls are possible. " +
+		"Answer now from what you already gathered: your best conclusion, what is still unverified, and the next step you would take."}
+	if err := l.persist(in, nudge); err != nil {
+		return stalled
+	}
+	l.emit(in.sessionKey, PhaseThinking, "")
+	resp, err := l.chat.Chat(ctx, &provider.Request{
+		Messages:    append(messages, nudge),
+		MaxTokens:   l.cfg.Provider.MaxTokens,
+		Temperature: l.cfg.Provider.Temperature,
+	})
+	if err != nil {
+		slog.Error("wrap-up call failed", "session", in.sessionKey, "error", err)
+		return stalled
+	}
+	if strings.TrimSpace(resp.Content) == "" {
+		return stalled
+	}
+	if err := l.persist(in, provider.Message{Role: "assistant", Content: resp.Content}); err != nil {
+		slog.Error("persist wrap-up answer", "session", in.sessionKey, "error", err)
+	}
+	return resp.Content
 }
 
 // maxImagesInContext bounds how many attached images ride one in-flight turn.

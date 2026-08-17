@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -222,24 +223,74 @@ func TestMemoryInjectionAndStorage(t *testing.T) {
 	}
 }
 
-func TestIterationLimit(t *testing.T) {
+// spinner is a scripted response that always asks for another tool call, so
+// the turn walks straight into the iteration limit.
+func spinner(*provider.Request) (*provider.Response, error) {
+	return &provider.Response{ToolCalls: []provider.ToolCall{{ID: "x", Name: "probe", Args: map[string]any{"value": "again"}}}}, nil
+}
+
+func TestIterationLimitWrapsUp(t *testing.T) {
 	h := newHarness(t) // empty script
 	h.chat.script = nil
-	loops := func(*provider.Request) (*provider.Response, error) {
-		return &provider.Response{ToolCalls: []provider.ToolCall{{ID: "x", Name: "probe", Args: map[string]any{"value": "again"}}}}, nil
+	for range 5 { // MaxToolIterations
+		h.chat.script = append(h.chat.script, spinner)
 	}
-	for range 10 {
-		h.chat.script = append(h.chat.script, loops)
-	}
+	h.chat.script = append(h.chat.script, func(req *provider.Request) (*provider.Response, error) {
+		if len(req.Tools) != 0 {
+			t.Errorf("wrap-up offered %d tools, want none", len(req.Tools))
+		}
+		last := req.Messages[len(req.Messages)-1]
+		if last.Role != "user" || !strings.Contains(last.Content, "no further tool calls are possible") {
+			t.Errorf("wrap-up nudge missing: %+v", last)
+		}
+		return &provider.Response{Content: "the probe kept saying again; nothing verified yet"}, nil
+	})
+
 	reply, err := h.loop.ProcessDirect(context.Background(), "loop forever", "cli:test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "tool-iteration limit") {
+	if reply != "the probe kept saying again; nothing verified yet" {
 		t.Errorf("reply = %q", reply)
 	}
-	if len(h.chat.requests) != 5 {
-		t.Errorf("LLM called %d times, want MaxToolIterations=5", len(h.chat.requests))
+	if len(h.chat.requests) != 6 {
+		t.Errorf("LLM called %d times, want 5 tool rounds plus one wrap-up", len(h.chat.requests))
+	}
+	history, _ := h.store.History("cli:test")
+	last := history[len(history)-1]
+	if last.Role != "assistant" || last.Content != reply {
+		t.Errorf("wrap-up answer not persisted: %+v", last)
+	}
+}
+
+func TestIterationLimitFallsBackWhenWrapUpFails(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		wrapUp func(*provider.Request) (*provider.Response, error)
+	}{
+		{"provider error", func(*provider.Request) (*provider.Response, error) {
+			return nil, errors.New("provider down")
+		}},
+		{"empty answer", func(*provider.Request) (*provider.Response, error) {
+			return &provider.Response{Content: "  "}, nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.chat.script = nil
+			for range 5 {
+				h.chat.script = append(h.chat.script, spinner)
+			}
+			h.chat.script = append(h.chat.script, tc.wrapUp)
+
+			reply, err := h.loop.ProcessDirect(context.Background(), "loop forever", "cli:test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(reply, "tool-iteration limit") {
+				t.Errorf("reply = %q", reply)
+			}
+		})
 	}
 }
 
