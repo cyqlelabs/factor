@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/cpu"
+
 	"github.com/cyqlelabs/factor/internal/config"
 )
 
@@ -43,6 +45,39 @@ const InstallTimeout = 15 * time.Minute
 
 // PackageName is what we install; the executable it provides is BinaryName.
 const PackageName = "smrti"
+
+// NumpyConstraint rides along with smrti on machines whose CPU numpy's own
+// wheels cannot run on. Since 2.0 those wheels target the x86-64-v2 baseline —
+// SSE4.2 — and below it the extension modules do not merely run slowly, they
+// execute an illegal instruction: `import numpy` dies with SIGILL, taking the
+// engine with it. SIGILL is a signal rather than an exception, so nothing
+// downstream can catch or retry it; the only fix is to not install that wheel.
+// 1.x is the last line whose baseline those CPUs can execute, and smrti's
+// dependencies are all happy with it (gliner2-onnx asks for numpy>=1.26).
+const NumpyConstraint = "numpy<2"
+
+// needsNumpyPin reports whether this machine is one of them. A var so a test
+// can drive both paths on whatever CPU it happens to run on.
+var needsNumpyPin = func() bool {
+	// Only x86 has the baseline problem; the check is meaningless elsewhere,
+	// and cpu.X86 reads as all-false on other architectures, which would
+	// otherwise pin numpy on every arm64 machine.
+	switch runtime.GOARCH {
+	case "amd64", "386":
+		return !cpu.X86.HasSSE42
+	default:
+		return false
+	}
+}
+
+// pinned appends the numpy constraint to a requirement list when this machine
+// needs it, so every installer path expresses it the same way.
+func pinned(requirements ...string) []string {
+	if needsNumpyPin() {
+		return append(requirements, NumpyConstraint)
+	}
+	return requirements
+}
 
 // BinaryName is the smrti executable name for this platform.
 func BinaryName() string {
@@ -138,14 +173,26 @@ func strategies() []installStrategy {
 			name:  "uv",
 			probe: "uv",
 			build: func(string) [][]string {
-				return [][]string{{"uv", "tool", "install", PackageName}}
+				cmd := []string{"uv", "tool", "install", PackageName}
+				if needsNumpyPin() {
+					// uv resolves the tool's own environment, so the constraint
+					// has to enter it as another requirement of that tool.
+					cmd = append(cmd, "--with", NumpyConstraint)
+				}
+				return [][]string{cmd}
 			},
 		},
 		{
 			name:  "pipx",
 			probe: "pipx",
 			build: func(string) [][]string {
-				return [][]string{{"pipx", "install", PackageName}}
+				cmds := [][]string{{"pipx", "install", PackageName}}
+				if needsNumpyPin() {
+					// pipx install takes no extra requirements; inject puts
+					// them into the venv it just made.
+					cmds = append(cmds, []string{"pipx", "inject", PackageName, NumpyConstraint})
+				}
+				return cmds
 			},
 		},
 		{
@@ -156,7 +203,7 @@ func strategies() []installStrategy {
 				if pip == nil {
 					return nil
 				}
-				return [][]string{append(pip, "install", "--user", "--upgrade", PackageName)}
+				return [][]string{append(append(pip, "install", "--user", "--upgrade"), pinned(PackageName)...)}
 			},
 			retry: func(_ string, output string) [][]string {
 				// Debian/Fedora/Arch mark the system Python externally managed
@@ -170,7 +217,7 @@ func strategies() []installStrategy {
 				if pip == nil {
 					return nil
 				}
-				return [][]string{append(pip, "install", "--user", "--upgrade", "--break-system-packages", PackageName)}
+				return [][]string{append(append(pip, "install", "--user", "--upgrade", "--break-system-packages"), pinned(PackageName)...)}
 			},
 		},
 		{
@@ -187,7 +234,7 @@ func strategies() []installStrategy {
 				}
 				return [][]string{
 					{py, "-m", "venv", VenvDir(home)},
-					{venvPip, "install", "--upgrade", PackageName},
+					append([]string{venvPip, "install", "--upgrade"}, pinned(PackageName)...),
 				}
 			},
 		},

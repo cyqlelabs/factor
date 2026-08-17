@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/cpu"
 )
 
 // fakeEnv swaps the exec hooks for a scripted machine: present holds the
@@ -261,5 +263,101 @@ func TestBinaryNameMatchesPlatform(t *testing.T) {
 	}
 	if BinaryName() != want {
 		t.Errorf("BinaryName = %q, want %q", BinaryName(), want)
+	}
+}
+
+// forceNumpyPin drives the CPU probe from a test, so both paths are covered
+// whatever the machine running the suite happens to support.
+func forceNumpyPin(t *testing.T, on bool) {
+	t.Helper()
+	prev := needsNumpyPin
+	needsNumpyPin = func() bool { return on }
+	t.Cleanup(func() { needsNumpyPin = prev })
+}
+
+// A CPU without SSE4.2 cannot execute numpy 2's wheels at all — `import numpy`
+// is SIGILL — so every installer path has to carry the constraint, whichever
+// one this machine ends up using.
+func TestInstallPinsNumpyOnAnOldCPU(t *testing.T) {
+	forceNumpyPin(t, true)
+
+	cases := []struct {
+		name       string
+		present    []string
+		fail       []string
+		failOutput string
+		want       string
+	}{
+		{"uv", []string{"uv"}, nil, "", "uv tool install smrti --with numpy<2"},
+		{"pipx", []string{"pipx"}, nil, "", "pipx inject smrti numpy<2"},
+		{"pip", []string{"pip3"}, nil, "", "pip3 install --user --upgrade smrti numpy<2"},
+		{
+			"pip break-system-packages",
+			[]string{"pip3"},
+			[]string{"pip3 install --user --upgrade smrti numpy<2"},
+			"error: externally-managed-environment",
+			"pip3 install --user --upgrade --break-system-packages smrti numpy<2",
+		},
+		// python3 alone still reaches pip via `python3 -m pip`, so venv is only
+		// exercised once that has failed for a reason the retry does not cover.
+		{
+			"venv",
+			[]string{"python3"},
+			[]string{"python3 -m pip install --user --upgrade smrti numpy<2"},
+			"boom",
+			filepath.Join("venv", "bin", "pip") + " install --upgrade smrti numpy<2",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeEnv(t, c.present...)
+			home := t.TempDir()
+			for _, line := range c.fail {
+				f.fail(line, c.failOutput)
+			}
+			f.onRun = func([]string) { writeBinary(t, venvBinDir(home)) }
+
+			if _, _, err := Install(context.Background(), home, nil); err != nil {
+				t.Fatalf("Install: %v", err)
+			}
+			joined := strings.Join(f.log, " | ")
+			if !strings.Contains(joined, c.want) {
+				t.Errorf("commands %q do not carry %q", joined, c.want)
+			}
+		})
+	}
+}
+
+// The pin is a workaround for hardware nobody should be held back by: a modern
+// CPU installs whatever numpy the resolver picks.
+func TestInstallLeavesNumpyAloneOnAModernCPU(t *testing.T) {
+	forceNumpyPin(t, false)
+
+	for _, present := range [][]string{{"uv"}, {"pipx"}, {"pip3"}, {"python3"}} {
+		f := newFakeEnv(t, present...)
+		home := t.TempDir()
+		f.onRun = func([]string) { writeBinary(t, venvBinDir(home)) }
+
+		if _, _, err := Install(context.Background(), home, nil); err != nil {
+			t.Fatalf("Install with %v: %v", present, err)
+		}
+		if joined := strings.Join(f.log, " | "); strings.Contains(joined, "numpy") {
+			t.Errorf("commands %q pin numpy on a CPU that does not need it", joined)
+		}
+	}
+}
+
+// The probe itself: the machine running this suite is overwhelmingly likely to
+// be x86 with SSE4.2, and must not be pinned.
+func TestNeedsNumpyPinLeavesCapableMachinesAlone(t *testing.T) {
+	switch runtime.GOARCH {
+	case "amd64", "386":
+		if cpu.X86.HasSSE42 && needsNumpyPin() {
+			t.Error("this CPU has SSE4.2; numpy 2 runs on it")
+		}
+	default:
+		if needsNumpyPin() {
+			t.Errorf("%s has no x86 baseline problem to work around", runtime.GOARCH)
+		}
 	}
 }
