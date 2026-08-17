@@ -95,7 +95,7 @@ func toolByName(t *testing.T, set []tools.Tool, name string) tools.Tool {
 }
 
 func TestMemoryToolContracts(t *testing.T) {
-	set := NewTools(&stubEngine{})
+	set := NewTools(&stubEngine{}, SpacePolicy{})
 	want := []string{"remember", "recall", "forget", "reflect", "memory_status"}
 	if len(set) != len(want) {
 		t.Fatalf("NewTools returned %d tools, want %d", len(set), len(want))
@@ -134,7 +134,7 @@ func asStrings(v any) []string {
 
 func TestRememberTool(t *testing.T) {
 	engine := &stubEngine{}
-	tool := toolByName(t, NewTools(engine), "remember")
+	tool := toolByName(t, NewTools(engine, SpacePolicy{}), "remember")
 	ctx := context.Background()
 
 	res := tool.Execute(ctx, map[string]any{
@@ -206,7 +206,7 @@ func TestRecallTool(t *testing.T) {
 		Content: "force-push broke CI", Type: "episode", Severity: SeverityCriticalWarning,
 		Salience: 0.81, Confidence: 0.92, Valence: -0.7,
 	}}}
-	tool := toolByName(t, NewTools(engine), "recall")
+	tool := toolByName(t, NewTools(engine, SpacePolicy{}), "recall")
 
 	res := tool.Execute(context.Background(), map[string]any{"query": "deploys", "top_k": 3})
 	if res.IsError {
@@ -231,7 +231,7 @@ func TestRecallTool(t *testing.T) {
 
 func TestForgetReflectStatusTools(t *testing.T) {
 	engine := &stubEngine{healthy: true}
-	set := NewTools(engine)
+	set := NewTools(engine, SpacePolicy{})
 	ctx := context.Background()
 
 	res := toolByName(t, set, "forget").Execute(ctx, map[string]any{"query": "wrong fact", "reason": "user corrected it"})

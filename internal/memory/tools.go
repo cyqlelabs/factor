@@ -10,17 +10,38 @@ import (
 )
 
 // NewTools returns the deliberate-memory tool set on top of the ambient loop.
-func NewTools(engine Engine) []tools.Tool {
+func NewTools(engine Engine, spaces SpacePolicy) []tools.Tool {
 	return []tools.Tool{
-		&rememberTool{engine},
-		&recallTool{engine},
-		&forgetTool{engine},
+		&rememberTool{engine, spaces},
+		&recallTool{engine, spaces},
+		&forgetTool{engine, spaces},
 		&reflectTool{engine},
 		&statusTool{engine},
 	}
 }
 
-type rememberTool struct{ engine Engine }
+// spaceParam is the shared schema for the optional space override on the
+// deliberate tools.
+func spaceParam() map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": "Memory space to target (advanced). Omit to use the space this conversation already writes to.",
+	}
+}
+
+// turnSpace resolves the write space for a tool call: an explicit space
+// argument wins, otherwise the turn's channel decides via the policy.
+func turnSpace(ctx context.Context, spaces SpacePolicy, args map[string]any) string {
+	if s := tools.StringArg(args, "space"); s != "" {
+		return s
+	}
+	return spaces.Scope(tools.ToolContextFrom(ctx).Channel).Space
+}
+
+type rememberTool struct {
+	engine Engine
+	spaces SpacePolicy
+}
 
 func (t *rememberTool) Name() string { return "remember" }
 func (t *rememberTool) Description() string {
@@ -44,6 +65,7 @@ func (t *rememberTool) Parameters() map[string]any {
 				"enum":        []any{"user", "agent"},
 				"description": "Who authored this. Use \"agent\" for facts about yourself — mistakes you made, actions you took. Omit for anything the user told you.",
 			},
+			"space": spaceParam(),
 		},
 		"required": []any{"content"},
 	}
@@ -54,6 +76,7 @@ func (t *rememberTool) Execute(ctx context.Context, args map[string]any) *tools.
 		Type:     tools.StringArg(args, "type"),
 		Evidence: tools.StringArg(args, "evidence"),
 		Source:   tools.StringArg(args, "source"),
+		Space:    turnSpace(ctx, t.spaces, args),
 	}
 	if req.Source != SourceUser && req.Source != SourceAgent {
 		req.Source = "" // unrecognised value: store with default user standing
@@ -93,7 +116,10 @@ func (t *rememberTool) Execute(ctx context.Context, args map[string]any) *tools.
 	return tools.Textf("Stored memory %s", id)
 }
 
-type recallTool struct{ engine Engine }
+type recallTool struct {
+	engine Engine
+	spaces SpacePolicy
+}
 
 func (t *recallTool) Name() string { return "recall" }
 func (t *recallTool) Description() string {
@@ -105,15 +131,22 @@ func (t *recallTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"query": map[string]any{"type": "string", "description": "What you are looking for, in plain language; matching is by meaning, not keywords"},
 			"top_k": map[string]any{"type": "integer", "description": "Max results (default 10)"},
+			"space": spaceParam(),
 		},
 		"required": []any{"query"},
 	}
 }
 func (t *recallTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	// An explicit space narrows the search to exactly that space; otherwise
+	// the turn reads its usual overlay.
+	scope := t.spaces.Scope(tools.ToolContextFrom(ctx).Channel)
+	if s := tools.StringArg(args, "space"); s != "" {
+		scope = Scope{Space: s, ReadSpaces: []string{s}}
+	}
 	// No confidence floor: an explicit search must reach everything still
 	// stored. A floor here reports "no memories found" for decayed facts the
 	// graph is still holding, which reads as data loss rather than fading.
-	mems, err := t.engine.Recall(ctx, tools.StringArg(args, "query"), tools.IntArg(args, "top_k", 10), 0, Scope{})
+	mems, err := t.engine.Recall(ctx, tools.StringArg(args, "query"), tools.IntArg(args, "top_k", 10), 0, scope)
 	if err != nil {
 		return tools.Errorf("recall failed: %v", err)
 	}
@@ -122,13 +155,20 @@ func (t *recallTool) Execute(ctx context.Context, args map[string]any) *tools.Re
 	}
 	var b strings.Builder
 	for _, m := range mems {
-		fmt.Fprintf(&b, "[%s | %s | salience %.2f | confidence %.2f | valence %+.2f] %s\n",
-			m.Type, m.Severity, m.Salience, m.Confidence, m.Valence, m.Content)
+		space := ""
+		if m.Space != "" {
+			space = " | " + m.Space
+		}
+		fmt.Fprintf(&b, "[%s | %s%s | salience %.2f | confidence %.2f | valence %+.2f] %s\n",
+			m.Type, m.Severity, space, m.Salience, m.Confidence, m.Valence, m.Content)
 	}
 	return tools.Text(b.String())
 }
 
-type forgetTool struct{ engine Engine }
+type forgetTool struct {
+	engine Engine
+	spaces SpacePolicy
+}
 
 func (t *forgetTool) Name() string { return "forget" }
 func (t *forgetTool) Description() string {
@@ -140,12 +180,15 @@ func (t *forgetTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"query":  map[string]any{"type": "string", "description": "Describes the memories to soften; everything matching by meaning is affected, so be specific"},
 			"reason": map[string]any{"type": "string", "description": "Why this is being forgotten (e.g. 'user corrected me: they moved to Berlin')"},
+			"space":  spaceParam(),
 		},
 		"required": []any{"query"},
 	}
 }
 func (t *forgetTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
-	if err := t.engine.Forget(ctx, tools.StringArg(args, "query"), tools.StringArg(args, "reason"), ""); err != nil {
+	// Scoped to the turn's write space so the semantic softening cannot bleed
+	// into memories another space is keeping.
+	if err := t.engine.Forget(ctx, tools.StringArg(args, "query"), tools.StringArg(args, "reason"), turnSpace(ctx, t.spaces, args)); err != nil {
 		return tools.Errorf("forget failed: %v", err)
 	}
 	return tools.Text("Softened matching memories.")

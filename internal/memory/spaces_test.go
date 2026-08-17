@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -202,6 +203,7 @@ type scopeEngine struct {
 	Noop
 	mu          sync.Mutex
 	recallScope Scope
+	forgotSpace string
 	remembered  []RememberRequest
 }
 
@@ -209,7 +211,14 @@ func (e *scopeEngine) Recall(_ context.Context, _ string, _ int, _ float64, scop
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.recallScope = scope
-	return []Memory{{Content: "a note", Confidence: 0.8}}, nil
+	return []Memory{{Content: "a note", Confidence: 0.8, Space: "system"}}, nil
+}
+
+func (e *scopeEngine) Forget(_ context.Context, _, _, space string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.forgotSpace = space
+	return nil
 }
 
 func (e *scopeEngine) Remember(_ context.Context, req RememberRequest) (string, error) {
@@ -264,6 +273,65 @@ func TestStoreExchangeWritesToTheChannelSpace(t *testing.T) {
 	}
 	if eng.remembered[0].Source != SourceUser || eng.remembered[1].Source != SourceAgent {
 		t.Errorf("sources = %q, %q", eng.remembered[0].Source, eng.remembered[1].Source)
+	}
+}
+
+func TestMemoryToolsDefaultToTheTurnScope(t *testing.T) {
+	eng := &scopeEngine{}
+	set := NewTools(eng, testPolicy())
+	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "cron", ChatID: "digest"})
+
+	if res := toolByName(t, set, "remember").Execute(ctx, map[string]any{"content": "job ran"}); res.IsError {
+		t.Fatalf("remember = %+v", res)
+	}
+	if got := eng.remembered[0].Space; got != "system" {
+		t.Errorf("remember space = %q, want system", got)
+	}
+
+	if res := toolByName(t, set, "recall").Execute(ctx, map[string]any{"query": "jobs"}); res.IsError {
+		t.Fatalf("recall = %+v", res)
+	}
+	want := Scope{Space: "system", ReadSpaces: []string{"system", "main"}}
+	if !reflect.DeepEqual(eng.recallScope, want) {
+		t.Errorf("recall scope = %+v, want %+v", eng.recallScope, want)
+	}
+
+	if res := toolByName(t, set, "forget").Execute(ctx, map[string]any{"query": "stale"}); res.IsError {
+		t.Fatalf("forget = %+v", res)
+	}
+	if eng.forgotSpace != "system" {
+		t.Errorf("forget space = %q, want system", eng.forgotSpace)
+	}
+}
+
+func TestMemoryToolsHonorAnExplicitSpace(t *testing.T) {
+	eng := &scopeEngine{}
+	set := NewTools(eng, testPolicy())
+	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "telegram", ChatID: "5"})
+
+	toolByName(t, set, "remember").Execute(ctx, map[string]any{"content": "x", "space": "projects"})
+	if got := eng.remembered[0].Space; got != "projects" {
+		t.Errorf("remember space = %q, want projects", got)
+	}
+
+	toolByName(t, set, "recall").Execute(ctx, map[string]any{"query": "q", "space": "projects"})
+	want := Scope{Space: "projects", ReadSpaces: []string{"projects"}}
+	if !reflect.DeepEqual(eng.recallScope, want) {
+		t.Errorf("recall scope = %+v, want %+v", eng.recallScope, want)
+	}
+
+	toolByName(t, set, "forget").Execute(ctx, map[string]any{"query": "q", "space": "projects"})
+	if eng.forgotSpace != "projects" {
+		t.Errorf("forget space = %q, want projects", eng.forgotSpace)
+	}
+}
+
+func TestRecallToolShowsTheMemorySpace(t *testing.T) {
+	eng := &scopeEngine{}
+	set := NewTools(eng, testPolicy())
+	res := toolByName(t, set, "recall").Execute(context.Background(), map[string]any{"query": "jobs"})
+	if res.IsError || !strings.Contains(res.ForLLM, "system") {
+		t.Errorf("recall output missing the memory's space: %+v", res)
 	}
 }
 
