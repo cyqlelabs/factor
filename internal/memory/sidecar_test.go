@@ -19,6 +19,14 @@ import (
 // TestMain lets the test binary impersonate the `smrti` executable so the
 // sidecar's spawn/health/shutdown paths run against a real child process.
 func TestMain(m *testing.M) {
+	// The runnability probe asks the binary for `--help`, which the real CLI
+	// answers and exits 0. The impersonation has to do the same, or every
+	// install on disk would look broken to the code under test.
+	for _, arg := range os.Args[1:] {
+		if arg == "--help" {
+			os.Exit(0)
+		}
+	}
 	switch os.Getenv("FACTOR_TEST_SMRTI_MODE") {
 	case "serve":
 		fakeSmrtiServe()

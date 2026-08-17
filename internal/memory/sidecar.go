@@ -104,10 +104,20 @@ func (s *Sidecar) reprobeInterval() time.Duration {
 // process: a machine without a usable Python installer must not re-attempt a
 // multi-minute install on every supervisor restart.
 func (s *Sidecar) resolveCommand(ctx context.Context) (string, error) {
-	if path, ok := FindSmrti(s.cfg.Command, config.Home()); ok {
-		return path, nil
+	// Present is not the same as usable: an smrti whose wheels this CPU cannot
+	// execute dies with SIGILL on every spawn, and adopting it would put the
+	// supervisor into a restart loop that no backoff ever escapes.
+	found, ok := FindSmrti(s.cfg.Command, config.Home())
+	if ok && Runnable(ctx, found) {
+		return found, nil
+	}
+	if ok {
+		slog.Warn("the installed smrti cannot run on this machine; reinstalling it", "path", found)
 	}
 	if !s.cfg.AutoInstall {
+		if ok {
+			return "", fmt.Errorf("%q cannot run on this machine and memory.auto_install is off (reinstall it, constraining numpy if this CPU predates SSE4.2: %s)", found, NumpyConstraint)
+		}
 		return "", fmt.Errorf("%q not found in PATH and memory.auto_install is off (pip install smrti)", s.cfg.Command)
 	}
 	if s.installTried.Swap(true) {

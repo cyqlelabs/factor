@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -228,8 +229,50 @@ func TestEnsureSmrtiSkipsInstallWhenPresent(t *testing.T) {
 	if err != nil || installed || path == "" {
 		t.Fatalf("EnsureSmrti = %q, %v, %v", path, installed, err)
 	}
-	if f.installs != 0 {
-		t.Errorf("ran %d commands; want none", f.installs)
+	// One command is expected — the probe that proves it runs. An installer is not.
+	if len(f.log) != 1 || !strings.HasSuffix(f.log[0], "--help") {
+		t.Errorf("commands = %v; want only the runnability probe", f.log)
+	}
+}
+
+// Finding the file is not the same as being able to run it: an smrti whose
+// wheels this CPU has no instructions for exits 132 on every invocation, and
+// adopting it would hand the supervisor a binary that can only crash.
+func TestEnsureSmrtiReinstallsAnUnrunnableBinary(t *testing.T) {
+	f := newFakeEnv(t, "smrti", "uv")
+	home := t.TempDir()
+	f.fail("/usr/bin/smrti --help", "Illegal instruction")
+	f.onRun = func([]string) { writeBinary(t, venvBinDir(home)) }
+
+	var steps []string
+	path, installed, err := EnsureSmrti(context.Background(), "", home, true,
+		func(format string, args ...any) { steps = append(steps, fmt.Sprintf(format, args...)) })
+	if err != nil {
+		t.Fatalf("EnsureSmrti: %v", err)
+	}
+	if !installed || path == "" {
+		t.Fatalf("a binary that cannot run must be reinstalled: path=%q installed=%v", path, installed)
+	}
+	if !strings.Contains(strings.Join(f.log, " | "), "uv tool install smrti") {
+		t.Errorf("commands = %v; want the installer to have run", f.log)
+	}
+	if !strings.Contains(strings.Join(steps, " "), "cannot run") {
+		t.Errorf("progress = %v; the reason must reach the user", steps)
+	}
+}
+
+// With auto_install off there is nothing to fall back on, so the error has to
+// say what is wrong and what would fix it.
+func TestEnsureSmrtiReportsAnUnrunnableBinaryWithoutAutoInstall(t *testing.T) {
+	f := newFakeEnv(t, "smrti")
+	f.fail("/usr/bin/smrti --help", "Illegal instruction")
+
+	_, _, err := EnsureSmrti(context.Background(), "", t.TempDir(), false, nil)
+	if err == nil || !strings.Contains(err.Error(), "cannot run") {
+		t.Fatalf("error = %v", err)
+	}
+	if !strings.Contains(err.Error(), NumpyConstraint) {
+		t.Errorf("error does not name the likely fix: %v", err)
 	}
 }
 

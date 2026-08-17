@@ -148,6 +148,28 @@ func FindSmrti(command, home string) (string, bool) {
 	return "", false
 }
 
+// runnableTimeout bounds the probe below. Two seconds is typical even on slow
+// hardware — it is one Python import chain — but a cold page cache on a busy
+// machine can take considerably longer, and a timeout that fires early would
+// condemn a working install.
+const runnableTimeout = 60 * time.Second
+
+// Runnable reports whether the smrti at path can actually execute. Finding the
+// file is not the same as being able to run it: an install can carry wheels
+// this CPU has no instructions for, and `import numpy` then dies with SIGILL
+// before smrti prints a word. A binary like that must not be adopted with a
+// checkmark — it has to send the caller back to the installer, which knows how
+// to constrain the install so it works here.
+//
+// --help is the cheapest command that still loads the whole import chain, so
+// the probe fails for exactly the reasons serving would.
+func Runnable(ctx context.Context, path string) bool {
+	ctx, cancel := context.WithTimeout(ctx, runnableTimeout)
+	defer cancel()
+	_, err := runCmd(ctx, []string{path, "--help"})
+	return err == nil
+}
+
 type installStrategy struct {
 	name  string
 	probe string // executable that must exist for this strategy
@@ -329,10 +351,17 @@ func Answering(ctx context.Context, cfg config.MemoryConfig) bool {
 // EnsureSmrti returns the smrti path, installing it when missing and allowed.
 // installed reports whether this call performed the installation.
 func EnsureSmrti(ctx context.Context, command, home string, autoInstall bool, progress Progress) (path string, installed bool, err error) {
-	if p, ok := FindSmrti(command, home); ok {
-		return p, false, nil
+	found, ok := FindSmrti(command, home)
+	if ok && Runnable(ctx, found) {
+		return found, false, nil
+	}
+	if ok {
+		progress.emit("%s is installed but cannot run on this machine; reinstalling it", found)
 	}
 	if !autoInstall {
+		if ok {
+			return "", false, fmt.Errorf("%s cannot run on this machine and memory.auto_install is off — reinstall it, constraining numpy if this CPU predates SSE4.2 (%s)", found, NumpyConstraint)
+		}
 		return "", false, fmt.Errorf("%s not found and memory.auto_install is off — install it with: pip install %s", BinaryName(), PackageName)
 	}
 	p, _, err := Install(ctx, home, progress)
