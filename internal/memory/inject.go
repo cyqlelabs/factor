@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/provider"
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 // BuildRecallQuery assembles the recall query from recent conversation
@@ -102,10 +103,11 @@ type Ambient struct {
 	QueryMsgs      int
 	QueryMaxChars  int
 	InjectMaxChars int
+	Spaces         SpacePolicy
 	ignore         []*regexp.Regexp
 }
 
-func NewAmbient(engine Engine, topK int, minConfidence float64, queryMsgs, queryMaxChars, injectMaxChars int, ignorePatterns []string) *Ambient {
+func NewAmbient(engine Engine, topK int, minConfidence float64, queryMsgs, queryMaxChars, injectMaxChars int, ignorePatterns []string, spaces SpacePolicy) *Ambient {
 	a := &Ambient{
 		Engine:         engine,
 		TopK:           topK,
@@ -113,6 +115,7 @@ func NewAmbient(engine Engine, topK int, minConfidence float64, queryMsgs, query
 		QueryMsgs:      queryMsgs,
 		QueryMaxChars:  queryMaxChars,
 		InjectMaxChars: injectMaxChars,
+		Spaces:         spaces,
 	}
 	for _, p := range ignorePatterns {
 		if re, err := regexp.Compile(p); err == nil {
@@ -145,7 +148,10 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	mems, err := a.Engine.Recall(ctx, query, a.TopK, a.MinConfidence, Scope{})
+	// The loop stamps the turn's ToolContext on ctx before building the
+	// system prompt, so the channel is already here — no signature change.
+	scope := a.Spaces.Scope(tools.ToolContextFrom(ctx).Channel)
+	mems, err := a.Engine.Recall(ctx, query, a.TopK, a.MinConfidence, scope)
 	if err != nil {
 		slog.Warn("memory recall failed", "error", err)
 		return ""
@@ -153,11 +159,12 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 	return FormatMemories(mems, a.InjectMaxChars)
 }
 
-// StoreExchange persists both sides of a completed turn as episodes.
-// Call it from a goroutine; it must never block a reply. If the memory
-// engine is still cold-booting (first sidecar start downloads models), it
-// waits for health rather than dropping the very first memories.
-func (a *Ambient) StoreExchange(userText, assistantText string) {
+// StoreExchange persists both sides of a completed turn as episodes, in the
+// space the turn's channel writes to. Call it from a goroutine; it must never
+// block a reply. If the memory engine is still cold-booting (first sidecar
+// start downloads models), it waits for health rather than dropping the very
+// first memories.
+func (a *Ambient) StoreExchange(channel, userText, assistantText string) {
 	if a == nil || a.Engine == nil || !a.Engine.Enabled() {
 		return
 	}
@@ -178,12 +185,13 @@ func (a *Ambient) StoreExchange(userText, assistantText string) {
 	// content. A prefix is invisible to smrti's scoring and decay — it reads as
 	// ordinary text — so both sides of the turn used to be stored with equal
 	// standing. It is also untranslated text injected into a multilingual graph.
+	space := a.Spaces.Scope(channel).Space
 	store := func(source, text string) {
 		text = strings.TrimSpace(text)
 		if text == "" || a.ignored(text) {
 			return
 		}
-		if _, err := a.Engine.Remember(ctx, RememberRequest{Content: text, Source: source}); err != nil {
+		if _, err := a.Engine.Remember(ctx, RememberRequest{Content: text, Source: source, Space: space}); err != nil {
 			slog.Debug("memory store dropped", "error", err)
 		}
 	}

@@ -213,7 +213,7 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn) (st
 		l.wg.Add(1)
 		go func() {
 			defer l.wg.Done()
-			l.ambient.StoreExchange(msg.Content, reply)
+			l.ambient.StoreExchange(msg.Channel, msg.Content, reply)
 		}()
 	}
 	return reply, err

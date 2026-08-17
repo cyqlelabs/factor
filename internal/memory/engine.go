@@ -64,6 +64,30 @@ type Scope struct {
 	ReadSpaces []string
 }
 
+// SpacePolicy decides which memory space a turn writes to and which overlay
+// it reads, keyed by the channel the turn arrived on. Real conversations
+// (cli, telegram, phone) write to Main; machine-originated turns (cron, jobs,
+// heartbeat) write to System so operational chatter stops crowding
+// conversational recall — and each side still reads the other as an overlay.
+// Strategy "single" (or a zero policy) turns the split off.
+type SpacePolicy struct {
+	Strategy string // "origin" (default) or "single"
+	Main     string
+	System   string
+}
+
+func (p SpacePolicy) Scope(channel string) Scope {
+	if p.Strategy == "single" || p.Main == "" || p.System == "" {
+		return Scope{}
+	}
+	switch channel {
+	case "cron", "job", "system":
+		return Scope{Space: p.System, ReadSpaces: []string{p.System, p.Main}}
+	default:
+		return Scope{Space: p.Main, ReadSpaces: []string{p.Main, p.System}}
+	}
+}
+
 // Engine is the memory seam. The production implementation talks to smrti;
 // tests use fakes; "off" mode uses Noop.
 type Engine interface {

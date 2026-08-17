@@ -70,10 +70,15 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: %w", err)
 	}
+	spaces := memory.SpacePolicy{
+		Strategy: cfg.Memory.SpaceStrategy,
+		Main:     cfg.Memory.Space,
+		System:   cfg.Memory.SystemSpace,
+	}
 	ambient := memory.NewAmbient(engine,
 		cfg.Memory.RecallTopK, cfg.Memory.RecallMinConfidence,
 		cfg.Memory.QueryContextMsgs, cfg.Memory.QueryMaxChars, cfg.Memory.InjectMaxChars,
-		cfg.Memory.IgnorePatterns)
+		cfg.Memory.IgnorePatterns, spaces)
 
 	registry := tools.NewRegistry(cfg.Tools.IsToolEnabled, cfg.FilterSecrets)
 	guard := tools.NewPathGuard(ws, cfg.Tools.RestrictToWorkspace, cfg.Tools.AllowReadOutsideWorkspace, cfg.Tools.AllowPaths)

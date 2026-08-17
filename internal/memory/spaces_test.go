@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
+
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 const (
@@ -164,6 +167,103 @@ func TestZeroScopeStaysByteIdenticalEvenWhenCapable(t *testing.T) {
 		if k != "query" && k != "top_k" && k != "min_confidence" {
 			t.Errorf("unexpected recall field %q with a zero scope", k)
 		}
+	}
+}
+
+func TestSpacePolicyScopes(t *testing.T) {
+	p := SpacePolicy{Strategy: "origin", Main: "main", System: "system"}
+	sysScope := Scope{Space: "system", ReadSpaces: []string{"system", "main"}}
+	mainScope := Scope{Space: "main", ReadSpaces: []string{"main", "system"}}
+	for channel, want := range map[string]Scope{
+		"cron":     sysScope,
+		"job":      sysScope,
+		"system":   sysScope,
+		"cli":      mainScope,
+		"telegram": mainScope,
+		"phone":    mainScope,
+		"":         mainScope,
+	} {
+		if got := p.Scope(channel); !reflect.DeepEqual(got, want) {
+			t.Errorf("Scope(%q) = %+v, want %+v", channel, got, want)
+		}
+	}
+
+	single := SpacePolicy{Strategy: "single", Main: "main", System: "system"}
+	if got := single.Scope("cron"); !reflect.DeepEqual(got, Scope{}) {
+		t.Errorf("single-strategy Scope = %+v, want zero", got)
+	}
+	if got := (SpacePolicy{}).Scope("cron"); !reflect.DeepEqual(got, Scope{}) {
+		t.Errorf("zero-policy Scope = %+v, want zero", got)
+	}
+}
+
+// scopeEngine records the scope and requests the ambient layer hands the engine.
+type scopeEngine struct {
+	Noop
+	mu          sync.Mutex
+	recallScope Scope
+	remembered  []RememberRequest
+}
+
+func (e *scopeEngine) Recall(_ context.Context, _ string, _ int, _ float64, scope Scope) ([]Memory, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.recallScope = scope
+	return []Memory{{Content: "a note", Confidence: 0.8}}, nil
+}
+
+func (e *scopeEngine) Remember(_ context.Context, req RememberRequest) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.remembered = append(e.remembered, req)
+	return "id-1", nil
+}
+
+func (e *scopeEngine) Enabled() bool { return true }
+func (e *scopeEngine) Healthy() bool { return true }
+
+func testPolicy() SpacePolicy {
+	return SpacePolicy{Strategy: "origin", Main: "main", System: "system"}
+}
+
+func TestMemoryPromptScopesRecallByTurnChannel(t *testing.T) {
+	eng := &scopeEngine{}
+	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy())
+
+	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "cron", ChatID: "job1"})
+	if got := a.MemoryPrompt(ctx, nil, "what happened overnight"); got == "" {
+		t.Fatal("MemoryPrompt returned nothing")
+	}
+	want := Scope{Space: "system", ReadSpaces: []string{"system", "main"}}
+	if !reflect.DeepEqual(eng.recallScope, want) {
+		t.Errorf("cron recall scope = %+v, want %+v", eng.recallScope, want)
+	}
+
+	ctx = tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "telegram", ChatID: "5"})
+	a.MemoryPrompt(ctx, nil, "hola")
+	want = Scope{Space: "main", ReadSpaces: []string{"main", "system"}}
+	if !reflect.DeepEqual(eng.recallScope, want) {
+		t.Errorf("telegram recall scope = %+v, want %+v", eng.recallScope, want)
+	}
+}
+
+func TestStoreExchangeWritesToTheChannelSpace(t *testing.T) {
+	eng := &scopeEngine{}
+	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy())
+
+	a.StoreExchange("cron", "job output", "noted")
+	a.StoreExchange("telegram", "hola", "hola, Nico")
+
+	if len(eng.remembered) != 4 {
+		t.Fatalf("remembered %d requests, want 4", len(eng.remembered))
+	}
+	for i, wantSpace := range []string{"system", "system", "main", "main"} {
+		if eng.remembered[i].Space != wantSpace {
+			t.Errorf("remembered[%d].Space = %q, want %q", i, eng.remembered[i].Space, wantSpace)
+		}
+	}
+	if eng.remembered[0].Source != SourceUser || eng.remembered[1].Source != SourceAgent {
+		t.Errorf("sources = %q, %q", eng.remembered[0].Source, eng.remembered[1].Source)
 	}
 }
 

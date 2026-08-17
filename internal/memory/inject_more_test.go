@@ -45,7 +45,7 @@ func TestFormatMemoriesClipsLongContent(t *testing.T) {
 
 func TestNewAmbientIgnoresBadPatterns(t *testing.T) {
 	a := NewAmbient(&stubEngine{enabled: true, healthy: true}, 5, 0.3, 5, 500, 500,
-		[]string{"([unclosed", "^ok$"})
+		[]string{"([unclosed", "^ok$"}, SpacePolicy{})
 	if len(a.ignore) != 1 {
 		t.Fatalf("compiled %d patterns, want only the valid one", len(a.ignore))
 	}
@@ -64,7 +64,7 @@ func TestMemoryPromptNilSafety(t *testing.T) {
 		t.Errorf("engine-less ambient returned %q", got)
 	}
 	// healthy engine but an empty query short-circuits before any call
-	a := NewAmbient(&stubEngine{enabled: true, healthy: true}, 5, 0.3, 5, 500, 500, nil)
+	a := NewAmbient(&stubEngine{enabled: true, healthy: true}, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
 	if got := a.MemoryPrompt(context.Background(), nil, "   "); got != "" {
 		t.Errorf("blank query produced %q", got)
 	}
@@ -72,12 +72,12 @@ func TestMemoryPromptNilSafety(t *testing.T) {
 
 func TestStoreExchangeNilAndDisabled(t *testing.T) {
 	var nilAmbient *Ambient
-	nilAmbient.StoreExchange("u", "a") // must not panic
+	nilAmbient.StoreExchange("cli", "u", "a") // must not panic
 
-	(&Ambient{}).StoreExchange("u", "a") // engine-less: must not panic
+	(&Ambient{}).StoreExchange("cli", "u", "a") // engine-less: must not panic
 
-	disabled := NewAmbient(&stubEngine{enabled: false}, 5, 0.3, 5, 500, 500, nil)
-	disabled.StoreExchange("u", "a") // off-mode engines never store
+	disabled := NewAmbient(&stubEngine{enabled: false}, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
+	disabled.StoreExchange("cli", "u", "a") // off-mode engines never store
 	if stored := disabled.Engine.(*stubEngine).stored(); len(stored) != 0 {
 		t.Error("disabled engine received a write")
 	}
@@ -85,13 +85,13 @@ func TestStoreExchangeNilAndDisabled(t *testing.T) {
 
 func TestStoreExchangeWaitsForHealthThenStores(t *testing.T) {
 	engine := &stubEngine{enabled: true, healthy: false}
-	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil)
+	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
 	go func() {
 		time.Sleep(200 * time.Millisecond)
 		engine.setHealthy(true)
 	}()
 	done := make(chan struct{})
-	go func() { a.StoreExchange("user text", "assistant text"); close(done) }()
+	go func() { a.StoreExchange("cli", "user text", "assistant text"); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
@@ -115,8 +115,8 @@ func TestStoreExchangeWaitsForHealthThenStores(t *testing.T) {
 // prunes the latter, so an unmarked reply becomes a permanent graph fixture.
 func TestStoreExchangeMarksTheAssistantSide(t *testing.T) {
 	engine := &stubEngine{enabled: true, healthy: true}
-	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil)
-	a.StoreExchange("what should I do this weekend?", "here are some ideas: ...")
+	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
+	a.StoreExchange("cli", "what should I do this weekend?", "here are some ideas: ...")
 	stored := engine.stored()
 	if len(stored) != 2 {
 		t.Fatalf("stored %d memories, want 2", len(stored))
@@ -167,8 +167,8 @@ func TestRememberSendsSourceWhenSet(t *testing.T) {
 
 func TestStoreExchangeSkipsBlankSides(t *testing.T) {
 	engine := &stubEngine{enabled: true, healthy: true}
-	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil)
-	a.StoreExchange("   ", "only the reply")
+	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
+	a.StoreExchange("cli", "   ", "only the reply")
 	if stored := engine.stored(); len(stored) != 1 {
 		t.Errorf("blank user text was stored: %+v", stored)
 	}

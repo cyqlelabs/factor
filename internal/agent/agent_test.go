@@ -44,6 +44,7 @@ func (s *scriptedChat) Chat(_ context.Context, req *provider.Request) (*provider
 type fakeEngine struct {
 	mu         sync.Mutex
 	remembered []string
+	spaces     []string
 	recalls    []memory.Memory
 	healthy    bool
 }
@@ -52,6 +53,7 @@ func (f *fakeEngine) Remember(_ context.Context, req memory.RememberRequest) (st
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.remembered = append(f.remembered, req.Content)
+	f.spaces = append(f.spaces, req.Space)
 	return "atom", nil
 }
 func (f *fakeEngine) Recall(context.Context, string, int, float64, memory.Scope) ([]memory.Memory, error) {
@@ -116,7 +118,8 @@ func newHarness(t *testing.T, script ...func(req *provider.Request) (*provider.R
 	}
 	chat := &scriptedChat{script: script}
 	engine := &fakeEngine{healthy: true}
-	ambient := memory.NewAmbient(engine, 5, 0.3, 5, 500, 500, []string{"^HEARTBEAT_OK$"})
+	ambient := memory.NewAmbient(engine, 5, 0.3, 5, 500, 500, []string{"^HEARTBEAT_OK$"},
+		memory.SpacePolicy{Strategy: "origin", Main: "main", System: "system"})
 	registry := tools.NewRegistry(cfg.Tools.IsToolEnabled, nil)
 	probe := &recordTool{}
 	registry.Register(probe)
@@ -218,6 +221,39 @@ func TestMemoryInjectionAndStorage(t *testing.T) {
 				t.Fatalf("remembered %d items, want 2", n)
 			}
 			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// a cli conversation writes to the main space
+	h.engine.mu.Lock()
+	spaces := append([]string(nil), h.engine.spaces...)
+	h.engine.mu.Unlock()
+	if len(spaces) != 2 || spaces[0] != "main" || spaces[1] != "main" {
+		t.Errorf("cli turn stored into spaces %v, want [main main]", spaces)
+	}
+}
+
+// Machine-originated turns must not pollute conversational memory: the loop
+// hands the channel to StoreExchange, and the origin policy routes cron turns
+// into the system space.
+func TestCronTurnStoresIntoTheSystemSpace(t *testing.T) {
+	h := newHarness(t, final("done"))
+	if _, err := h.loop.ProcessDirect(context.Background(), "nightly digest ran", "cron:digest"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		h.engine.mu.Lock()
+		spaces := append([]string(nil), h.engine.spaces...)
+		h.engine.mu.Unlock()
+		if len(spaces) == 2 {
+			if spaces[0] != "system" || spaces[1] != "system" {
+				t.Fatalf("cron turn stored into spaces %v, want [system system]", spaces)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stored %d memories, want 2", len(spaces))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

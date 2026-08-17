@@ -116,6 +116,8 @@ type MemoryConfig struct {
 	DBPath              string   `json:"db_path"`
 	Tenant              string   `json:"tenant"`
 	Space               string   `json:"space"`
+	SpaceStrategy       string   `json:"space_strategy"` // origin: conversations write to `space`, cron/job turns to `system_space`, each reading the other as an overlay (needs a smrti with space routing; older engines fall back to single). single: everything in `space`.
+	SystemSpace         string   `json:"system_space"`
 	Personality         string   `json:"personality" env:"FACTOR_MEMORY_PERSONALITY"`
 	APIKey              string   `json:"api_key,omitempty" env:"FACTOR_MEMORY_API_KEY"`
 	RecallTopK          int      `json:"recall_top_k"`
@@ -265,17 +267,19 @@ func Default() *Config {
 			RetryBackoffSecs: 2,
 		},
 		Memory: MemoryConfig{
-			Mode:        "sidecar",
-			Command:     "smrti",
-			AutoInstall: true,
-			KeepAlive:   true,
-			Host:        "127.0.0.1",
-			Port:        8420,
-			DBPath:      filepath.Join(home, "memory.db"),
-			Tenant:      "default",
-			Space:       "main",
-			Personality: "balanced",
-			RecallTopK:  5,
+			Mode:          "sidecar",
+			Command:       "smrti",
+			AutoInstall:   true,
+			KeepAlive:     true,
+			Host:          "127.0.0.1",
+			Port:          8420,
+			DBPath:        filepath.Join(home, "memory.db"),
+			Tenant:        "default",
+			Space:         "main",
+			SpaceStrategy: "origin",
+			SystemSpace:   "system",
+			Personality:   "balanced",
+			RecallTopK:    5,
 			// smrti never prunes a user-stated episode or belief — it pins
 			// them at an LTI floor above the prune line — but their confidence
 			// decays toward zero forever. A floor near the 0.5 an atom is born
