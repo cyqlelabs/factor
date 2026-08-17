@@ -61,12 +61,12 @@ func engineDocker(t *testing.T, failOn ...string) *[]string {
 				return "", fmt.Errorf("docker %s: exit status 125", prefix)
 			}
 		}
-		switch {
-		case args[0] == "ps":
+		switch args[0] {
+		case "ps":
 			return "c0ffee\n", nil
-		case args[0] == "inspect":
+		case "inspect":
 			return engineInspect, nil
-		case args[0] == "image":
+		case "image":
 			return engineImage, nil
 		default:
 			return "", nil
