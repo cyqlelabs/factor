@@ -377,10 +377,10 @@ func TestSidecarDelegatesEveryOperation(t *testing.T) {
 	if len(*remembered) == 0 {
 		t.Error("Remember did not reach the server")
 	}
-	if _, err := eng.Recall(ctx, "q", 3, 0.1); err != nil {
+	if _, err := eng.Recall(ctx, "q", 3, 0.1, Scope{}); err != nil {
 		t.Errorf("Recall: %v", err)
 	}
-	if err := eng.Forget(ctx, "q", "because"); err != nil {
+	if err := eng.Forget(ctx, "q", "because", ""); err != nil {
 		t.Errorf("Forget: %v", err)
 	}
 	if _, err := eng.Reflect(ctx); err != nil {

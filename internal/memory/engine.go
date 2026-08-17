@@ -50,14 +50,26 @@ type RememberRequest struct {
 	Valence     *float64 // nil = smrti auto-estimates from content
 	Evidence    string   // beliefs only
 	Source      string   // user | agent (empty means user)
+	Space       string   // memory space to write to (empty = engine default)
+}
+
+// Scope names the space a call writes to and the overlay a recall reads.
+// The zero value means "the engine's configured default"; with it every
+// request payload stays byte-identical to pre-space builds. The client drops
+// the fields entirely when the engine has not advertised space support, so a
+// non-zero Scope against an old engine degrades to today's single space
+// instead of silently misrouting.
+type Scope struct {
+	Space      string
+	ReadSpaces []string
 }
 
 // Engine is the memory seam. The production implementation talks to smrti;
 // tests use fakes; "off" mode uses Noop.
 type Engine interface {
 	Remember(ctx context.Context, req RememberRequest) (string, error)
-	Recall(ctx context.Context, query string, topK int, minConfidence float64) ([]Memory, error)
-	Forget(ctx context.Context, query, reason string) error
+	Recall(ctx context.Context, query string, topK int, minConfidence float64, scope Scope) ([]Memory, error)
+	Forget(ctx context.Context, query, reason, space string) error
 	Reflect(ctx context.Context) (map[string]any, error)
 	Status(ctx context.Context) (map[string]any, error)
 	Enabled() bool // false only for the disabled (off-mode) engine
@@ -69,11 +81,11 @@ type Engine interface {
 type Noop struct{}
 
 func (Noop) Remember(context.Context, RememberRequest) (string, error) { return "", nil }
-func (Noop) Recall(context.Context, string, int, float64) ([]Memory, error) {
+func (Noop) Recall(context.Context, string, int, float64, Scope) ([]Memory, error) {
 	return nil, nil
 }
-func (Noop) Forget(context.Context, string, string) error    { return nil }
-func (Noop) Reflect(context.Context) (map[string]any, error) { return map[string]any{}, nil }
+func (Noop) Forget(context.Context, string, string, string) error { return nil }
+func (Noop) Reflect(context.Context) (map[string]any, error)      { return map[string]any{}, nil }
 func (Noop) Status(context.Context) (map[string]any, error) {
 	return map[string]any{"mode": "off"}, nil
 }

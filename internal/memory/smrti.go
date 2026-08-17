@@ -21,6 +21,11 @@ type Client struct {
 	extractKey string
 	http       *http.Client
 	healthy    atomic.Bool
+	// spacesOK is refreshed by every /status response: a `spaces` key is the
+	// engine advertising per-request space routing. Old engines silently drop
+	// unknown fields — the memory would land in the wrong space, not error —
+	// so space fields are only ever sent once the engine has proved support.
+	spacesOK atomic.Bool
 }
 
 func NewClient(baseURL, apiKey, extractKey string) *Client {
@@ -92,6 +97,7 @@ func (c *Client) Remember(ctx context.Context, req RememberRequest) (string, err
 	}
 	if req.Type == "belief" && req.Evidence != "" {
 		body := map[string]any{"statement": req.Content, "probability": req.Probability, "evidence": req.Evidence}
+		c.addSpace(body, req.Space)
 		if err := c.do(ctx, http.MethodPost, "/believe", body, &out); err != nil {
 			return "", err
 		}
@@ -107,13 +113,23 @@ func (c *Client) Remember(ctx context.Context, req RememberRequest) (string, err
 	if req.Source != "" {
 		body["source"] = req.Source
 	}
+	c.addSpace(body, req.Space)
 	if err := c.do(ctx, http.MethodPost, "/remember", body, &out); err != nil {
 		return "", err
 	}
 	return out.AtomID, nil
 }
 
-func (c *Client) Recall(ctx context.Context, query string, topK int, minConfidence float64) ([]Memory, error) {
+// addSpace attaches a space to a request body — only when one is asked for
+// and the engine has advertised space routing, so payloads to older engines
+// stay byte-identical to pre-space builds.
+func (c *Client) addSpace(body map[string]any, space string) {
+	if space != "" && c.spacesOK.Load() {
+		body["space"] = space
+	}
+}
+
+func (c *Client) Recall(ctx context.Context, query string, topK int, minConfidence float64, scope Scope) ([]Memory, error) {
 	if query == "" {
 		return nil, nil
 	}
@@ -124,17 +140,22 @@ func (c *Client) Recall(ctx context.Context, query string, topK int, minConfiden
 		Memories []Memory `json:"memories"`
 	}
 	body := map[string]any{"query": query, "top_k": topK, "min_confidence": minConfidence}
+	c.addSpace(body, scope.Space)
+	if len(scope.ReadSpaces) > 0 && c.spacesOK.Load() {
+		body["read_spaces"] = scope.ReadSpaces
+	}
 	if err := c.do(ctx, http.MethodPost, "/recall", body, &out); err != nil {
 		return nil, err
 	}
 	return out.Memories, nil
 }
 
-func (c *Client) Forget(ctx context.Context, query, reason string) error {
+func (c *Client) Forget(ctx context.Context, query, reason, space string) error {
 	body := map[string]any{"query": query}
 	if reason != "" {
 		body["reason"] = reason
 	}
+	c.addSpace(body, space)
 	return c.do(ctx, http.MethodPost, "/forget", body, nil)
 }
 
@@ -151,6 +172,8 @@ func (c *Client) Status(ctx context.Context) (map[string]any, error) {
 	if err := c.do(ctx, http.MethodGet, "/status", nil, &out); err != nil {
 		return nil, err
 	}
+	_, ok := out["spaces"]
+	c.spacesOK.Store(ok)
 	return out, nil
 }
 

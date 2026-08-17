@@ -47,12 +47,12 @@ func (s *stubEngine) Remember(_ context.Context, req RememberRequest) (string, e
 	}
 	return "atom-7", nil
 }
-func (s *stubEngine) Recall(context.Context, string, int, float64) ([]Memory, error) {
+func (s *stubEngine) Recall(context.Context, string, int, float64, Scope) ([]Memory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.recalls, s.err
 }
-func (s *stubEngine) Forget(_ context.Context, query, reason string) error {
+func (s *stubEngine) Forget(_ context.Context, query, reason string, _ string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.forgot = [2]string{query, reason}
@@ -284,10 +284,10 @@ func TestNoopEngine(t *testing.T) {
 	if id, err := eng.Remember(ctx, RememberRequest{Content: "x"}); id != "" || err != nil {
 		t.Errorf("Remember = %q, %v", id, err)
 	}
-	if mems, err := eng.Recall(ctx, "q", 5, 0.1); mems != nil || err != nil {
+	if mems, err := eng.Recall(ctx, "q", 5, 0.1, Scope{}); mems != nil || err != nil {
 		t.Errorf("Recall = %v, %v", mems, err)
 	}
-	if err := eng.Forget(ctx, "q", ""); err != nil {
+	if err := eng.Forget(ctx, "q", "", ""); err != nil {
 		t.Errorf("Forget = %v", err)
 	}
 	if r, err := eng.Reflect(ctx); err != nil || r == nil {

@@ -292,11 +292,11 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 func (s *Sidecar) Remember(ctx context.Context, req RememberRequest) (string, error) {
 	return s.client.Remember(ctx, req)
 }
-func (s *Sidecar) Recall(ctx context.Context, query string, topK int, minConfidence float64) ([]Memory, error) {
-	return s.client.Recall(ctx, query, topK, minConfidence)
+func (s *Sidecar) Recall(ctx context.Context, query string, topK int, minConfidence float64, scope Scope) ([]Memory, error) {
+	return s.client.Recall(ctx, query, topK, minConfidence, scope)
 }
-func (s *Sidecar) Forget(ctx context.Context, query, reason string) error {
-	return s.client.Forget(ctx, query, reason)
+func (s *Sidecar) Forget(ctx context.Context, query, reason, space string) error {
+	return s.client.Forget(ctx, query, reason, space)
 }
 func (s *Sidecar) Reflect(ctx context.Context) (map[string]any, error) { return s.client.Reflect(ctx) }
 func (s *Sidecar) Status(ctx context.Context) (map[string]any, error)  { return s.client.Status(ctx) }

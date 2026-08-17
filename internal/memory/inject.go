@@ -145,7 +145,7 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	mems, err := a.Engine.Recall(ctx, query, a.TopK, a.MinConfidence)
+	mems, err := a.Engine.Recall(ctx, query, a.TopK, a.MinConfidence, Scope{})
 	if err != nil {
 		slog.Warn("memory recall failed", "error", err)
 		return ""

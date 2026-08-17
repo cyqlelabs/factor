@@ -196,7 +196,7 @@ func TestClientErrorPaths(t *testing.T) {
 
 	// 4xx: an error, but the server is up — health is untouched
 	status, body = 400, "bad request"
-	if _, err := c.Recall(ctx, "q", 5, 0.1); err == nil {
+	if _, err := c.Recall(ctx, "q", 5, 0.1, Scope{}); err == nil {
 		t.Error("4xx accepted")
 	}
 	if !c.Healthy() {
@@ -205,7 +205,7 @@ func TestClientErrorPaths(t *testing.T) {
 
 	// 5xx: the server is failing — health must flip so callers stop trusting it
 	status, body = 500, strings.Repeat("e", 500)
-	if err := c.Forget(ctx, "q", ""); err == nil {
+	if err := c.Forget(ctx, "q", "", ""); err == nil {
 		t.Error("5xx accepted")
 	}
 	if c.Healthy() {
@@ -227,7 +227,7 @@ func TestClientRecallEmptyQueryShortCircuits(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "", "")
-	mems, err := c.Recall(context.Background(), "", 5, 0.1)
+	mems, err := c.Recall(context.Background(), "", 5, 0.1, Scope{})
 	if err != nil || mems != nil {
 		t.Errorf("Recall(empty) = %v, %v", mems, err)
 	}

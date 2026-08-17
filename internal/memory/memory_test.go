@@ -83,7 +83,7 @@ func TestClientRememberRoutesBeliefs(t *testing.T) {
 func TestClientRecallParsesMemories(t *testing.T) {
 	srv, _ := fakeSmrti(t)
 	c := NewClient(srv.URL, "", "")
-	mems, err := c.Recall(context.Background(), "deploys", 5, 0.1)
+	mems, err := c.Recall(context.Background(), "deploys", 5, 0.1, Scope{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestClientRecallParsesMemories(t *testing.T) {
 
 func TestClientUnreachableMarksUnhealthy(t *testing.T) {
 	c := NewClient("http://127.0.0.1:1", "", "")
-	if _, err := c.Recall(context.Background(), "x", 5, 0.1); err == nil {
+	if _, err := c.Recall(context.Background(), "x", 5, 0.1, Scope{}); err == nil {
 		t.Fatal("expected error")
 	}
 	if c.Healthy() {
@@ -217,7 +217,7 @@ func TestSidecarAdoptsRunningServer(t *testing.T) {
 	if !eng.Healthy() {
 		t.Fatal("engine did not adopt the running server")
 	}
-	if _, err := eng.Recall(context.Background(), "anything", 3, 0.1); err != nil {
+	if _, err := eng.Recall(context.Background(), "anything", 3, 0.1, Scope{}); err != nil {
 		t.Fatal(err)
 	}
 }

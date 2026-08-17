@@ -113,7 +113,7 @@ func (t *recallTool) Execute(ctx context.Context, args map[string]any) *tools.Re
 	// No confidence floor: an explicit search must reach everything still
 	// stored. A floor here reports "no memories found" for decayed facts the
 	// graph is still holding, which reads as data loss rather than fading.
-	mems, err := t.engine.Recall(ctx, tools.StringArg(args, "query"), tools.IntArg(args, "top_k", 10), 0)
+	mems, err := t.engine.Recall(ctx, tools.StringArg(args, "query"), tools.IntArg(args, "top_k", 10), 0, Scope{})
 	if err != nil {
 		return tools.Errorf("recall failed: %v", err)
 	}
@@ -145,7 +145,7 @@ func (t *forgetTool) Parameters() map[string]any {
 	}
 }
 func (t *forgetTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
-	if err := t.engine.Forget(ctx, tools.StringArg(args, "query"), tools.StringArg(args, "reason")); err != nil {
+	if err := t.engine.Forget(ctx, tools.StringArg(args, "query"), tools.StringArg(args, "reason"), ""); err != nil {
 		return tools.Errorf("forget failed: %v", err)
 	}
 	return tools.Text("Softened matching memories.")

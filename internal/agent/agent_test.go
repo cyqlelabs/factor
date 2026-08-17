@@ -54,15 +54,15 @@ func (f *fakeEngine) Remember(_ context.Context, req memory.RememberRequest) (st
 	f.remembered = append(f.remembered, req.Content)
 	return "atom", nil
 }
-func (f *fakeEngine) Recall(context.Context, string, int, float64) ([]memory.Memory, error) {
+func (f *fakeEngine) Recall(context.Context, string, int, float64, memory.Scope) ([]memory.Memory, error) {
 	return f.recalls, nil
 }
-func (f *fakeEngine) Forget(context.Context, string, string) error    { return nil }
-func (f *fakeEngine) Reflect(context.Context) (map[string]any, error) { return nil, nil }
-func (f *fakeEngine) Status(context.Context) (map[string]any, error)  { return nil, nil }
-func (f *fakeEngine) Enabled() bool                                   { return true }
-func (f *fakeEngine) Healthy() bool                                   { return f.healthy }
-func (f *fakeEngine) Close() error                                    { return nil }
+func (f *fakeEngine) Forget(context.Context, string, string, string) error { return nil }
+func (f *fakeEngine) Reflect(context.Context) (map[string]any, error)      { return nil, nil }
+func (f *fakeEngine) Status(context.Context) (map[string]any, error)       { return nil, nil }
+func (f *fakeEngine) Enabled() bool                                        { return true }
+func (f *fakeEngine) Healthy() bool                                        { return f.healthy }
+func (f *fakeEngine) Close() error                                         { return nil }
 
 type recordTool struct {
 	mu    sync.Mutex
