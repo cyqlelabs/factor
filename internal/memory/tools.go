@@ -29,13 +29,19 @@ func spaceParam() map[string]any {
 	}
 }
 
-// turnSpace resolves the write space for a tool call: an explicit space
-// argument wins, otherwise the turn's channel decides via the policy.
-func turnSpace(ctx context.Context, spaces SpacePolicy, args map[string]any) string {
+// requestedSpace resolves the write space for a tool call: an explicit space
+// argument wins, otherwise the turn's channel decides via the policy. An
+// explicit space the engine cannot route is refused rather than quietly
+// swapped for the default space — the model asked for a partition, and acting
+// as if it got one is how a memory ends up somewhere nobody looks for it.
+func requestedSpace(ctx context.Context, engine Engine, spaces SpacePolicy, args map[string]any) (string, *tools.Result) {
 	if s := tools.StringArg(args, "space"); s != "" {
-		return s
+		if ok, _ := engine.SpaceSupport(); !ok {
+			return "", tools.Errorf("this memory engine does not support spaces; retry without the space parameter")
+		}
+		return s, nil
 	}
-	return spaces.Scope(tools.ToolContextFrom(ctx).Channel).Space
+	return scopeFor(engine, spaces, tools.ToolContextFrom(ctx).Channel).Space, nil
 }
 
 type rememberTool struct {
@@ -71,12 +77,16 @@ func (t *rememberTool) Parameters() map[string]any {
 	}
 }
 func (t *rememberTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	space, refusal := requestedSpace(ctx, t.engine, t.spaces, args)
+	if refusal != nil {
+		return refusal
+	}
 	req := RememberRequest{
 		Content:  tools.StringArg(args, "content"),
 		Type:     tools.StringArg(args, "type"),
 		Evidence: tools.StringArg(args, "evidence"),
 		Source:   tools.StringArg(args, "source"),
-		Space:    turnSpace(ctx, t.spaces, args),
+		Space:    space,
 	}
 	if req.Source != SourceUser && req.Source != SourceAgent {
 		req.Source = "" // unrecognised value: store with default user standing
@@ -139,8 +149,11 @@ func (t *recallTool) Parameters() map[string]any {
 func (t *recallTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
 	// An explicit space narrows the search to exactly that space; otherwise
 	// the turn reads its usual overlay.
-	scope := t.spaces.Scope(tools.ToolContextFrom(ctx).Channel)
+	scope := scopeFor(t.engine, t.spaces, tools.ToolContextFrom(ctx).Channel)
 	if s := tools.StringArg(args, "space"); s != "" {
+		if ok, _ := t.engine.SpaceSupport(); !ok {
+			return tools.Errorf("this memory engine does not support spaces; retry without the space parameter")
+		}
 		scope = Scope{Space: s, ReadSpaces: []string{s}}
 	}
 	// No confidence floor: an explicit search must reach everything still
@@ -188,7 +201,11 @@ func (t *forgetTool) Parameters() map[string]any {
 func (t *forgetTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
 	// Scoped to the turn's write space so the semantic softening cannot bleed
 	// into memories another space is keeping.
-	if err := t.engine.Forget(ctx, tools.StringArg(args, "query"), tools.StringArg(args, "reason"), turnSpace(ctx, t.spaces, args)); err != nil {
+	space, refusal := requestedSpace(ctx, t.engine, t.spaces, args)
+	if refusal != nil {
+		return refusal
+	}
+	if err := t.engine.Forget(ctx, tools.StringArg(args, "query"), tools.StringArg(args, "reason"), space); err != nil {
 		return tools.Errorf("forget failed: %v", err)
 	}
 	return tools.Text("Softened matching memories.")

@@ -390,6 +390,33 @@ func TestMemoryToolsHonorAnExplicitSpace(t *testing.T) {
 	}
 }
 
+// Ambient routing degrading quietly is the deal; an explicit request that
+// cannot be honoured is not. Silently using the default space would write the
+// memory somewhere else, or — worse, for forget — soften the wrong space's
+// memories, and report success either way.
+func TestMemoryToolsRefuseAnExplicitSpaceWhenUnsupported(t *testing.T) {
+	eng := &scopeEngine{} // old engine: no space routing
+	set := NewTools(eng, testPolicy())
+	ctx := context.Background()
+
+	for _, name := range []string{"remember", "recall", "forget"} {
+		args := map[string]any{"space": "projects"}
+		switch name {
+		case "remember":
+			args["content"] = "x"
+		default:
+			args["query"] = "x"
+		}
+		res := toolByName(t, set, name).Execute(ctx, args)
+		if !res.IsError || !strings.Contains(res.ForLLM, "space") {
+			t.Errorf("%s with an unsupported space = %+v, want an error naming spaces", name, res)
+		}
+	}
+	if len(eng.remembered) != 0 || eng.forgotSpace != "" {
+		t.Error("a refused call still reached the engine")
+	}
+}
+
 func TestRecallToolShowsTheMemorySpace(t *testing.T) {
 	eng := newScopeEngine()
 	set := NewTools(eng, testPolicy())
