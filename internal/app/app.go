@@ -70,10 +70,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: %w", err)
 	}
-	spaces := memory.SpacePolicy{
-		Strategy: cfg.Memory.SpaceStrategy,
-		Main:     cfg.Memory.Space,
-		System:   cfg.Memory.SystemSpace,
+	spaces, err := memory.NewSpacePolicy(cfg.Memory.SpaceStrategy, cfg.Memory.Space, cfg.Memory.SystemSpace)
+	if err != nil {
+		return nil, fmt.Errorf("memory: %w", err)
 	}
 	ambient := memory.NewAmbient(engine,
 		cfg.Memory.RecallTopK, cfg.Memory.RecallMinConfidence,

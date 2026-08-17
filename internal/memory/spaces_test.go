@@ -199,6 +199,26 @@ func TestSpacePolicyScopes(t *testing.T) {
 	}
 }
 
+// A typo in space_strategy must not quietly enable the split — the same
+// treatment memory.mode gets for an unknown value.
+func TestNewSpacePolicyRejectsUnknownStrategy(t *testing.T) {
+	if _, err := NewSpacePolicy("singel", "main", "system"); err == nil {
+		t.Error("unknown strategy accepted")
+	}
+	for _, strategy := range []string{"", "origin", "single"} {
+		if _, err := NewSpacePolicy(strategy, "main", "system"); err != nil {
+			t.Errorf("NewSpacePolicy(%q) = %v", strategy, err)
+		}
+	}
+	p, err := NewSpacePolicy("", "main", "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Scope("cli").Space != "main" {
+		t.Errorf("empty strategy should default to origin routing: %+v", p)
+	}
+}
+
 // scopeEngine records the scope and requests the ambient layer hands the engine.
 type scopeEngine struct {
 	Noop

@@ -6,7 +6,10 @@
 // line — the agent keeps working, just without its long-term memory.
 package memory
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 type Severity string
 
@@ -74,6 +77,19 @@ type SpacePolicy struct {
 	Strategy string // "origin" (default) or "single"
 	Main     string
 	System   string
+}
+
+// NewSpacePolicy validates the configured strategy. An unrecognised value is
+// an error rather than a silent fallback: defaulting it to origin would turn
+// the split on for someone who wrote "single" with a typo, which is the
+// opposite of what they asked for.
+func NewSpacePolicy(strategy, main, system string) (SpacePolicy, error) {
+	switch strategy {
+	case "", "origin", "single":
+		return SpacePolicy{Strategy: strategy, Main: main, System: system}, nil
+	default:
+		return SpacePolicy{}, fmt.Errorf("unknown space_strategy %q (want origin or single)", strategy)
+	}
 }
 
 func (p SpacePolicy) Scope(channel string) Scope {
