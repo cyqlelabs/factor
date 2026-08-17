@@ -576,9 +576,13 @@ func (t *backTool) Execute(ctx context.Context, _ map[string]any) *tools.Result 
 	// for a lifecycle event that a back/forward-cache restore never fires,
 	// so it stalls until timeout on most real pages.
 	var outcome string
+	// The back is queued rather than called inline: navigating tears down the
+	// execution context this very Evaluate is waiting on a reply from, so
+	// calling it directly races its own result and surfaces the navigation as
+	// "Inspected target navigated or closed" on a back that actually worked.
 	script := `(() => {
 		if (history.length <= 1) return "no-history";
-		history.back();
+		setTimeout(() => history.back(), 0);
 		return "ok";
 	})()`
 	if err := t.s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &outcome)); err != nil {
