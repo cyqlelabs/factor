@@ -301,12 +301,12 @@ func Watch(ctx context.Context, every time.Duration, current string, notify func
 		every = DefaultCheckInterval
 	}
 	told := ""
-	check := func() {
+	watchLoop(ctx, every, func() {
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		rel, err := Latest(callCtx)
 		cancel()
 		if err != nil {
-			slog.Debug("release check failed", "error", err)
+			slogDebug("release check failed", err)
 			return
 		}
 		if rel.Version == told || !Newer(current, rel.Version) {
@@ -314,6 +314,15 @@ func Watch(ctx context.Context, every time.Duration, current string, notify func
 		}
 		told = rel.Version
 		notify(rel)
+	})
+}
+
+// watchLoop runs check now and then every interval, until ctx ends. Both
+// watchers start with a check: news that arrived while Factor was down is
+// still news.
+func watchLoop(ctx context.Context, every time.Duration, check func()) {
+	if every <= 0 {
+		every = DefaultCheckInterval
 	}
 	check()
 	t := time.NewTicker(every)
@@ -327,3 +336,5 @@ func Watch(ctx context.Context, every time.Duration, current string, notify func
 		}
 	}
 }
+
+func slogDebug(msg string, err error) { slog.Debug(msg, "error", err) }

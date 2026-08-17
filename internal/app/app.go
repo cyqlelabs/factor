@@ -43,6 +43,9 @@ type App struct {
 	// Restart is how the upgrade tool reloads this process into the release
 	// it just installed. Only a daemon fills it in.
 	Restart *upgrade.Restarter
+	// SmrtiUpgrade keeps the memory engine current, and is nil when memory is
+	// off — there is then no engine to keep current.
+	SmrtiUpgrade *upgrade.Smrti
 
 	closeBrowser func()
 }
@@ -97,7 +100,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(tools.NewConfigTools(cfg)...)
 	registry.Register(tools.NewPkgInstallTool())
 	restarter := &upgrade.Restarter{}
-	registry.Register(&upgrade.Tool{Current: version.Version, Restart: restarter})
+	// The engine is upgraded in place, so what gates it is the graph being
+	// idle rather than the process being about to exit.
+	var smrtiUpgrade *upgrade.Smrti
+	if cfg.Memory.Mode != "off" {
+		smrtiUpgrade = upgrade.NewSmrti(cfg.Memory, memory.IdleFunc(engine, memory.UpgradeQuiet))
+	}
+	registry.Register(&upgrade.Tool{Current: version.Version, Restart: restarter, Smrti: smrtiUpgrade})
 
 	// Desktop control: skipped on headless machines, where these tools would
 	// be prompt weight that can only ever fail (desktop.enabled forces it).
@@ -174,6 +183,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Cron:     cronService,
 		MCP:      mcpManager,
 		Restart:  restarter,
+
+		SmrtiUpgrade: smrtiUpgrade,
 
 		closeBrowser: closeBrowser,
 	}, nil

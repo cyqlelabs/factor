@@ -304,6 +304,10 @@ func (s *Sidecar) Status(ctx context.Context) (map[string]any, error)  { return 
 func (s *Sidecar) Enabled() bool                                       { return !s.binaryMissing.Load() }
 func (s *Sidecar) Healthy() bool                                       { return s.client.Healthy() }
 
+// Idle reports that the graph has been untouched for quiet — what the upgrade
+// path waits for before restarting the engine underneath a live Factor.
+func (s *Sidecar) Idle(quiet time.Duration) bool { return s.client.Idle(quiet) }
+
 func (s *Sidecar) Close() error {
 	if s.cancel != nil {
 		s.cancel()

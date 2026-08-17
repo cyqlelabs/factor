@@ -4,11 +4,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -75,7 +77,7 @@ func main() {
 	case "status":
 		err = runStatus(*configPath)
 	case "upgrade":
-		err = runUpgrade(*checkOnly)
+		err = runUpgrade(*configPath, *checkOnly)
 	case "gateway":
 		err = gateway.Run(*configPath)
 	case "":
@@ -109,16 +111,34 @@ func runInit(configPath string, nonInteractive, noInstall bool) error {
 	return err
 }
 
-// Seams: an upgrade test must not depend on what GitHub is publishing today.
+// Seams: an upgrade test must not depend on what GitHub is publishing today,
+// nor on what this machine happens to be running in docker.
 var (
 	latestRelease  = upgrade.Latest
 	applyRelease   = upgrade.Apply
 	restartGateway = gateway.SignalRestart
+	updateEngine   = func(ctx context.Context, configPath string, checkOnly bool) error {
+		cfg, err := config.Load(configPath)
+		if err != nil || cfg.Memory.Mode == "off" {
+			return err
+		}
+		return upgrade.NewSmrti(cfg.Memory, gatewayMemoryIdle(cfg)).Update(ctx, checkOnly,
+			func(format string, args ...any) { fmt.Printf(format+"\n", args...) })
+	}
 )
 
-func runUpgrade(checkOnly bool) error {
+func runUpgrade(configPath string, checkOnly bool) error {
 	ctx, cancel := signalContext()
 	defer cancel()
+
+	// The memory engine first: it is swapped in place, so it neither needs nor
+	// survives a Factor restart, and doing it before the binary keeps the
+	// restart below as the last thing that happens. Its failures are reported
+	// rather than fatal — a Factor that cannot reach the image registry, or
+	// whose engine is a pip install, still upgrades itself.
+	if err := updateEngine(ctx, configPath, checkOnly); err != nil && !errors.Is(err, upgrade.ErrNotContainerised) {
+		fmt.Fprintf(os.Stderr, "smrti: %v\n", err)
+	}
 
 	rel, err := latestRelease(ctx)
 	if err != nil {
@@ -152,6 +172,35 @@ func runUpgrade(checkOnly bool) error {
 		}
 	}
 	return nil
+}
+
+// gatewayMemoryIdle reports whether the daemon's memory engine is quiet. Only
+// the gateway knows what it has in flight, so a terminal asks it over the
+// health endpoint; with no daemon running, nothing is using the engine and the
+// swap can go ahead.
+func gatewayMemoryIdle(cfg *config.Config) func() bool {
+	if _, alive := gateway.ReadPidFile(); !alive {
+		return nil
+	}
+	url := fmt.Sprintf("http://%s:%d/health", cfg.Gateway.Host, cfg.Gateway.Port)
+	client := &http.Client{Timeout: 3 * time.Second}
+	return func() bool {
+		resp, err := client.Get(url)
+		if err != nil {
+			return false // unconfirmed is not idle
+		}
+		defer resp.Body.Close()
+		var health struct {
+			MemoryIdle *bool `json:"memory_idle"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&health); err != nil {
+			return false
+		}
+		// A daemon too old to report it has no opinion, and waiting for an
+		// answer it will never give would stall the first upgrade that brings
+		// the field with it.
+		return health.MemoryIdle == nil || *health.MemoryIdle
+	}
 }
 
 func runStatus(configPath string) error {

@@ -26,6 +26,7 @@ import (
 	_ "github.com/cyqlelabs/factor/internal/channel/telegram" // register connector
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/heartbeat"
+	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/upgrade"
 	"github.com/cyqlelabs/factor/internal/version"
 )
@@ -160,8 +161,13 @@ func serve(configPath string) (bool, error) {
 	}
 
 	if cfg.Upgrade.Check {
-		go upgrade.Watch(ctx, time.Duration(cfg.Upgrade.CheckIntervalHours)*time.Hour, version.Version,
+		every := time.Duration(cfg.Upgrade.CheckIntervalHours) * time.Hour
+		go upgrade.Watch(ctx, every, version.Version,
 			func(rel upgrade.Release) { announceRelease(rel, a.Loop.LastChannel, a.Bus.PublishOutbound) })
+		if a.SmrtiUpgrade != nil {
+			go a.SmrtiUpgrade.Watch(ctx, every,
+				func(rel upgrade.SmrtiRelease) { announceEngine(rel, a.Loop.LastChannel, a.Bus.PublishOutbound) })
+		}
 	}
 
 	healthSrv, err := startHealthServer(cfg, a, manager)
@@ -250,6 +256,20 @@ func announceRelease(rel upgrade.Release, last func() (string, string, bool), pu
 		rel.Version, version.Version, rel.Notes)})
 }
 
+// announceEngine does the same for a newer smrti image. Installing it never
+// takes Factor down — the engine is swapped in place while the graph is idle —
+// but it is still the user's call, not the daemon's.
+func announceEngine(rel upgrade.SmrtiRelease, last func() (string, string, bool), publish func(bus.OutboundMessage) bool) {
+	slog.Info("a newer smrti image is available", "image", rel.Version, "running", rel.Running)
+	ch, chat, ok := last()
+	if !ok {
+		return
+	}
+	publish(bus.OutboundMessage{Channel: ch, ChatID: chat, Content: fmt.Sprintf(
+		"smrti %s is out — the memory engine here runs %s. Ask me to upgrade it, or run `factor upgrade`.",
+		rel.Version, rel.Running)})
+}
+
 func startHealthServer(cfg *config.Config, a *app.App, manager *channel.Manager) (*http.Server, error) {
 	started := time.Now()
 	mux := http.NewServeMux()
@@ -259,7 +279,11 @@ func startHealthServer(cfg *config.Config, a *app.App, manager *channel.Manager)
 			"version":        version.Version,
 			"uptime_seconds": int(time.Since(started).Seconds()),
 			"memory_healthy": a.Memory.Healthy(),
-			"channels":       manager.Names(),
+			// What a `factor upgrade` in a terminal waits for before it swaps
+			// the engine's container: only this process knows what it has in
+			// flight against the graph.
+			"memory_idle": memory.IdleFunc(a.Memory, memory.UpgradeQuiet)(),
+			"channels":    manager.Names(),
 		})
 	})
 	addr := net.JoinHostPort(cfg.Gateway.Host, strconv.Itoa(cfg.Gateway.Port))

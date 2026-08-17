@@ -9,6 +9,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 type Severity string
@@ -135,6 +136,22 @@ type Engine interface {
 	// that never had them.
 	SpaceSupport() (bool, string)
 	Close() error
+}
+
+// UpgradeQuiet is how long the graph must have gone untouched before the
+// engine may be restarted under a running Factor. Long enough that a turn's
+// trailing store has landed, short enough that an idle minute offers a window.
+const UpgradeQuiet = 15 * time.Second
+
+// IdleFunc adapts an engine to the gate the upgrade path waits on. An engine
+// that cannot report activity — Noop, a test fake — reads as idle: there is
+// nothing of its own to interrupt.
+func IdleFunc(e Engine, quiet time.Duration) func() bool {
+	idler, ok := e.(interface{ Idle(time.Duration) bool })
+	if !ok {
+		return func() bool { return true }
+	}
+	return func() bool { return idler.Idle(quiet) }
 }
 
 // Noop is the disabled-memory engine.

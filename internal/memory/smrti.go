@@ -21,6 +21,11 @@ type Client struct {
 	extractKey string
 	http       *http.Client
 	healthy    atomic.Bool
+	// Data calls in flight, and when the last one finished (unix nanos).
+	// Restarting the engine is only safe in the gap between them, so the
+	// upgrade path reads both through Idle.
+	inflight   atomic.Int64
+	lastActive atomic.Int64
 	// routing is refreshed by every /status response: a `spaces` key is the
 	// engine advertising per-request space routing. Old engines silently drop
 	// unknown fields — the memory would land in the wrong space, not error —
@@ -91,7 +96,31 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	return nil
 }
 
+// activity marks one data request in flight; the returned call ends it. Only
+// the calls that touch the graph are tracked: the supervisor probes /status
+// every 30 seconds, so counting probes would leave the engine never idle and
+// never upgradable.
+func (c *Client) activity() func() {
+	c.inflight.Add(1)
+	return func() {
+		c.lastActive.Store(time.Now().UnixNano())
+		c.inflight.Add(-1)
+	}
+}
+
+// Idle reports that nothing is reading or writing the graph right now and
+// nothing has for quiet. Swapping the engine out from under a live request
+// loses that memory, so the upgrade waits for this to be true.
+func (c *Client) Idle(quiet time.Duration) bool {
+	if c.inflight.Load() > 0 {
+		return false
+	}
+	last := c.lastActive.Load()
+	return last == 0 || time.Since(time.Unix(0, last)) >= quiet
+}
+
 func (c *Client) Remember(ctx context.Context, req RememberRequest) (string, error) {
+	defer c.activity()()
 	if req.Type == "" {
 		req.Type = "episode"
 	}
@@ -149,6 +178,7 @@ func (c *Client) Recall(ctx context.Context, query string, topK int, minConfiden
 	if query == "" {
 		return nil, nil
 	}
+	defer c.activity()()
 	if topK <= 0 {
 		topK = 10
 	}
@@ -167,6 +197,7 @@ func (c *Client) Recall(ctx context.Context, query string, topK int, minConfiden
 }
 
 func (c *Client) Forget(ctx context.Context, query, reason, space string) error {
+	defer c.activity()()
 	body := map[string]any{"query": query}
 	if reason != "" {
 		body["reason"] = reason
@@ -176,6 +207,7 @@ func (c *Client) Forget(ctx context.Context, query, reason, space string) error 
 }
 
 func (c *Client) Reflect(ctx context.Context) (map[string]any, error) {
+	defer c.activity()()
 	out := map[string]any{}
 	if err := c.do(ctx, http.MethodPost, "/reflect", struct{}{}, &out); err != nil {
 		return nil, err
