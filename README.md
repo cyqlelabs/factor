@@ -234,6 +234,10 @@ factor gateway     # brings the line up
 factor status      # number, speech tier, voice-shell health
 ```
 
+Setting up the carrier is a page of its own — portal steps, config, and what to check
+when a call does not connect: **[Twilio](docs/phone-twilio.md)** ·
+**[Telnyx](docs/phone-telnyx.md)**.
+
 The voice shell is [Patter](https://github.com/PatterAI/Patter) running as a
 supervised sidecar — exactly like the smrti memory engine, into its own virtualenv,
 installed on demand. It terminates the carrier's media stream and owns the parts of
@@ -323,12 +327,11 @@ before writing anything.
 | Credentials | account SID + auth token | API key + connection id + public key |
 | Setup at the carrier | buy a number | buy a number, create a Call Control Application |
 | Cost | the baseline above | lower per minute and per text |
+| Step by step | [docs/phone-twilio.md](docs/phone-twilio.md) | [docs/phone-telnyx.md](docs/phone-telnyx.md) |
 
-The connection id is that application's. On every start Factor attaches the number to
-it and points its webhook at wherever the shell is answering, so a rotating tunnel
-keeps working and there is nothing to click in the portal. Telnyx signs its webhooks
-and the shell refuses ones it cannot verify, which is why the public key is required
-rather than optional.
+Either way the carrier is pointed at the shell on every start — Patter does it for
+Twilio, Factor itself for Telnyx — so a rotating tunnel keeps working and there is
+nothing to click in the portal.
 
 The carrier has to reach the voice shell, so it needs a public URL. `tunnel: "quick"`
 (the default) uses Patter's built-in Cloudflare quick tunnel — fine for trying it
