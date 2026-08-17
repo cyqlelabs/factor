@@ -125,7 +125,9 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
     "mode": "sidecar",                       // sidecar | external | off
     "auto_install": true,                    // install smrti when it is missing
     "personality": "balanced",               // analytical | curious | empathetic | maverick | deterministic
-    "space": "main"
+    "space": "main",                         // where conversations are remembered
+    "space_strategy": "origin",              // origin: cron and job turns use system_space | single: one space for all
+    "system_space": "system"
   },
   "channels": {
     "telegram": { "token": "123:ABC", "allow_from": ["your-telegram-id"] },
