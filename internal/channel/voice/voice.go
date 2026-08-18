@@ -509,6 +509,10 @@ func (v *Voice) speak(ctx context.Context, text string) {
 		return
 	}
 	defer v.armWindow()
+	text = spokenText(text, v.cfg.Language)
+	if text == "" {
+		return
+	}
 	for _, chunk := range channel.SplitMessage(text, ttsChunkChars) {
 		pcm, err := client.synthesize(ctx, chunk)
 		if err != nil {
