@@ -465,6 +465,58 @@ func TestVoiceReopensTheMicrophoneAfterAHelperCrash(t *testing.T) {
 	h.turn(10 * time.Second)
 }
 
+// micHealth reads the control endpoint's microphone gauges.
+func micHealth(t *testing.T, port int) (level, floor float64, silent bool) {
+	t.Helper()
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		MicLevel  float64 `json:"mic_level"`
+		MicFloor  float64 `json:"mic_floor"`
+		MicSilent bool    `json:"mic_silent"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return body.MicLevel, body.MicFloor, body.MicSilent
+}
+
+// The health endpoint answers the first question of a mute session: is any
+// signal reaching the code at all?
+func TestVoiceHealthReportsMicrophoneGauges(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.start()
+
+	h.mic.feed(repeat(toneFrame(2000), 10)...)
+	waitUntil(t, func() bool {
+		level, floor, _ := micHealth(t, h.v.cfg.ControlPort)
+		return level > 0 && floor > 0
+	})
+}
+
+// An unbroken run of exact-zero samples is the signature of capturing the
+// wrong device; the channel must say so instead of listening to nothing.
+func TestVoiceReportsADigitallySilentMicrophone(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.start()
+
+	h.mic.feed(repeat(silenceFrame(), 10*1000/frameMs+5)...)
+	waitUntil(t, func() bool {
+		_, _, silent := micHealth(t, h.v.cfg.ControlPort)
+		return silent
+	})
+
+	// Real signal clears the flag.
+	h.mic.feed(repeat(toneFrame(500), 5)...)
+	waitUntil(t, func() bool {
+		_, _, silent := micHealth(t, h.v.cfg.ControlPort)
+		return !silent
+	})
+}
+
 func TestVoiceStartFailures(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
 	cfg := validConfig()

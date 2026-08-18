@@ -3,6 +3,7 @@ package voice
 import (
 	"context"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -129,7 +130,13 @@ func (p *player) startLocked(ctx context.Context) {
 	feeder := &pcmFeeder{p: p, gen: gen, run: run, started: time.Now(), budget: p.offset}
 	go func() {
 		defer cancel()
-		_ = p.env.Play(ctx, p.argv, feeder)
+		err := p.env.Play(ctx, p.argv, feeder)
+		if err != nil && ctx.Err() == nil {
+			// A helper that dies on its own is a real failure — a wrong
+			// device, a stopped sound server — and staying quiet about it is
+			// how a mute agent goes undiagnosed.
+			slog.Warn("speech playback failed", "helper", p.argv[0], "error", err)
+		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		// Replaced, stopped, paused, or superseded by a resume: someone else
@@ -173,6 +180,9 @@ func (p *player) startFileLocked(ctx context.Context) {
 	go func() {
 		defer cancel()
 		err := p.env.PlayFile(ctx, p.argv, wavPCM(clip, playbackRate))
+		if err != nil && ctx.Err() == nil {
+			slog.Warn("speech playback failed", "helper", p.argv[0], "error", err)
+		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		if gen != p.gen || run != p.runSeq || !p.active {

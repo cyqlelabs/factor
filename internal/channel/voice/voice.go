@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -87,6 +88,14 @@ type Voice struct {
 
 	ready atomic.Bool
 	down  atomic.Value // string: why it cannot listen, "" when fine
+
+	// Microphone gauges for the health endpoint, so "I spoke and nothing
+	// happened" is answerable with one curl: the live level, the learned
+	// noise floor, and whether the stream is digitally silent — the
+	// signature of capturing the wrong device.
+	micLevel  atomic.Uint64 // float64 bits
+	micFloor  atomic.Uint64 // float64 bits
+	micSilent atomic.Bool
 
 	mu          sync.Mutex
 	stopped     bool
@@ -308,12 +317,33 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 	v.down.Store("")
 	slog.Info("listening on the microphone", "helper", argv[0], "activation", v.cfg.Activation)
 
+	// A live microphone always carries noise; an unbroken run of exact-zero
+	// samples means the signal path is dead — usually the default source
+	// being the wrong device — and that deserves saying once, not silence.
+	const silentStreamFrames = 10 * 1000 / frameMs
+	zeroRun, silenceWarned := 0, false
+
 	seg := newSegmenter(v.cfg.VADRatio, v.cfg.BargeRatio, v.cfg.SilenceMs)
 	frame := make([]byte, frameBytes)
 	for {
 		if _, err := io.ReadFull(stream, frame); err != nil {
 			return err
 		}
+		level := rms(frame)
+		v.micLevel.Store(math.Float64bits(level))
+		v.micFloor.Store(math.Float64bits(seg.floor))
+		if level == 0 {
+			zeroRun++
+		} else {
+			zeroRun, silenceWarned = 0, false
+		}
+		v.micSilent.Store(zeroRun >= silentStreamFrames)
+		if zeroRun >= silentStreamFrames && !silenceWarned {
+			silenceWarned = true
+			slog.Warn("the microphone is delivering pure digital silence — likely the wrong device; "+
+				"list sources and set channels.voice.input_device", "helper", argv[0])
+		}
+
 		playing := v.player.playing()
 		started, ended, utterance := seg.push(frame, playing)
 		if started && playing {
@@ -324,9 +354,11 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 		}
 		if utterance == nil {
 			// Too short to hold a word — a cough. Let the reply go on.
+			slog.Debug("a sound opened the microphone but was too short to keep")
 			v.player.resume(ctx)
 			continue
 		}
+		slog.Debug("utterance captured", "ms", len(utterance)/2*1000/captureRate)
 		select {
 		case v.utts <- utterance:
 		default:
@@ -360,6 +392,18 @@ func (v *Voice) handleUtterance(ctx context.Context, pcm []byte) {
 		return
 	}
 	dec := v.gate(text)
+	// One line per detected utterance: what was heard and what became of it.
+	// This is what turns "I spoke and nothing happened" into a diagnosis —
+	// no line means the voice never reached the VAD, an empty text means the
+	// transcriber filtered it, "ignored" means the gate did.
+	action := "ignored"
+	switch {
+	case dec.accept:
+		action = "turn"
+	case dec.acknowledge:
+		action = "acknowledge"
+	}
+	slog.Info("voice heard", "text", text, "action", action)
 	switch {
 	case dec.accept:
 		// The new utterance owns the floor: whatever was playing is over,
@@ -560,6 +604,12 @@ func (v *Voice) controlHandler() http.Handler {
 			"reason":     reason,
 			"activation": v.cfg.Activation,
 			"tier":       v.tierLabel(),
+			// The microphone gauges: what the mic delivers right now, the
+			// noise floor the VAD learned, and whether the stream is
+			// digitally silent (the wrong-device signature).
+			"mic_level":  math.Round(math.Float64frombits(v.micLevel.Load())),
+			"mic_floor":  math.Round(math.Float64frombits(v.micFloor.Load())),
+			"mic_silent": v.micSilent.Load(),
 		})
 	})
 	mux.HandleFunc("POST /ptt", func(w http.ResponseWriter, _ *http.Request) {
