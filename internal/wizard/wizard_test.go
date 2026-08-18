@@ -15,6 +15,7 @@ import (
 
 	"github.com/cyqlelabs/factor/internal/browser"
 	"github.com/cyqlelabs/factor/internal/channel/phone"
+	"github.com/cyqlelabs/factor/internal/channel/voice"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/memory"
@@ -75,6 +76,14 @@ func newHarness(t *testing.T, answers ...string) *harness {
 			Run:    func(context.Context, string, ...string) (string, error) { return "", nil },
 			Has:    func(string) bool { return false },
 			Getenv: func(string) string { return "" }, // headless by default
+		},
+		// Deaf by default: the PC voice step self-skips, exactly like the
+		// desktop step on a headless box. Voice tests swap in hearingAudio.
+		Audio: voice.Env{
+			GOOS:   "linux",
+			Has:    func(string) bool { return false },
+			Getenv: func(string) string { return "" },
+			Glob:   func(string) ([]string, error) { return nil, nil },
 		},
 		EnsureSmrti: func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
 			return filepath.Join(home, "venv", "bin", "smrti"), true, nil

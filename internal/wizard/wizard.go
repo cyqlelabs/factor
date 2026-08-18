@@ -14,6 +14,7 @@ import (
 
 	"github.com/cyqlelabs/factor/internal/browser"
 	"github.com/cyqlelabs/factor/internal/channel/phone"
+	"github.com/cyqlelabs/factor/internal/channel/voice"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/memory"
@@ -48,6 +49,10 @@ type Options struct {
 	InstallPackages func(ctx context.Context, packages []string) (string, error)
 	Desktop         desktop.Env
 
+	// Audio is the seam to the machine's sound system, for the PC voice
+	// step: probing for a sound card and for the capture/playback helpers.
+	Audio voice.Env
+
 	// InstallSpeech puts the local speech engines and their models on the
 	// machine. Choosing a local tier is a request for local speech, not for
 	// homework, so the wizard does this rather than telling the user to.
@@ -78,6 +83,9 @@ func (o *Options) defaults() {
 	}
 	if o.Desktop.Run == nil {
 		o.Desktop = desktop.DefaultEnv()
+	}
+	if o.Audio.Has == nil {
+		o.Audio = voice.DefaultEnv()
 	}
 	if o.MemoryAnswering == nil {
 		o.MemoryAnswering = memory.Answering
@@ -207,6 +215,7 @@ func (w *wiz) runQuiet(ctx context.Context) error {
 	}
 	if !w.opts.NoInstall {
 		w.quietDesktopHelpers(ctx)
+		w.quietAudioHelpers(ctx)
 	}
 	if w.cfg.Browser.Enabled && !w.opts.NoInstall && browser.Available() {
 		if err := w.quietBrowser(ctx); err != nil {
@@ -241,6 +250,34 @@ func (w *wiz) quietDesktopHelpers(ctx context.Context) {
 		return
 	}
 	w.ui.printf("desktop:   installed %s\n", strings.Join(packages, " "))
+}
+
+// quietAudioHelpers meets the PC voice channel's dependencies without asking,
+// but only when the channel is configured: a machine that never listens has
+// no use for capture helpers.
+func (w *wiz) quietAudioHelpers(ctx context.Context) {
+	if _, ok := w.cfg.Channels["voice"]; !ok {
+		return
+	}
+	env := w.opts.Audio
+	if !voice.MachineHasAudio(env) {
+		return
+	}
+	missing := voice.MissingHelpers(env)
+	if len(missing) == 0 {
+		return
+	}
+	manager := tools.DetectSystemManager()
+	if manager == "" {
+		w.ui.printf("voice:     missing %s and no package manager to install them\n", helperNames(missing))
+		return
+	}
+	packages := desktop.PackagesFor(missing, manager)
+	if _, err := w.opts.InstallPackages(ctx, packages); err != nil {
+		w.ui.printf("voice:     %s NOT installed — %v\n", strings.Join(packages, " "), err)
+		return
+	}
+	w.ui.printf("voice:     installed %s\n", strings.Join(packages, " "))
 }
 
 func helperNames(helpers []desktop.Helper) string {
@@ -703,7 +740,10 @@ func (w *wiz) stepChannels(ctx context.Context) error {
 	if err := w.stepTelegram(ctx); err != nil {
 		return err
 	}
-	return w.stepPhone(ctx)
+	if err := w.stepPhone(ctx); err != nil {
+		return err
+	}
+	return w.stepVoice(ctx)
 }
 
 func (w *wiz) stepTelegram(ctx context.Context) error {
@@ -1175,8 +1215,12 @@ func boolIndex(b bool) int {
 
 // tierIndex maps an existing section back onto the tier menu.
 func tierIndex(existing phoneSection) int {
-	localSTT := existing.STT.Provider == "local-openai"
-	localTTS := existing.TTS.Provider == "local-openai"
+	return tierIndexFor(existing.STT.Provider, existing.TTS.Provider)
+}
+
+func tierIndexFor(sttProvider, ttsProvider string) int {
+	localSTT := sttProvider == "local-openai"
+	localTTS := ttsProvider == "local-openai"
 	switch {
 	case localSTT && localTTS:
 		return 3
@@ -1208,6 +1252,292 @@ func (w *wiz) askProactive(section *phoneSection, existing phoneSection) error {
 		return err
 	}
 	section.Proactive = []string{"sms", "call", "off"}[idx]
+	return nil
+}
+
+// ---- step 3c: PC voice -----------------------------------------------------
+
+// voiceSection mirrors channels.voice, the way phoneSection mirrors the phone.
+type voiceSection struct {
+	Language   string `json:"language,omitempty"`
+	Activation string `json:"activation,omitempty"`
+	WakeWord   string `json:"wake_word,omitempty"`
+
+	STT              audioSection `json:"stt,omitempty"`
+	STTAPIKey        string       `json:"stt_api_key,omitempty"`
+	TTS              audioSection `json:"tts,omitempty"`
+	ElevenLabsAPIKey string       `json:"elevenlabs_api_key,omitempty"`
+	VoiceID          string       `json:"voice_id,omitempty"`
+
+	SpeechServer *speechSection `json:"speech_server,omitempty"`
+}
+
+func voiceChannelConfig(cfg *config.Config) voiceSection {
+	var section voiceSection
+	if raw, ok := cfg.Channels["voice"]; ok {
+		_ = json.Unmarshal(raw, &section)
+	}
+	return section
+}
+
+func (s voiceSection) configured() bool {
+	return s.Activation != "" || s.STT.Provider != "" || s.STTAPIKey != ""
+}
+
+// The activation modes, in the words the config uses.
+var activationChoices = []Option{
+	{Label: "Always listening", Hint: "every utterance is a request — best in a quiet room"},
+	{Label: "Wake word", Hint: "only utterances that open with the wake word (plus a short follow-up window)"},
+	{Label: "Push-to-talk", Hint: "only after `factor talk` arms the microphone"},
+}
+
+var activationValues = []string{"always", "wake-word", "push-to-talk"}
+
+func activationIndex(existing voiceSection) int {
+	for i, value := range activationValues {
+		if value == existing.Activation {
+			return i
+		}
+	}
+	return 1 // wake word: the default that does not answer the television
+}
+
+func (w *wiz) stepVoice(ctx context.Context) error {
+	env := w.opts.Audio
+	if !voice.MachineHasAudio(env) {
+		w.ui.Note("no sound system detected — skipping PC voice (mic + speakers)")
+		return nil
+	}
+	existing := voiceChannelConfig(w.cfg)
+	w.ui.Note("Factor can also listen on this machine's microphone and answer through its speakers")
+	want, err := w.ui.Confirm("Set up PC voice?", existing.configured())
+	if err != nil {
+		return err
+	}
+	if !want {
+		return nil
+	}
+
+	if err := w.installAudioHelpers(ctx, env); err != nil {
+		return err
+	}
+
+	section := &voiceSection{}
+	phoneExisting := phoneConfig(w.cfg)
+	language, err := w.ui.Input("Language spoken at the machine (BCP-47, e.g. en or es)",
+		firstNonEmpty(existing.Language, phoneExisting.Language, "en"))
+	if err != nil {
+		return err
+	}
+	section.Language = strings.TrimSpace(language)
+
+	if err := w.askVoiceSpeechTier(ctx, section, existing, phoneExisting); err != nil {
+		return err
+	}
+	if err := w.askActivation(section, existing); err != nil {
+		return err
+	}
+
+	raw, err := json.Marshal(section)
+	if err != nil {
+		return err
+	}
+	if w.cfg.Channels == nil {
+		w.cfg.Channels = map[string]json.RawMessage{}
+	}
+	w.cfg.Channels["voice"] = raw
+	w.ui.Note("the microphone opens whenever `factor` or `factor gateway` runs")
+	return nil
+}
+
+// installAudioHelpers gets the capture and playback programs onto the
+// machine, the way the desktop step installs its helpers: setup is where
+// dependencies get met.
+func (w *wiz) installAudioHelpers(ctx context.Context, env voice.Env) error {
+	missing := voice.MissingHelpers(env)
+	if len(missing) == 0 {
+		w.ui.Success("audio helpers are installed")
+		return nil
+	}
+	var names []string
+	for _, h := range missing {
+		names = append(names, fmt.Sprintf("%s (%s)", h.Bin, h.Purpose))
+	}
+	w.ui.Warn("missing audio helpers: %s", strings.Join(names, ", "))
+	if w.opts.NoInstall {
+		return nil
+	}
+	manager := tools.DetectSystemManager()
+	if manager == "" {
+		w.ui.Note("no supported package manager found — install them with your system's tools")
+		return nil
+	}
+	packages := desktop.PackagesFor(missing, manager)
+	install, err := w.ui.Confirm(fmt.Sprintf("Install %s with %s?", strings.Join(packages, " "), manager), true)
+	if err != nil {
+		return err
+	}
+	if !install {
+		return nil
+	}
+	if err := w.ui.Task("installing audio helpers", func() error {
+		_, err := w.opts.InstallPackages(ctx, packages)
+		return err
+	}); err != nil {
+		w.ui.Note("install them yourself with: sudo %s install %s", manager, strings.Join(packages, " "))
+	}
+	return nil
+}
+
+// askVoiceSpeechTier is the phone's speech-tier question asked for the PC:
+// the same tiers, the same local install, its own section. Cloud keys default
+// to whatever the phone step already collected, so a machine with both
+// channels types each secret once.
+func (w *wiz) askVoiceSpeechTier(ctx context.Context, section *voiceSection,
+	existing voiceSection, phoneExisting phoneSection) error {
+
+	idx, err := w.ui.Select("How should speech be handled?", voiceTiers,
+		tierIndexFor(existing.STT.Provider, existing.TTS.Provider))
+	if err != nil {
+		return err
+	}
+	localSTT := idx == 1 || idx == 3
+	localTTS := idx == 2 || idx == 3
+
+	if localSTT || localTTS {
+		if err := w.setUpLocalVoiceSpeech(ctx, section, existing, localSTT, localTTS); err != nil {
+			return err
+		}
+	}
+
+	if !localSTT {
+		w.ui.Note("transcription runs on Deepgram (nova-3); get a key at console.deepgram.com")
+		key, err := w.ui.Secret("Deepgram API key", firstNonEmpty(existing.STTAPIKey, phoneExisting.STTAPIKey))
+		if err != nil {
+			return err
+		}
+		section.STT = audioSection{Provider: "deepgram"}
+		section.STTAPIKey = strings.TrimSpace(key)
+		if section.STTAPIKey == "" {
+			w.ui.Warn("without a transcription key the agent cannot hear anything")
+		}
+	}
+	if !localTTS {
+		w.ui.Note("the voice is ElevenLabs flash v2.5; get a key at elevenlabs.io")
+		key, err := w.ui.Secret("ElevenLabs API key", firstNonEmpty(existing.ElevenLabsAPIKey, phoneExisting.ElevenLabsAPIKey))
+		if err != nil {
+			return err
+		}
+		section.TTS = audioSection{Provider: "elevenlabs"}
+		section.ElevenLabsAPIKey = strings.TrimSpace(key)
+		if section.ElevenLabsAPIKey == "" {
+			w.ui.Warn("without a voice key the agent cannot speak")
+		} else {
+			voiceID, err := w.ui.Input("Voice id (blank = the default voice)",
+				firstNonEmpty(existing.VoiceID, phoneExisting.VoiceID))
+			if err != nil {
+				return err
+			}
+			section.VoiceID = strings.TrimSpace(voiceID)
+		}
+	}
+	return nil
+}
+
+// setUpLocalVoiceSpeech mirrors the phone's setUpLocalSpeech onto the voice
+// section: Factor's own server by default, an existing one by base URL.
+func (w *wiz) setUpLocalVoiceSpeech(ctx context.Context, section *voiceSection, existing voiceSection,
+	localSTT, localTTS bool) error {
+
+	byo := existing.STT.BaseURL != "" || existing.TTS.BaseURL != ""
+	host, err := w.ui.Select("Where should local speech run?", speechHosts, boolIndex(byo))
+	if err != nil {
+		return err
+	}
+
+	if host == 0 {
+		// Blank endpoints mark the server as Factor's own; the voice channel
+		// serves it on its own port, clear of the phone's.
+		if localSTT {
+			section.STT = audioSection{Provider: "local-openai"}
+		}
+		if localTTS {
+			section.TTS = audioSection{Provider: "local-openai"}
+		}
+		w.ui.Note("Factor installs the speech engines into their own virtualenv and downloads the models for %q",
+			section.Language)
+		if w.opts.NoInstall {
+			w.ui.Note("skipping the download; Factor installs it on the first start instead")
+			return nil
+		}
+		var choices phone.SpeechChoices
+		err := w.ui.Task("installing local speech (this takes a few minutes the first time)", func() error {
+			var installErr error
+			choices, installErr = w.opts.InstallSpeech(ctx, section.Language, localSTT, localTTS, w.ui.Progress())
+			return installErr
+		})
+		if err != nil {
+			w.ui.Warn("the local speech install did not finish — Factor will try again when it starts")
+			return nil
+		}
+		section.SpeechServer = &speechSection{
+			WhisperModel:   choices.WhisperModel,
+			WhisperDevice:  choices.WhisperDevice,
+			WhisperCompute: choices.WhisperCompute,
+			PiperVoice:     choices.PiperVoice,
+		}
+		w.ui.Success("local speech ready — %s", choices.Summary())
+		if choices.Warning != "" {
+			w.ui.Warn("%s", choices.Warning)
+		}
+		return nil
+	}
+
+	base, err := w.ui.Input("Local speech server base URL",
+		firstNonEmpty(existing.STT.BaseURL, existing.TTS.BaseURL, defaultSpeechServer))
+	if err != nil {
+		return err
+	}
+	base = strings.TrimSpace(base)
+	if err := w.ui.Task("checking the local speech server", func() error {
+		return CheckSpeechServer(ctx, w.opts.HTTP, base)
+	}); err != nil {
+		w.ui.Note("start it before talking — Factor falls back to the cloud tier until it answers")
+	}
+	if localSTT {
+		model, err := w.ui.Input("Speech-to-text model (blank = the server's default)", existing.STT.Model)
+		if err != nil {
+			return err
+		}
+		section.STT = audioSection{Provider: "local-openai", BaseURL: base, Model: strings.TrimSpace(model)}
+	}
+	if localTTS {
+		voiceName, err := w.ui.Input("Voice (blank = the server's default)", existing.TTS.Voice)
+		if err != nil {
+			return err
+		}
+		section.TTS = audioSection{Provider: "local-openai", BaseURL: base, Voice: strings.TrimSpace(voiceName)}
+	}
+	return nil
+}
+
+func (w *wiz) askActivation(section *voiceSection, existing voiceSection) error {
+	idx, err := w.ui.Select("When should Factor respond?", activationChoices, activationIndex(existing))
+	if err != nil {
+		return err
+	}
+	section.Activation = activationValues[idx]
+	if section.Activation == "wake-word" {
+		wake, err := w.ui.Input("Wake word", firstNonEmpty(existing.WakeWord, "factor"))
+		if err != nil {
+			return err
+		}
+		section.WakeWord = strings.TrimSpace(wake)
+		w.ui.Note("`factor talk` still arms the microphone directly, for when the wake word misfires")
+	}
+	if section.Activation == "push-to-talk" {
+		w.ui.Note("arm the microphone with `factor talk`")
+	}
 	return nil
 }
 
@@ -1448,8 +1778,13 @@ func (w *wiz) memorySummary() string {
 func (w *wiz) channelSummary() string {
 	names := make([]string, 0, len(w.cfg.Channels))
 	for name := range w.cfg.Channels {
-		if name == "phone" {
+		switch name {
+		case "phone":
 			name += " · " + voiceTierSummary(phoneConfig(w.cfg))
+		case "voice":
+			section := voiceChannelConfig(w.cfg)
+			name += " · " + firstNonEmpty(section.Activation, "always") + " · " +
+				strings.ToLower(voiceTiers[tierIndexFor(section.STT.Provider, section.TTS.Provider)].Label)
 		}
 		names = append(names, name)
 	}
