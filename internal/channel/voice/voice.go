@@ -625,6 +625,29 @@ func (v *Voice) tierLabel() string {
 	return v.effective.TierLabel()
 }
 
+// Meter is a live reading of the channel's ears and mouth, for status UIs.
+type Meter struct {
+	Ready    bool    // the microphone is open
+	Level    float64 // what the mic delivers right now (RMS)
+	Floor    float64 // the noise floor the VAD learned
+	Silent   bool    // digital silence: the wrong-device signature
+	Speaking bool    // sound is coming out of the speakers
+}
+
+// Meter reports the channel's live state; safe from any goroutine.
+func (v *Voice) Meter() Meter {
+	m := Meter{
+		Ready:  v.ready.Load(),
+		Level:  math.Float64frombits(v.micLevel.Load()),
+		Floor:  math.Float64frombits(v.micFloor.Load()),
+		Silent: v.micSilent.Load(),
+	}
+	if v.player != nil {
+		m.Speaking = v.player.playing()
+	}
+	return m
+}
+
 // redact keeps speech credentials out of anything a user or the model sees.
 func (v *Voice) redact(err error) error {
 	if err == nil {

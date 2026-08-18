@@ -49,7 +49,7 @@ func (f *flakyMemory) Enabled() bool { return true }
 func (f *flakyMemory) Healthy() bool { return f.healthy }
 
 func TestChatBarShowsWhereYouAreAndHowToTypeANewline(t *testing.T) {
-	bar := chatBar("main", "some/model", &flakyMemory{healthy: true})
+	bar := chatBar("main", "some/model", &flakyMemory{healthy: true}, nil)
 	if bar.Session != "main" || bar.Model != "some/model" {
 		t.Errorf("bar = %+v", bar)
 	}
@@ -60,14 +60,14 @@ func TestChatBarShowsWhereYouAreAndHowToTypeANewline(t *testing.T) {
 		t.Errorf("hints = %v, want the newline shortcut first", bar.Hints)
 	}
 
-	if got := chatBar("main", "m", &flakyMemory{}).Memory; got != "memory ✗" {
+	if got := chatBar("main", "m", &flakyMemory{}, nil).Memory; got != "memory ✗" {
 		t.Errorf("unhealthy memory = %q", got)
 	}
 	// Memory turned off is left out of the bar entirely.
-	if got := chatBar("main", "m", memory.Noop{}).Memory; got != "" {
+	if got := chatBar("main", "m", memory.Noop{}, nil).Memory; got != "" {
 		t.Errorf("disabled memory = %q, want nothing", got)
 	}
-	if got := chatBar("main", "m", nil).Memory; got != "" {
+	if got := chatBar("main", "m", nil, nil).Memory; got != "" {
 		t.Errorf("absent memory = %q, want nothing", got)
 	}
 }

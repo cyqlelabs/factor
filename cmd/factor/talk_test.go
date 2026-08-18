@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/app"
+	"github.com/cyqlelabs/factor/internal/channel/voice"
 	"github.com/cyqlelabs/factor/internal/config"
 )
 
@@ -122,7 +123,7 @@ func TestStartVoiceChannelDegradesGracefully(t *testing.T) {
 	a := appFor(t, loaded)
 
 	// No section at all.
-	stop, _, on := startVoiceChannel(context.Background(), a, loaded, "main")
+	stop, _, _, on := startVoiceChannel(context.Background(), a, loaded, "main")
 	stop()
 	if on {
 		t.Error("an unconfigured voice channel reported itself on")
@@ -130,7 +131,7 @@ func TestStartVoiceChannelDegradesGracefully(t *testing.T) {
 
 	// A disabled section.
 	loaded.Channels = map[string]json.RawMessage{"voice": json.RawMessage(`{"enabled":false}`)}
-	stop, _, on = startVoiceChannel(context.Background(), a, loaded, "main")
+	stop, _, _, on = startVoiceChannel(context.Background(), a, loaded, "main")
 	stop()
 	if on {
 		t.Error("a disabled voice channel reported itself on")
@@ -146,10 +147,46 @@ func TestStartVoiceChannelDegradesGracefully(t *testing.T) {
 	port := taken.Addr().(*net.TCPAddr).Port
 	loaded.Channels = map[string]json.RawMessage{"voice": json.RawMessage(fmt.Sprintf(
 		`{"stt_api_key":"dg","elevenlabs_api_key":"el","control_port":%d}`, port))}
-	stop, _, on = startVoiceChannel(context.Background(), a, loaded, "main")
+	stop, _, _, on = startVoiceChannel(context.Background(), a, loaded, "main")
 	stop()
 	if on {
 		t.Error("a channel that could not start reported itself on")
+	}
+}
+
+func TestVoiceBarSegmentShowsEarsAndMouth(t *testing.T) {
+	cases := []struct {
+		name     string
+		meter    voice.Meter
+		wantText string
+		wantTone string
+	}{
+		{"starting", voice.Meter{}, "mic …", ""},
+		{"dead microphone", voice.Meter{Ready: true, Silent: true}, "mic ✗", "warn"},
+		{"quiet room", voice.Meter{Ready: true, Level: 120, Floor: 120}, "mic ▁▁▁ ·", ""},
+		{"someone speaking", voice.Meter{Ready: true, Level: 500, Floor: 120}, "mic ▂▄▁ ·", "hear"},
+		{"shouting", voice.Meter{Ready: true, Level: 5000, Floor: 120}, "mic ▂▄▆ ·", "hear"},
+		{"factor speaking", voice.Meter{Ready: true, Level: 120, Floor: 120, Speaking: true}, "mic ▁▁▁ ♪", "speak"},
+	}
+	for _, tc := range cases {
+		text, tone := voiceBarSegment(tc.meter)
+		if text != tc.wantText || tone != tc.wantTone {
+			t.Errorf("%s: = %q/%q, want %q/%q", tc.name, text, tone, tc.wantText, tc.wantTone)
+		}
+	}
+}
+
+func TestChatBarCarriesTheVoiceMeter(t *testing.T) {
+	meter := func() voice.Meter { return voice.Meter{Ready: true, Level: 500, Floor: 120} }
+	bar := chatBar("main", "m", nil, meter)
+	if bar.Voice == "" || bar.VoiceTone != "hear" {
+		t.Errorf("bar voice = %q/%q", bar.Voice, bar.VoiceTone)
+	}
+	if bar.Hints[0] != "/talk" {
+		t.Errorf("hints = %v, want /talk first", bar.Hints)
+	}
+	if off := chatBar("main", "m", nil, nil); off.Voice != "" {
+		t.Errorf("without voice the bar grew a meter: %q", off.Voice)
 	}
 }
 

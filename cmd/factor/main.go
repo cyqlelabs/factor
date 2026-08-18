@@ -309,14 +309,14 @@ func runTalk(configPath string) error {
 // the microphone works without the gateway. It reports whether it started and
 // hands back the push-to-talk trigger for the /talk command; the returned
 // stop is always safe to call.
-func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sessionName string) (stop func(), talk func(), started bool) {
+func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sessionName string) (stop func(), talk func(), meter func() voice.Meter, started bool) {
 	raw, configured := cfg.Channels["voice"]
 	if !configured {
-		return func() {}, nil, false
+		return func() {}, nil, nil, false
 	}
 	channels := channel.Build(map[string]json.RawMessage{"voice": raw}, a.Bus)
 	if len(channels) == 0 {
-		return func() {}, nil, false
+		return func() {}, nil, nil, false
 	}
 	ch := channels[0]
 	if runner, ok := ch.(channel.TurnRunner); ok {
@@ -332,12 +332,15 @@ func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sess
 	}
 	if err := ch.Start(ctx); err != nil {
 		log.Printf("voice channel failed to start: %v", err)
-		return func() {}, nil, false
+		return func() {}, nil, nil, false
 	}
 	if talker, ok := ch.(interface{ ArmPTT() }); ok {
 		talk = talker.ArmPTT
 	}
-	return func() { _ = ch.Stop() }, talk, true
+	if metered, ok := ch.(interface{ Meter() voice.Meter }); ok {
+		meter = metered.Meter
+	}
+	return func() { _ = ch.Stop() }, talk, meter, true
 }
 
 func runChat(configPath, sessionName, message string) error {
@@ -369,19 +372,25 @@ func runChat(configPath, sessionName, message string) error {
 		defer log.SetOutput(os.Stderr)
 	}
 
+	// The PC voice channel listens here too, not only under the gateway —
+	// registered before the loop runs so its tool exists from the first turn,
+	// and before the bar so its meter shows from the first repaint.
+	stopVoice, talk, meter, voiceOn := startVoiceChannel(ctx, a, cfg, baseName)
+	defer stopVoice()
+
 	ui := newChatUI(con)
-	ui.bar = func() tui.Bar { return chatBar(sessionName, cfg.Provider.Model, a.Memory) }
+	ui.bar = func() tui.Bar { return chatBar(sessionName, cfg.Provider.Model, a.Memory, meter) }
 	a.Loop.OnActivity(ui.activity)
 	ui.refreshBar()
-	go ui.watchBar(ctx, 2*time.Second)
+	// A live microphone meter needs a livelier bar than the memory dot does.
+	barEvery := 2 * time.Second
+	if meter != nil {
+		barEvery = 300 * time.Millisecond
+	}
+	go ui.watchBar(ctx, barEvery)
 
 	con.Printf("factor %s — %s | /quit to exit, /new for a fresh session",
 		version.Version, cfg.Provider.Model)
-
-	// The PC voice channel listens here too, not only under the gateway —
-	// registered before the loop runs so its tool exists from the first turn.
-	stopVoice, talk, voiceOn := startVoiceChannel(ctx, a, cfg, baseName)
-	defer stopVoice()
 	if voiceOn {
 		con.Printf("voice: listening on the microphone (/talk for push-to-talk)")
 	}
@@ -539,7 +548,7 @@ func (u *chatUI) watchBar(ctx context.Context, every time.Duration) {
 
 // chatBar is what the bar says: where you are, what is answering, and the
 // keys that are not guessable.
-func chatBar(session, model string, mem memory.Engine) tui.Bar {
+func chatBar(session, model string, mem memory.Engine, meter func() voice.Meter) tui.Bar {
 	bar := tui.Bar{
 		Session: session,
 		Model:   model,
@@ -550,7 +559,55 @@ func chatBar(session, model string, mem memory.Engine) tui.Bar {
 			bar.Memory = "memory ✗"
 		}
 	}
+	if meter != nil {
+		bar.Voice, bar.VoiceTone = voiceBarSegment(meter())
+		bar.Hints = append([]string{"/talk"}, bar.Hints...)
+	}
 	return bar
+}
+
+// voiceBarSegment renders the channel's ears and mouth for the bar: a live
+// VU meter for the microphone, a note while the agent speaks.
+func voiceBarSegment(m voice.Meter) (text, tone string) {
+	switch {
+	case !m.Ready:
+		return "mic …", ""
+	case m.Silent:
+		return "mic ✗", "warn"
+	}
+	speech := "·"
+	if m.Speaking {
+		speech = "♪"
+	}
+	text = "mic " + vuMeter(m.Level, m.Floor) + " " + speech
+	switch {
+	case m.Speaking:
+		return text, "speak"
+	case m.Floor > 0 && m.Level >= m.Floor*2:
+		return text, "hear"
+	}
+	return text, ""
+}
+
+// vuMeter draws three cells that light up as the microphone level climbs over
+// the noise floor.
+func vuMeter(level, floor float64) string {
+	if floor <= 0 {
+		return "▁▁▁"
+	}
+	ratio := level / floor
+	var b strings.Builder
+	for _, cell := range []struct {
+		at  float64
+		lit string
+	}{{1.5, "▂"}, {3, "▄"}, {6, "▆"}} {
+		if ratio >= cell.at {
+			b.WriteString(cell.lit)
+		} else {
+			b.WriteString("▁")
+		}
+	}
+	return b.String()
 }
 
 // activity mirrors the loop's phases onto the pulse. Turns nobody asked for

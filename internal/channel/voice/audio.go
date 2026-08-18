@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,6 +48,9 @@ type Env struct {
 	// PlayFile plays one whole WAV clip through a helper that can only read
 	// files (afplay). Cancelling ctx kills it mid-note.
 	PlayFile func(ctx context.Context, argv []string, wav []byte) error
+	// Run executes one short-lived helper and returns its stdout — device
+	// listing, not audio.
+	Run func(ctx context.Context, argv ...string) (string, error)
 }
 
 // DefaultEnv wires Env to the real machine.
@@ -58,7 +63,17 @@ func DefaultEnv() Env {
 		Capture:  captureExec,
 		Play:     playExec,
 		PlayFile: playFileExec,
+		Run:      runExec,
 	}
+}
+
+func runExec(ctx context.Context, argv ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.Output()
+	return string(out), err
 }
 
 func (e Env) has(bin string) bool {
@@ -274,4 +289,62 @@ func MissingHelpers(e Env) []desktop.Helper {
 		missing = append(missing, playbackHelper)
 	}
 	return missing
+}
+
+// CaptureSources names the machine's capture devices, for the wizard's
+// microphone menu. Monitor sources — outputs echoed back as inputs — are left
+// out: pointing the agent's ear at its own mouth is how it talks to itself.
+// Only the PulseAudio interface is asked (PipeWire answers it too); a machine
+// without pactl gets no menu and uses the default source.
+func CaptureSources(ctx context.Context, e Env) []string {
+	if e.Run == nil || !e.has("pactl") {
+		return nil
+	}
+	out, err := e.Run(ctx, "pactl", "list", "sources", "short")
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		// A source row is "<index> <name> …" — anything else is noise.
+		if len(fields) < 2 || strings.HasSuffix(fields[1], ".monitor") {
+			continue
+		}
+		if _, err := strconv.Atoi(fields[0]); err != nil {
+			continue
+		}
+		names = append(names, fields[1])
+	}
+	return names
+}
+
+// MeasureMic captures from one device for d and reports the loudest frame —
+// the wizard's live check. A peak of exactly 0 is the wrong-device signature:
+// a real microphone always carries noise.
+func MeasureMic(ctx context.Context, e Env, device string, d time.Duration) (float64, error) {
+	argv, err := captureCommand(e, device)
+	if err != nil {
+		return 0, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, d+5*time.Second)
+	defer cancel()
+	stream, err := e.Capture(ctx, argv)
+	if err != nil {
+		return 0, err
+	}
+	defer stream.Close()
+
+	deadline := time.Now().Add(d)
+	frame := make([]byte, frameBytes)
+	var peak float64
+	for time.Now().Before(deadline) {
+		if _, err := io.ReadFull(stream, frame); err != nil {
+			return peak, fmt.Errorf("the capture stream ended early: %w", err)
+		}
+		if level := rms(frame); level > peak {
+			peak = level
+		}
+	}
+	return peak, nil
 }

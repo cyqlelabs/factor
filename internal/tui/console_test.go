@@ -617,6 +617,28 @@ func TestBarFitsTheTerminal(t *testing.T) {
 	}
 }
 
+// The voice meter joins the left side of the bar, coloured by its tone so a
+// glance says whether the agent is hearing, speaking, or deaf.
+func TestBarRendersTheVoiceMeter(t *testing.T) {
+	c, _, _ := rawConsole(t)
+	c.color, c.width = true, func() int { return 80 }
+	for tone, code := range map[string]string{"hear": ansiGreen, "speak": ansiCyan, "warn": ansiYellow} {
+		bar := c.renderBar(Bar{Session: "main", Voice: "mic ▂▄▁ ·", VoiceTone: tone})
+		if !strings.Contains(stripANSI(bar), "mic ▂▄▁ ·") {
+			t.Errorf("%s: meter missing from %q", tone, stripANSI(bar))
+		}
+		if !strings.Contains(bar, code+"mic") {
+			t.Errorf("%s: meter not coloured with %q: %q", tone, code, bar)
+		}
+	}
+	plain := c.renderBar(Bar{Session: "main", Voice: "mic ▁▁▁ ·"})
+	for _, code := range []string{ansiGreen, ansiCyan, ansiYellow} {
+		if strings.Contains(plain, code) {
+			t.Errorf("an idle meter picked up a colour: %q", plain)
+		}
+	}
+}
+
 func TestBarStyleNamesItsOwnColors(t *testing.T) {
 	cases := []struct {
 		name              string

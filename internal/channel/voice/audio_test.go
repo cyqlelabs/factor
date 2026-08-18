@@ -211,6 +211,87 @@ func TestMissingHelpersListsEachDirectionOnce(t *testing.T) {
 	}
 }
 
+func TestCaptureSourcesFiltersMonitorsAndDegrades(t *testing.T) {
+	env := scriptedEnv("linux", "pactl")
+	env.Run = func(_ context.Context, argv ...string) (string, error) {
+		if argv[0] != "pactl" {
+			t.Errorf("unexpected helper %v", argv)
+		}
+		return "38\txr18_stereo.monitor\tPipeWire\n" +
+			"76\talsa_input.pci.analog-stereo\tPipeWire\n" +
+			"77\talsa_input.usb-Brio.mono-fallback\tPipeWire\n" +
+			"151\talsa_output.hdmi-stereo.monitor\tPipeWire\n" +
+			"broken line without fields\n", nil
+	}
+	sources := CaptureSources(context.Background(), env)
+	if len(sources) != 2 || sources[0] != "alsa_input.pci.analog-stereo" || sources[1] != "alsa_input.usb-Brio.mono-fallback" {
+		t.Errorf("sources = %v, want the two real inputs with monitors dropped", sources)
+	}
+
+	// No pactl, or a failing one, means no menu — never an error.
+	if got := CaptureSources(context.Background(), scriptedEnv("linux")); got != nil {
+		t.Errorf("without pactl: %v", got)
+	}
+	env.Run = func(context.Context, ...string) (string, error) { return "", io.ErrUnexpectedEOF }
+	if got := CaptureSources(context.Background(), env); got != nil {
+		t.Errorf("with a failing pactl: %v", got)
+	}
+}
+
+func TestMeasureMicReportsThePeakAndTheDevice(t *testing.T) {
+	var captured []string
+	env := scriptedEnv("linux", "parec")
+	env.Capture = func(_ context.Context, argv []string) (io.ReadCloser, error) {
+		captured = argv
+		return io.NopCloser(endlessTone(700)), nil
+	}
+	peak, err := MeasureMic(context.Background(), env, "the-brio", 50*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peak < 699 || peak > 701 {
+		t.Errorf("peak = %v", peak)
+	}
+	if !strings.Contains(strings.Join(captured, " "), "the-brio") {
+		t.Errorf("the device was not passed to the helper: %v", captured)
+	}
+
+	// A dead source reads as exactly zero.
+	env.Capture = func(context.Context, []string) (io.ReadCloser, error) {
+		return io.NopCloser(endlessTone(0)), nil
+	}
+	if peak, err := MeasureMic(context.Background(), env, "", 50*time.Millisecond); err != nil || peak != 0 {
+		t.Errorf("silent source: peak=%v err=%v", peak, err)
+	}
+
+	// A stream that dies early says so.
+	env.Capture = func(context.Context, []string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("short")), nil
+	}
+	if _, err := MeasureMic(context.Background(), env, "", 50*time.Millisecond); err == nil {
+		t.Error("an early-ending stream reported no error")
+	}
+	if _, err := MeasureMic(context.Background(), scriptedEnv("linux"), "", time.Millisecond); err == nil {
+		t.Error("a machine with no capture helper reported no error")
+	}
+}
+
+// endlessTone streams frames of one amplitude forever.
+func endlessTone(amplitude int16) io.Reader {
+	return &toneReader{frame: toneFrame(amplitude)}
+}
+
+type toneReader struct {
+	frame []byte
+	pos   int
+}
+
+func (r *toneReader) Read(b []byte) (int, error) {
+	n := copy(b, r.frame[r.pos:])
+	r.pos = (r.pos + n) % len(r.frame)
+	return n, nil
+}
+
 // The real executors, driven through /bin/sh so no audio hardware is needed:
 // capture streams a helper's stdout and Close kills it; playback feeds stdin
 // and a cancelled context kills it mid-stream.

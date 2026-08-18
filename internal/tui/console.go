@@ -375,8 +375,26 @@ func layout(promptWidth, indentWidth, width int, buf []rune, cursor int) (rows, 
 type Bar struct {
 	Session string
 	Model   string
-	Memory  string   // "" leaves memory out entirely
-	Hints   []string // right-aligned, dropped first when the terminal is narrow
+	Memory  string // "" leaves memory out entirely
+	// Voice is the microphone/speech meter ("" leaves it out); VoiceTone
+	// picks its color — "hear" while the mic carries speech, "speak" while
+	// the agent talks, "warn" for a dead microphone, anything else plain.
+	Voice     string
+	VoiceTone string
+	Hints     []string // right-aligned, dropped first when the terminal is narrow
+}
+
+// voiceToneStyle maps a meter tone onto the bar's palette.
+func voiceToneStyle(tone string) string {
+	switch tone {
+	case "hear":
+		return ansiGreen
+	case "speak":
+		return ansiCyan
+	case "warn":
+		return ansiYellow
+	}
+	return ""
 }
 
 // SetBar replaces the status bar. A zero Bar removes it.
@@ -400,6 +418,13 @@ func (c *Console) renderBar(bar Bar) string {
 	for _, part := range []string{bar.Model, bar.Memory} {
 		if part != "" {
 			left = append(left, part)
+		}
+	}
+	if bar.Voice != "" {
+		if code := voiceToneStyle(bar.VoiceTone); code != "" {
+			left = append(left, c.style(code, bar.Voice))
+		} else {
+			left = append(left, bar.Voice)
 		}
 	}
 	if len(left) == 0 && len(bar.Hints) == 0 {
