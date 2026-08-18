@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -207,8 +208,18 @@ func (t *Telegram) handle(u update) {
 	})
 }
 
+// Send renders the Markdown the model writes as Telegram rich text. If
+// Telegram rejects the generated HTML, the raw text goes out instead — a
+// plain message beats a lost one.
 func (t *Telegram) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	return t.call(ctx, "sendMessage", map[string]any{"chat_id": msg.ChatID, "text": msg.Content})
+	err := t.call(ctx, "sendMessage", map[string]any{
+		"chat_id": msg.ChatID, "text": formatHTML(msg.Content), "parse_mode": "HTML",
+	})
+	var rejected *apiError
+	if errors.As(err, &rejected) && rejected.status == http.StatusBadRequest {
+		return t.call(ctx, "sendMessage", map[string]any{"chat_id": msg.ChatID, "text": msg.Content})
+	}
+	return err
 }
 
 // SetTyping starts or stops the "typing…" indicator for one chat. The agent
@@ -249,6 +260,18 @@ func (t *Telegram) typingLoop(ctx context.Context, chatID string) {
 	}
 }
 
+// apiError is a response Telegram itself refused — as opposed to a transport
+// failure — so callers can tell a rejected payload from a network blip.
+type apiError struct {
+	method      string
+	status      int
+	description string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("telegram %s failed: HTTP %d %s", e.method, e.status, e.description)
+}
+
 // call posts a JSON payload to one Bot API method and checks its ok flag.
 func (t *Telegram) call(ctx context.Context, method string, payload map[string]any) error {
 	body, err := json.Marshal(payload)
@@ -271,7 +294,7 @@ func (t *Telegram) call(ctx context.Context, method string, payload map[string]a
 		Description string `json:"description"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil || !parsed.OK {
-		return fmt.Errorf("telegram %s failed: HTTP %d %s", method, resp.StatusCode, parsed.Description)
+		return &apiError{method: method, status: resp.StatusCode, description: parsed.Description}
 	}
 	return nil
 }

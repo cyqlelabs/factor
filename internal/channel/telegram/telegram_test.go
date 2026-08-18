@@ -128,6 +128,22 @@ func TestSend(t *testing.T) {
 	}
 }
 
+func TestSendFormatsMarkdownAsTelegramHTML(t *testing.T) {
+	tg, api, _ := newTestTelegram(t, nil)
+	err := tg.Send(context.Background(), bus.OutboundMessage{Channel: "telegram", ChatID: "111", Content: "**bold** and `code`"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.sent) != 1 {
+		t.Fatalf("sent = %+v, want one message", api.sent)
+	}
+	if api.sent[0]["text"] != "<b>bold</b> and <code>code</code>" || api.sent[0]["parse_mode"] != "HTML" {
+		t.Errorf("sent = %+v, want Telegram HTML with parse_mode HTML", api.sent[0])
+	}
+}
+
 func TestNewRequiresToken(t *testing.T) {
 	if _, err := New(Config{}, bus.New()); err == nil {
 		t.Error("empty token accepted")

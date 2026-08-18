@@ -171,6 +171,58 @@ func TestSendFailsWhenTheAPIRejectsTheMessage(t *testing.T) {
 	}
 }
 
+func TestSendFallsBackToPlainTextWhenTheHTMLIsRejected(t *testing.T) {
+	var mu sync.Mutex
+	var calls []map[string]any
+	tg, _ := newTelegram(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		calls = append(calls, body)
+		mu.Unlock()
+		if _, formatted := body["parse_mode"]; formatted {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"ok":false,"description":"Bad Request: can't parse entities"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	err := tg.Send(context.Background(), bus.OutboundMessage{ChatID: "1", Content: "**broken**"})
+	if err != nil {
+		t.Fatalf("Send = %v, want the plain-text fallback to deliver", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("made %d sendMessage calls, want a formatted attempt then a plain one", len(calls))
+	}
+	if _, formatted := calls[1]["parse_mode"]; formatted || calls[1]["text"] != "**broken**" {
+		t.Errorf("fallback call = %+v, want the raw text with no parse_mode", calls[1])
+	}
+}
+
+func TestSendDoesNotFallBackOnANonFormatRejection(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	tg, _ := newTelegram(t, func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"ok":false,"description":"Too Many Requests: retry after 5"}`))
+	})
+
+	if err := tg.Send(context.Background(), bus.OutboundMessage{ChatID: "1", Content: "hi"}); err == nil {
+		t.Fatal("Send accepted a rate-limited response")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("made %d sendMessage calls, want the rate limit left to the manager's retry", calls)
+	}
+}
+
 func TestSendTransportErrorNeverLeaksTheToken(t *testing.T) {
 	tg := newUnreachableTelegram(t)
 

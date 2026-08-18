@@ -7,6 +7,7 @@ require (
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
 	github.com/chromedp/chromedp v0.14.1
+	github.com/yuin/goldmark v1.8.5
 	golang.org/x/image v0.45.0
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
