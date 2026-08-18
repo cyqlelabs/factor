@@ -53,6 +53,39 @@ func TestLoadOverlayAndEnv(t *testing.T) {
 	}
 }
 
+// The extraction settings are what a small box tunes to keep smrti from
+// loading a local model, so each one has to be reachable from the
+// environment like the rest of the memory section.
+func TestExtractSettingsHaveEnvOverrides(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("FACTOR_HOME", dir)
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"memory":{"extract_mode":"hybrid"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FACTOR_MEMORY_EXTRACT_MODE", "llm")
+	t.Setenv("FACTOR_MEMORY_EXTRACT_URL", "https://extract.example/v1")
+	t.Setenv("FACTOR_MEMORY_EXTRACT_MODEL", "google/gemini-3.1-flash-lite")
+	t.Setenv("FACTOR_MEMORY_EXTRACT_API_KEY", "sk-extract")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Memory.ExtractMode != "llm" {
+		t.Errorf("ExtractMode = %q, want the env override to win over the file", cfg.Memory.ExtractMode)
+	}
+	if cfg.Memory.ExtractURL != "https://extract.example/v1" {
+		t.Errorf("ExtractURL = %q", cfg.Memory.ExtractURL)
+	}
+	if cfg.Memory.ExtractModel != "google/gemini-3.1-flash-lite" {
+		t.Errorf("ExtractModel = %q", cfg.Memory.ExtractModel)
+	}
+	if cfg.Memory.ExtractAPIKey != "sk-extract" {
+		t.Errorf("ExtractAPIKey = %q", cfg.Memory.ExtractAPIKey)
+	}
+}
+
 func TestContextWindowDerivedFromMaxTokens(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FACTOR_HOME", dir)

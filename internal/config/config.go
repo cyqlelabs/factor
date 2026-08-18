@@ -126,9 +126,9 @@ type MemoryConfig struct {
 	QueryMaxChars       int      `json:"query_max_chars"`
 	InjectMaxChars      int      `json:"inject_max_chars"`
 	ReflectIntervalSecs int      `json:"reflect_interval_secs"`
-	ExtractMode         string   `json:"extract_mode,omitempty"` // hybrid | llm | local | "" = auto
-	ExtractURL          string   `json:"extract_url,omitempty"`
-	ExtractModel        string   `json:"extract_model,omitempty"`
+	ExtractMode         string   `json:"extract_mode,omitempty" env:"FACTOR_MEMORY_EXTRACT_MODE"` // hybrid | llm | local | "" = auto
+	ExtractURL          string   `json:"extract_url,omitempty" env:"FACTOR_MEMORY_EXTRACT_URL"`
+	ExtractModel        string   `json:"extract_model,omitempty" env:"FACTOR_MEMORY_EXTRACT_MODEL"`
 	ExtractAPIKey       string   `json:"extract_api_key,omitempty" env:"FACTOR_MEMORY_EXTRACT_API_KEY"`
 	IgnorePatterns      []string `json:"ignore_patterns,omitempty"`
 	StartupTimeoutSecs  int      `json:"startup_timeout_secs"`
