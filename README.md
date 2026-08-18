@@ -384,8 +384,9 @@ factor status      # tier, activation, helpers, and whether anything is listenin
 ```
 
 Audio goes through the sound system's own helpers — `parec`/`paplay` on PulseAudio
-and PipeWire, `arecord`/`aplay` on bare ALSA, sox's `rec`/`play` on macOS — and the
-wizard installs what's missing. Voice activity detection is pure Go: an adaptive
+and PipeWire, `arecord`/`aplay` on bare ALSA, sox's `rec`/`play` on macOS, where
+playback also falls back to the built-in `afplay` — and the wizard installs what's
+missing. Voice activity detection is pure Go: an adaptive
 noise floor, a pre-roll so the first syllable survives, and a higher bar while the
 agent is speaking, so the speakers can't barge in on themselves. You still can:
 talking over a reply stops it mid-word, and if a turn is still thinking, it is
@@ -401,7 +402,8 @@ Who it answers is the `activation` setting:
 | `push-to-talk` | nothing until `factor talk` arms the microphone |
 
 `factor talk` works in every mode: it is the rescue for a wake word that misfired,
-and it cuts off whatever is playing.
+and it cuts off whatever is playing. Inside the chat, `/talk` does the same without
+leaving the prompt.
 
 The speech tiers are the phone's, chosen the same way in the wizard — cloud
 (Deepgram + ElevenLabs) or the managed local server (faster-whisper + Piper), which
