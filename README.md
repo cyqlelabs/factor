@@ -386,7 +386,12 @@ factor status      # tier, activation, helpers, and whether anything is listenin
 Audio goes through the sound system's own helpers — `parec`/`paplay` on PulseAudio
 and PipeWire, `arecord`/`aplay` on bare ALSA, sox's `rec`/`play` on macOS, where
 playback also falls back to the built-in `afplay` — and the wizard installs what's
-missing. Voice activity detection is pure Go: an adaptive
+missing. It also asks *which* microphone and then proves it live: you make a noise,
+it measures the signal, and a source delivering silence — the usual fate of a
+multichannel interface picked as the system default — is called out on the spot
+instead of at the first ignored wake word. In the chat, the status bar carries a
+live meter: `mic ▂▄▁` moves as the room does, turns green when it hears speech,
+`♪` lights up cyan while Factor talks, and a dead source shows `mic ✗`. Voice activity detection is pure Go: an adaptive
 noise floor, a pre-roll so the first syllable survives, and a higher bar while the
 agent is speaking, so the speakers can't barge in on themselves. You still can:
 talking over a reply stops it mid-word, and if a turn is still thinking, it is

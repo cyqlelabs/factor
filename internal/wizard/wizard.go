@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cyqlelabs/factor/internal/browser"
 	"github.com/cyqlelabs/factor/internal/channel/phone"
@@ -1259,9 +1260,10 @@ func (w *wiz) askProactive(section *phoneSection, existing phoneSection) error {
 
 // voiceSection mirrors channels.voice, the way phoneSection mirrors the phone.
 type voiceSection struct {
-	Language   string `json:"language,omitempty"`
-	Activation string `json:"activation,omitempty"`
-	WakeWord   string `json:"wake_word,omitempty"`
+	Language    string `json:"language,omitempty"`
+	Activation  string `json:"activation,omitempty"`
+	WakeWord    string `json:"wake_word,omitempty"`
+	InputDevice string `json:"input_device,omitempty"`
 
 	STT              audioSection `json:"stt,omitempty"`
 	STTAPIKey        string       `json:"stt_api_key,omitempty"`
@@ -1323,6 +1325,9 @@ func (w *wiz) stepVoice(ctx context.Context) error {
 	}
 
 	section := &voiceSection{}
+	if err := w.askMicrophone(ctx, section, existing); err != nil {
+		return err
+	}
 	phoneExisting := phoneConfig(w.cfg)
 	language, err := w.ui.Input("Language spoken at the machine (BCP-47, e.g. en or es)",
 		firstNonEmpty(existing.Language, phoneExisting.Language, "en"))
@@ -1386,6 +1391,81 @@ func (w *wiz) installAudioHelpers(ctx context.Context, env voice.Env) error {
 	}); err != nil {
 		w.ui.Note("install them yourself with: sudo %s install %s", manager, strings.Join(packages, " "))
 	}
+	return nil
+}
+
+// micCheckDuration is how long the live microphone check listens; a variable
+// so tests do not sit through it.
+var micCheckDuration = 2 * time.Second
+
+// askMicrophone picks the capture device and proves it is alive — the check
+// that would have caught a silent default source at setup instead of at the
+// first ignored wake word. Machines whose sound server cannot list sources
+// keep the default device; machines whose harness has no capture seam skip
+// the live check.
+func (w *wiz) askMicrophone(ctx context.Context, section *voiceSection, existing voiceSection) error {
+	env := w.opts.Audio
+	sources := voice.CaptureSources(ctx, env)
+	device := existing.InputDevice
+
+	choose := func() error {
+		opts := make([]Option, 0, len(sources)+1)
+		opts = append(opts, Option{Label: "System default", Hint: "whatever the sound server routes"})
+		def := 0
+		for i, source := range sources {
+			opts = append(opts, Option{Label: source})
+			if source == device {
+				def = i + 1
+			}
+		}
+		idx, err := w.ui.Select("Which microphone?", opts, def)
+		if err != nil {
+			return err
+		}
+		if idx == 0 {
+			device = ""
+		} else {
+			device = sources[idx-1]
+		}
+		return nil
+	}
+
+	if len(sources) > 0 {
+		if err := choose(); err != nil {
+			return err
+		}
+	}
+	for env.Capture != nil {
+		w.ui.Note("make a little noise for the microphone check — tap the desk, say anything")
+		var peak float64
+		err := w.ui.Task("listening", func() error {
+			var measureErr error
+			peak, measureErr = voice.MeasureMic(ctx, env, device, micCheckDuration)
+			return measureErr
+		})
+		if err == nil && peak > 0 {
+			w.ui.Success("microphone is live (level %.0f)", peak)
+			break
+		}
+		// Exactly zero is the wrong-device signature; an error is a helper
+		// that could not open the source at all. Both mean this microphone
+		// would never hear the wake word.
+		w.ui.Warn("that source delivered no signal — the wrong device, or muted")
+		if len(sources) == 0 {
+			break
+		}
+		again, confirmErr := w.ui.Confirm("Pick a different source?", true)
+		if confirmErr != nil {
+			return confirmErr
+		}
+		if !again {
+			break
+		}
+		if err := choose(); err != nil {
+			return err
+		}
+	}
+	section.InputDevice = device
 	return nil
 }
 

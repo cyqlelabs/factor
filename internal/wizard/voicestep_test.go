@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyqlelabs/factor/internal/channel/phone"
 	"github.com/cyqlelabs/factor/internal/channel/voice"
@@ -200,6 +202,74 @@ func TestWizardVoiceInstallsMissingAudioHelpers(t *testing.T) {
 	}
 	if !strings.Contains(h.out.String(), "factor talk") {
 		t.Errorf("push-to-talk was configured without naming its trigger:\n%s", h.out.String())
+	}
+}
+
+// constSamples streams s16le frames of one amplitude forever.
+type constSamples struct{ amplitude int16 }
+
+func (r constSamples) Read(p []byte) (int, error) {
+	for i := 0; i+1 < len(p); i += 2 {
+		p[i], p[i+1] = byte(r.amplitude), byte(r.amplitude>>8)
+	}
+	return len(p), nil
+}
+
+// The setup that would have caught a silent default source: the wizard lists
+// the real inputs, checks the chosen one live, and loops until a microphone
+// actually carries signal.
+func TestWizardVoiceMicCheckCatchesASilentSource(t *testing.T) {
+	provider := fakeProvider(t, "big-model")
+	h := newHarness(t, voiceAnswers(provider,
+		"y",         // set up PC voice
+		"2",         // microphone: the mixer input (menu: default, mixer, brio)
+		"y",         // it was silent — pick a different source
+		"3",         // microphone: the brio
+		"",          // language
+		"1",         // tier: cloud
+		"dg-secret", // deepgram key
+		"el-secret", // elevenlabs key
+		"",          // voice id
+		"3",         // activation: push-to-talk
+	)...)
+	_, elevenlabs, _ := fakeTelephony(t)
+	h.opts.ElevenLabs = elevenlabs.URL
+
+	restore := micCheckDuration
+	micCheckDuration = 50 * time.Millisecond
+	t.Cleanup(func() { micCheckDuration = restore })
+
+	env := hearingAudio("parec", "paplay", "pactl")
+	env.Run = func(_ context.Context, argv ...string) (string, error) {
+		return "1\talsa_input.usb-mixer.multichannel-input\tPipeWire\n" +
+			"2\talsa_input.usb-brio.mono-fallback\tPipeWire\n" +
+			"3\talsa_output.hdmi.monitor\tPipeWire\n", nil
+	}
+	env.Capture = func(_ context.Context, argv []string) (io.ReadCloser, error) {
+		// Only the brio carries signal; the mixer and the default are dead.
+		if strings.Contains(strings.Join(argv, " "), "brio") {
+			return io.NopCloser(constSamples{amplitude: 700}), nil
+		}
+		return io.NopCloser(constSamples{}), nil
+	}
+	h.opts.Audio = env
+
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	section := savedVoice(t, h)
+	if section.InputDevice != "alsa_input.usb-brio.mono-fallback" {
+		t.Errorf("input_device = %q, want the live microphone", section.InputDevice)
+	}
+	out := h.out.String()
+	if !strings.Contains(out, "no signal") {
+		t.Errorf("the silent source was never called out:\n%s", out)
+	}
+	if !strings.Contains(out, "microphone is live") {
+		t.Errorf("the live check never reported success:\n%s", out)
+	}
+	if strings.Contains(out, "hdmi.monitor") {
+		t.Errorf("a monitor source reached the menu:\n%s", out)
 	}
 }
 
