@@ -21,8 +21,8 @@
 desktop, a voice on the phone, and a real memory.**
 
 Factor is a single static Go binary. Chat with it in the terminal, message it on
-Telegram, or call its phone number and talk out loud: the same agent picks up every
-time, with the same tools and the same memory. It drives a real browser, works your
+Telegram, call its phone number, or just talk to the machine itself: the same agent
+picks up every time, with the same tools and the same memory. It drives a real browser, works your
 desktop, keeps long tasks running in the background, and calls or texts you when one
 lands. Its long-term memory is [smrti](https://github.com/cyqlelabs/smrti) — Bayesian
 truth values, attention economics, emotional valence — so Factor doesn't just log
@@ -38,6 +38,7 @@ what you said: it consolidates, prioritizes, and *never repeats a critical mista
 | 🔁 **Provider failover that works** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with error classification, per-candidate cooldowns, and overflow-triggered compaction |
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning` (OpenRouter), `reasoning_effort` (OpenAI/Groq), or a `thinking` budget (Anthropic) |
 | ☎️ **Answers the phone** | A real number: call it and talk to Factor out loud, or have it call and text you — barge-in, voicemail detection, and a fully local speech tier if you want no audio leaving the machine ([Phone](#phone-calls-and-sms)) |
+| 🎙️ **Listens in the room** | Talk to the machine itself: mic in, speakers out, with barge-in, an optional wake word, and push-to-talk via `factor talk` — on the same speech tiers as the phone ([PC voice](#pc-voice-mic-and-speakers)) |
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications — X11, Wayland, macOS, Windows; auto-registered when a display exists — plus **grid vision**: a vision model sees the screen under a coordinate grid, zooms a cell, and clicks it by name ([Desktop](#desktop)) |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed instance, visible by default so you can watch it work — and setup installs one when the machine has none ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills, drop-in instructions — see [Extending](#extending-factor) |
@@ -52,6 +53,8 @@ flowchart LR
     CLI([CLI]) <--> BUS
     PH([Phone]) <--> SHELL["voice shell sidecar · speech · barge-in"]
     SHELL <-->|chat completions on loopback| LOOP
+    PC([PC voice]) <--> MIC["mic + speakers · VAD · wake word · barge-in"]
+    MIC <-->|synchronous turns| LOOP
     BUS[message bus] --> LOOP["agent loop · one live turn per session"]
     LOOP <-->|recall · store| MEM[("smrti REST sidecar")]
     LOOP --> PROV["provider chain · failover · cooldowns · compaction"]
@@ -87,8 +90,9 @@ installing anything.
 export FACTOR_PROVIDER_API_KEY=sk-or-...   # OpenRouter by default
 factor                                     # interactive chat
 factor -m "what's on my disk?"             # one-shot
-factor gateway                             # daemon: Telegram, phone, cron, heartbeat, jobs
-factor status                              # daemon / provider / memory / phone / desktop health
+factor gateway                             # daemon: Telegram, phone, PC voice, cron, heartbeat, jobs
+factor talk                                # push-to-talk: arm the PC voice microphone
+factor status                              # daemon / provider / memory / phone / voice / desktop health
 factor upgrade                             # replace this binary with the newest release
 ```
 
@@ -145,6 +149,15 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
       "tts": { "provider": "elevenlabs" },     // elevenlabs | local-openai
       "proactive": "sms",                      // sms | call | off
       "max_call_minutes": 15
+    },
+    "voice": {                                 // PC voice: this machine's mic and speakers
+      "activation": "wake-word",               // always | wake-word | push-to-talk
+      "wake_word": "factor",
+      "language": "en",
+      "stt": { "provider": "deepgram" },       // deepgram | whisper | local-openai
+      "stt_api_key": "...",                    // Deepgram
+      "tts": { "provider": "elevenlabs" },     // elevenlabs | local-openai
+      "elevenlabs_api_key": "..."
     }
   },
   "mcp": {
@@ -356,6 +369,47 @@ asked for the call.
 
 </details>
 
+## PC voice: mic and speakers
+
+The same conversation without a phone bill: Factor listens on the machine's own
+microphone and answers through its speakers. The microphone opens whenever Factor
+runs — in `factor` (the terminal chat keeps working alongside) and in
+`factor gateway` alike.
+
+```bash
+factor init        # the Channels step sets up the mic, the speech tier, and the activation
+factor             # or factor gateway — either one listens
+factor talk        # push-to-talk: arm the microphone from any terminal
+factor status      # tier, activation, helpers, and whether anything is listening
+```
+
+Audio goes through the sound system's own helpers — `parec`/`paplay` on PulseAudio
+and PipeWire, `arecord`/`aplay` on bare ALSA, sox's `rec`/`play` on macOS — and the
+wizard installs what's missing. Voice activity detection is pure Go: an adaptive
+noise floor, a pre-roll so the first syllable survives, and a higher bar while the
+agent is speaking, so the speakers can't barge in on themselves. You still can:
+talking over a reply stops it mid-word, and if a turn is still thinking, it is
+cancelled — the new utterance owns the conversation. Windows capture isn't wired up
+yet; the channel says so instead of pretending.
+
+Who it answers is the `activation` setting:
+
+| Mode | It responds to |
+|---|---|
+| `always` | every utterance — best alone in a quiet room |
+| `wake-word` | utterances that open with the wake word, plus a short window after each reply so follow-ups don't need it (the wizard preselects this) |
+| `push-to-talk` | nothing until `factor talk` arms the microphone |
+
+`factor talk` works in every mode: it is the rescue for a wake word that misfired,
+and it cuts off whatever is playing.
+
+The speech tiers are the phone's, chosen the same way in the wizard — cloud
+(Deepgram + ElevenLabs) or the managed local server (faster-whisper + Piper), which
+runs on its own port so the phone and the PC can both keep speech local on one
+machine. One tool comes with the channel: ask for something in writing and the agent
+uses `voice_write` — the text lands in your terminal, or in the chat you last used
+when Factor runs as a daemon, and the spoken reply stays short.
+
 ## Extending Factor
 
 | Seam | What it takes |
@@ -401,9 +455,9 @@ make build-tiny   # -tags nobrowser: smallest binary
 
 The suite runs against fakes — scripted providers, a fake smrti sidecar and a fake
 voice shell (both spawned by re-execing the test binary), a fake Telegram API, a
-fake carrier, a fake MCP server over real stdio JSON-RPC, a scripted desktop — plus
-live headless-Chrome and desktop round-trip tests that auto-skip where the machine
-can't host them.
+fake carrier, a scripted microphone and speaker, a fake MCP server over real stdio
+JSON-RPC, a scripted desktop — plus live headless-Chrome and desktop round-trip
+tests that auto-skip where the machine can't host them.
 
 ## License
 
