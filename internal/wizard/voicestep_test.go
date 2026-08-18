@@ -94,6 +94,10 @@ func TestWizardVoiceCloudTier(t *testing.T) {
 		"helios",    // the wake word
 	)...)
 	h.opts.Audio = hearingAudio("parec", "paplay")
+	// The key entered below is not fakeTelephony's, so the live check fails;
+	// the wizard must keep going and keep the key.
+	_, elevenlabs, _ := fakeTelephony(t)
+	h.opts.ElevenLabs = elevenlabs.URL
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
@@ -175,6 +179,8 @@ func TestWizardVoiceInstallsMissingAudioHelpers(t *testing.T) {
 		"3",         // activation: push-to-talk
 	)...)
 	h.opts.Audio = hearingAudio() // a sound card, but nothing to drive it
+	_, elevenlabs, _ := fakeTelephony(t)
+	h.opts.ElevenLabs = elevenlabs.URL
 	plantManager(t, h.home)
 
 	var installed []string

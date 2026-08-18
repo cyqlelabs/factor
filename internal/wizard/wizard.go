@@ -1433,6 +1433,15 @@ func (w *wiz) askVoiceSpeechTier(ctx context.Context, section *voiceSection,
 		if section.ElevenLabsAPIKey == "" {
 			w.ui.Warn("without a voice key the agent cannot speak")
 		} else {
+			var plan string
+			_ = w.ui.Task("verifying the ElevenLabs key", func() error {
+				var err error
+				plan, err = CheckElevenLabs(ctx, w.opts.HTTP, w.opts.ElevenLabs, section.ElevenLabsAPIKey)
+				return err
+			})
+			if plan != "" {
+				w.ui.Info("ElevenLabs plan: %s", plan)
+			}
 			voiceID, err := w.ui.Input("Voice id (blank = the default voice)",
 				firstNonEmpty(existing.VoiceID, phoneExisting.VoiceID))
 			if err != nil {
