@@ -48,6 +48,13 @@ type Toolset interface {
 	Toolset() []tools.Tool
 }
 
+// Guarded is the optional capability of a connector that reads or writes
+// files itself — sending a chat a local file, saving one it received — and so
+// must obey the same path rules as every file tool. Bound before Start.
+type Guarded interface {
+	BindPathGuard(*tools.PathGuard)
+}
+
 // Factory builds a channel from its raw config section.
 type Factory func(raw json.RawMessage, b *bus.MessageBus) (Channel, error)
 

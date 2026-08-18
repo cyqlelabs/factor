@@ -265,13 +265,13 @@ func TestHandleIgnoresUpdatesWithoutUsableMessages(t *testing.T) {
 		"edit-only body": `{"update_id":4,"message":{"from":{"id":5},"chat":{"id":5}}}`,
 	}
 	for name, raw := range ignored {
-		tg.handle(mustUpdate(t, raw))
+		tg.handle(context.Background(), mustUpdate(t, raw))
 		if n := len(b.Inbound()); n != 0 {
 			t.Fatalf("%s: published %d inbound messages, want 0", name, n)
 		}
 	}
 
-	tg.handle(mustUpdate(t, `{"update_id":5,"message":{"from":{"id":42,"username":"nico"},"chat":{"id":77},"text":"hello"}}`))
+	tg.handle(context.Background(), mustUpdate(t, `{"update_id":5,"message":{"from":{"id":42,"username":"nico"},"chat":{"id":77},"text":"hello"}}`))
 	select {
 	case msg := <-b.Inbound():
 		if msg.SenderID != "42" || msg.ChatID != "77" || msg.Content != "hello" {

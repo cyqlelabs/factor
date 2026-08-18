@@ -20,6 +20,7 @@ import (
 
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/channel"
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 func init() {
@@ -44,14 +45,16 @@ type Config struct {
 var typingInterval = 4 * time.Second
 
 type Telegram struct {
-	apiBase string
-	token   string
-	allow   map[string]bool
-	b       *bus.MessageBus
-	client  *http.Client
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	offset  int64
+	apiBase  string
+	fileBase string // downloads live under /file/bot<token>, not /bot<token>
+	token    string
+	allow    map[string]bool
+	b        *bus.MessageBus
+	client   *http.Client
+	guard    *tools.PathGuard // bound by the gateway before Start
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	offset   int64
 
 	typingMu sync.Mutex
 	runCtx   context.Context // set by Start; parents the typing loops
@@ -76,12 +79,13 @@ func New(cfg Config, b *bus.MessageBus) (*Telegram, error) {
 		base = "https://api.telegram.org"
 	}
 	t := &Telegram{
-		apiBase: base + "/bot" + cfg.Token,
-		token:   cfg.Token,
-		allow:   map[string]bool{},
-		b:       b,
-		client:  &http.Client{Timeout: 70 * time.Second},
-		typing:  map[string]context.CancelFunc{},
+		apiBase:  base + "/bot" + cfg.Token,
+		fileBase: base + "/file/bot" + cfg.Token,
+		token:    cfg.Token,
+		allow:    map[string]bool{},
+		b:        b,
+		client:   &http.Client{Timeout: 70 * time.Second},
+		typing:   map[string]context.CancelFunc{},
 	}
 	for _, a := range cfg.AllowFrom {
 		t.allow[strings.TrimSpace(a)] = true
@@ -120,17 +124,39 @@ func (t *Telegram) Stop() error {
 }
 
 type update struct {
-	UpdateID int64 `json:"update_id"`
-	Message  *struct {
-		From *struct {
-			ID       int64  `json:"id"`
-			Username string `json:"username"`
-		} `json:"from"`
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-		Text string `json:"text"`
-	} `json:"message"`
+	UpdateID int64    `json:"update_id"`
+	Message  *message `json:"message"`
+}
+
+type message struct {
+	From *struct {
+		ID       int64  `json:"id"`
+		Username string `json:"username"`
+	} `json:"from"`
+	Chat struct {
+		ID int64 `json:"id"`
+	} `json:"chat"`
+	Text    string `json:"text"`
+	Caption string `json:"caption"`
+
+	Document *struct {
+		FileID   string `json:"file_id"`
+		FileName string `json:"file_name"`
+	} `json:"document"`
+	Photo []struct {
+		FileID string `json:"file_id"`
+	} `json:"photo"`
+	Voice *struct {
+		FileID string `json:"file_id"`
+	} `json:"voice"`
+	Audio *struct {
+		FileID   string `json:"file_id"`
+		FileName string `json:"file_name"`
+	} `json:"audio"`
+	Video *struct {
+		FileID   string `json:"file_id"`
+		FileName string `json:"file_name"`
+	} `json:"video"`
 }
 
 func (t *Telegram) pollLoop(ctx context.Context) {
@@ -149,7 +175,7 @@ func (t *Telegram) pollLoop(ctx context.Context) {
 			if u.UpdateID >= t.offset {
 				t.offset = u.UpdateID + 1
 			}
-			t.handle(u)
+			t.handle(ctx, u)
 		}
 	}
 }
@@ -190,20 +216,40 @@ func (t *Telegram) allowed(id int64, username string) bool {
 	return t.allow[strconv.FormatInt(id, 10)] || (username != "" && t.allow["@"+username])
 }
 
-func (t *Telegram) handle(u update) {
-	if u.Message == nil || u.Message.Text == "" || u.Message.From == nil {
+func (t *Telegram) handle(ctx context.Context, u update) {
+	m := u.Message
+	if m == nil || m.From == nil {
 		return
 	}
-	if !t.allowed(u.Message.From.ID, u.Message.From.Username) {
-		slog.Warn("telegram message from non-allowed sender dropped",
-			"sender", u.Message.From.ID, "username", u.Message.From.Username)
+	att := m.attachment()
+	if m.Text == "" && att == nil {
 		return
+	}
+	if !t.allowed(m.From.ID, m.From.Username) {
+		slog.Warn("telegram message from non-allowed sender dropped",
+			"sender", m.From.ID, "username", m.From.Username)
+		return
+	}
+	content := m.Text
+	if att != nil {
+		content = m.Caption // a message carries text or an attachment+caption, never both
+		var note string
+		if path, err := t.download(ctx, att); err != nil {
+			slog.Warn("telegram attachment download failed", "kind", att.kind, "error", err)
+			note = fmt.Sprintf("[the user sent a %s over Telegram, but downloading it failed: %v]", att.kind, err)
+		} else {
+			note = fmt.Sprintf("[the user sent a %s over Telegram; it is saved at %s]", att.kind, path)
+		}
+		if content != "" {
+			content += "\n\n"
+		}
+		content += note
 	}
 	t.b.PublishInbound(bus.InboundMessage{
 		Channel:  "telegram",
-		SenderID: strconv.FormatInt(u.Message.From.ID, 10),
-		ChatID:   strconv.FormatInt(u.Message.Chat.ID, 10),
-		Content:  u.Message.Text,
+		SenderID: strconv.FormatInt(m.From.ID, 10),
+		ChatID:   strconv.FormatInt(m.Chat.ID, 10),
+		Content:  content,
 		Time:     time.Now(),
 	})
 }
@@ -274,6 +320,11 @@ func (e *apiError) Error() string {
 
 // call posts a JSON payload to one Bot API method and checks its ok flag.
 func (t *Telegram) call(ctx context.Context, method string, payload map[string]any) error {
+	return t.callResult(ctx, method, payload, nil)
+}
+
+// callResult is call for the methods whose result matters (e.g. getFile).
+func (t *Telegram) callResult(ctx context.Context, method string, payload map[string]any, out any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -288,13 +339,24 @@ func (t *Telegram) call(ctx context.Context, method string, payload map[string]a
 		return t.redact(err)
 	}
 	defer resp.Body.Close()
+	return decodeAPI(method, resp, out)
+}
+
+// decodeAPI checks a Bot API response's ok flag and decodes its result.
+func decodeAPI(method string, resp *http.Response, out any) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var parsed struct {
-		OK          bool   `json:"ok"`
-		Description string `json:"description"`
+		OK          bool            `json:"ok"`
+		Result      json.RawMessage `json:"result"`
+		Description string          `json:"description"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil || !parsed.OK {
 		return &apiError{method: method, status: resp.StatusCode, description: parsed.Description}
+	}
+	if out != nil {
+		if err := json.Unmarshal(parsed.Result, out); err != nil {
+			return fmt.Errorf("telegram %s result: %w", method, err)
+		}
 	}
 	return nil
 }

@@ -121,6 +121,9 @@ func serve(configPath string) (bool, error) {
 		if runner, ok := ch.(channel.TurnRunner); ok {
 			runner.BindTurnRunner(a.Loop.ProcessDirect)
 		}
+		if guarded, ok := ch.(channel.Guarded); ok {
+			guarded.BindPathGuard(a.Guard)
+		}
 		if provider, ok := ch.(channel.Toolset); ok {
 			a.Registry.Register(provider.Toolset()...)
 		}

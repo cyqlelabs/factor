@@ -34,6 +34,9 @@ type App struct {
 	Memory   memory.Engine
 	Ambient  *memory.Ambient
 	Registry *tools.Registry
+	// Guard is the path rule every file-touching tool obeys; the gateway
+	// hands it to connectors that read or write files themselves.
+	Guard    *tools.PathGuard
 	Sessions *session.Store
 	Skills   *skills.Loader
 	Loop     *agent.Loop
@@ -176,6 +179,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Memory:   engine,
 		Ambient:  ambient,
 		Registry: registry,
+		Guard:    guard,
 		Sessions: sessions,
 		Skills:   loader,
 		Loop:     loop,
