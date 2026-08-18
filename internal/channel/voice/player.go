@@ -171,7 +171,9 @@ func (p *player) startFileLocked(ctx context.Context) {
 			case <-ticker.C:
 				p.mu.Lock()
 				if gen == p.gen && run == p.runSeq && p.active {
-					p.offset = min(base+int(time.Since(started).Seconds()*playbackRate*2), len(p.pcm))
+					heard := base + int(time.Since(started).Seconds()*playbackRate*2)
+					// Sample-aligned, or a resume plays byte-swapped static.
+					p.offset = min(heard, len(p.pcm)) &^ 1
 				}
 				p.mu.Unlock()
 			}
@@ -241,6 +243,11 @@ func (f *pcmFeeder) Read(b []byte) (int, error) {
 		if allowed > 0 {
 			n := min(len(b), remaining)
 			n = min(n, max(allowed, frameBytes))
+			// Never split a sample: an offset resting on an odd byte turns
+			// every s16 sample after a resume into byte-swapped static.
+			if n &^= 1; n == 0 {
+				n = min(2, remaining)
+			}
 			copy(b, f.p.pcm[f.p.offset:f.p.offset+n])
 			f.p.offset += n
 			f.p.mu.Unlock()

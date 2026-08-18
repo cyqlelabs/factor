@@ -117,6 +117,12 @@ func TestPlayerPauseKeepsThePlaceAndResumePicksItUp(t *testing.T) {
 	if !p.busy() {
 		t.Error("a paused player must still hold the floor")
 	}
+	p.mu.Lock()
+	odd := p.offset%2 != 0
+	p.mu.Unlock()
+	if odd {
+		t.Error("the pause offset split a sample; the resume would play byte-swapped static")
+	}
 	select {
 	case <-done:
 		t.Fatal("pause ended the clip; it should only hold it")
@@ -183,6 +189,28 @@ func TestPlayerReplacingAClipSettlesTheOldOne(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the second clip never finished")
 	}
+}
+
+// Repeated barge-ins pause and resume the same clip over and over; the
+// offset must land on a sample boundary every single time, because one odd
+// resume is a burst of white noise.
+func TestPlayerOffsetStaysSampleAlignedAcrossManyPauses(t *testing.T) {
+	speaker, p := speakerAndPlayer()
+	done := p.play(context.Background(), clip(480000)) // 10 s: room for many cycles
+	for i := 0; i < 12; i++ {
+		waitUntil(t, func() bool { return p.playing() && len(speaker.heard()) > 0 })
+		time.Sleep(time.Duration(20+i*7) * time.Millisecond) // vary the cut point
+		p.pause()
+		p.mu.Lock()
+		offset := p.offset
+		p.mu.Unlock()
+		if offset%2 != 0 {
+			t.Fatalf("cycle %d paused at odd offset %d", i, offset)
+		}
+		p.resume(context.Background())
+	}
+	p.stop()
+	<-done
 }
 
 func TestPlayerPauseAndResumeAreSafeWhenIdle(t *testing.T) {

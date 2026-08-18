@@ -375,6 +375,45 @@ func TestVoiceBargeInCancelsATurnStillThinking(t *testing.T) {
 	}
 }
 
+// A barge-in transcript carries the agent's own words from the speakers
+// before the user's; the wake word must count wherever it appears, or "Factor,
+// stop" over a reply gets rejected and the reply talks on.
+func TestVoiceBargeInHearsTheWakeWordMidTranscript(t *testing.T) {
+	h := newVoiceHarness(t, func(c *Config) {
+		c.Activation = "wake-word"
+		c.FollowUpSeconds = 1
+	})
+	h.setReplyPCM(clip(120000))
+	h.start()
+
+	h.setTranscript("factor hello")
+	h.say()
+	h.turn(10 * time.Second)
+	waitUntil(t, func() bool { return len(h.speaker.heard()) > 0 })
+	time.Sleep(1100 * time.Millisecond) // the follow-up window lapses
+
+	// What the mic actually hears: the reply from the speakers, then the user.
+	h.setTranscript("and the weather tomorrow will be Factor stop talking")
+	h.mic.feed(repeat(toneFrame(16000), 12)...)
+	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
+
+	if call := h.turn(10 * time.Second); !contains(call.content, "stop talking") ||
+		contains(call.content, "weather tomorrow") {
+		t.Errorf("the barge turn carried %q, want just what follows the wake word", call.content)
+	}
+
+	// Off playback the same mid-sentence mention stays rejected: someone
+	// merely talking about Factor must not trigger it. Wait for the barge
+	// turn's own reply to start and finish, and its follow-up window to
+	// lapse, or this utterance would be a barge too.
+	waitUntil(t, func() bool { return h.v.player.busy() })
+	waitUntil(t, func() bool { return !h.v.player.busy() })
+	time.Sleep(1100 * time.Millisecond)
+	h.setTranscript("we discussed factor yesterday")
+	h.say()
+	h.noTurn(2 * time.Second)
+}
+
 // A rejected barge-in — background chatter in wake-word mode — resumes the
 // reply instead of abandoning it.
 func TestVoiceRejectedBargeInResumesTheReply(t *testing.T) {
@@ -582,50 +621,50 @@ func TestGateDecisions(t *testing.T) {
 	}
 
 	always := build("always")
-	if dec := always.gate("anything"); !dec.accept || dec.text != "anything" {
+	if dec := always.gate("anything", false); !dec.accept || dec.text != "anything" {
 		t.Errorf("always: %+v", dec)
 	}
-	if dec := always.gate("  "); dec.accept {
+	if dec := always.gate("  ", false); dec.accept {
 		t.Error("an empty transcript was accepted")
 	}
 
 	ptt := build("push-to-talk")
-	if dec := ptt.gate("anything"); dec.accept {
+	if dec := ptt.gate("anything", false); dec.accept {
 		t.Error("push-to-talk accepted without being armed")
 	}
 	ptt.mu.Lock()
 	ptt.pttUntil = time.Now().Add(time.Minute)
 	ptt.mu.Unlock()
-	if dec := ptt.gate("now"); !dec.accept {
+	if dec := ptt.gate("now", false); !dec.accept {
 		t.Error("an armed push-to-talk rejected the utterance")
 	}
-	if dec := ptt.gate("again"); dec.accept {
+	if dec := ptt.gate("again", false); dec.accept {
 		t.Error("one arm admitted two utterances")
 	}
 
 	wake := build("wake-word")
-	if dec := wake.gate("factor do the thing"); !dec.accept || dec.text != "do the thing" {
+	if dec := wake.gate("factor do the thing", false); !dec.accept || dec.text != "do the thing" {
 		t.Errorf("wake word: %+v", dec)
 	}
-	if dec := wake.gate("do the thing"); dec.accept {
+	if dec := wake.gate("do the thing", false); dec.accept {
 		t.Error("wake-word mode accepted an unaddressed utterance")
 	}
-	if dec := wake.gate("Factor"); !dec.acknowledge || dec.accept {
+	if dec := wake.gate("Factor", false); !dec.acknowledge || dec.accept {
 		t.Errorf("the bare wake word should acknowledge: %+v", dec)
 	}
 	// The bare wake word opened the follow-up window.
-	if dec := wake.gate("do the thing"); !dec.accept {
+	if dec := wake.gate("do the thing", false); !dec.accept {
 		t.Error("the follow-up window did not admit the next utterance")
 	}
 	wake.mu.Lock()
 	wake.windowUntil = time.Time{}
 	wake.mu.Unlock()
-	if dec := wake.gate("do the thing"); dec.accept {
+	if dec := wake.gate("do the thing", false); dec.accept {
 		t.Error("a closed window still admitted utterances")
 	}
 	// Push-to-talk arms in wake-word mode too: the misfire rescue.
 	wake.ArmPTT()
-	if dec := wake.gate("no wake word here"); !dec.accept {
+	if dec := wake.gate("no wake word here", false); !dec.accept {
 		t.Error("push-to-talk did not override the wake word")
 	}
 }
@@ -633,25 +672,31 @@ func TestGateDecisions(t *testing.T) {
 func TestStripWakeWord(t *testing.T) {
 	cases := []struct {
 		text, wake string
+		anywhere   bool
 		want       string
 		ok         bool
 	}{
-		{"Factor, open the browser", "factor", "open the browser", true},
-		{"hey factor status report", "factor", "status report", true},
-		{"FACTOR!", "factor", "", true},
-		{"hey Jarvis do it", "hey jarvis", "do it", true},
-		{"refactor this function", "factor", "", false},
+		{"Factor, open the browser", "factor", false, "open the browser", true},
+		{"hey factor status report", "factor", false, "status report", true},
+		{"FACTOR!", "factor", false, "", true},
+		{"hey Jarvis do it", "hey jarvis", false, "do it", true},
+		{"refactor this function", "factor", false, "", false},
 		// The wake word may sit second ("hey factor"), which makes this a
 		// deliberate false positive; push-to-talk is the documented rescue.
-		{"the factor of two", "factor", "of two", true},
-		{"and the factor of two", "factor", "", false}, // but no deeper than second
-		{"completely unrelated", "factor", "", false},
-		{"factor", "", "", false},
+		{"the factor of two", "factor", false, "of two", true},
+		{"and the factor of two", "factor", false, "", false}, // but no deeper than second
+		{"completely unrelated", "factor", false, "", false},
+		{"factor", "", false, "", false},
+		// A barge-in transcript opens with the speakers' own words, so the
+		// wake word counts anywhere in it.
+		{"the forecast for tomorrow says Factor stop the reply", "factor", true, "stop the reply", true},
+		{"tomorrow will be sunny with FACTOR", "factor", true, "", true},
+		{"tomorrow will be sunny all day", "factor", true, "", false},
 	}
 	for _, tc := range cases {
-		got, ok := stripWakeWord(tc.text, tc.wake)
+		got, ok := stripWakeWord(tc.text, tc.wake, tc.anywhere)
 		if got != tc.want || ok != tc.ok {
-			t.Errorf("stripWakeWord(%q, %q) = %q, %v; want %q, %v", tc.text, tc.wake, got, ok, tc.want, tc.ok)
+			t.Errorf("stripWakeWord(%q, %q, %v) = %q, %v; want %q, %v", tc.text, tc.wake, tc.anywhere, got, ok, tc.want, tc.ok)
 		}
 	}
 }

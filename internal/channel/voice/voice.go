@@ -78,7 +78,7 @@ type Voice struct {
 	publish      func(bus.OutboundMessage) bool
 
 	player *player
-	utts   chan []byte
+	utts   chan capturedUtterance
 
 	ctl    *http.Server
 	ctlLn  net.Listener
@@ -125,7 +125,7 @@ func New(cfg Config, b *bus.MessageBus) (*Voice, error) {
 		env:        DefaultEnv(),
 		publish:    publish,
 		speechWait: speechReadyWait,
-		utts:       make(chan []byte, 3),
+		utts:       make(chan capturedUtterance, 3),
 		effective:  cfg,
 	}
 	if cfg.managedSpeech() {
@@ -325,6 +325,7 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 
 	seg := newSegmenter(v.cfg.VADRatio, v.cfg.BargeRatio, v.cfg.SilenceMs)
 	frame := make([]byte, frameBytes)
+	barged := false
 	for {
 		if _, err := io.ReadFull(stream, frame); err != nil {
 			return err
@@ -347,25 +348,38 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 		playing := v.player.playing()
 		started, ended, utterance := seg.push(frame, playing)
 		if started && playing {
+			// A barge-in: hold the reply while the utterance is heard out,
+			// and remember the context — its transcript will carry the
+			// agent's own words from the speakers alongside the user's.
+			barged = true
 			v.player.pause()
 		}
 		if !ended {
 			continue
 		}
+		wasBarge := barged
+		barged = false
 		if utterance == nil {
 			// Too short to hold a word — a cough. Let the reply go on.
 			slog.Debug("a sound opened the microphone but was too short to keep")
 			v.player.resume(ctx)
 			continue
 		}
-		slog.Debug("utterance captured", "ms", len(utterance)/2*1000/captureRate)
+		slog.Debug("utterance captured", "ms", len(utterance)/2*1000/captureRate, "barge", wasBarge)
 		select {
-		case v.utts <- utterance:
+		case v.utts <- capturedUtterance{pcm: utterance, barged: wasBarge}:
 		default:
 			slog.Warn("dropping an utterance: transcription is falling behind")
 			v.player.resume(ctx)
 		}
 	}
+}
+
+// capturedUtterance is one segment on its way to transcription; barged marks
+// one captured while the agent was speaking.
+type capturedUtterance struct {
+	pcm    []byte
+	barged bool
 }
 
 // utteranceWorker transcribes and dispatches off the capture goroutine, so a
@@ -382,8 +396,8 @@ func (v *Voice) utteranceWorker(ctx context.Context) {
 	}
 }
 
-func (v *Voice) handleUtterance(ctx context.Context, pcm []byte) {
-	text, err := v.speechClient().transcribe(ctx, pcm)
+func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance) {
+	text, err := v.speechClient().transcribe(ctx, utterance.pcm)
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Warn("transcription failed", "error", v.redact(err))
@@ -391,7 +405,7 @@ func (v *Voice) handleUtterance(ctx context.Context, pcm []byte) {
 		v.player.resume(ctx)
 		return
 	}
-	dec := v.gate(text)
+	dec := v.gate(text, utterance.barged)
 	// One line per detected utterance: what was heard and what became of it.
 	// This is what turns "I spoke and nothing happened" into a diagnosis —
 	// no line means the voice never reached the VAD, an empty text means the
@@ -426,7 +440,10 @@ type decision struct {
 	text        string
 }
 
-func (v *Voice) gate(text string) decision {
+// gate decides an utterance's fate. barged marks one captured over the
+// agent's own voice: its transcript mixes the speakers' words with the
+// user's, so the wake word counts wherever it appears, not only up front.
+func (v *Voice) gate(text string, barged bool) decision {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return decision{}
@@ -444,7 +461,7 @@ func (v *Voice) gate(text string) decision {
 	case activationPTT:
 		return decision{}
 	case activationWakeWord:
-		if stripped, ok := stripWakeWord(text, v.cfg.WakeWord); ok {
+		if stripped, ok := stripWakeWord(text, v.cfg.WakeWord, barged); ok {
 			if stripped == "" {
 				v.windowUntil = now.Add(v.followUp())
 				return decision{acknowledge: true}
@@ -666,9 +683,12 @@ func (v *Voice) redact(err error) error {
 	return fmt.Errorf("%s", msg)
 }
 
-// stripWakeWord reports whether text opens with the wake word — allowing one
-// filler word before it, so "hey factor" works — and returns what follows.
-func stripWakeWord(text, wake string) (string, bool) {
+// stripWakeWord reports whether text carries the wake word and returns what
+// follows it. Normally it must open the utterance — one filler word allowed,
+// so "hey factor" works. With anywhere, it counts at any position: a barge-in
+// transcript opens with whatever the speakers were saying when the user
+// talked over them.
+func stripWakeWord(text, wake string, anywhere bool) (string, bool) {
 	var wakeWords []string
 	for _, w := range strings.Fields(wake) {
 		if n := normalizeWord(w); n != "" {
@@ -701,7 +721,11 @@ func stripWakeWord(text, wake string) (string, bool) {
 		tokens = append(tokens, token{normalizeWord(text[start:]), len(text)})
 	}
 
-	for pos := 0; pos <= 1 && pos+len(wakeWords) <= len(tokens); pos++ {
+	maxPos := 1
+	if anywhere {
+		maxPos = len(tokens)
+	}
+	for pos := 0; pos <= maxPos && pos+len(wakeWords) <= len(tokens); pos++ {
 		match := true
 		for j, w := range wakeWords {
 			if tokens[pos+j].norm != w {
