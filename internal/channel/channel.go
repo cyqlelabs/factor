@@ -55,6 +55,15 @@ type Guarded interface {
 	BindPathGuard(*tools.PathGuard)
 }
 
+// Addresser is the optional capability of a connector that sometimes has to
+// hand a message to the user's usual written conversation — a spoken exchange
+// asked to answer in writing. The host binds where that is: the gateway hands
+// it the loop's last external chat, the CLI its own terminal session. Bound
+// before Start.
+type Addresser interface {
+	BindLastExternal(func() (channel, chatID string, ok bool))
+}
+
 // Factory builds a channel from its raw config section.
 type Factory func(raw json.RawMessage, b *bus.MessageBus) (Channel, error)
 

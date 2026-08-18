@@ -21,7 +21,9 @@ import (
 	"github.com/cyqlelabs/factor/internal/agent"
 	"github.com/cyqlelabs/factor/internal/app"
 	"github.com/cyqlelabs/factor/internal/bus"
+	"github.com/cyqlelabs/factor/internal/channel"
 	"github.com/cyqlelabs/factor/internal/channel/phone"
+	"github.com/cyqlelabs/factor/internal/channel/voice"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/gateway"
@@ -40,6 +42,7 @@ Usage:
   factor -s NAME         use a named session (default "main")
   factor gateway         run the daemon (channels, cron, heartbeat)
   factor init            interactive setup wizard (provider, memory, channels)
+  factor talk            push-to-talk: arm the PC voice channel's microphone
   factor status          show daemon, provider, and memory status
   factor upgrade         install the newest release
   factor version         print version
@@ -80,6 +83,8 @@ func main() {
 		err = runUpgrade(*configPath, *checkOnly)
 	case "gateway":
 		err = gateway.Run(*configPath)
+	case "talk":
+		err = runTalk(*configPath)
 	case "":
 		err = runChat(*configPath, *sessionName, *message)
 	default:
@@ -247,6 +252,13 @@ func runStatus(configPath string) error {
 		}
 	}
 
+	if raw, configured := cfg.Channels["voice"]; configured {
+		voiceCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		voiceStatus := voice.Describe(voiceCtx, raw, voice.DefaultEnv())
+		cancel()
+		fmt.Printf("voice:     %s\n", voiceStatus.Line())
+	}
+
 	env := desktop.DefaultEnv()
 	if cfg.Desktop.Register(desktop.HasDisplay(env)) {
 		ctl := desktop.NewController(env)
@@ -271,6 +283,57 @@ func runStatus(configPath string) error {
 		fmt.Printf("memory:    healthy at %s — %v atoms\n", cfg.Memory.BaseURL(), memStatus["total_atoms"])
 	}
 	return nil
+}
+
+// runTalk arms push-to-talk on the process running the voice channel — the
+// daemon, or a chat session in another terminal.
+func runTalk(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	raw, configured := cfg.Channels["voice"]
+	if !configured {
+		return errors.New("PC voice is not configured — run `factor init` to set it up")
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	if err := voice.Talk(ctx, raw); err != nil {
+		return err
+	}
+	fmt.Println("listening — speak now")
+	return nil
+}
+
+// startVoiceChannel brings the PC voice channel up inside a chat session, so
+// the microphone works without the gateway. It reports whether it started;
+// the returned stop is always safe to call.
+func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sessionName string) (func(), bool) {
+	raw, configured := cfg.Channels["voice"]
+	if !configured {
+		return func() {}, false
+	}
+	channels := channel.Build(map[string]json.RawMessage{"voice": raw}, a.Bus)
+	if len(channels) == 0 {
+		return func() {}, false
+	}
+	ch := channels[0]
+	if runner, ok := ch.(channel.TurnRunner); ok {
+		runner.BindTurnRunner(a.Loop.ProcessDirect)
+	}
+	if addresser, ok := ch.(channel.Addresser); ok {
+		// A written reply lands in this terminal: the drain below prints
+		// every outbound cli message.
+		addresser.BindLastExternal(func() (string, string, bool) { return "cli", sessionName, true })
+	}
+	if provider, ok := ch.(channel.Toolset); ok {
+		a.Registry.Register(provider.Toolset()...)
+	}
+	if err := ch.Start(ctx); err != nil {
+		log.Printf("voice channel failed to start: %v", err)
+		return func() {}, false
+	}
+	return func() { _ = ch.Stop() }, true
 }
 
 func runChat(configPath, sessionName, message string) error {
@@ -310,6 +373,14 @@ func runChat(configPath, sessionName, message string) error {
 
 	con.Printf("factor %s — %s | /quit to exit, /new for a fresh session",
 		version.Version, cfg.Provider.Model)
+
+	// The PC voice channel listens here too, not only under the gateway —
+	// registered before the loop runs so its tool exists from the first turn.
+	stopVoice, voiceOn := startVoiceChannel(ctx, a, cfg, baseName)
+	defer stopVoice()
+	if voiceOn {
+		con.Printf("voice: listening on the microphone (`factor talk` for push-to-talk)")
+	}
 
 	// Bus-driven REPL: replies AND proactive messages (finished background
 	// jobs, steered turns) print as they arrive, above the live prompt.

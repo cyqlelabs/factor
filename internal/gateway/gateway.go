@@ -24,6 +24,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/channel"
 	_ "github.com/cyqlelabs/factor/internal/channel/phone"    // register connector
 	_ "github.com/cyqlelabs/factor/internal/channel/telegram" // register connector
+	_ "github.com/cyqlelabs/factor/internal/channel/voice"    // register connector
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/heartbeat"
 	"github.com/cyqlelabs/factor/internal/memory"
@@ -123,6 +124,9 @@ func serve(configPath string) (bool, error) {
 		}
 		if guarded, ok := ch.(channel.Guarded); ok {
 			guarded.BindPathGuard(a.Guard)
+		}
+		if addresser, ok := ch.(channel.Addresser); ok {
+			addresser.BindLastExternal(a.Loop.LastChannel)
 		}
 		if provider, ok := ch.(channel.Toolset); ok {
 			a.Registry.Register(provider.Toolset()...)
