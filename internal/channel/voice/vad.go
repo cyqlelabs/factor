@@ -28,11 +28,11 @@ const (
 	startFramesIdle    = 3
 	startFramesPlaying = 8
 
-	// defaultSilenceMs is how much silence closes an utterance. Three
-	// seconds is deliberately patient: a thinking pause mid-sentence must
-	// not hand half a thought to the agent, which then talks over the rest.
-	// The cost is a beat of latency before every reply; silence_ms tunes it.
-	defaultSilenceMs    = 3000
+	// defaultSilenceMs is how much silence closes an utterance. Two seconds
+	// is deliberately patient: a thinking pause mid-sentence must not hand
+	// half a thought to the agent, which then talks over the rest. The cost
+	// is a beat of latency before every reply; silence_ms tunes it.
+	defaultSilenceMs    = 2000
 	maxUtteranceSeconds = 30
 	// minUtteranceMs of speech below which the segment is discarded unheard.
 	minUtteranceMs = 300
