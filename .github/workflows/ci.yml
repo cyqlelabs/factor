@@ -8,9 +8,19 @@ on:
 permissions:
   contents: read
 
+# Recency wins: a newer push cancels the older run's still-running jobs, so
+# two pushes landing close together spend one CI run, not two. The
+# cancellation lives on the pre-tag jobs rather than the workflow, because the
+# tag job must never be cancellable — killing it between pushing a tag and
+# publishing its release would leave a version with no binaries. An older run
+# whose tests are cancelled simply never reaches its tag job, and the newer
+# run releases everything both pushes carried.
 jobs:
   test:
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-test-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -56,6 +66,9 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-lint-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -67,6 +80,9 @@ jobs:
 
   govulncheck:
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-govulncheck-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -90,6 +106,9 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs: [test]
+    concurrency:
+      group: ci-build-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
