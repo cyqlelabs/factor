@@ -129,6 +129,7 @@ type MemoryConfig struct {
 	ExtractMode         string   `json:"extract_mode,omitempty"` // hybrid | llm | local | "" = auto
 	ExtractURL          string   `json:"extract_url,omitempty"`
 	ExtractModel        string   `json:"extract_model,omitempty"`
+	ExtractAPIKey       string   `json:"extract_api_key,omitempty" env:"FACTOR_MEMORY_EXTRACT_API_KEY"`
 	IgnorePatterns      []string `json:"ignore_patterns,omitempty"`
 	StartupTimeoutSecs  int      `json:"startup_timeout_secs"`
 }
@@ -419,7 +420,7 @@ func (c *Config) normalize() {
 
 // SecretValues returns every non-empty secret for output filtering.
 func (c *Config) SecretValues() []string {
-	secrets := []string{c.Provider.APIKey, c.Memory.APIKey}
+	secrets := []string{c.Provider.APIKey, c.Memory.APIKey, c.Memory.ExtractAPIKey}
 	for _, f := range c.Provider.Fallbacks {
 		secrets = append(secrets, f.APIKey)
 	}

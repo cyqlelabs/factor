@@ -37,7 +37,10 @@ func DeriveExtract(cfg config.MemoryConfig, providerCfg config.ProviderConfig) E
 		mode = "hybrid"
 	}
 	if cfg.ExtractURL != "" {
-		return ExtractSettings{Mode: mode, URL: stripV1(cfg.ExtractURL), Model: cfg.ExtractModel}
+		// An explicit endpoint carries an explicit key or none at all: the
+		// provider's key belongs to the provider's host, and forwarding it to
+		// whatever URL this names would hand it to a third party.
+		return ExtractSettings{Mode: mode, URL: stripV1(cfg.ExtractURL), Model: cfg.ExtractModel, Key: cfg.ExtractAPIKey}
 	}
 	base, key, model, ok := provider.OpenAICompatibleEndpoint(providerCfg)
 	if !ok {
@@ -182,8 +185,21 @@ func (s *Sidecar) pollWhileHealthy(ctx context.Context) {
 	}
 }
 
+// arenaMax caps glibc's per-thread malloc arenas. smrti runs a dozen-odd
+// threads (its web server, its executor pool, and ONNX/OpenBLAS when local
+// extraction loads a model), and glibc gives each one an arena it grows to
+// 64MB and never returns — on one box that was ~950MB of pure fragmentation,
+// most of a small machine's RAM. Two arenas cost a little lock contention in
+// a sidecar that is idle between turns anyway. A user who has tuned this
+// keeps their value.
+const arenaMax = "2"
+
 func (s *Sidecar) buildEnv() []string {
-	env := append(os.Environ(),
+	env := os.Environ()
+	if _, tuned := os.LookupEnv("MALLOC_ARENA_MAX"); !tuned {
+		env = append(env, "MALLOC_ARENA_MAX="+arenaMax)
+	}
+	env = append(env,
 		"SMRTI_DB="+s.cfg.DBPath,
 		"SMRTI_TENANT_ID="+s.cfg.Tenant,
 		"SMRTI_SPACE="+s.cfg.Space,

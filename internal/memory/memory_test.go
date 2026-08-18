@@ -193,6 +193,24 @@ func TestDeriveExtract(t *testing.T) {
 	if es.URL != "http://127.0.0.1:11434" || es.Model != "qwen3" {
 		t.Errorf("explicit = %+v", es)
 	}
+	// An explicit endpoint must never be handed the provider's key.
+	if es.Key != "" {
+		t.Errorf("explicit endpoint got key %q, want the provider's key withheld", es.Key)
+	}
+	es = DeriveExtract(config.MemoryConfig{
+		ExtractURL: "https://extract.example/v1", ExtractModel: "m", ExtractAPIKey: "sk-extract",
+	}, prov)
+	if es.Key != "sk-extract" {
+		t.Errorf("explicit endpoint key = %q, want its own configured key", es.Key)
+	}
+
+	// Only the model is overridden: the inherited endpoint keeps its key, so
+	// extraction can run on a cheaper model than the agent itself.
+	es = DeriveExtract(config.MemoryConfig{ExtractMode: "llm", ExtractModel: "google/gemini-3.1-flash-lite"}, prov)
+	if es.Mode != "llm" || es.URL != "https://openrouter.ai/api" || es.Key != "sk-or" ||
+		es.Model != "google/gemini-3.1-flash-lite" {
+		t.Errorf("model-only override = %+v", es)
+	}
 }
 
 func TestSidecarAdoptsRunningServer(t *testing.T) {

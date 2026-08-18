@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -191,6 +192,22 @@ func TestSidecarBuildEnvOptionalFields(t *testing.T) {
 	s = &Sidecar{cfg: cfg, extract: ExtractSettings{Mode: "hybrid"}}
 	if !strings.Contains(strings.Join(s.buildEnv(), "\n"), "SMRTI_IGNORE_PATTERNS=^a$\n^b$") {
 		t.Error("ignore patterns not newline-joined")
+	}
+}
+
+func TestSidecarBuildEnvCapsMallocArenas(t *testing.T) {
+	s := &Sidecar{cfg: config.Default().Memory, extract: ExtractSettings{Mode: "local"}}
+	if !slices.Contains(s.buildEnv(), "MALLOC_ARENA_MAX="+arenaMax) {
+		t.Errorf("MALLOC_ARENA_MAX=%s missing; per-thread arenas cost hundreds of MB", arenaMax)
+	}
+
+	t.Setenv("MALLOC_ARENA_MAX", "8")
+	env := s.buildEnv()
+	if slices.Contains(env, "MALLOC_ARENA_MAX="+arenaMax) {
+		t.Error("a user's own MALLOC_ARENA_MAX must be left alone")
+	}
+	if !slices.Contains(env, "MALLOC_ARENA_MAX=8") {
+		t.Error("the inherited MALLOC_ARENA_MAX went missing")
 	}
 }
 
