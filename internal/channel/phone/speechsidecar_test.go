@@ -346,6 +346,39 @@ func TestSpeechSupervisorWaitHealthyGivesUp(t *testing.T) {
 	}
 }
 
+// The exported façade is what the PC voice channel supervises the speech
+// server through; it must drive the same lifecycle the phone does.
+func TestSpeechServerFacadeSupervisesTheServer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("FACTOR_TEST_SPEECH_MODE", "serve")
+	cfg := SpeechConfig{
+		Port:         freePort(t),
+		Command:      os.Args[0],
+		WhisperModel: "base",
+		PiperVoice:   "en_US-lessac-medium",
+	}
+	s := NewSpeechServer(cfg, home, "en", "boot-token", true, true)
+	s.SetProbeInterval(50 * time.Millisecond)
+	t.Cleanup(s.Stop)
+	s.Start(context.Background())
+
+	if !s.WaitHealthy(context.Background(), 10*time.Second) {
+		t.Fatalf("the speech server never became healthy: %s", s.Down())
+	}
+	if !s.Healthy() || s.Down() != "" {
+		t.Errorf("healthy=%v down=%q", s.Healthy(), s.Down())
+	}
+	if err := ProbeSpeechServer(context.Background(), SpeechBaseURL(cfg)); err != nil {
+		t.Errorf("the probe could not reach the server the facade started: %v", err)
+	}
+}
+
+func TestSpeechBaseURLNamesTheConfiguredPort(t *testing.T) {
+	if got := SpeechBaseURL(SpeechConfig{Port: 9000}); got != "http://127.0.0.1:9000/v1" {
+		t.Errorf("SpeechBaseURL = %q", got)
+	}
+}
+
 // A cancelled context stops the wait immediately: the gateway is shutting down
 // and nothing should sit on a three-minute deadline.
 func TestSpeechSupervisorWaitHealthyStopsOnCancel(t *testing.T) {
