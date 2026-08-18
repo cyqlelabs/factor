@@ -306,16 +306,17 @@ func runTalk(configPath string) error {
 }
 
 // startVoiceChannel brings the PC voice channel up inside a chat session, so
-// the microphone works without the gateway. It reports whether it started;
-// the returned stop is always safe to call.
-func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sessionName string) (func(), bool) {
+// the microphone works without the gateway. It reports whether it started and
+// hands back the push-to-talk trigger for the /talk command; the returned
+// stop is always safe to call.
+func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sessionName string) (stop func(), talk func(), started bool) {
 	raw, configured := cfg.Channels["voice"]
 	if !configured {
-		return func() {}, false
+		return func() {}, nil, false
 	}
 	channels := channel.Build(map[string]json.RawMessage{"voice": raw}, a.Bus)
 	if len(channels) == 0 {
-		return func() {}, false
+		return func() {}, nil, false
 	}
 	ch := channels[0]
 	if runner, ok := ch.(channel.TurnRunner); ok {
@@ -331,9 +332,12 @@ func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sess
 	}
 	if err := ch.Start(ctx); err != nil {
 		log.Printf("voice channel failed to start: %v", err)
-		return func() {}, false
+		return func() {}, nil, false
 	}
-	return func() { _ = ch.Stop() }, true
+	if talker, ok := ch.(interface{ ArmPTT() }); ok {
+		talk = talker.ArmPTT
+	}
+	return func() { _ = ch.Stop() }, talk, true
 }
 
 func runChat(configPath, sessionName, message string) error {
@@ -376,10 +380,10 @@ func runChat(configPath, sessionName, message string) error {
 
 	// The PC voice channel listens here too, not only under the gateway —
 	// registered before the loop runs so its tool exists from the first turn.
-	stopVoice, voiceOn := startVoiceChannel(ctx, a, cfg, baseName)
+	stopVoice, talk, voiceOn := startVoiceChannel(ctx, a, cfg, baseName)
 	defer stopVoice()
 	if voiceOn {
-		con.Printf("voice: listening on the microphone (`factor talk` for push-to-talk)")
+		con.Printf("voice: listening on the microphone (/talk for push-to-talk)")
 	}
 
 	// Bus-driven REPL: replies AND proactive messages (finished background
@@ -416,6 +420,14 @@ func runChat(configPath, sessionName, message string) error {
 			sessionKey = "cli:" + sessionName
 			con.Printf("(started a fresh session)")
 			ui.refreshBar()
+			continue
+		case "/talk":
+			if talk == nil {
+				con.Printf("(PC voice is not running — set it up with `factor init`)")
+				continue
+			}
+			talk()
+			con.Printf("(listening — speak now)")
 			continue
 		}
 		chatID := strings.TrimPrefix(sessionKey, "cli:")

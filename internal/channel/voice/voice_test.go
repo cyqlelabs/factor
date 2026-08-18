@@ -572,7 +572,7 @@ func TestGateDecisions(t *testing.T) {
 		t.Error("a closed window still admitted utterances")
 	}
 	// Push-to-talk arms in wake-word mode too: the misfire rescue.
-	wake.armPTT()
+	wake.ArmPTT()
 	if dec := wake.gate("no wake word here"); !dec.accept {
 		t.Error("push-to-talk did not override the wake word")
 	}

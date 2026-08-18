@@ -122,7 +122,7 @@ func TestStartVoiceChannelDegradesGracefully(t *testing.T) {
 	a := appFor(t, loaded)
 
 	// No section at all.
-	stop, on := startVoiceChannel(context.Background(), a, loaded, "main")
+	stop, _, on := startVoiceChannel(context.Background(), a, loaded, "main")
 	stop()
 	if on {
 		t.Error("an unconfigured voice channel reported itself on")
@@ -130,7 +130,7 @@ func TestStartVoiceChannelDegradesGracefully(t *testing.T) {
 
 	// A disabled section.
 	loaded.Channels = map[string]json.RawMessage{"voice": json.RawMessage(`{"enabled":false}`)}
-	stop, on = startVoiceChannel(context.Background(), a, loaded, "main")
+	stop, _, on = startVoiceChannel(context.Background(), a, loaded, "main")
 	stop()
 	if on {
 		t.Error("a disabled voice channel reported itself on")
@@ -146,7 +146,7 @@ func TestStartVoiceChannelDegradesGracefully(t *testing.T) {
 	port := taken.Addr().(*net.TCPAddr).Port
 	loaded.Channels = map[string]json.RawMessage{"voice": json.RawMessage(fmt.Sprintf(
 		`{"stt_api_key":"dg","elevenlabs_api_key":"el","control_port":%d}`, port))}
-	stop, on = startVoiceChannel(context.Background(), a, loaded, "main")
+	stop, _, on = startVoiceChannel(context.Background(), a, loaded, "main")
 	stop()
 	if on {
 		t.Error("a channel that could not start reported itself on")

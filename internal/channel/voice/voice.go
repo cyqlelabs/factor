@@ -523,9 +523,9 @@ func (v *Voice) cancelTurn() {
 	}
 }
 
-// armPTT admits the next utterance unconditionally. The reply being spoken is
+// ArmPTT arms push-to-talk: it admits the next utterance unconditionally. The reply being spoken is
 // abandoned: the user pressed the button to say something else.
-func (v *Voice) armPTT() {
+func (v *Voice) ArmPTT() {
 	if v.player != nil {
 		v.player.stop()
 	}
@@ -563,7 +563,7 @@ func (v *Voice) controlHandler() http.Handler {
 		})
 	})
 	mux.HandleFunc("POST /ptt", func(w http.ResponseWriter, _ *http.Request) {
-		v.armPTT()
+		v.ArmPTT()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	return mux

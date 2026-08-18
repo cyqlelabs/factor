@@ -134,6 +134,7 @@ func TestRunChatInteractiveSession(t *testing.T) {
 	restore := feedStdin(t, func(w *os.File) {
 		fmt.Fprintln(w, "")      // blank input is ignored
 		fmt.Fprintln(w, "/new")  // start a fresh session
+		fmt.Fprintln(w, "/talk") // no voice channel: explained, not fatal
 		fmt.Fprintln(w, "hello") // a real turn: the dead provider makes it fail
 		time.Sleep(500 * time.Millisecond)
 		fmt.Fprintln(w, "/quit")
@@ -160,6 +161,9 @@ func TestRunChatInteractiveSession(t *testing.T) {
 	}
 	if !strings.Contains(out, "(started a fresh session)") {
 		t.Errorf("/new not handled: %q", out)
+	}
+	if !strings.Contains(out, "PC voice is not running") {
+		t.Errorf("/talk not handled: %q", out)
 	}
 	// the failed turn is surfaced through the bus-driven printer
 	if !strings.Contains(out, "Something went wrong") {
