@@ -754,7 +754,7 @@ func (w *wiz) stepTelegram(ctx context.Context) error {
 		return err
 	}
 	if !want {
-		return nil
+		return w.askKeepChannel("telegram", "Telegram")
 	}
 
 	w.ui.Note("create a bot with @BotFather, then paste the token it gives you")
@@ -809,6 +809,62 @@ func (w *wiz) stepTelegram(ctx context.Context) error {
 type telegramSection struct {
 	Token     string   `json:"token"`
 	AllowFrom []string `json:"allow_from"`
+}
+
+// askKeepChannel is what declining a channel's setup means for a section that
+// already exists: the question the wizard used to skip. "No" to "set up X?"
+// reads as "X off" — and a section left in the config is an enabled channel,
+// so a user who declined Telegram still had a bot polling. The answer is
+// written onto the raw section, so fields the wizard's mirrors don't know
+// about survive.
+func (w *wiz) askKeepChannel(name, label string) error {
+	raw, ok := w.cfg.Channels[name]
+	if !ok {
+		return nil
+	}
+	enabled := sectionEnabled(raw)
+	keep, err := w.ui.Confirm(fmt.Sprintf("%s is already configured. Keep it enabled?", label), enabled)
+	if err != nil {
+		return err
+	}
+	if err := w.setChannelEnabled(name, keep); err != nil {
+		return err
+	}
+	if !keep {
+		w.ui.Note("disabled — the settings stay in the config; re-run `factor init` to switch it back on")
+	}
+	return nil
+}
+
+// sectionEnabled mirrors the connector rule: absent means on.
+func sectionEnabled(raw json.RawMessage) bool {
+	var section struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(raw, &section); err != nil {
+		return true
+	}
+	return section.Enabled == nil || *section.Enabled
+}
+
+// setChannelEnabled flips one channel section's enabled flag in place,
+// leaving every other field exactly as it was.
+func (w *wiz) setChannelEnabled(name string, enabled bool) error {
+	var section map[string]any
+	if err := json.Unmarshal(w.cfg.Channels[name], &section); err != nil {
+		return fmt.Errorf("channels.%s: %w", name, err)
+	}
+	if enabled {
+		delete(section, "enabled")
+	} else {
+		section["enabled"] = false
+	}
+	raw, err := json.Marshal(section)
+	if err != nil {
+		return err
+	}
+	w.cfg.Channels[name] = raw
+	return nil
 }
 
 func telegramConfig(cfg *config.Config) telegramSection {
@@ -896,7 +952,7 @@ func (w *wiz) stepPhone(ctx context.Context) error {
 		return err
 	}
 	if !want {
-		return nil
+		return w.askKeepChannel("phone", "The phone channel")
 	}
 
 	section, err := w.askCarrier(ctx, existing)
@@ -1317,7 +1373,7 @@ func (w *wiz) stepVoice(ctx context.Context) error {
 		return err
 	}
 	if !want {
-		return nil
+		return w.askKeepChannel("voice", "PC voice")
 	}
 
 	if err := w.installAudioHelpers(ctx, env); err != nil {

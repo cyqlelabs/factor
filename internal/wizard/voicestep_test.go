@@ -289,6 +289,73 @@ func TestWizardVoiceSkippedOnADeafMachine(t *testing.T) {
 	}
 }
 
+// Saying no to a channel's setup must be able to mean no: an existing section
+// left in the config is an enabled channel, which is how a user who declined
+// Telegram in the wizard still had a bot polling from the gateway.
+func TestWizardDecliningAConfiguredChannelCanDisableIt(t *testing.T) {
+	provider := fakeProvider(t, "big-model")
+	h := newHarness(t,
+		"8", provider.URL+"/v1", "sk-test", "1", "5", // provider, reasoning off
+		"3", // memory: off
+		"n", // set up telegram? no —
+		"n", // — and do not keep it enabled
+		"n", // no phone
+		"y", // restrict to workspace
+		"n", // browser off
+	)
+	seed := func() {
+		cfg, err := config.ReadFile(h.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Channels = map[string]json.RawMessage{
+			"telegram": json.RawMessage(`{"token":"123:secret","allow_from":["1"],"api_base":"http://x"}`),
+		}
+		if err := cfg.Save(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed()
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+
+	var section map[string]any
+	if err := json.Unmarshal(h.saved().Channels["telegram"], &section); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, ok := section["enabled"].(bool); !ok || enabled {
+		t.Errorf("declining did not disable the channel: %v", section)
+	}
+	// Disabling must not cost the section its settings — token, allowlist,
+	// and fields the wizard's own mirror does not even know about.
+	if section["token"] != "123:secret" || section["api_base"] != "http://x" {
+		t.Errorf("disabling lost settings: %v", section)
+	}
+
+	// The other answer: declining setup but keeping the channel on.
+	kept := newHarness(t,
+		"8", provider.URL+"/v1", "sk-test", "1", "5",
+		"3",
+		"n", // set up telegram? no —
+		"y", // — but keep it running
+		"n", // no phone
+		"y", "n",
+	)
+	kept.path = h.path
+	seed()
+	if err := kept.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, kept.out.String())
+	}
+	var keptSection map[string]any
+	if err := json.Unmarshal(kept.saved().Channels["telegram"], &keptSection); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := keptSection["enabled"]; present {
+		t.Errorf("keeping the channel wrote a needless flag: %v", keptSection)
+	}
+}
+
 // The scriptable path meets a configured voice channel's dependencies without
 // asking, and leaves an unconfigured machine alone.
 func TestQuietRunInstallsAudioHelpers(t *testing.T) {
