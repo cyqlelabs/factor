@@ -3,6 +3,7 @@ package voice
 import (
 	"context"
 	"io"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -83,6 +84,57 @@ func TestPlaybackCommandSelection(t *testing.T) {
 		if !strings.Contains(strings.Join(argv, " "), "24000") {
 			t.Errorf("%v does not ask for 24 kHz", argv)
 		}
+	}
+}
+
+// macOS with nothing installed still plays: afplay ships with the OS. It is
+// the last resort because it cannot stream.
+func TestPlaybackCommandFallsBackToAfplay(t *testing.T) {
+	argv, err := playbackCommand(scriptedEnv("darwin", "afplay"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argv[0] != "afplay" {
+		t.Errorf("helper = %q", argv[0])
+	}
+	preferred, err := playbackCommand(scriptedEnv("darwin", "afplay", "play"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preferred[0] != "play" {
+		t.Errorf("helper = %q, want the streaming helper over afplay", preferred[0])
+	}
+}
+
+func TestDefaultEnvPlayFileWritesAndCleansTheClip(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no sh on windows")
+	}
+	env := DefaultEnv()
+	captured := filepath.Join(t.TempDir(), "path")
+	// The helper records the path it was handed and proves the file is there.
+	err := env.PlayFile(context.Background(),
+		[]string{"sh", "-c", `test -s "$1" && printf %s "$1" > ` + captured, "sh"},
+		wavPCM(toneFrame(1000), playbackRate))
+	if err != nil {
+		t.Fatalf("PlayFile: %v", err)
+	}
+	path, err := os.ReadFile(captured)
+	if err != nil || len(path) == 0 {
+		t.Fatalf("the helper never saw the clip: %v", err)
+	}
+	if _, err := os.Stat(string(path)); !os.IsNotExist(err) {
+		t.Errorf("the temp clip %s was not removed", path)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+	start := time.Now()
+	if err := env.PlayFile(ctx, []string{"sh", "-c", "sleep 30", "sh"}, []byte("wav")); err == nil {
+		t.Error("a cancelled file playback reported success")
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Error("cancel did not kill the player promptly")
 	}
 }
 

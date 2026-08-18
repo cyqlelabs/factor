@@ -195,6 +195,119 @@ func TestPlayerPauseAndResumeAreSafeWhenIdle(t *testing.T) {
 	}
 }
 
+// fakeFileSpeaker is an Env.PlayFile that "plays" each WAV clip for its real
+// duration, recording what it was handed. Each call is one helper process.
+type fakeFileSpeaker struct {
+	mu    sync.Mutex
+	clips [][]byte
+}
+
+func (f *fakeFileSpeaker) playFile(ctx context.Context, _ []string, wav []byte) error {
+	f.mu.Lock()
+	f.clips = append(f.clips, wav)
+	f.mu.Unlock()
+	duration := time.Duration(len(wav)-44) * time.Second / (playbackRate * 2)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(duration):
+		return nil
+	}
+}
+
+func (f *fakeFileSpeaker) clipCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.clips)
+}
+
+func (f *fakeFileSpeaker) clipLen(i int) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i >= len(f.clips) {
+		return 0
+	}
+	return len(f.clips[i]) - 44 // strip the WAV header
+}
+
+func filePlayer() (*fakeFileSpeaker, *player) {
+	speaker := &fakeFileSpeaker{}
+	return speaker, newPlayer(Env{PlayFile: speaker.playFile}, []string{"afplay"})
+}
+
+func TestFilePlayerPlaysAClipToCompletion(t *testing.T) {
+	speaker, p := filePlayer()
+	pcm := clip(12000) // 250 ms
+	select {
+	case result := <-p.play(context.Background(), pcm):
+		if !result.completed {
+			t.Error("an uninterrupted clip reported incomplete")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("playback never finished")
+	}
+	if speaker.clipCount() != 1 || speaker.clipLen(0) != len(pcm) {
+		t.Errorf("clips = %d, first = %d bytes", speaker.clipCount(), speaker.clipLen(0))
+	}
+	if p.busy() {
+		t.Error("a finished player still reports busy")
+	}
+}
+
+// A file-only helper cannot stream, so pause tracks the heard position by
+// wall clock and resume hands over only the remainder.
+func TestFilePlayerPauseResumeReplaysTheRemainder(t *testing.T) {
+	speaker, p := filePlayer()
+	pcm := clip(96000) // 2 s
+	done := p.play(context.Background(), pcm)
+
+	time.Sleep(500 * time.Millisecond) // hear roughly a quarter of it
+	p.pause()
+	if !p.busy() || p.playing() {
+		t.Error("a paused file player should hold the floor silently")
+	}
+	p.mu.Lock()
+	offset := p.offset
+	p.mu.Unlock()
+	if offset == 0 || offset >= len(pcm) {
+		t.Errorf("paused offset = %d of %d; the wall clock never advanced it", offset, len(pcm))
+	}
+
+	p.resume(context.Background())
+	select {
+	case result := <-done:
+		if !result.completed {
+			t.Error("a resumed clip that ran to the end reported incomplete")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the resumed clip never finished")
+	}
+	if speaker.clipCount() != 2 {
+		t.Fatalf("pause+resume handed over %d clips, want 2", speaker.clipCount())
+	}
+	if remainder := speaker.clipLen(1); remainder >= len(pcm) || remainder == 0 {
+		t.Errorf("the resume clip is %d bytes; it should be the remainder of %d", remainder, len(pcm))
+	}
+}
+
+func TestFilePlayerStopDiscardsTheRest(t *testing.T) {
+	speaker, p := filePlayer()
+	done := p.play(context.Background(), clip(96000))
+	waitUntil(t, func() bool { return speaker.clipCount() == 1 })
+	p.stop()
+	select {
+	case result := <-done:
+		if result.completed {
+			t.Error("a stopped clip reported completed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop never settled the clip")
+	}
+	if p.busy() {
+		t.Error("a stopped player still holds the floor")
+	}
+}
+
 func waitUntil(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

@@ -29,6 +29,10 @@ type playResult struct {
 type player struct {
 	env  Env
 	argv []string
+	// fileBased marks a helper that can only read files (afplay): clips go
+	// out whole, and the heard position is tracked by wall clock instead of
+	// by pacing the stream.
+	fileBased bool
 
 	mu     sync.Mutex
 	gen    int // one per clip
@@ -42,7 +46,7 @@ type player struct {
 }
 
 func newPlayer(env Env, argv []string) *player {
-	return &player{env: env, argv: argv}
+	return &player{env: env, argv: argv, fileBased: len(argv) > 0 && argv[0] == "afplay"}
 }
 
 // play replaces whatever is playing with pcm and returns the channel that
@@ -113,6 +117,10 @@ func (p *player) busy() bool {
 // up after a resume has already started the next one, and must not be allowed
 // to settle a clip it no longer owns.
 func (p *player) startLocked(ctx context.Context) {
+	if p.fileBased {
+		p.startFileLocked(ctx)
+		return
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
 	p.active = true
@@ -128,6 +136,50 @@ func (p *player) startLocked(ctx context.Context) {
 		// owns the ending.
 		if gen != p.gen || run != p.runSeq || !p.active {
 			return
+		}
+		p.endLocked(p.offset >= len(p.pcm))
+	}()
+}
+
+// startFileLocked is startLocked for a file-only helper: the remainder of the
+// clip is handed over whole, and the offset advances with the wall clock so a
+// pause still knows how much was heard.
+func (p *player) startFileLocked(ctx context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
+	p.cancel = cancel
+	p.active = true
+	p.runSeq++
+	gen, run := p.gen, p.runSeq
+	clip := p.pcm[p.offset:]
+	base := p.offset
+	started := time.Now()
+
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				p.mu.Lock()
+				if gen == p.gen && run == p.runSeq && p.active {
+					p.offset = min(base+int(time.Since(started).Seconds()*playbackRate*2), len(p.pcm))
+				}
+				p.mu.Unlock()
+			}
+		}
+	}()
+	go func() {
+		defer cancel()
+		err := p.env.PlayFile(ctx, p.argv, wavPCM(clip, playbackRate))
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if gen != p.gen || run != p.runSeq || !p.active {
+			return
+		}
+		if err == nil {
+			p.offset = len(p.pcm)
 		}
 		p.endLocked(p.offset >= len(p.pcm))
 	}()

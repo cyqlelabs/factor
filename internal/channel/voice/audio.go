@@ -43,17 +43,21 @@ type Env struct {
 	// Play runs a helper that reads raw PCM from stdin until pcm drains or
 	// ctx is cancelled, which kills it mid-note.
 	Play func(ctx context.Context, argv []string, pcm io.Reader) error
+	// PlayFile plays one whole WAV clip through a helper that can only read
+	// files (afplay). Cancelling ctx kills it mid-note.
+	PlayFile func(ctx context.Context, argv []string, wav []byte) error
 }
 
 // DefaultEnv wires Env to the real machine.
 func DefaultEnv() Env {
 	return Env{
-		Has:     hasBinary,
-		Getenv:  os.Getenv,
-		Glob:    filepath.Glob,
-		GOOS:    runtime.GOOS,
-		Capture: captureExec,
-		Play:    playExec,
+		Has:      hasBinary,
+		Getenv:   os.Getenv,
+		Glob:     filepath.Glob,
+		GOOS:     runtime.GOOS,
+		Capture:  captureExec,
+		Play:     playExec,
+		PlayFile: playFileExec,
 	}
 }
 
@@ -125,6 +129,32 @@ func playExec(ctx context.Context, argv []string, pcm io.Reader) error {
 	return err
 }
 
+// playFileExec hands the clip to a file-only helper: written to a temp file,
+// played, removed. The helper gets the file path as its last argument.
+func playFileExec(ctx context.Context, argv []string, wav []byte) error {
+	f, err := os.CreateTemp("", "factor-voice-*.wav")
+	if err != nil {
+		return err
+	}
+	path := f.Name()
+	defer func() { _ = os.Remove(path) }()
+	if _, err := f.Write(wav); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], path)...)
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	cmd.WaitDelay = 2 * time.Second
+	err = cmd.Run()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
 // captureCommand builds the helper invocation that streams 16 kHz s16le mono
 // from the microphone to stdout. Preference order: the PulseAudio interface
 // first (PipeWire serves it too), then PipeWire's own tool, bare ALSA, and
@@ -188,8 +218,13 @@ func playbackCommand(e Env, device string) ([]string, error) {
 	case e.has("play"):
 		return []string{"play", "-q", "-t", "raw", "-b", "16", "-e", "signed-integer",
 			"-r", "24000", "-c", "1", "-"}, nil
+	case e.has("afplay"):
+		// macOS ships afplay; it only reads files, so the player hands it
+		// whole clips instead of a stream. Last on the list because the
+		// streaming helpers pause with better precision.
+		return []string{"afplay"}, nil
 	}
-	return nil, fmt.Errorf("no speaker helper is installed (want one of paplay, pw-play, aplay, play)")
+	return nil, fmt.Errorf("no speaker helper is installed (want one of paplay, pw-play, aplay, play, afplay)")
 }
 
 // MachineHasAudio reports whether this machine has a sound system at all —
