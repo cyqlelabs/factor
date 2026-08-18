@@ -27,14 +27,15 @@ import (
 // drive the whole flow without touching the network, the package manager, or
 // the user's Python installation.
 type Options struct {
-	UI         *UI
-	Version    string
-	HTTP       *http.Client
-	Home       string // FACTOR_HOME (defaults to config.Home())
-	Telegram   string // Telegram API base (defaults to the real one)
-	Twilio     string // Twilio API base (defaults to the real one)
-	Telnyx     string // Telnyx API base (defaults to the real one)
-	ElevenLabs string // ElevenLabs API base (defaults to the real one)
+	UI          *UI
+	Version     string
+	HTTP        *http.Client
+	Home        string // FACTOR_HOME (defaults to config.Home())
+	Telegram    string // Telegram API base (defaults to the real one)
+	Twilio      string // Twilio API base (defaults to the real one)
+	Telnyx      string // Telnyx API base (defaults to the real one)
+	ElevenLabs  string // ElevenLabs API base (defaults to the real one)
+	PiperVoices string // Piper's voice catalogue URL (defaults to the real one)
 
 	// NonInteractive skips every prompt: defaults are kept, smrti is
 	// installed when missing, and the config is written as-is.
@@ -57,7 +58,9 @@ type Options struct {
 	// InstallSpeech puts the local speech engines and their models on the
 	// machine. Choosing a local tier is a request for local speech, not for
 	// homework, so the wizard does this rather than telling the user to.
-	InstallSpeech func(ctx context.Context, language string, needSTT, needTTS bool,
+	// A non-blank voice names the Piper voice to install; blank lets the
+	// installer resolve one from the language.
+	InstallSpeech func(ctx context.Context, language, voice string, needSTT, needTTS bool,
 		progress phone.Progress) (phone.SpeechChoices, error)
 
 	// EnsureBrowser puts a browser on the machine, and VerifyBrowser proves
@@ -97,9 +100,10 @@ func (o *Options) defaults() {
 		}
 	}
 	if o.InstallSpeech == nil {
-		o.InstallSpeech = func(ctx context.Context, language string, needSTT, needTTS bool,
+		o.InstallSpeech = func(ctx context.Context, language, voice string, needSTT, needTTS bool,
 			progress phone.Progress) (phone.SpeechChoices, error) {
-			return phone.InstallSpeech(ctx, o.Home, language, phone.SpeechConfig{}, needSTT, needTTS, progress)
+			return phone.InstallSpeech(ctx, o.Home, language,
+				phone.SpeechConfig{PiperVoice: voice}, needSTT, needTTS, progress)
 		}
 	}
 	if o.EnsureBrowser == nil {
@@ -1161,7 +1165,7 @@ func (w *wiz) askVoiceTier(ctx context.Context, section *phoneSection, existing 
 			if plan != "" {
 				w.ui.Info("ElevenLabs plan: %s", plan)
 			}
-			voice, err := w.ui.Input("Voice id (blank = the default voice)", existing.VoiceID)
+			voice, err := w.chooseElevenLabsVoice(ctx, section.ElevenLabsAPIKey, existing.VoiceID)
 			if err != nil {
 				return err
 			}
@@ -1230,6 +1234,17 @@ func (w *wiz) installLocalSpeech(ctx context.Context, section *phoneSection, loc
 		section.TTS = audioSection{Provider: "local-openai"}
 	}
 
+	voice := ""
+	if localTTS {
+		current := ""
+		if existing := phoneConfig(w.cfg); existing.SpeechServer != nil {
+			current = existing.SpeechServer.PiperVoice
+		}
+		var err error
+		if voice, err = w.choosePiperVoice(ctx, section.Language, current); err != nil {
+			return err
+		}
+	}
 	w.ui.Note("Factor installs the speech engines into their own virtualenv and downloads the models for %q",
 		section.Language)
 	if w.opts.NoInstall {
@@ -1240,7 +1255,7 @@ func (w *wiz) installLocalSpeech(ctx context.Context, section *phoneSection, loc
 	var choices phone.SpeechChoices
 	err := w.ui.Task("installing local speech (this takes a few minutes the first time)", func() error {
 		var installErr error
-		choices, installErr = w.opts.InstallSpeech(ctx, section.Language, localSTT, localTTS, w.ui.Progress())
+		choices, installErr = w.opts.InstallSpeech(ctx, section.Language, voice, localSTT, localTTS, w.ui.Progress())
 		return installErr
 	})
 	if err != nil {
@@ -1261,6 +1276,81 @@ func (w *wiz) installLocalSpeech(ctx context.Context, section *phoneSection, loc
 		w.ui.Warn("%s", choices.Warning)
 	}
 	return nil
+}
+
+// chooseElevenLabsVoice offers the account's own voices by name. When the
+// list cannot be fetched — an old key scope, a fake in a test — the pasted-id
+// input the wizard always had still works.
+func (w *wiz) chooseElevenLabsVoice(ctx context.Context, apiKey, current string) (string, error) {
+	voices, err := ListElevenLabsVoices(ctx, w.opts.HTTP, w.opts.ElevenLabs, apiKey)
+	if err != nil || len(voices) == 0 {
+		return w.ui.Input("Voice id (blank = the default voice)", current)
+	}
+	if len(voices) > maxModelMenu {
+		voices = voices[:maxModelMenu]
+	}
+	opts := make([]Option, 0, len(voices)+2)
+	opts = append(opts, Option{Label: "Default voice", Hint: "ElevenLabs' stock voice"})
+	def := 0
+	for i, v := range voices {
+		opts = append(opts, Option{Label: v.Name, Hint: v.Category})
+		if v.ID == current {
+			def = i + 1
+		}
+	}
+	opts = append(opts, Option{Label: "✎ type a voice id", Hint: current})
+	idx, err := w.ui.Select("Which voice?", opts, def)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case idx == 0:
+		return "", nil
+	case idx <= len(voices):
+		return voices[idx-1].ID, nil
+	default:
+		return w.ui.Input("Voice id", current)
+	}
+}
+
+// choosePiperVoice offers the catalogue's voices for the language. A blank
+// answer — and any failure to fetch the catalogue — keeps the installer's own
+// resolution, which is the right default everywhere it is not overridden.
+func (w *wiz) choosePiperVoice(ctx context.Context, language, current string) (string, error) {
+	voices, err := ListPiperVoices(ctx, w.opts.HTTP, w.opts.PiperVoices, language)
+	if err != nil || len(voices) == 0 {
+		return current, nil
+	}
+	if len(voices) > maxModelMenu {
+		voices = voices[:maxModelMenu]
+	}
+	opts := make([]Option, 0, len(voices)+2)
+	opts = append(opts, Option{Label: "Let the installer pick (recommended)",
+		Hint: "the reference voice for " + language})
+	def := 0
+	for i, v := range voices {
+		hint := v.Quality
+		if v.Exact {
+			hint += " · exact locale"
+		}
+		opts = append(opts, Option{Label: v.Key, Hint: hint})
+		if v.Key == current {
+			def = i + 1
+		}
+	}
+	opts = append(opts, Option{Label: "✎ type a voice name", Hint: current})
+	idx, err := w.ui.Select("Which voice?", opts, def)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case idx == 0:
+		return "", nil
+	case idx <= len(voices):
+		return voices[idx-1].Key, nil
+	default:
+		return w.ui.Input("Voice name (e.g. es_MX-ald-medium)", current)
+	}
 }
 
 func boolIndex(b bool) int {
@@ -1578,7 +1668,7 @@ func (w *wiz) askVoiceSpeechTier(ctx context.Context, section *voiceSection,
 			if plan != "" {
 				w.ui.Info("ElevenLabs plan: %s", plan)
 			}
-			voiceID, err := w.ui.Input("Voice id (blank = the default voice)",
+			voiceID, err := w.chooseElevenLabsVoice(ctx, section.ElevenLabsAPIKey,
 				firstNonEmpty(existing.VoiceID, phoneExisting.VoiceID))
 			if err != nil {
 				return err
@@ -1609,6 +1699,17 @@ func (w *wiz) setUpLocalVoiceSpeech(ctx context.Context, section *voiceSection, 
 		if localTTS {
 			section.TTS = audioSection{Provider: "local-openai"}
 		}
+		voice := ""
+		if localTTS {
+			current := ""
+			if existing.SpeechServer != nil {
+				current = existing.SpeechServer.PiperVoice
+			}
+			var err error
+			if voice, err = w.choosePiperVoice(ctx, section.Language, current); err != nil {
+				return err
+			}
+		}
 		w.ui.Note("Factor installs the speech engines into their own virtualenv and downloads the models for %q",
 			section.Language)
 		if w.opts.NoInstall {
@@ -1618,7 +1719,7 @@ func (w *wiz) setUpLocalVoiceSpeech(ctx context.Context, section *voiceSection, 
 		var choices phone.SpeechChoices
 		err := w.ui.Task("installing local speech (this takes a few minutes the first time)", func() error {
 			var installErr error
-			choices, installErr = w.opts.InstallSpeech(ctx, section.Language, localSTT, localTTS, w.ui.Progress())
+			choices, installErr = w.opts.InstallSpeech(ctx, section.Language, voice, localSTT, localTTS, w.ui.Progress())
 			return installErr
 		})
 		if err != nil {

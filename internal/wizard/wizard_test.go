@@ -71,6 +71,8 @@ func newHarness(t *testing.T, answers ...string) *harness {
 		Home:     home,
 		HTTP:     http.DefaultClient,
 		Telegram: "http://127.0.0.1:0", // unreachable unless a test overrides it
+		// Same for the voice catalogue: never fetch the real one in a test.
+		PiperVoices: "http://127.0.0.1:0",
 		Desktop: desktop.Env{
 			GOOS:   "linux",
 			Run:    func(context.Context, string, ...string) (string, error) { return "", nil },
@@ -105,7 +107,7 @@ func newHarness(t *testing.T, answers ...string) *harness {
 		FastBrowserSupported: func() (bool, string) { return true, "" },
 		// Never touch the network or the machine's Python: tests that care
 		// about the install override this to observe what it was asked for.
-		InstallSpeech: func(_ context.Context, language string, _, needTTS bool,
+		InstallSpeech: func(_ context.Context, language, _ string, _, needTTS bool,
 			_ phone.Progress) (phone.SpeechChoices, error) {
 			choices := phone.SpeechChoices{
 				WhisperModel: "base", WhisperDevice: "cpu", WhisperCompute: "int8",
@@ -756,7 +758,7 @@ func TestWizardPhoneLocalTierInstallsEverything(t *testing.T) {
 
 	var gotLanguage string
 	var gotSTT, gotTTS bool
-	h.opts.InstallSpeech = func(_ context.Context, language string, needSTT, needTTS bool,
+	h.opts.InstallSpeech = func(_ context.Context, language, _ string, needSTT, needTTS bool,
 		_ phone.Progress) (phone.SpeechChoices, error) {
 		gotLanguage, gotSTT, gotTTS = language, needSTT, needTTS
 		return phone.SpeechChoices{
@@ -807,7 +809,7 @@ func TestWizardPhoneLocalTierSurvivesAFailedInstall(t *testing.T) {
 		"en", "4", "1", "1", "", "", "",
 	)
 	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
-	h.opts.InstallSpeech = func(context.Context, string, bool, bool, phone.Progress) (phone.SpeechChoices, error) {
+	h.opts.InstallSpeech = func(context.Context, string, string, bool, bool, phone.Progress) (phone.SpeechChoices, error) {
 		return phone.SpeechChoices{}, errors.New("no space left on device")
 	}
 	if err := h.run(); err != nil {
@@ -842,7 +844,7 @@ func TestWizardLocalVoiceOnlyDoesNotInstallTranscription(t *testing.T) {
 	h.opts.Twilio, h.opts.ElevenLabs = twilio.URL, elevenlabs.URL
 
 	var gotSTT, gotTTS bool
-	h.opts.InstallSpeech = func(_ context.Context, _ string, needSTT, needTTS bool,
+	h.opts.InstallSpeech = func(_ context.Context, _, _ string, needSTT, needTTS bool,
 		_ phone.Progress) (phone.SpeechChoices, error) {
 		gotSTT, gotTTS = needSTT, needTTS
 		return phone.SpeechChoices{WhisperModel: "base", PiperVoice: "en_US-lessac-medium"}, nil

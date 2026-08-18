@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -141,10 +142,10 @@ func TestWizardVoiceLocalTierInstallsSpeech(t *testing.T) {
 	var gotLanguage string
 	var gotSTT, gotTTS bool
 	base := h.opts.InstallSpeech
-	h.opts.InstallSpeech = func(ctx context.Context, language string, needSTT, needTTS bool,
+	h.opts.InstallSpeech = func(ctx context.Context, language, voice string, needSTT, needTTS bool,
 		progress phone.Progress) (phone.SpeechChoices, error) {
 		gotLanguage, gotSTT, gotTTS = language, needSTT, needTTS
-		return base(ctx, language, needSTT, needTTS, progress)
+		return base(ctx, language, voice, needSTT, needTTS, progress)
 	}
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
@@ -286,6 +287,102 @@ func TestWizardVoiceSkippedOnADeafMachine(t *testing.T) {
 	}
 	if _, ok := h.saved().Channels["voice"]; ok {
 		t.Error("a deaf machine grew a voice section")
+	}
+}
+
+// fakeVoiceCatalogues serves an ElevenLabs account with named voices and a
+// Piper catalogue, so the wizard can offer menus instead of demanding ids.
+func fakeVoiceCatalogues(t *testing.T) (elevenlabs, piper *httptest.Server) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/user", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"subscription":{"tier":"starter"}}`))
+	})
+	mux.HandleFunc("/v1/voices", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("xi-api-key") != "el-secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"voices":[
+			{"voice_id":"id-rachel","name":"Rachel","category":"premade"},
+			{"voice_id":"id-antoni","name":"Antoni","category":"premade"}]}`))
+	})
+	elevenlabs = httptest.NewServer(mux)
+	piper = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"es_ES-davefx-medium": {"quality":"medium","language":{"code":"es_ES"}},
+			"es_MX-ald-medium":    {"quality":"medium","language":{"code":"es_MX"}},
+			"es_ES-carlfm-x_low":  {"quality":"x_low","language":{"code":"es_ES"}},
+			"en_US-lessac-medium": {"quality":"medium","language":{"code":"en_US"}}}`))
+	}))
+	t.Cleanup(elevenlabs.Close)
+	t.Cleanup(piper.Close)
+	return elevenlabs, piper
+}
+
+func TestWizardVoicePickersOfferCloudAndLocalVoices(t *testing.T) {
+	provider := fakeProvider(t, "big-model")
+	elevenlabs, piper := fakeVoiceCatalogues(t)
+
+	// Cloud tier: the account's voices come up by name.
+	h := newHarness(t, voiceAnswers(provider,
+		"y",         // set up PC voice
+		"",          // language: en
+		"1",         // tier: cloud
+		"dg-secret", // deepgram key
+		"el-secret", // elevenlabs key
+		"3",         // voice: Antoni (menu: default, Rachel, Antoni, type-an-id)
+		"1",         // activation: always
+	)...)
+	h.opts.Audio = hearingAudio("parec", "paplay")
+	h.opts.ElevenLabs = elevenlabs.URL
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	if section := savedVoice(t, h); section.VoiceID != "id-antoni" {
+		t.Errorf("voice id = %q, want Antoni's id", section.VoiceID)
+	}
+	if !strings.Contains(h.out.String(), "Rachel") {
+		t.Errorf("the account's voices were never offered:\n%s", h.out.String())
+	}
+
+	// Local tier: the catalogue's voices for the language, exact locale
+	// first, and the choice reaches the installer.
+	local := newHarness(t, voiceAnswers(provider,
+		"y",         // set up PC voice
+		"es",        // language
+		"3",         // tier: local text-to-speech
+		"1",         // Factor installs the server
+		"3",         // voice: es_MX-ald-medium (menu: installer-pick, davefx, ald, carlfm, type)
+		"dg-secret", // deepgram key for the cloud STT half
+		"1",         // activation: always
+	)...)
+	local.opts.Audio = hearingAudio("parec", "paplay")
+	local.opts.PiperVoices = piper.URL
+	var gotVoice string
+	base := local.opts.InstallSpeech
+	local.opts.InstallSpeech = func(ctx context.Context, language, voice string, needSTT, needTTS bool,
+		progress phone.Progress) (phone.SpeechChoices, error) {
+		gotVoice = voice
+		choices, err := base(ctx, language, voice, needSTT, needTTS, progress)
+		if voice != "" {
+			choices.PiperVoice = voice
+		}
+		return choices, err
+	}
+	if err := local.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, local.out.String())
+	}
+	// "es" ranks both Spanish locales as family voices: medium quality first,
+	// then by name — davefx, ald, carlfm — so answer 3 is es_MX-ald-medium.
+	if gotVoice != "es_MX-ald-medium" {
+		t.Errorf("the installer was asked for %q", gotVoice)
+	}
+	if section := savedVoice(t, local); section.SpeechServer == nil || section.SpeechServer.PiperVoice != "es_MX-ald-medium" {
+		t.Errorf("speech_server = %+v", section.SpeechServer)
+	}
+	if strings.Contains(local.out.String(), "en_US-lessac-medium") {
+		t.Errorf("an English voice reached the Spanish menu:\n%s", local.out.String())
 	}
 }
 

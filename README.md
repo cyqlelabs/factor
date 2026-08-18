@@ -294,10 +294,14 @@ virtualenv and your language's models download before setup finishes — so the 
 call finds everything on disk. No server to start, no model names to choose.
 `factor status` reports what it built.
 
-**Languages.** Transcription covers everything Whisper does, about 99 languages.
-Voices come from Piper's catalogue: **49 languages**, resolved from your `language`
-setting. The exact locale wins where it exists — `es-MX` gets a Mexican voice, not a
-Castilian one — then the language at large. Spanish is first-class on every tier.
+**Languages and voices.** Transcription covers everything Whisper does, about 99
+languages. Voices come from Piper's catalogue: **49 languages**, resolved from your
+`language` setting. The exact locale wins where it exists — `es-MX` gets a Mexican
+voice, not a Castilian one — then the language at large. Spanish is first-class on
+every tier. You can also pick the voice yourself: the wizard lists your ElevenLabs
+account's voices by name on the cloud tier and the catalogue's voices for your
+language on the local one, and a voice named in `speech_server.piper_voice` is
+downloaded on the next start if its weights aren't on disk yet.
 
 <details>
 <summary><b>Why a GPU changes which tier to pick</b></summary>
@@ -413,7 +417,8 @@ leaving the prompt.
 The speech tiers are the phone's, chosen the same way in the wizard — cloud
 (Deepgram + ElevenLabs) or the managed local server (faster-whisper + Piper), which
 runs on its own port so the phone and the PC can both keep speech local on one
-machine. One tool comes with the channel: ask for something in writing and the agent
+machine. The voice is yours to pick either way: the wizard offers your ElevenLabs
+account's voices by name, or Piper's catalogue for your language. One tool comes with the channel: ask for something in writing and the agent
 uses `voice_write` — the text lands in your terminal, or in the chat you last used
 when Factor runs as a daemon, and the spoken reply stays short.
 

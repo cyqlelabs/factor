@@ -329,3 +329,131 @@ func filterModels(models []string, needle string) []string {
 	}
 	return out
 }
+
+// ---- voice catalogues -------------------------------------------------------
+
+// ElevenLabsVoice is one voice the account can speak with.
+type ElevenLabsVoice struct {
+	ID       string
+	Name     string
+	Category string
+}
+
+// ListElevenLabsVoices asks the account which voices it has, so the wizard
+// can offer names instead of demanding a pasted id. An error is informational:
+// the caller falls back to free-text entry.
+func ListElevenLabsVoices(ctx context.Context, client *http.Client, apiBase, apiKey string) ([]ElevenLabsVoice, error) {
+	if apiBase == "" {
+		apiBase = "https://api.elevenlabs.io"
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimSuffix(apiBase, "/")+"/v1/voices", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("xi-api-key", apiKey)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("elevenlabs unreachable: %s", redactSecret(err.Error(), apiKey))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("elevenlabs voices: HTTP %d", resp.StatusCode)
+	}
+	var payload struct {
+		Voices []struct {
+			VoiceID  string `json:"voice_id"`
+			Name     string `json:"name"`
+			Category string `json:"category"`
+		} `json:"voices"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&payload); err != nil {
+		return nil, err
+	}
+	voices := make([]ElevenLabsVoice, 0, len(payload.Voices))
+	for _, v := range payload.Voices {
+		if v.VoiceID == "" || v.Name == "" {
+			continue
+		}
+		voices = append(voices, ElevenLabsVoice{ID: v.VoiceID, Name: v.Name, Category: v.Category})
+	}
+	return voices, nil
+}
+
+// piperCatalogueURL is where Piper publishes every voice it has — the same
+// catalogue the local speech installer resolves against.
+const piperCatalogueURL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/voices.json?download=true"
+
+// PiperVoice is one catalogue voice that fits a language.
+type PiperVoice struct {
+	Key     string // e.g. "es_MX-ald-medium"
+	Quality string
+	Exact   bool // matches the exact locale, not just the language family
+}
+
+// ListPiperVoices fetches Piper's catalogue and returns the voices for a
+// language, exact locale first, then the family at large — the same widening
+// the installer's own resolver does. An error is informational: the caller
+// keeps letting the installer pick.
+func ListPiperVoices(ctx context.Context, client *http.Client, catalogueURL, language string) ([]PiperVoice, error) {
+	if catalogueURL == "" {
+		catalogueURL = piperCatalogueURL
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, catalogueURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("piper catalogue: HTTP %d", resp.StatusCode)
+	}
+	var catalogue map[string]struct {
+		Quality  string `json:"quality"`
+		Language struct {
+			Code string `json:"code"`
+		} `json:"language"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&catalogue); err != nil {
+		return nil, err
+	}
+
+	family := strings.ToLower(strings.SplitN(strings.SplitN(language, "-", 2)[0], "_", 2)[0])
+	wanted := strings.ToLower(strings.ReplaceAll(language, "-", "_"))
+	var voices []PiperVoice
+	for key, entry := range catalogue {
+		code := strings.ToLower(entry.Language.Code)
+		if code != wanted && strings.SplitN(code, "_", 2)[0] != family {
+			continue
+		}
+		voices = append(voices, PiperVoice{Key: key, Quality: entry.Quality, Exact: code == wanted})
+	}
+	// Exact locale first, then the quality ladder the installer uses, then
+	// the name — deterministic, so the menu reads the same every run.
+	rank := map[string]int{"medium": 0, "low": 1, "x_low": 2, "high": 3}
+	sort.Slice(voices, func(i, j int) bool {
+		if voices[i].Exact != voices[j].Exact {
+			return voices[i].Exact
+		}
+		ri, ok := rank[voices[i].Quality]
+		if !ok {
+			ri = len(rank)
+		}
+		rj, ok := rank[voices[j].Quality]
+		if !ok {
+			rj = len(rank)
+		}
+		if ri != rj {
+			return ri < rj
+		}
+		return voices[i].Key < voices[j].Key
+	})
+	return voices, nil
+}

@@ -175,6 +175,24 @@ func (s *speechSupervisor) adopt(choices SpeechChoices) {
 	}
 }
 
+// needsPrepare reports whether the weights the server would load are settled:
+// unchosen halves need choosing, and a voice named in the config — by the
+// wizard's picker or a hand edit — needs its files actually on disk, or the
+// server would crash-loop against a voice it cannot load.
+func (s *speechSupervisor) needsPrepare() bool {
+	if s.needSTT && s.cfg.WhisperModel == "" {
+		return true
+	}
+	if !s.needTTS {
+		return false
+	}
+	if s.cfg.PiperVoice == "" {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(speechDataDir(s.cfg, s.home), "piper", s.cfg.PiperVoice+".onnx"))
+	return err != nil
+}
+
 func (s *speechSupervisor) spawnAndWait(ctx context.Context) error {
 	command, err := s.resolveCommand(ctx)
 	if err != nil {
@@ -185,7 +203,7 @@ func (s *speechSupervisor) spawnAndWait(ctx context.Context) error {
 	// changed in the config, say — so prepare runs whenever the server has not
 	// been told what to load. It settles the hardware question too, which is
 	// why a transcription-only tier needs it just as much as a voice does.
-	if (s.needTTS && s.cfg.PiperVoice == "") || (s.needSTT && s.cfg.WhisperModel == "") {
+	if s.needsPrepare() {
 		choices, prepErr := PrepareSpeech(ctx, s.home, s.language, s.cfg, s.needSTT, s.needTTS,
 			func(format string, args ...any) {
 				slog.Info("speech models: " + fmt.Sprintf(format, args...))

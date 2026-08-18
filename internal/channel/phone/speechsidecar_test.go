@@ -37,8 +37,22 @@ func fakeSpeechServer() {
 	_ = srv.ListenAndServe()
 }
 
+// plantVoice puts a voice's weights "on disk", so the supervisor sees a
+// prepared machine rather than something to download.
+func plantVoice(t *testing.T, home, voice string) {
+	t.Helper()
+	dir := filepath.Join(home, "speech", "piper")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, voice+".onnx"), []byte("weights"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // speechSupervisorFor builds a supervisor around the fake server, with the
-// engines already "installed" so the install path is not exercised here.
+// engines already "installed" and the voice's weights on disk so neither
+// install path is exercised here.
 func speechSupervisorFor(t *testing.T, mode string, mutate func(*SpeechConfig)) (*speechSupervisor, string) {
 	t.Helper()
 	home := t.TempDir()
@@ -53,10 +67,36 @@ func speechSupervisorFor(t *testing.T, mode string, mutate func(*SpeechConfig)) 
 	if mutate != nil {
 		mutate(&cfg)
 	}
+	plantVoice(t, home, cfg.PiperVoice)
 	s := newSpeechSupervisor(cfg, home, "es", "test-token", true, true)
 	s.probeInterval = 50 * time.Millisecond
 	t.Cleanup(s.stop)
 	return s, home
+}
+
+// A voice named in the config but absent from disk — the wizard's picker, or
+// a hand edit — must trigger the download instead of crash-looping the server.
+func TestSpeechSupervisorPreparesAConfiguredVoiceMissingFromDisk(t *testing.T) {
+	home := t.TempDir()
+	cfg := SpeechConfig{WhisperModel: "base", PiperVoice: "es_AR-daniela-high"}
+	s := newSpeechSupervisor(cfg, home, "es", "tok", true, true)
+	if !s.needsPrepare() {
+		t.Error("a voice with no weights on disk was treated as prepared")
+	}
+	plantVoice(t, home, "es_AR-daniela-high")
+	if s.needsPrepare() {
+		t.Error("a voice with weights on disk was re-prepared")
+	}
+
+	// The other reasons to prepare still hold.
+	unchosen := newSpeechSupervisor(SpeechConfig{PiperVoice: "es_AR-daniela-high"}, home, "es", "tok", true, true)
+	if !unchosen.needsPrepare() {
+		t.Error("an unchosen whisper model was treated as prepared")
+	}
+	sttOnly := newSpeechSupervisor(SpeechConfig{WhisperModel: "base"}, home, "es", "tok", true, false)
+	if sttOnly.needsPrepare() {
+		t.Error("a transcription-only tier wanted a voice download")
+	}
 }
 
 func TestSpeechSupervisorSpawnsTheServerAndPassesItsConfiguration(t *testing.T) {
@@ -357,6 +397,7 @@ func TestSpeechServerFacadeSupervisesTheServer(t *testing.T) {
 		WhisperModel: "base",
 		PiperVoice:   "en_US-lessac-medium",
 	}
+	plantVoice(t, home, cfg.PiperVoice)
 	s := NewSpeechServer(cfg, home, "en", "boot-token", true, true)
 	s.SetProbeInterval(50 * time.Millisecond)
 	t.Cleanup(s.Stop)
