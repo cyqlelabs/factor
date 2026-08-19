@@ -28,6 +28,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/gateway"
 	"github.com/cyqlelabs/factor/internal/memory"
+	"github.com/cyqlelabs/factor/internal/proxy"
 	"github.com/cyqlelabs/factor/internal/tray"
 	"github.com/cyqlelabs/factor/internal/tui"
 	"github.com/cyqlelabs/factor/internal/upgrade"
@@ -50,6 +51,10 @@ Usage:
 
 Flags:
   -c PATH      config file (default ~/.factor/config.json)
+  -p ADDR      route HTTP through a proxy (e.g. -p 127.0.0.1:8080) so every
+               provider call can be inspected; loopback and the browser are
+               left alone. mitmproxy's CA is trusted when installed, or name
+               another with --proxy-ca.
   -d           gateway: run in the background (logs to ~/.factor/gateway.log)
   -y           init: skip the wizard and accept the defaults
   --no-install init: never install smrti, desktop helpers, or a browser
@@ -59,6 +64,8 @@ Flags:
 func main() {
 	fs := flag.NewFlagSet("factor", flag.ExitOnError)
 	configPath := fs.String("c", "", "config file path")
+	proxyAddr := fs.String("p", "", "route HTTP through this proxy")
+	proxyCA := fs.String("proxy-ca", "", "certificate authority the proxy signs with")
 	message := fs.String("m", "", "one-shot message")
 	sessionName := fs.String("s", "main", "session name")
 	daemon := fs.Bool("d", false, "gateway: run in the background")
@@ -73,6 +80,17 @@ func main() {
 		cmd, args = args[0], args[1:]
 	}
 	_ = fs.Parse(args)
+
+	// Before anything builds an HTTP client or spawns a sidecar: the proxy is
+	// read from the environment once, and the children inherit it.
+	if *proxyAddr != "" {
+		line, perr := proxy.Use(*proxyAddr, *proxyCA)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "factor: %v\n", perr)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, "factor: "+line)
+	}
 
 	var err error
 	switch cmd {

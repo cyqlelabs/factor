@@ -98,7 +98,19 @@ factor gateway -d                          # the same, detached from this termin
 factor talk                                # push-to-talk: arm the PC voice microphone
 factor status                              # daemon / provider / memory / phone / voice / desktop health
 factor upgrade                             # replace this binary with the newest release
+factor -p 127.0.0.1:8080                   # route HTTP through a proxy and watch every call
 ```
+
+`-p` sends Factor's HTTP through any proxy — mitmproxy, Burp, ZAP, a corporate
+egress, a SOCKS5 listener — so you can read the LLM traffic it is actually
+sending: prompts, tool schemas, replies, token counts. Loopback is left direct,
+so the memory and speech sidecars are not caught in the capture, and every child
+process inherits the setting, which is how smrti's own extraction calls show up
+too. A proxy that intercepts TLS needs its certificate authority trusted:
+`--proxy-ca /path/to/ca.pem`, or leave it out and Factor looks where mitmproxy
+and Burp put theirs. It probes once at startup, so a certificate it cannot trust
+is a sentence on the way in rather than an x509 error an hour later. The browser
+is not routed — it has its own trust store and its own proxy setting.
 
 On a desktop, the running gateway puts an icon in the system tray. Click it
 for a small status overview — version, uptime, memory health, connected
