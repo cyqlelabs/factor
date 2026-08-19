@@ -83,7 +83,12 @@ func main() {
 
 	// Before anything builds an HTTP client or spawns a sidecar: the proxy is
 	// read from the environment once, and the children inherit it.
+	var proxyArgs []string
 	if *proxyAddr != "" {
+		proxyArgs = append(proxyArgs, "-p", *proxyAddr)
+		if *proxyCA != "" {
+			proxyArgs = append(proxyArgs, "--proxy-ca", *proxyCA)
+		}
 		line, perr := proxy.Use(*proxyAddr, *proxyCA)
 		if perr != nil {
 			fmt.Fprintf(os.Stderr, "factor: %v\n", perr)
@@ -103,7 +108,7 @@ func main() {
 	case "upgrade":
 		err = runUpgrade(*configPath, *checkOnly)
 	case "gateway":
-		err = runGateway(*configPath, *daemon)
+		err = runGateway(*configPath, *daemon, proxyArgs)
 	case "talk":
 		err = runTalk(*configPath)
 	case "":
@@ -125,9 +130,9 @@ func signalContext() (context.Context, context.CancelFunc) {
 // runGateway runs the daemon here, or hands it to a detached background
 // process when -d asks for that — in which case success means the child
 // confirmed it is serving, not that this process ran it.
-func runGateway(configPath string, detach bool) error {
+func runGateway(configPath string, detach bool, proxyArgs []string) error {
 	if detach {
-		pid, err := daemonize(configPath)
+		pid, err := daemonize(configPath, proxyArgs)
 		if err != nil {
 			return err
 		}

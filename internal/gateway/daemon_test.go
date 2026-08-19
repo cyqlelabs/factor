@@ -44,7 +44,7 @@ echo $$ > "$FACTOR_HOME/factor.pid"
 sleep 30
 `)
 
-	pid, err := Daemonize(filepath.Join(home, "config.json"))
+	pid, err := Daemonize(filepath.Join(home, "config.json"), []string{"-p", "127.0.0.1:9"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,10 @@ sleep 30
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "args: gateway -c " + filepath.Join(home, "config.json")
+	// The child got the real gateway invocation with the config path and the
+	// flags that configured this process: a detached gateway that quietly
+	// drops the proxy is a capture that records nothing.
+	want := "args: gateway -c " + filepath.Join(home, "config.json") + " -p 127.0.0.1:9"
 	if !strings.Contains(string(log), want) {
 		t.Errorf("log %q is missing %q", log, want)
 	}
@@ -78,7 +81,7 @@ func TestDaemonizeRefusesWhileGatewayRuns(t *testing.T) {
 	}
 	t.Cleanup(func() { daemonExecutable = old })
 
-	_, err := Daemonize("")
+	_, err := Daemonize("", nil)
 	if err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Errorf("Daemonize = %v, want an already-running refusal", err)
 	}
@@ -92,7 +95,7 @@ func TestDaemonizeReportsChildDeathFromTheLog(t *testing.T) {
 exit 3
 `)
 
-	_, err := Daemonize("")
+	_, err := Daemonize("", nil)
 	if err == nil || !strings.Contains(err.Error(), "factor: boom") {
 		t.Errorf("Daemonize = %v, want the child's last words", err)
 	}
@@ -106,7 +109,7 @@ func TestDaemonizeTimesOutOnSilentChild(t *testing.T) {
 sleep 30
 `)
 
-	_, err := Daemonize("")
+	_, err := Daemonize("", nil)
 	if err == nil || !strings.Contains(err.Error(), LogPath()) {
 		t.Errorf("Daemonize = %v, want a timeout naming the log", err)
 	}

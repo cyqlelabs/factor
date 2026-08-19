@@ -12,18 +12,26 @@ func TestRunGatewayDaemonizedReportsPidAndLog(t *testing.T) {
 	testHome(t)
 	old := daemonize
 	var gotPath string
-	daemonize = func(configPath string) (int, error) {
-		gotPath = configPath
+	var gotArgs []string
+	daemonize = func(configPath string, passthrough []string) (int, error) {
+		gotPath, gotArgs = configPath, passthrough
 		return 4242, nil
 	}
 	t.Cleanup(func() { daemonize = old })
 
-	out, err := captureStdout(t, func() error { return runGateway("custom.json", true) })
+	out, err := captureStdout(t, func() error {
+		return runGateway("custom.json", true, []string{"-p", "127.0.0.1:9090"})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "custom.json" {
 		t.Errorf("config path %q did not reach the daemonizer", gotPath)
+	}
+	// A detached gateway is a fresh process: a proxy that does not travel
+	// with it is a capture that quietly records nothing.
+	if strings.Join(gotArgs, " ") != "-p 127.0.0.1:9090" {
+		t.Errorf("proxy flags reached the daemonizer as %q", gotArgs)
 	}
 	if !strings.Contains(out, "4242") || !strings.Contains(out, gateway.LogPath()) {
 		t.Errorf("output %q is missing the pid or the log path", out)
@@ -45,7 +53,7 @@ func TestRunGatewayTakesTheTrayDownWithIt(t *testing.T) {
 	trayRun = func(string, func() []string, func()) { <-quit } // blocks like the real loop
 	gatewayRun = func(string) error { return errors.New("gateway ended") }
 
-	if err := runGateway("", false); err == nil || err.Error() != "gateway ended" {
+	if err := runGateway("", false, nil); err == nil || err.Error() != "gateway ended" {
 		t.Errorf("runGateway = %v, want the gateway's error", err)
 	}
 	select {
@@ -64,7 +72,7 @@ func TestRunGatewayWithoutATrayJustWaits(t *testing.T) {
 	served := false
 	gatewayRun = func(string) error { served = true; return nil }
 
-	if err := runGateway("", false); err != nil {
+	if err := runGateway("", false, nil); err != nil {
 		t.Errorf("runGateway = %v", err)
 	}
 	if !served {
@@ -75,10 +83,10 @@ func TestRunGatewayWithoutATrayJustWaits(t *testing.T) {
 func TestRunGatewayDaemonizedSurfacesFailure(t *testing.T) {
 	testHome(t)
 	old := daemonize
-	daemonize = func(string) (int, error) { return 0, errors.New("no dice") }
+	daemonize = func(string, []string) (int, error) { return 0, errors.New("no dice") }
 	t.Cleanup(func() { daemonize = old })
 
-	if err := runGateway("", true); err == nil || !strings.Contains(err.Error(), "no dice") {
+	if err := runGateway("", true, nil); err == nil || !strings.Contains(err.Error(), "no dice") {
 		t.Errorf("runGateway = %v, want the daemonizer's error", err)
 	}
 }

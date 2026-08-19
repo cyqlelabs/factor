@@ -172,6 +172,10 @@ func (t *recallTool) Execute(ctx context.Context, args map[string]any) *tools.Re
 		if m.Space != "" {
 			space = " | " + m.Space
 		}
+		if strings.TrimSpace(m.Content) == "" {
+			// concept atoms carry their text in the label
+			m.Content = m.Label
+		}
 		fmt.Fprintf(&b, "[%s | %s%s | salience %.2f | confidence %.2f | valence %+.2f] %s\n",
 			m.Type, m.Severity, space, m.Salience, m.Confidence, m.Valence, m.Content)
 	}

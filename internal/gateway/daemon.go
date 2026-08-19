@@ -30,7 +30,11 @@ var daemonExecutable = os.Executable
 // this terminal and reports its pid once it is up. The pid comes from the pid
 // file rather than the spawn: writePidFile records the writer's own pid, and
 // it is the child, not this process, that serves.
-func Daemonize(configPath string) (int, error) {
+// passthrough carries the flags that must survive the re-spawn. A detached
+// gateway is a fresh process, so anything that configured this one — the
+// proxy above all — has to be handed over on its command line, or the child
+// runs without it and the log says nothing about the difference.
+func Daemonize(configPath string, passthrough []string) (int, error) {
 	if pid, alive := ReadPidFile(); alive {
 		return 0, fmt.Errorf("gateway already running (pid %d)", pid)
 	}
@@ -51,6 +55,7 @@ func Daemonize(configPath string) (int, error) {
 	if configPath != "" {
 		args = append(args, "-c", configPath)
 	}
+	args = append(args, passthrough...)
 	cmd := exec.Command(exe, args...)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	detach(cmd)

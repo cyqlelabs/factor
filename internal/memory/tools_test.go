@@ -219,6 +219,15 @@ func TestRecallTool(t *testing.T) {
 		}
 	}
 
+	// concept atoms carry their text in the label, not the content
+	engine.recalls = []Memory{{
+		Label: "Roxana", Type: "concept", Severity: SeverityContext,
+		Salience: 0.4, Confidence: 0.0, Valence: 0.3,
+	}}
+	if res := tool.Execute(context.Background(), map[string]any{"query": "familia"}); !strings.Contains(res.ForLLM, "Roxana") {
+		t.Errorf("label-only concept rendered blank: %q", res.ForLLM)
+	}
+
 	engine.recalls = nil
 	if res := tool.Execute(context.Background(), map[string]any{"query": "x"}); res.IsError || !strings.Contains(res.ForLLM, "No memories") {
 		t.Errorf("empty recall = %+v", res)
