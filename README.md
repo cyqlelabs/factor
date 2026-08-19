@@ -455,6 +455,13 @@ talking over a reply stops it mid-word, and if a turn is still thinking, it is
 cancelled — the new utterance owns the conversation. Windows capture isn't wired up
 yet; the channel says so instead of pretending.
 
+The local tier keeps to itself, and that took one fix: Piper runs its voices on
+onnxruntime, which bundles Microsoft's telemetry client and posts your OS build,
+CPU model, memory, network type and interpreter path to
+`mobile.events.data.microsoft.com` on every model load. Factor switches it off
+before Piper is imported. A speech tier chosen because it is local should not be
+introducing itself to anyone.
+
 A spoken turn is also told it is being heard rather than read, so the reply is
 composed to be said — no markdown, no bullet lists, no URLs spelled out — instead
 of being written for a screen and then stripped on the way to the speakers. The

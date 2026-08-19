@@ -392,3 +392,26 @@ func TestPrepareSpeechPassesConfigThroughTheEnvironment(t *testing.T) {
 		t.Errorf("the speech server script was not written: %v", err)
 	}
 }
+
+// The local speech tier is chosen by people who do not want their machine
+// talking to anyone. onnxruntime, which Piper runs its voices on, ships
+// Microsoft's telemetry client and posts device data on every model load, so
+// the embedded server has to switch it off — before it imports Piper, which
+// is what pulls onnxruntime in.
+func TestEmbeddedSpeechServerSilencesOnnxTelemetry(t *testing.T) {
+	script := string(speechServerScript)
+	// The indented call, not the definition — which also matches the bare
+	// name and would let this pass with the call site deleted.
+	mute := strings.Index(script, "\n        mute_onnx_telemetry()\n")
+	define := strings.Index(script, "def mute_onnx_telemetry")
+	piper := strings.Index(script, "from piper import PiperVoice")
+	if define < 0 || mute < 0 || piper < 0 {
+		t.Fatalf("landmarks missing: define=%d call=%d piper=%d", define, mute, piper)
+	}
+	if mute > piper {
+		t.Error("telemetry is disabled only after Piper has already loaded onnxruntime")
+	}
+	if !strings.Contains(script, "disable_telemetry_events") {
+		t.Error("the script never calls onnxruntime's own switch")
+	}
+}

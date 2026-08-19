@@ -97,6 +97,24 @@ _stt_lock = threading.Lock()
 _tts_lock = threading.Lock()
 
 
+
+def mute_onnx_telemetry() -> None:
+    """Stop onnxruntime posting device data to Microsoft.
+
+    Piper runs its voices on onnxruntime, which bundles Microsoft's 1DS
+    client and POSTs to mobile.events.data.microsoft.com on every model
+    load: OS build, CPU model, core count, memory, network type, stable
+    device and session GUIDs, the model file name, and the interpreter
+    path — which carries the user's name. A speech tier chosen because it
+    is local should not be introducing itself to anyone.
+    """
+    try:
+        import onnxruntime
+
+        onnxruntime.disable_telemetry_events()
+    except Exception as exc:  # an older build without the call, or no onnxruntime at all
+        log("could not disable onnxruntime telemetry", error=str(exc))
+
 def load_models() -> None:
     """Load both engines before the server reports itself healthy.
 
@@ -116,6 +134,7 @@ def load_models() -> None:
     )
 
     if PIPER_VOICE:
+        mute_onnx_telemetry()
         from piper import PiperVoice
 
         onnx = DATA_DIR / "piper" / f"{PIPER_VOICE}.onnx"
