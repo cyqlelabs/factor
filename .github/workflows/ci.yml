@@ -31,6 +31,11 @@ jobs:
       # not a red build.
       - name: install desktop test helpers
         continue-on-error: true
+        # Bounded, because this step is cosmetic and the job is not: without a
+        # limit a slow apt mirror hangs the run for hours, and the release
+        # behind it never happens. Missing helpers only cost the grid-vision
+        # tests, which skip themselves.
+        timeout-minutes: 5
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb scrot xdotool x11-apps
       - name: gofmt
         run: test -z "$(gofmt -l .)"
