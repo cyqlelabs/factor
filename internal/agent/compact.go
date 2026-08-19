@@ -169,19 +169,39 @@ func (l *Loop) compact(ctx context.Context, sessionKey string) error {
 	if prior != "" {
 		prompt += "\n\nEarlier summary (fold it in):\n" + prior
 	}
-	resp, err := l.chat.Chat(ctx, &provider.Request{
+	req := &provider.Request{
 		Messages: []provider.Message{
 			{Role: "system", Content: prompt},
 			{Role: "user", Content: transcript.String()},
 		},
 		MaxTokens: 1024,
-	})
+	}
+	resp, err := l.chat.Chat(ctx, req)
 	if err != nil {
 		return fmt.Errorf("summarize: %w", err)
+	}
+	// A summary that hit the token cap is cut mid-sentence, and the cut falls
+	// on the newest facts — the part compaction exists to keep. Ask once for
+	// a version that fits; if that also overflows, salvage the draft at its
+	// last complete line so no half-written fact is stored as truth.
+	if summaryTruncated(resp.FinishReason) {
+		req.Messages[0].Content = prompt + "\n\nYour summary was cut off by the length limit. Rewrite it at half the length: keep identifiers, decisions, and open tasks; drop everything else."
+		if retry, rerr := l.chat.Chat(ctx, req); rerr == nil && strings.TrimSpace(retry.Content) != "" && !summaryTruncated(retry.FinishReason) {
+			resp = retry
+		} else if i := strings.LastIndexByte(strings.TrimRight(resp.Content, "\n"), '\n'); i > 0 {
+			resp.Content = resp.Content[:i]
+		}
 	}
 
 	if err := l.sessions.SetSummaryAt(sessionKey, strings.TrimSpace(resp.Content), priorSkip+cut); err != nil {
 		return err
 	}
 	return l.sessions.Compact(sessionKey)
+}
+
+// summaryTruncated reports whether a finish reason means the reply hit the
+// token cap: OpenAI-compatible dialects say "length", native Anthropic says
+// "max_tokens" (stop reasons pass through the chain untranslated).
+func summaryTruncated(reason string) bool {
+	return reason == "length" || reason == "max_tokens"
 }

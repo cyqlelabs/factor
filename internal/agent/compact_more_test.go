@@ -164,6 +164,62 @@ func TestCompactFoldsPriorSummary(t *testing.T) {
 	}
 }
 
+func TestCompactRetriesTruncatedSummary(t *testing.T) {
+	h := newHarness(t)
+	key := "cli:truncated"
+	for i := range 12 {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		_ = h.store.Append(key, provider.Message{Role: role, Content: fmt.Sprintf("m%d", i)})
+	}
+	h.chat.script = []func(*provider.Request) (*provider.Response, error){
+		func(*provider.Request) (*provider.Response, error) {
+			return &provider.Response{Content: "draft\ncut mid-sen", FinishReason: "length"}, nil
+		},
+		func(req *provider.Request) (*provider.Response, error) {
+			if !strings.Contains(req.Messages[0].Content, "cut off by the length limit") {
+				t.Error("retry prompt does not ask for a shorter summary")
+			}
+			return &provider.Response{Content: "tight summary"}, nil
+		},
+	}
+	if err := h.loop.compact(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	if h.store.Summary(key) != "tight summary" {
+		t.Errorf("summary = %q, want the fitting retry stored", h.store.Summary(key))
+	}
+}
+
+func TestCompactSalvagesSummaryWhenRetryAlsoTruncates(t *testing.T) {
+	h := newHarness(t)
+	key := "cli:salvage"
+	for i := range 12 {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		_ = h.store.Append(key, provider.Message{Role: role, Content: fmt.Sprintf("m%d", i)})
+	}
+	h.chat.script = []func(*provider.Request) (*provider.Response, error){
+		func(*provider.Request) (*provider.Response, error) {
+			// Anthropic's spelling of the same condition must count too.
+			return &provider.Response{Content: "fact one\nfact two\ndangling frag", FinishReason: "max_tokens"}, nil
+		},
+		func(*provider.Request) (*provider.Response, error) {
+			return &provider.Response{Content: "still overflowing", FinishReason: "length"}, nil
+		},
+	}
+	if err := h.loop.compact(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.store.Summary(key); got != "fact one\nfact two" {
+		t.Errorf("summary = %q, want the draft trimmed at its last complete line", got)
+	}
+}
+
 func TestCompactIncludesToolNamesInTranscript(t *testing.T) {
 	h := newHarness(t)
 	key := "cli:tools"
