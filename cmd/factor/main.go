@@ -44,7 +44,7 @@ Usage:
   factor gateway         run the daemon (channels, cron, heartbeat)
   factor init            interactive setup wizard (provider, memory, channels)
   factor talk            push-to-talk: arm the PC voice channel's microphone
-  factor status          show daemon, provider, and memory status
+  factor status          show daemon, provider, memory, channel, and desktop status
   factor upgrade         install the newest release
   factor version         print version
 
