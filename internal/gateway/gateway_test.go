@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,13 +21,42 @@ import (
 
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	return freePorts(t, 1)[0]
+}
+
+// freePorts hands out n ports that are free and distinct from each other.
+//
+// Taking them one at a time does not: each listener is closed before the next
+// is opened, so the kernel is free to offer the same port again — and the
+// phone connector refuses a configuration whose bridge port collides with the
+// voice shell's, which turns that coincidence into a connector that never
+// starts and a test that fails for a reason nowhere near itself. Holding
+// every listener open until all of them are chosen is what makes them
+// distinct; they are only closed once the set is complete.
+func freePorts(t *testing.T, n int) []int {
+	t.Helper()
+	var listeners []net.Listener
+	defer func() {
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+	}()
+	ports := make([]int, 0, n)
+	for len(ports) < n {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		listeners = append(listeners, l)
+		port := l.Addr().(*net.TCPAddr).Port
+		// The voice shell's webhook sits one above its control port, so a
+		// neighbouring pair collides just as surely as an identical one.
+		if slices.ContainsFunc(ports, func(p int) bool { return p == port || p == port+1 || p+1 == port }) {
+			continue
+		}
+		ports = append(ports, port)
 	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	return port
+	return ports
 }
 
 func TestPidFileLifecycle(t *testing.T) {

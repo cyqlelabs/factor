@@ -140,7 +140,7 @@ func (t *recallTool) Parameters() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"query": map[string]any{"type": "string", "description": "What you are looking for, in plain language; matching is by meaning, not keywords"},
-			"top_k": map[string]any{"type": "integer", "description": "Max results (default 10)"},
+			"top_k": map[string]any{"type": "integer", "description": "Max results (default 20)"},
 			"space": spaceParam(),
 		},
 		"required": []any{"query"},
@@ -159,7 +159,11 @@ func (t *recallTool) Execute(ctx context.Context, args map[string]any) *tools.Re
 	// No confidence floor: an explicit search must reach everything still
 	// stored. A floor here reports "no memories found" for decayed facts the
 	// graph is still holding, which reads as data loss rather than fading.
-	mems, err := t.engine.Recall(ctx, tools.StringArg(args, "query"), tools.IntArg(args, "top_k", 10), 0, scope)
+	// The default width is generous for the same reason: a deliberate search
+	// is the recovery path for faded memories, and those rank below whatever
+	// the conversation just minted — a family fact asked about after a year
+	// sits under the question that asked, not over it.
+	mems, err := t.engine.Recall(ctx, tools.StringArg(args, "query"), tools.IntArg(args, "top_k", 20), 0, scope)
 	if err != nil {
 		return tools.Errorf("recall failed: %v", err)
 	}

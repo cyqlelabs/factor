@@ -313,24 +313,17 @@ func TestVoiceRunsAnUtteranceThroughTheLoopAndSpeaksTheReply(t *testing.T) {
 	if call.session != "voice:local" {
 		t.Errorf("session = %q", call.session)
 	}
-	if !contains(call.content, "hello there") {
-		t.Errorf("turn content = %q, want the transcript", call.content)
-	}
-	// The first turn of a boot carries the voice brief; it tells the agent
-	// its words will be spoken.
-	if !contains(call.content, "voice_write") {
-		t.Errorf("the first turn carries no brief: %q", call.content)
+	// The turn carries the user's words and nothing else: the spoken-reply
+	// briefing lives in the system prompt (channelBriefing), and anything
+	// prepended here would be stored as the user's own testimony and mined
+	// for entities by the memory engine.
+	if call.content != "hello there" {
+		t.Errorf("turn content = %q, want the bare transcript", call.content)
 	}
 
 	waitUntil(t, func() bool { return len(h.speaker.heard()) > 0 })
 	if texts := h.synthesized(); len(texts) == 0 || texts[len(texts)-1] != "as you wish" {
 		t.Errorf("synthesized = %v, want the reply", texts)
-	}
-
-	// The brief is per boot, not per turn.
-	h.say()
-	if second := h.turn(10 * time.Second); contains(second.content, "voice_write") {
-		t.Errorf("the second turn repeats the brief: %q", second.content)
 	}
 }
 

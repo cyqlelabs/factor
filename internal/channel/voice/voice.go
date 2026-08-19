@@ -51,13 +51,6 @@ const (
 	ttsChunkChars = 1200
 )
 
-// voiceBrief opens the first turn of a boot, so the agent knows how its words
-// will arrive. It is the same trick the phone bridge uses for outbound calls.
-const voiceBrief = "[Heard on this machine's microphone; your reply will be spoken aloud. " +
-	"Keep spoken replies short and conversational — no markdown, no lists. When the user asks " +
-	"for a written reply, or the content would be painful to listen to (code, lists, links, " +
-	"anything long), deliver it with the voice_write tool and keep the spoken reply to a sentence.]"
-
 // Voice is the PC voice connector. Like the phone it does not publish inbound
 // turns onto the bus: an utterance is synchronous — the user is standing
 // there — so each one runs directly through the agent loop, and talking over
@@ -110,7 +103,6 @@ type Voice struct {
 	turnCancel  context.CancelFunc
 	pttUntil    time.Time
 	windowUntil time.Time
-	briefed     bool
 }
 
 // New builds the connector from an already-decoded config section.
@@ -495,11 +487,6 @@ func (v *Voice) turn(parent context.Context, text string) {
 	v.turnID++
 	id := v.turnID
 	v.turnCancel = cancel
-	content := text
-	if !v.briefed {
-		v.briefed = true
-		content = voiceBrief + "\n\n" + text
-	}
 	v.mu.Unlock()
 	defer func() {
 		v.mu.Lock()
@@ -516,7 +503,7 @@ func (v *Voice) turn(parent context.Context, text string) {
 	notice := func(line string) {
 		v.spawn(func() { v.speak(ctx, line) })
 	}
-	reply, err := v.runner(ctx, content, sessionKey, notice)
+	reply, err := v.runner(ctx, text, sessionKey, notice)
 	if ctx.Err() != nil {
 		return // barged in on — the next utterance owns the conversation
 	}

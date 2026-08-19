@@ -93,6 +93,8 @@ func TestRunStartsThePhoneChannel(t *testing.T) {
 	cfg, _ := gatewayConfig(t)
 	shell := fakeVoiceShell(t)
 
+	// One allocation for both, so they cannot land on top of each other.
+	ports := freePorts(t, 2)
 	cfg.Channels = map[string]json.RawMessage{
 		"phone": json.RawMessage(fmt.Sprintf(`{
 			"user_number": "+15550001111",
@@ -104,7 +106,7 @@ func TestRunStartsThePhoneChannel(t *testing.T) {
 			"sidecar_port": %d,
 			"bridge_port": %d,
 			"control_api_base": %q
-		}`, freePort(t), freePort(t), shell.URL)),
+		}`, ports[0], ports[1], shell.URL)),
 	}
 	path := filepath.Join(config.Home(), "config.json")
 	if err := os.WriteFile(path, mustJSON(t, cfg), 0o600); err != nil {
