@@ -208,7 +208,7 @@ func PrepareSpeech(ctx context.Context, home, language string, cfg SpeechConfig,
 	ctx, cancel := context.WithTimeout(ctx, speechPrepareTimeout)
 	defer cancel()
 	out, err := runCmdEnv(ctx, []string{python, script, "--prepare"},
-		append(os.Environ(), "FACTOR_SPEECH_CONFIG="+string(blob)))
+		append(speechEnv(), "FACTOR_SPEECH_CONFIG="+string(blob)))
 	if err != nil {
 		return SpeechChoices{}, fmt.Errorf("could not prepare the speech models: %v\n%s",
 			err, lastLines(out, 12))

@@ -394,50 +394,49 @@ func TestPrepareSpeechPassesConfigThroughTheEnvironment(t *testing.T) {
 }
 
 // The local speech tier is chosen by people who do not want their machine
-// talking to anyone. onnxruntime, which the speech engines run on, ships
-// Microsoft's telemetry client and queues device data while it registers its
-// execution providers — during the import, before any model is loaded. The
-// switch therefore has to be thrown before the first import that pulls
-// onnxruntime in, and that is faster-whisper's VAD, not Piper. Getting this
-// order wrong still silences Piper and leaks everything anyway.
-func TestEmbeddedSpeechServerSilencesOnnxTelemetryBeforeAnyImport(t *testing.T) {
+// talking to anyone. onnxruntime, which both speech engines run on, posts the
+// machine to Microsoft as it initializes, and its own disable_telemetry_events()
+// cannot stop that — the events are logged while the environment is created,
+// before any call can be made against it (microsoft/onnxruntime#25573). Only
+// ORT_DISABLE_TELEMETRY, read before initialization, keeps the uploader and
+// the persistent device id from existing.
+func TestSpeechProcessIsBornWithTelemetryOff(t *testing.T) {
+	var got string
+	for _, entry := range speechEnv() {
+		if v, ok := strings.CutPrefix(entry, "ORT_DISABLE_TELEMETRY="); ok {
+			got = v
+		}
+	}
+	if got != "1" {
+		t.Errorf("ORT_DISABLE_TELEMETRY = %q in the speech process environment, want \"1\"", got)
+	}
+}
+
+// And the script sets it too, for a run that did not come from Factor. It has
+// to be module-level and above the third-party imports: onnxruntime arrives
+// transitively through them, and a switch thrown after that is a switch
+// thrown too late.
+func TestEmbeddedSpeechServerSetsTelemetryOffBeforeAnyImport(t *testing.T) {
 	script := string(speechServerScript)
-	if !strings.Contains(script, "disable_telemetry_events") {
-		t.Fatal("the script never calls onnxruntime's own switch")
+	// Column zero, so it runs when the module is imported rather than when
+	// some function is eventually called.
+	switchAt := strings.Index(script, "\nos.environ.setdefault(\"ORT_DISABLE_TELEMETRY\", \"1\")\n")
+	if switchAt < 0 {
+		t.Fatal("the script does not disable onnxruntime telemetry at module level")
 	}
-	if !strings.Contains(script, "def mute_onnx_telemetry") {
-		t.Fatal("the helper is gone")
+	// The first third-party import in the file: everything that can reach
+	// onnxruntime comes at or after this point.
+	firstThirdParty := strings.Index(script, "\nfrom fastapi import")
+	if firstThirdParty < 0 {
+		t.Fatal("the import block has changed shape; this test needs rewriting")
 	}
-	// Every import that reaches onnxruntime must be preceded by a call. The
-	// definition also matches the bare name, so the call is matched with its
-	// indentation.
-	for _, importer := range []string{
-		"from faster_whisper import WhisperModel",
-		"from piper import PiperVoice",
-	} {
-		for _, at := range indexesOf(script, importer) {
-			if !mutedBefore(script[:at]) {
-				t.Errorf("%q at offset %d is reached without disabling telemetry first", importer, at)
-			}
-		}
+	if switchAt > firstThirdParty {
+		t.Error("telemetry is switched off after the third-party imports have already run")
 	}
-}
-
-// mutedBefore reports whether the script disables telemetry somewhere in the
-// text leading up to an import.
-func mutedBefore(prefix string) bool {
-	return strings.Contains(prefix, "\n    mute_onnx_telemetry()\n") ||
-		strings.Contains(prefix, "\n        mute_onnx_telemetry()\n")
-}
-
-func indexesOf(haystack, needle string) []int {
-	var out []int
-	for at := 0; ; {
-		i := strings.Index(haystack[at:], needle)
-		if i < 0 {
-			return out
-		}
-		out = append(out, at+i)
-		at += i + len(needle)
+	// The call that cannot work must not come back and look like protection.
+	// Naming it in a comment is how the next reader learns why, so only an
+	// actual call counts.
+	if strings.Contains(script, ".disable_telemetry_events(") {
+		t.Error("the script calls disable_telemetry_events, which cannot stop initialization telemetry")
 	}
 }

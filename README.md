@@ -455,13 +455,16 @@ talking over a reply stops it mid-word, and if a turn is still thinking, it is
 cancelled — the new utterance owns the conversation. Windows capture isn't wired up
 yet; the channel says so instead of pretending.
 
-The local tier keeps to itself, and that took one fix: Piper runs its voices on
-onnxruntime, which bundles Microsoft's telemetry client and posts your OS build,
-CPU model, memory, network type and interpreter path to
-`mobile.events.data.microsoft.com`. Factor switches it off before the first
-import that loads onnxruntime — faster-whisper's voice-activity detector, which
-gets there before Piper does. A speech tier chosen because it is local should not be
-introducing itself to anyone.
+The local tier keeps to itself, and that took one fix: onnxruntime, which both
+speech engines run on, posts your OS build, CPU model, memory, network type, a
+persistent device id and the interpreter path (which carries your username) to
+`mobile.events.data.microsoft.com` as it initializes. Its own
+`disable_telemetry_events()` cannot stop that — the events are logged while the
+environment is being created, before any call can be made against it
+([onnxruntime#25573](https://github.com/microsoft/onnxruntime/issues/25573)) —
+so Factor sets `ORT_DISABLE_TELEMETRY=1` in the speech process's environment
+before it starts, which is the switch onnxruntime documents as keeping the
+uploader and the device id from existing at all.
 
 A spoken turn is also told it is being heard rather than read, so the reply is
 composed to be said — no markdown, no bullet lists, no URLs spelled out — instead

@@ -54,6 +54,20 @@ func newSpeechSupervisor(cfg SpeechConfig, home, language, token string, needSTT
 	}
 }
 
+// speechEnv is the environment the speech process is born with.
+//
+// onnxruntime, which both speech engines run on, posts the machine to
+// Microsoft the moment it initializes — OS build, CPU model, memory, network
+// type, a persistent device id, and the interpreter path, which carries the
+// user's name. Its own disable_telemetry_events() cannot stop that: the
+// events are logged while the environment is created, before any call can be
+// made against it (microsoft/onnxruntime#25573). Only ORT_DISABLE_TELEMETRY,
+// read before initialization, prevents the uploader and the device id from
+// existing at all, which is why it is set out here rather than in the script.
+func speechEnv() []string {
+	return append(os.Environ(), "ORT_DISABLE_TELEMETRY=1")
+}
+
 func (s *speechSupervisor) Healthy() bool { return s.healthy.Load() }
 
 func (s *speechSupervisor) Down() string {
@@ -225,7 +239,7 @@ func (s *speechSupervisor) spawnAndWait(ctx context.Context) error {
 	s.down.Store("")
 
 	cmd := exec.CommandContext(ctx, command, s.scriptPath)
-	cmd.Env = append(os.Environ(), "FACTOR_SPEECH_CONFIG="+string(blob))
+	cmd.Env = append(speechEnv(), "FACTOR_SPEECH_CONFIG="+string(blob))
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 

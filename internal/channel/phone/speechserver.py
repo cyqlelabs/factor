@@ -37,8 +37,19 @@ import wave
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, Response
+# Before any import that can reach onnxruntime, which both speech engines run
+# on. It posts the machine to Microsoft as it initializes — OS build, CPU
+# model, memory, network type, a persistent device id, and this interpreter's
+# path, which carries the user's name — and its own disable_telemetry_events()
+# cannot stop that, because the events are logged while the environment is
+# being created (microsoft/onnxruntime#25573). Only this, read before
+# initialization, keeps the uploader and the device id from existing at all.
+# Factor sets it when it spawns this server; the default is for a run started
+# any other way.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+
+from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile  # noqa: E402
+from fastapi.responses import JSONResponse, Response  # noqa: E402
 
 # ---------------------------------------------------------------- configuration
 
@@ -98,29 +109,6 @@ _tts_lock = threading.Lock()
 
 
 
-def mute_onnx_telemetry() -> None:
-    """Stop onnxruntime posting device data to Microsoft.
-
-    Piper runs its voices on onnxruntime, which bundles Microsoft's 1DS
-    client and POSTs to mobile.events.data.microsoft.com on every model
-    load: OS build, CPU model, core count, memory, network type, stable
-    device and session GUIDs, the model file name, and the interpreter
-    path — which carries the user's name. A speech tier chosen because it
-    is local should not be introducing itself to anyone.
-
-    This has to run before the first import that pulls onnxruntime in, which
-    is faster-whisper's VAD rather than Piper: the events that carry the
-    device data are queued while onnxruntime registers its execution
-    providers, and a switch thrown after that only silences what has not
-    been sent yet.
-    """
-    try:
-        import onnxruntime
-
-        onnxruntime.disable_telemetry_events()
-    except Exception as exc:  # an older build without the call, or no onnxruntime at all
-        log("could not disable onnxruntime telemetry", error=str(exc))
-
 def load_models() -> None:
     """Load both engines before the server reports itself healthy.
 
@@ -128,7 +116,6 @@ def load_models() -> None:
     load here is what keeps the first call of the day from opening with a
     twenty-second silence while a model is read off disk."""
     global _stt, _tts
-    mute_onnx_telemetry()
 
     from faster_whisper import WhisperModel
 
@@ -491,7 +478,6 @@ def prepare() -> None:
 
     if CFG.get("need_stt"):
         log("downloading the transcription model", model=model, device=device)
-        mute_onnx_telemetry()
         from faster_whisper import WhisperModel
 
         # Constructing it is what pulls the weights; doing it here means the
