@@ -30,6 +30,48 @@ func TestRunGatewayDaemonizedReportsPidAndLog(t *testing.T) {
 	}
 }
 
+// swapGatewaySeams isolates runGateway from the real daemon and the real
+// tray, restoring both after the test.
+func swapGatewaySeams(t *testing.T) {
+	t.Helper()
+	oldRun, oldTray, oldQuit := gatewayRun, trayRun, trayQuit
+	t.Cleanup(func() { gatewayRun, trayRun, trayQuit = oldRun, oldTray, oldQuit })
+}
+
+func TestRunGatewayTakesTheTrayDownWithIt(t *testing.T) {
+	swapGatewaySeams(t)
+	quit := make(chan struct{})
+	trayQuit = func() { close(quit) }
+	trayRun = func(string, func()) { <-quit } // blocks like the real loop
+	gatewayRun = func(string) error { return errors.New("gateway ended") }
+
+	if err := runGateway("", false); err == nil || err.Error() != "gateway ended" {
+		t.Errorf("runGateway = %v, want the gateway's error", err)
+	}
+	select {
+	case <-quit:
+	default:
+		t.Error("the gateway ended but the tray was not told to quit")
+	}
+}
+
+func TestRunGatewayWithoutATrayJustWaits(t *testing.T) {
+	// A headless session: trayRun comes straight back, and runGateway must
+	// still wait out the gateway rather than return before it.
+	swapGatewaySeams(t)
+	trayRun = func(string, func()) {}
+	trayQuit = func() {}
+	served := false
+	gatewayRun = func(string) error { served = true; return nil }
+
+	if err := runGateway("", false); err != nil {
+		t.Errorf("runGateway = %v", err)
+	}
+	if !served {
+		t.Error("runGateway returned without running the gateway")
+	}
+}
+
 func TestRunGatewayDaemonizedSurfacesFailure(t *testing.T) {
 	testHome(t)
 	old := daemonize

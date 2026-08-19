@@ -6,13 +6,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cyqlelabs/factor/internal/browser"
 	"github.com/cyqlelabs/factor/internal/config"
 )
 
 // The minimal complete flow (ollama provider, defaults everywhere), with the
-// autostart answer supplied explicitly by each test.
+// autostart answer supplied explicitly by each test. The browser questions
+// only exist in builds that carry the suite, so the script length follows
+// the build tag — a fixed list would land the autostart answer two prompts
+// early under -tags nobrowser.
 func autostartAnswers(answer string) []string {
-	return []string{"5", "llama3", "3", "3", "n", "n", "", "", "", answer}
+	base := []string{"5", "llama3", "3", "3", "n", "n", ""}
+	if browser.Available() {
+		base = append(base, "", "")
+	}
+	return append(base, answer)
 }
 
 func TestWizardInstallsAutostartOnYes(t *testing.T) {

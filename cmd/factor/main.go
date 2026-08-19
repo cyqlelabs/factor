@@ -28,6 +28,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/gateway"
 	"github.com/cyqlelabs/factor/internal/memory"
+	"github.com/cyqlelabs/factor/internal/tray"
 	"github.com/cyqlelabs/factor/internal/tui"
 	"github.com/cyqlelabs/factor/internal/upgrade"
 	"github.com/cyqlelabs/factor/internal/version"
@@ -107,15 +108,26 @@ func signalContext() (context.Context, context.CancelFunc) {
 // process when -d asks for that — in which case success means the child
 // confirmed it is serving, not that this process ran it.
 func runGateway(configPath string, detach bool) error {
-	if !detach {
-		return gateway.Run(configPath)
+	if detach {
+		pid, err := daemonize(configPath)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("gateway running in the background (pid %d) — logs at %s\n", pid, gateway.LogPath())
+		return nil
 	}
-	pid, err := daemonize(configPath)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("gateway running in the background (pid %d) — logs at %s\n", pid, gateway.LogPath())
-	return nil
+	// The tray owns the main goroutine — its event loop must run there on
+	// some platforms — so the gateway serves from a goroutine and its return
+	// takes the icon down with it. Where no tray can be shown, trayRun comes
+	// straight back and this reduces to waiting on the gateway.
+	done := make(chan error, 1)
+	go func() {
+		err := gatewayRun(configPath)
+		trayQuit()
+		done <- err // sent last, so a returned runGateway has nothing in flight
+	}()
+	trayRun(version.Version, gateway.RequestStop)
+	return <-done
 }
 
 func runInit(configPath string, nonInteractive, noInstall bool) error {
@@ -140,6 +152,9 @@ var (
 	applyRelease   = upgrade.Apply
 	restartGateway = gateway.SignalRestart
 	daemonize      = gateway.Daemonize
+	gatewayRun     = gateway.Run
+	trayRun        = tray.Run
+	trayQuit       = tray.Quit
 	updateEngine   = func(ctx context.Context, configPath string, checkOnly bool) error {
 		cfg, err := config.Load(configPath)
 		if err != nil || cfg.Memory.Mode == "off" {

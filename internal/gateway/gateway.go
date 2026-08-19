@@ -60,6 +60,19 @@ func writePidFile() error {
 // A seam: a test must not exec away the process running it.
 var relaunch = upgrade.Relaunch
 
+// stopRequests carries a stop asked from inside this process — the tray's
+// quit item — into serve's select, where it ends the daemon the way SIGTERM
+// does. Buffered, so the click that delivers it never blocks on the loop.
+var stopRequests = make(chan struct{}, 1)
+
+// RequestStop asks the gateway running in this process to shut down cleanly.
+func RequestStop() {
+	select {
+	case stopRequests <- struct{}{}:
+	default: // one request is all it takes
+	}
+}
+
 // Run starts the daemon and blocks until SIGINT/SIGTERM — or until an
 // upgrade asks it to reload, in which case it shuts down cleanly and then
 // execs the binary now on disk. The exec happens out here, after serve has
@@ -203,6 +216,8 @@ func serve(configPath string) (bool, error) {
 	reloading := false
 	select {
 	case <-ctx.Done():
+	case <-stopRequests:
+		cancel()
 	case req := <-restart:
 		slog.Info("restart requested", "reason", req.reason)
 		settle(ctx, a.Loop.Idle, a.Bus.PendingOutbound)

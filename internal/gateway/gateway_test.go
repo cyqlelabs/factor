@@ -190,6 +190,32 @@ func TestRunServesHealthAndShutsDownOnSignal(t *testing.T) {
 	}
 }
 
+func TestRunShutsDownOnRequestStop(t *testing.T) {
+	cfg, path := gatewayConfig(t)
+	healthURL := fmt.Sprintf("http://%s/health", net.JoinHostPort(cfg.Gateway.Host, strconv.Itoa(cfg.Gateway.Port)))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- Run(path) }()
+	if waitForHealth(t, healthURL, 20*time.Second) == nil {
+		t.Fatal("gateway never served /health")
+	}
+
+	// The tray's quit item ends the daemon the way SIGTERM does — cleanly,
+	// and without coming back.
+	RequestStop()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Run returned %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not return after RequestStop")
+	}
+	if _, err := os.Stat(pidPath()); !os.IsNotExist(err) {
+		t.Errorf("pid file not removed on shutdown: %v", err)
+	}
+}
+
 func TestRunRejectsSecondInstance(t *testing.T) {
 	_, path := gatewayConfig(t)
 	if err := writePidFile(); err != nil { // pretend a gateway is already up
