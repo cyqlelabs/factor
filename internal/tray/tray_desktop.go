@@ -42,9 +42,20 @@ func Run(version string, status func() []string, onQuit func()) {
 	defer func() { _ = recover() }()
 	started.Store(true)
 	stop := make(chan struct{})
+	// When the mark can be handed over differs by platform, and handing it
+	// over at the wrong moment loses it silently. Linux exports its
+	// StatusNotifierItem properties from whatever systray already holds, on a
+	// path that races the goroutine onReady runs on: an icon set from inside
+	// onReady loses that race and the item registers an empty pixmap, which
+	// the panel draws as a blank slot. Windows is the other way round — there
+	// is no window to hang an icon on until onReady runs.
+	if runtime.GOOS != "windows" {
+		identify(version)
+	}
 	systray.Run(func() {
-		systray.SetIcon(icon())
-		systray.SetTooltip("Factor " + version + " — running")
+		if runtime.GOOS == "windows" {
+			identify(version)
+		}
 		rows := make([]*systray.MenuItem, overviewRows)
 		for i := range rows {
 			rows[i] = systray.AddMenuItem("", "")
@@ -59,6 +70,13 @@ func Run(version string, status func() []string, onQuit func()) {
 		}()
 		go refreshOverview(rows, status, stop)
 	}, func() { close(stop) })
+}
+
+// identify gives the tray item the mark it is known by and the tooltip that
+// names the version behind it.
+func identify(version string) {
+	systray.SetIcon(icon())
+	systray.SetTooltip("Factor " + version + " — running")
 }
 
 // refreshOverview keeps the status rows current: once at startup, on every
