@@ -205,6 +205,7 @@ func (p *Anthropic) Chat(ctx context.Context, req *Request) (*Response, error) {
 	out := &Response{
 		FinishReason: parsed.StopReason,
 		Usage:        Usage{PromptTokens: parsed.Usage.InputTokens, CompletionTokens: parsed.Usage.OutputTokens},
+		Model:        p.model,
 	}
 	for _, block := range parsed.Content {
 		switch block.Type {

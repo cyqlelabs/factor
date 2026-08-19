@@ -617,6 +617,24 @@ func TestBarFitsTheTerminal(t *testing.T) {
 	}
 }
 
+func TestBarCarriesWhatTheSessionHasSpent(t *testing.T) {
+	c, _, _ := rawConsole(t)
+	c.color, c.width = true, func() int { return 120 }
+	spent := stripANSI(c.renderBar(Bar{Session: "main", Model: "some/model", Cost: "$0.42 of $5.00", Memory: "memory ✓"}))
+	if !strings.Contains(spent, "$0.42 of $5.00") {
+		t.Errorf("bar = %q, want the session spend on it", spent)
+	}
+	// The spend sits between the model and memory, next to what is charging for it.
+	if strings.Index(spent, "$0.42") < strings.Index(spent, "some/model") ||
+		strings.Index(spent, "$0.42") > strings.Index(spent, "memory") {
+		t.Errorf("bar order = %q", spent)
+	}
+	// Nothing counted leaves the bar as it was.
+	if quiet := stripANSI(c.renderBar(Bar{Session: "main", Model: "some/model"})); strings.Contains(quiet, "$") {
+		t.Errorf("an unmetered bar = %q", quiet)
+	}
+}
+
 // The voice meter joins the left side of the bar, coloured by its tone so a
 // glance says whether the agent is hearing, speaking, or deaf.
 func TestBarRendersTheVoiceMeter(t *testing.T) {

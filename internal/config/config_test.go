@@ -227,3 +227,52 @@ func TestIsToolEnabled(t *testing.T) {
 		t.Error("read_file should be enabled")
 	}
 }
+
+func TestCostStartsCountingButNeverCapping(t *testing.T) {
+	cfg := Default()
+	if !cfg.Cost.Track {
+		t.Error("tracking is off by default, so the status bar starts blank")
+	}
+	if !cfg.Cost.Budget.Off() {
+		t.Errorf("a cap was inherited rather than asked for: %+v", cfg.Cost.Budget)
+	}
+	if cfg.Cost.Budget.Period != "month" {
+		t.Errorf("default period = %q", cfg.Cost.Budget.Period)
+	}
+	if got := (BudgetConfig{GlobalUSD: 5}); got.Off() {
+		t.Error("a configured global cap reported itself off")
+	}
+}
+
+func TestCostNormalizesWhatWasHandEdited(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(
+		`{"cost":{"refresh_hours":0,"budget":{"period":"fortnight","session_usd":2}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cost.RefreshHours != 24 {
+		t.Errorf("refresh hours = %d, want the default back", cfg.Cost.RefreshHours)
+	}
+	if cfg.Cost.Budget.Period != "month" {
+		t.Errorf("period = %q, want an unknown one to fall back to month", cfg.Cost.Budget.Period)
+	}
+	if cfg.Cost.Budget.SessionUSD != 2 {
+		t.Errorf("session cap = %v, want the one that was written", cfg.Cost.Budget.SessionUSD)
+	}
+}
+
+func TestBudgetCapsCanComeFromTheEnvironment(t *testing.T) {
+	t.Setenv("FACTOR_BUDGET_SESSION_USD", "1.25")
+	t.Setenv("FACTOR_BUDGET_GLOBAL_USD", "40")
+	cfg, err := Load(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cost.Budget.SessionUSD != 1.25 || cfg.Cost.Budget.GlobalUSD != 40 {
+		t.Errorf("budget = %+v", cfg.Cost.Budget)
+	}
+}

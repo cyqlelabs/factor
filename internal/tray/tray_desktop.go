@@ -20,7 +20,7 @@ var started atomic.Bool
 // hidden while blank, because a menu item added later would land below the
 // quit item — so a source reporting more lines than this has the extras
 // dropped rather than misplaced.
-const overviewRows = 4
+const overviewRows = 5
 
 // refreshEvery is the floor on staleness for hosts that never report the
 // menu opening; an open refreshes immediately.

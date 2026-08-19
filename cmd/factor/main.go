@@ -412,7 +412,9 @@ func runChat(configPath, sessionName, message string) error {
 	defer stopVoice()
 
 	ui := newChatUI(con)
-	ui.bar = func() tui.Bar { return chatBar(sessionName, cfg.Provider.Model, a.Memory, meter) }
+	ui.bar = func() tui.Bar {
+		return chatBar(sessionName, cfg.Provider.Model, a.Cost.SessionLine(sessionKey), a.Memory, meter)
+	}
 	a.Loop.OnActivity(ui.activity)
 	ui.refreshBar()
 	// A live microphone meter needs a livelier bar than the memory dot does.
@@ -581,10 +583,11 @@ func (u *chatUI) watchBar(ctx context.Context, every time.Duration) {
 
 // chatBar is what the bar says: where you are, what is answering, and the
 // keys that are not guessable.
-func chatBar(session, model string, mem memory.Engine, meter func() voice.Meter) tui.Bar {
+func chatBar(session, model, spend string, mem memory.Engine, meter func() voice.Meter) tui.Bar {
 	bar := tui.Bar{
 		Session: session,
 		Model:   model,
+		Cost:    spend,
 		Hints:   []string{"alt+⏎ newline", "↑ history", "/quit"},
 	}
 	if mem != nil && mem.Enabled() {

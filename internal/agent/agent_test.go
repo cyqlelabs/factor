@@ -13,6 +13,7 @@ import (
 
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
+	"github.com/cyqlelabs/factor/internal/cost"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/session"
@@ -708,6 +709,63 @@ func TestProcessDirectSerializesPerSession(t *testing.T) {
 	for i, m := range history {
 		if m.Content == "second" && i != 4 {
 			t.Errorf("interleaved history: %d %+v", i, history)
+		}
+	}
+}
+
+// ctxChat records the session key each provider call carried, which is what
+// the cost meter bills against.
+type ctxChat struct {
+	inner ChatProvider
+	mu    sync.Mutex
+	keys  []string
+}
+
+func (c *ctxChat) Chat(ctx context.Context, req *provider.Request) (*provider.Response, error) {
+	c.mu.Lock()
+	c.keys = append(c.keys, tools.ToolContextFrom(ctx).SessionKey)
+	c.mu.Unlock()
+	return c.inner.Chat(ctx, req)
+}
+
+func TestBudgetCapIsAnsweredRatherThanReportedAsABreakage(t *testing.T) {
+	h := newHarness(t, func(*provider.Request) (*provider.Response, error) {
+		return nil, &cost.BudgetError{Scope: "session", Spent: 2, Limit: 1.5}
+	})
+	reply, err := h.loop.ProcessDirect(context.Background(), "hi", "cli:test")
+	if err != nil {
+		t.Fatalf("a cap the user set was raised as an error: %v", err)
+	}
+	if !strings.Contains(reply, "Budget cap reached") || !strings.Contains(reply, "session_usd") {
+		t.Errorf("reply = %q", reply)
+	}
+	h.loop.WaitBackground(2 * time.Second)
+	if len(h.engine.remembered) != 0 {
+		t.Errorf("a budget stop was written to memory: %v", h.engine.remembered)
+	}
+}
+
+func TestEveryCallOfATurnCarriesTheSessionItIsSpentFor(t *testing.T) {
+	h := newHarness(t, final("one"), final("two"), final("summary"))
+	h.loop.cfg.Agent.SummarizeAtMessages = 1 // compact after every turn
+	watched := &ctxChat{inner: h.loop.chat}
+	h.loop.chat = watched
+
+	for _, msg := range []string{"first", "second"} {
+		if _, err := h.loop.ProcessDirect(context.Background(), msg, "cli:test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.loop.WaitBackground(5 * time.Second)
+
+	watched.mu.Lock()
+	defer watched.mu.Unlock()
+	if len(watched.keys) < 3 {
+		t.Fatalf("calls = %v, want the compaction call among them", watched.keys)
+	}
+	for i, key := range watched.keys {
+		if key != "cli:test" {
+			t.Errorf("call %d ran under session %q, so its spend would be billed to nobody", i, key)
 		}
 	}
 }

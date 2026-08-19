@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/provider"
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 // estimateTokens is a cheap chars/4 heuristic with per-message overhead —
@@ -112,7 +113,10 @@ func (l *Loop) maybeCompactAsync(in turnInput) {
 		defer l.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		if err := l.compact(ctx, in.sessionKey); err != nil {
+		// Compaction is spent on this session's behalf, so it is billed to
+		// it: the turn that ended is gone, but the tool context is what
+		// tells the meter whose spend this is.
+		if err := l.compact(tools.WithToolContext(ctx, in.toolCtx), in.sessionKey); err != nil {
 			slog.Warn("compaction failed", "session", in.sessionKey, "error", err)
 		}
 	}()

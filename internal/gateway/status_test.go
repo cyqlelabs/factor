@@ -7,21 +7,26 @@ import (
 )
 
 func TestStatusLinesNameWhatRunsAndWhatDoesNot(t *testing.T) {
-	lines := statusLines("v1.2.3", 3*time.Minute, true, true, []string{"telegram", "voice"})
-	for i, want := range []string{"factor v1.2.3", "up 3m", "memory: healthy", "channels: telegram, voice"} {
+	lines := statusLines("v1.2.3", 3*time.Minute, true, true, []string{"telegram", "voice"}, "spend: $0.42 today · $12.30 all-time")
+	for i, want := range []string{"factor v1.2.3", "up 3m", "memory: healthy", "channels: telegram, voice", "spend: $0.42 today · $12.30 all-time"} {
 		if lines[i] != want {
 			t.Errorf("line %d = %q, want %q", i, lines[i], want)
 		}
 	}
 
-	lines = statusLines("dev", time.Second, false, false, nil)
+	lines = statusLines("dev", time.Second, false, false, nil, "")
 	if lines[2] != "memory: off" || lines[3] != "channels: none" {
 		t.Errorf("bare gateway lines = %q", lines)
+	}
+	// Nothing counted is not the same fact as nothing spent, so an empty
+	// spend line is left out rather than shown as zero.
+	if len(lines) != 4 {
+		t.Errorf("unmetered gateway lines = %q, want no spend row", lines)
 	}
 
 	// Healthy is only worth reporting for a memory that is on; an unhealthy
 	// one must say so rather than hide behind the version row.
-	if lines := statusLines("dev", time.Second, true, false, nil); lines[2] != "memory: unreachable" {
+	if lines := statusLines("dev", time.Second, true, false, nil, ""); lines[2] != "memory: unreachable" {
 		t.Errorf("sick memory reported as %q", lines[2])
 	}
 }

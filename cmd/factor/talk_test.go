@@ -178,14 +178,14 @@ func TestVoiceBarSegmentShowsEarsAndMouth(t *testing.T) {
 
 func TestChatBarCarriesTheVoiceMeter(t *testing.T) {
 	meter := func() voice.Meter { return voice.Meter{Ready: true, Level: 500, Floor: 120} }
-	bar := chatBar("main", "m", nil, meter)
+	bar := chatBar("main", "m", "", nil, meter)
 	if bar.Voice == "" || bar.VoiceTone != "hear" {
 		t.Errorf("bar voice = %q/%q", bar.Voice, bar.VoiceTone)
 	}
 	if bar.Hints[0] != "/talk" {
 		t.Errorf("hints = %v, want /talk first", bar.Hints)
 	}
-	if off := chatBar("main", "m", nil, nil); off.Voice != "" {
+	if off := chatBar("main", "m", "", nil, nil); off.Voice != "" {
 		t.Errorf("without voice the bar grew a meter: %q", off.Voice)
 	}
 }

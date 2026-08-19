@@ -160,7 +160,7 @@ func serve(configPath string) (bool, error) {
 	// engine.
 	setStatusSource(func() []string {
 		return statusLines(version.Version, time.Since(began),
-			a.Memory.Enabled(), a.Memory.Healthy(), manager.Names())
+			a.Memory.Enabled(), a.Memory.Healthy(), manager.Names(), a.Cost.OverviewLine())
 	})
 	defer setStatusSource(nil)
 

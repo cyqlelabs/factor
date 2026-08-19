@@ -51,6 +51,10 @@ type Response struct {
 	ToolCalls    []ToolCall
 	FinishReason string
 	Usage        Usage
+	// Model names who actually answered. The chain fails over between
+	// candidates, so the caller cannot infer it from configuration — and
+	// pricing a turn against the wrong model is worse than not pricing it.
+	Model string
 }
 
 // Provider is the single seam every LLM backend implements.

@@ -29,6 +29,7 @@ type Config struct {
 	Heartbeat     HeartbeatConfig            `json:"heartbeat"`
 	Gateway       GatewayConfig              `json:"gateway"`
 	Upgrade       UpgradeConfig              `json:"upgrade"`
+	Cost          CostConfig                 `json:"cost"`
 
 	path string
 }
@@ -230,6 +231,39 @@ type UpgradeConfig struct {
 	CheckIntervalHours int  `json:"check_interval_hours"`
 }
 
+// Price is what one model charges, in USD per million tokens — the unit
+// model pages quote, so a hand-written override reads the way it was copied.
+type Price struct {
+	Input  float64 `json:"input"`
+	Output float64 `json:"output"`
+}
+
+// BudgetConfig caps spend. Zero is no cap, on both scopes: a budget that
+// starts refusing turns is something you ask for, never something you
+// inherit. Period says what "global" counts — this day, this month, or
+// everything Factor has ever spent.
+type BudgetConfig struct {
+	SessionUSD float64 `json:"session_usd" env:"FACTOR_BUDGET_SESSION_USD"`
+	GlobalUSD  float64 `json:"global_usd" env:"FACTOR_BUDGET_GLOBAL_USD"`
+	Period     string  `json:"period"` // day | month | total
+}
+
+// Off reports that neither cap is set.
+func (b BudgetConfig) Off() bool { return b.SessionUSD <= 0 && b.GlobalUSD <= 0 }
+
+// CostConfig turns token counts into money. Tracking is on by default
+// because it costs nothing — every provider already reports the counts, and
+// a spend you cannot see is one you find out about on an invoice. Prices are
+// fetched from the model catalog and cached; an entry here overrides one for
+// a model the catalog does not carry (a private endpoint, a negotiated rate).
+type CostConfig struct {
+	Track        bool             `json:"track"`
+	Budget       BudgetConfig     `json:"budget"`
+	Prices       map[string]Price `json:"prices,omitempty"` // model id -> USD per million tokens
+	PricesURL    string           `json:"prices_url,omitempty"`
+	RefreshHours int              `json:"refresh_hours"`
+}
+
 // Home returns $FACTOR_HOME or ~/.factor.
 func Home() string {
 	if h := os.Getenv("FACTOR_HOME"); h != "" {
@@ -311,6 +345,7 @@ func Default() *Config {
 		Heartbeat: HeartbeatConfig{Enabled: true, IntervalMinutes: 30},
 		Gateway:   GatewayConfig{Host: "127.0.0.1", Port: 8720},
 		Upgrade:   UpgradeConfig{Check: true, CheckIntervalHours: 24},
+		Cost:      CostConfig{Track: true, Budget: BudgetConfig{Period: "month"}, RefreshHours: 24},
 	}
 }
 
@@ -416,9 +451,23 @@ func (c *Config) normalize() {
 	if c.Agent.ContextWindowTokens <= 0 {
 		c.Agent.ContextWindowTokens = 4 * c.Provider.MaxTokens
 	}
+	if c.Cost.RefreshHours <= 0 {
+		c.Cost.RefreshHours = 24
+	}
+	switch c.Cost.Budget.Period {
+	case "day", "month", "total":
+	default:
+		c.Cost.Budget.Period = "month"
+	}
 }
 
-// SecretValues returns every non-empty secret for output filtering.
+// minSecretLen is the floor for treating a configured value as a secret.
+// Filtering is a blind string replacement, so a one- or two-character "key"
+// would rewrite ordinary text wherever it appeared — "1.0k tokens" becoming
+// "1.0[redacted]". Nothing that authenticates anything is this short.
+const minSecretLen = 8
+
+// SecretValues returns every configured secret worth filtering out of output.
 func (c *Config) SecretValues() []string {
 	secrets := []string{c.Provider.APIKey, c.Memory.APIKey, c.Memory.ExtractAPIKey}
 	for _, f := range c.Provider.Fallbacks {
@@ -429,14 +478,12 @@ func (c *Config) SecretValues() []string {
 	}
 	for _, srv := range c.MCP.Servers {
 		for _, v := range srv.Env {
-			if len(v) >= 8 { // short values create false positives
-				secrets = append(secrets, v)
-			}
+			secrets = append(secrets, v)
 		}
 	}
 	out := secrets[:0]
 	for _, s := range secrets {
-		if s != "" {
+		if len(s) >= minSecretLen {
 			out = append(out, s)
 		}
 	}

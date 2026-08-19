@@ -35,9 +35,11 @@ func StatusLines() []string {
 }
 
 // statusLines renders the overview: what is running and for how long, whether
-// memory answers, and which connectors are up — the facts that say
-// "everything is fine" or name what is not, one per row.
-func statusLines(version string, up time.Duration, memOn, memHealthy bool, channels []string) []string {
+// memory answers, which connectors are up, and what the models have cost —
+// the facts that say "everything is fine" or name what is not, one per row.
+// An empty spend line is left out rather than shown as zero: nothing counted
+// is not the same fact as nothing spent.
+func statusLines(version string, up time.Duration, memOn, memHealthy bool, channels []string, spend string) []string {
 	mem := "memory: off"
 	if memOn {
 		if mem = "memory: healthy"; !memHealthy {
@@ -48,12 +50,16 @@ func statusLines(version string, up time.Duration, memOn, memHealthy bool, chann
 	if len(channels) > 0 {
 		chs = "channels: " + strings.Join(channels, ", ")
 	}
-	return []string{
+	lines := []string{
 		"factor " + version,
 		"up " + upWords(up),
 		mem,
 		chs,
 	}
+	if spend != "" {
+		lines = append(lines, spend)
+	}
+	return lines
 }
 
 // upWords says how long the daemon has been up, at the precision a glance

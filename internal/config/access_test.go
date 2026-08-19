@@ -387,3 +387,16 @@ func TestEnsureWorkspaceFailsOnFileCollision(t *testing.T) {
 		t.Error("EnsureWorkspace succeeded where the workspace path is a file")
 	}
 }
+
+func TestSecretValuesSkipsAnyShortCredential(t *testing.T) {
+	cfg := tempConfig(t)
+	cfg.Provider.APIKey = "k"
+	cfg.Memory.APIKey = "sk-long-enough"
+	// A one-character "key" would rewrite ordinary text wherever it appeared.
+	if got := cfg.FilterSecrets("1.0k tokens in"); got != "1.0k tokens in" {
+		t.Errorf("a short key corrupted output: %q", got)
+	}
+	if got := cfg.FilterSecrets("using sk-long-enough here"); strings.Contains(got, "sk-long-enough") {
+		t.Errorf("a real key survived filtering: %q", got)
+	}
+}

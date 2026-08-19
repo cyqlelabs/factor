@@ -36,6 +36,7 @@ what you said: it consolidates, prioritizes, and *never repeats a critical mista
 | ⚡ **Never keeps you waiting** | A turn opens with a line on what Factor is about to do, sent while the tools are still running — and long work becomes a background job it acks instantly, then messages you when the result lands, even mid-conversation |
 | 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations instead of queuing |
 | 🔁 **Provider failover that works** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with error classification, per-candidate cooldowns, and overflow-triggered compaction |
+| 💸 **Counts what it spends** | Every provider call is priced from the live model catalog and billed to the session that made it — in the chat status bar, in the tray, and in a `usage` tool — with per-session and global caps that refuse the next call rather than the one already paid for |
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning` (OpenRouter), `reasoning_effort` (OpenAI/Groq), or a `thinking` budget (Anthropic) |
 | ☎️ **Answers the phone** | A real number: call it and talk to Factor out loud, or have it call and text you — barge-in, voicemail detection, and a fully local speech tier if you want no audio leaving the machine ([Phone](#phone-calls-and-sms)) |
 | 🎙️ **Listens in the room** | Talk to the machine itself: mic in, speakers out, with barge-in, an optional wake word, and push-to-talk via `factor talk` — on the same speech tiers as the phone ([PC voice](#pc-voice-mic-and-speakers)) |
@@ -57,7 +58,7 @@ flowchart LR
     MIC <-->|synchronous turns| LOOP
     BUS[message bus] --> LOOP["agent loop · one live turn per session"]
     LOOP <-->|recall · store| MEM[("smrti REST sidecar")]
-    LOOP --> PROV["provider chain · failover · cooldowns · compaction"]
+    LOOP --> PROV["provider chain · cost meter · failover · cooldowns · compaction"]
     LOOP --> REG[tool registry]
     REG --- SUITES["fs · exec · web · browser · desktop · memory · jobs · cron · config · pkg · skills · MCP"]
     BG[jobs · cron · heartbeat] -.->|proactive results| BUS
@@ -181,11 +182,27 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
     "fast_path": false                       // opt in to the lightweight read-only engine
   },
   "heartbeat": { "enabled": true, "interval_minutes": 30 },
-  "upgrade": { "check": true, "check_interval_hours": 24 }   // report new releases; never install one unasked
+  "upgrade": { "check": true, "check_interval_hours": 24 },  // report new releases; never install one unasked
+  "cost": {
+    "track": true,                           // price every call; models served locally cost nothing
+    "budget": {
+      "session_usd": 0,                      // 0 = no cap, on both scopes
+      "global_usd": 0,
+      "period": "month"                      // what "global" counts: day | month | total
+    },
+    "prices": {}                             // USD per million tokens, for models the catalog does not list
+  }
 }
 ```
 
 </details>
+
+Spend is priced from the model catalog Factor caches in `~/.factor/pricing.json` and totalled
+in `~/.factor/usage.json`, per session and overall, so both survive a restart. A model this
+machine serves is free; one the catalog does not list is counted in tokens and left unpriced
+rather than guessed at. A cap is checked before the call it would pay for, and the turn answers
+with a line saying what stopped instead of failing. Ask for `usage` to see the breakdown;
+what the memory sidecar spends on its own extraction calls is not part of it.
 
 The workspace (`~/.factor/workspace`) is the agent's home. Its persona is built into
 the binary, so an upgrade improves it everywhere at once; `SOUL.md` layers your own

@@ -14,6 +14,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/browser"
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
+	"github.com/cyqlelabs/factor/internal/cost"
 	"github.com/cyqlelabs/factor/internal/cron"
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/jobs"
@@ -28,9 +29,12 @@ import (
 )
 
 type App struct {
-	Cfg      *config.Config
-	Bus      *bus.MessageBus
-	Chain    *provider.Chain
+	Cfg   *config.Config
+	Bus   *bus.MessageBus
+	Chain *provider.Chain
+	// Cost prices every provider call the loop makes and holds the budget
+	// caps; the CLI bar and the tray overview read their numbers from it.
+	Cost     *cost.Meter
 	Memory   memory.Engine
 	Ambient  *memory.Ambient
 	Registry *tools.Registry
@@ -71,6 +75,15 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("provider: %w", err)
 	}
 
+	// Everything the loop asks a provider goes through the meter, so
+	// compaction and wrap-up calls are billed alongside the ones the user
+	// can see, and a cap stops the turn before the next call is paid for.
+	catalog := cost.NewCatalog(cfg.Cost, cfg.Provider.Candidates(), filepath.Join(config.Home(), "pricing.json"))
+	meter := cost.NewMeter(chain, catalog, cost.NewLedger(filepath.Join(config.Home(), "usage.json")), cfg.Cost)
+	if meter.Active() {
+		go catalog.Watch(ctx)
+	}
+
 	extract := memory.DeriveExtract(cfg.Memory, cfg.Provider)
 	engine, err := memory.NewEngine(ctx, cfg.Memory, extract, filepath.Join(config.Home(), "logs"))
 	if err != nil {
@@ -101,6 +114,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(&skills.WriteTool{Root: skillsRoot})
 	registry.Register(&skills.RemoveTool{Root: skillsRoot})
 	registry.Register(tools.NewConfigTools(cfg)...)
+	registry.Register(cost.NewTool(meter)...)
 	registry.Register(tools.NewPkgInstallTool())
 	restarter := &upgrade.Restarter{}
 	// The engine is upgraded in place, so what gates it is the graph being
@@ -138,7 +152,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	loader := skills.NewLoader(filepath.Join(ws, "skills"), filepath.Join(config.Home(), "skills"))
 	builder := agent.NewContextBuilder(cfg, loader, ambient)
 	b := bus.New()
-	loop := agent.NewLoop(cfg, b, chain, registry, sessions, builder, ambient)
+	loop := agent.NewLoop(cfg, b, meter, registry, sessions, builder, ambient)
 
 	// Background jobs: completion events re-enter the originating session as
 	// inbound messages, so the agent proactively reports back to the user
@@ -176,6 +190,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Cfg:      cfg,
 		Bus:      b,
 		Chain:    chain,
+		Cost:     meter,
 		Memory:   engine,
 		Ambient:  ambient,
 		Registry: registry,

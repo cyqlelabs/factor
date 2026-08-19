@@ -1,0 +1,314 @@
+// Package cost prices what the agent spends. Every provider reports the
+// tokens a call used; this package turns those counts into dollars, keeps a
+// running ledger per session and overall, and refuses a turn once a budget
+// cap is reached.
+//
+// Prices come from the model catalog OpenRouter publishes — the one public
+// list that carries per-token rates for every major vendor — cached on disk
+// so a cold start is not a network round trip. Models served from this
+// machine are free by construction, and anything the catalog does not carry
+// is counted in tokens and left unpriced rather than guessed at.
+package cost
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/cyqlelabs/factor/internal/config"
+	"github.com/cyqlelabs/factor/internal/provider"
+)
+
+// Price is what one model charges, in USD per million tokens.
+type Price = config.Price
+
+// USD converts a token count into money.
+func usd(p Price, in, out int) float64 {
+	return (float64(in)*p.Input + float64(out)*p.Output) / 1e6
+}
+
+// DefaultPricesURL is the public model catalog: ids with per-token rates for
+// every vendor OpenRouter fronts, which is most of them.
+const DefaultPricesURL = "https://openrouter.ai/api/v1/models"
+
+// localTypes are the provider types that only ever serve models this machine
+// (or its LAN) is already paying for in electricity.
+var localTypes = map[string]bool{"ollama": true, "lmstudio": true, "llamacpp": true}
+
+// Local reports whether a candidate is served locally, and therefore costs
+// nothing per token. A type Factor knows to be local says so on its own; any
+// other type is judged by where its endpoint points.
+func Local(c config.Candidate) bool {
+	if localTypes[c.Type] {
+		return true
+	}
+	base := c.APIBase
+	if base == "" {
+		base = provider.DefaultAPIBase(c.Type)
+	}
+	return localEndpoint(base)
+}
+
+func localEndpoint(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" || strings.HasSuffix(host, ".local") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+// Catalog answers what a model costs. Overrides from config win, models
+// served locally are free, and everything else comes from the fetched
+// catalog — by exact id first, then by the vendor-and-date-insensitive form
+// that lets a native Anthropic model id find its OpenRouter twin.
+type Catalog struct {
+	path   string
+	url    string
+	ttl    time.Duration
+	client *http.Client
+	now    func() time.Time
+	after  func(time.Duration) <-chan time.Time
+
+	override map[string]Price // config, keyed by exact lowercased id
+	free     map[string]bool  // models a local candidate serves
+	paid     bool             // at least one candidate bills per token
+
+	mu      sync.RWMutex
+	byID    map[string]Price
+	byShort map[string]Price
+	fetched time.Time
+}
+
+// cacheFile is the on-disk pricing cache.
+type cacheFile struct {
+	FetchedAt time.Time        `json:"fetched_at"`
+	Source    string           `json:"source"`
+	Prices    map[string]Price `json:"prices"`
+}
+
+// NewCatalog builds the price book for one configuration. It reads whatever
+// the last fetch cached, so pricing works before — and without — a network
+// call.
+func NewCatalog(cfg config.CostConfig, candidates []config.Candidate, cachePath string) *Catalog {
+	c := &Catalog{
+		path:     cachePath,
+		url:      cfg.PricesURL,
+		ttl:      time.Duration(cfg.RefreshHours) * time.Hour,
+		client:   &http.Client{Timeout: 30 * time.Second},
+		now:      time.Now,
+		after:    time.After,
+		override: map[string]Price{},
+		free:     map[string]bool{},
+		byID:     map[string]Price{},
+		byShort:  map[string]Price{},
+	}
+	if c.url == "" {
+		c.url = DefaultPricesURL
+	}
+	if c.ttl <= 0 {
+		c.ttl = 24 * time.Hour
+	}
+	for id, p := range cfg.Prices {
+		c.override[strings.ToLower(strings.TrimSpace(id))] = p
+	}
+	for _, cand := range candidates {
+		if cand.Model == "" {
+			continue
+		}
+		if Local(cand) {
+			c.free[strings.ToLower(cand.Model)] = true
+			continue
+		}
+		c.paid = true
+	}
+	c.loadCache()
+	return c
+}
+
+// Paid reports whether any configured candidate bills per token — the answer
+// to "is this machine spending money when it thinks?".
+func (c *Catalog) Paid() bool { return c.paid }
+
+// Price returns what a model charges. ok is false when nothing prices it,
+// which the caller must report as unpriced rather than as free.
+func (c *Catalog) Price(model string) (Price, bool) {
+	key := strings.ToLower(strings.TrimSpace(model))
+	if key == "" {
+		return Price{}, false
+	}
+	if p, ok := c.override[key]; ok {
+		return p, true
+	}
+	if c.free[key] {
+		return Price{}, true
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if p, ok := c.byID[key]; ok {
+		return p, true
+	}
+	if p, ok := c.byShort[shortID(key)]; ok {
+		return p, true
+	}
+	return Price{}, false
+}
+
+// dateSuffix is the release stamp vendors append to a model id
+// (claude-sonnet-4-5-20250929, gpt-4o-2024-11-20).
+var dateSuffix = regexp.MustCompile(`-(\d{8}|\d{4}-\d{2}-\d{2}|latest|v\d+)$`)
+
+// shortID reduces a model id to the part two vendors are unlikely to share:
+// no routing vendor prefix, no variant suffix, no release date.
+func shortID(model string) string {
+	s := strings.ToLower(strings.TrimSpace(model))
+	if i := strings.IndexByte(s, ':'); i > 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		s = s[i+1:]
+	}
+	return dateSuffix.ReplaceAllString(s, "")
+}
+
+// Fresh reports whether the cached catalog is young enough to skip a fetch.
+func (c *Catalog) Fresh() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.byID) > 0 && c.now().Sub(c.fetched) < c.ttl
+}
+
+// Refresh fetches the catalog and caches it. It is a no-op when nothing here
+// bills per token: a machine running only local models has no rates to look
+// up and no reason to phone out.
+func (c *Catalog) Refresh(ctx context.Context) error {
+	if !c.paid || c.Fresh() {
+		return nil
+	}
+	prices, err := c.fetch(ctx)
+	if err != nil {
+		return err
+	}
+	c.adopt(prices, c.now())
+	return c.saveCache(prices)
+}
+
+func (c *Catalog) fetch(ctx context.Context) (map[string]Price, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching model prices: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching model prices: %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return nil, fmt.Errorf("fetching model prices: %w", err)
+	}
+	var body struct {
+		Data []struct {
+			ID      string `json:"id"`
+			Pricing struct {
+				Prompt     string `json:"prompt"`
+				Completion string `json:"completion"`
+			} `json:"pricing"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, fmt.Errorf("decoding model prices: %w", err)
+	}
+	prices := make(map[string]Price, len(body.Data))
+	for _, m := range body.Data {
+		if m.ID == "" {
+			continue
+		}
+		// Rates arrive as USD per token, in decimal strings small enough that
+		// only a float parse reads them back.
+		in, err1 := strconv.ParseFloat(m.Pricing.Prompt, 64)
+		out, err2 := strconv.ParseFloat(m.Pricing.Completion, 64)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		prices[strings.ToLower(m.ID)] = Price{Input: in * 1e6, Output: out * 1e6}
+	}
+	if len(prices) == 0 {
+		return nil, fmt.Errorf("model price catalog at %s carried no priced models", c.url)
+	}
+	return prices, nil
+}
+
+// adopt installs a fetched catalog, building the short-id index alongside it.
+// A short id two vendors both claim at different rates is dropped: an
+// unpriced model is a gap the usage report names, while a wrong price is a
+// number nobody can tell is wrong.
+func (c *Catalog) adopt(prices map[string]Price, at time.Time) {
+	short := make(map[string]Price, len(prices))
+	clashed := map[string]bool{}
+	for id, p := range prices {
+		s := shortID(id)
+		if s == "" || clashed[s] {
+			continue
+		}
+		if prev, ok := short[s]; ok && prev != p {
+			delete(short, s)
+			clashed[s] = true
+			continue
+		}
+		short[s] = p
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.byID, c.byShort, c.fetched = prices, short, at
+}
+
+func (c *Catalog) loadCache() {
+	if c.path == "" {
+		return
+	}
+	data, err := os.ReadFile(c.path)
+	if err != nil {
+		return
+	}
+	var f cacheFile
+	if err := json.Unmarshal(data, &f); err != nil || len(f.Prices) == 0 {
+		return
+	}
+	c.adopt(f.Prices, f.FetchedAt)
+}
+
+func (c *Catalog) saveCache(prices map[string]Price) error {
+	if c.path == "" {
+		return nil
+	}
+	data, err := json.Marshal(cacheFile{FetchedAt: c.now(), Source: c.url, Prices: prices})
+	if err != nil {
+		return err
+	}
+	tmp := c.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, c.path)
+}

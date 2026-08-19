@@ -375,6 +375,7 @@ func layout(promptWidth, indentWidth, width int, buf []rune, cursor int) (rows, 
 type Bar struct {
 	Session string
 	Model   string
+	Cost    string // what this session has spent so far; "" leaves it out
 	Memory  string // "" leaves memory out entirely
 	// Voice is the microphone/speech meter ("" leaves it out); VoiceTone
 	// picks its color — "hear" while the mic carries speech, "speak" while
@@ -415,7 +416,7 @@ func (c *Console) renderBar(bar Bar) string {
 	if bar.Session != "" {
 		left = append(left, c.style(ansiBold, bar.Session))
 	}
-	for _, part := range []string{bar.Model, bar.Memory} {
+	for _, part := range []string{bar.Model, bar.Cost, bar.Memory} {
 		if part != "" {
 			left = append(left, part)
 		}

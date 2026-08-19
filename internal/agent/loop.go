@@ -10,6 +10,7 @@ import (
 
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
+	"github.com/cyqlelabs/factor/internal/cost"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/session"
@@ -224,6 +225,12 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, not
 		notice:     notice,
 		toolCtx:    tools.ToolContext{Channel: msg.Channel, ChatID: msg.ChatID, SessionKey: msg.SessionKey()},
 	}, t)
+	// A budget cap is a decision the user made, so it is answered rather
+	// than reported as a breakage — and left out of memory, since "you ran
+	// out of budget" is not a fact about the user worth recalling.
+	if stop := cost.BudgetStop(err); stop != "" {
+		return stop, nil
+	}
 	if err == nil && l.ambient != nil {
 		l.wg.Add(1)
 		go func() {

@@ -192,6 +192,7 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 		Content:      choice.Message.Content,
 		FinishReason: choice.FinishReason,
 		Usage:        Usage{PromptTokens: parsed.Usage.PromptTokens, CompletionTokens: parsed.Usage.CompletionTokens},
+		Model:        p.model,
 	}
 	for _, tc := range choice.Message.ToolCalls {
 		args := map[string]any{}
