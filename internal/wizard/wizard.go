@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/autostart"
 	"github.com/cyqlelabs/factor/internal/browser"
 	"github.com/cyqlelabs/factor/internal/channel/phone"
 	"github.com/cyqlelabs/factor/internal/channel/voice"
@@ -73,6 +74,13 @@ type Options struct {
 	// FastBrowserSupported reports whether this machine could run it at all.
 	EnsureFastBrowser    func(ctx context.Context, progress browser.Progress) (path string, installed bool, err error)
 	FastBrowserSupported func() (bool, string)
+
+	// The autostart trio: saying yes to "start Factor at login" is a request
+	// for a login entry, not for homework, so the wizard installs and removes
+	// the entry itself.
+	AutostartInstalled func() (mechanism string, ok bool)
+	InstallAutostart   func(ctx context.Context, configPath string) (mechanism string, err error)
+	RemoveAutostart    func(ctx context.Context) error
 }
 
 func (o *Options) defaults() {
@@ -122,6 +130,27 @@ func (o *Options) defaults() {
 			return browser.EnsureFastEngine(ctx, o.Home, progress)
 		}
 	}
+	if o.AutostartInstalled == nil {
+		o.AutostartInstalled = func() (string, bool) {
+			entry, ok := autostart.Installed(o.Desktop)
+			return entry.Mechanism, ok
+		}
+	}
+	if o.InstallAutostart == nil {
+		o.InstallAutostart = func(ctx context.Context, configPath string) (string, error) {
+			exe, err := os.Executable()
+			if err != nil {
+				return "", err
+			}
+			entry, err := autostart.Install(ctx, o.Desktop, exe, configPath)
+			return entry.Mechanism, err
+		}
+	}
+	if o.RemoveAutostart == nil {
+		o.RemoveAutostart = func(ctx context.Context) error {
+			return autostart.Uninstall(ctx, o.Desktop)
+		}
+	}
 	if o.InstallPackages == nil {
 		o.InstallPackages = func(ctx context.Context, packages []string) (string, error) {
 			args := make([]any, 0, len(packages))
@@ -141,12 +170,16 @@ func (o *Options) defaults() {
 // drive both sides of it without running as root.
 var geteuid = os.Geteuid
 
-const totalSteps = 5
+const totalSteps = 6
 
 type wiz struct {
 	cfg  *config.Config
 	ui   *UI
 	opts Options
+
+	// autostart is what stepAutostart arranged, in words for the summary;
+	// blank means the gateway only runs when asked to.
+	autostart string
 }
 
 // Run walks the user through setup and writes the config file at path
@@ -177,6 +210,7 @@ func Run(ctx context.Context, path string, opts Options) error {
 		w.stepMemory,
 		w.stepChannels,
 		w.stepDesktop,
+		w.stepAutostart,
 		w.stepFinish,
 	} {
 		if err := step(ctx); err != nil {
@@ -1980,10 +2014,64 @@ func (w *wiz) installDesktopHelpers(ctx context.Context, env desktop.Env, ctl de
 	return nil
 }
 
-// ---- step 5: save ----------------------------------------------------------
+// ---- step 5: autostart -----------------------------------------------------
+
+// stepAutostart offers to start the gateway at login. The default mirrors
+// what is already in place, so pressing Enter through the wizard never
+// changes how the machine boots — and declining while an entry exists
+// removes it, the same way declining a configured channel disables it.
+func (w *wiz) stepAutostart(ctx context.Context) error {
+	w.ui.Step(5, totalSteps, "Autostart")
+
+	mechanism, installed := w.opts.AutostartInstalled()
+	if installed {
+		w.ui.Info("Factor already starts at login (%s)", mechanism)
+	}
+	if w.opts.NoInstall && !installed {
+		w.ui.Note("skipped (--no-install) — start it by hand with: factor gateway -d")
+		return nil
+	}
+	enable, err := w.ui.Confirm("Start Factor automatically when you log in?", installed)
+	if err != nil {
+		return err
+	}
+	switch {
+	case enable && !installed:
+		mechanism, err := w.opts.InstallAutostart(ctx, w.autostartConfigPath())
+		if err != nil {
+			w.ui.Warn("could not set up autostart: %v", err)
+			w.ui.Note("start it by hand with: factor gateway -d")
+			return nil
+		}
+		w.autostart = "at login (" + mechanism + ")"
+		w.ui.Success("Factor will start at login (%s)", mechanism)
+	case enable:
+		w.autostart = "at login (" + mechanism + ")"
+		w.ui.Success("Factor keeps starting at login")
+	case installed:
+		if err := w.opts.RemoveAutostart(ctx); err != nil {
+			w.autostart = "at login (" + mechanism + ")"
+			w.ui.Warn("could not remove the autostart entry: %v", err)
+			return nil
+		}
+		w.ui.Success("Factor will no longer start at login")
+	}
+	return nil
+}
+
+// autostartConfigPath names the config for the login entry only when it is
+// not the one a fresh gateway would find on its own.
+func (w *wiz) autostartConfigPath() string {
+	if w.cfg.Path() == config.DefaultPath() {
+		return ""
+	}
+	return w.cfg.Path()
+}
+
+// ---- step 6: save ----------------------------------------------------------
 
 func (w *wiz) stepFinish(context.Context) error {
-	w.ui.Step(5, totalSteps, "Saving")
+	w.ui.Step(6, totalSteps, "Saving")
 
 	if err := config.EnsureWorkspace(w.cfg.Agent.Workspace); err != nil {
 		return err
@@ -2001,6 +2089,7 @@ func (w *wiz) stepFinish(context.Context) error {
 		{"channels", w.channelSummary()},
 		{"desktop", w.desktopSummary()},
 		{"browser", enabledLabel(w.cfg.Browser.Enabled)},
+		{"autostart", firstNonEmpty(w.autostart, "off")},
 		{"workspace", w.cfg.Agent.Workspace},
 	}
 	w.ui.Summary("Factor is ready", rows)

@@ -105,6 +105,12 @@ func newHarness(t *testing.T, answers ...string) *harness {
 			return filepath.Join(home, "engine", "lightpanda"), true, nil
 		},
 		FastBrowserSupported: func() (bool, string) { return true, "" },
+		// Never touch this box's login sequence from a test.
+		AutostartInstalled: func() (string, bool) { return "", false },
+		InstallAutostart: func(context.Context, string) (string, error) {
+			return "systemd user service", nil
+		},
+		RemoveAutostart: func(context.Context) error { return nil },
 		// Never touch the network or the machine's Python: tests that care
 		// about the install override this to observe what it was asked for.
 		InstallSpeech: func(_ context.Context, language, _ string, _, needTTS bool,
@@ -123,7 +129,16 @@ func newHarness(t *testing.T, answers ...string) *harness {
 
 func (h *harness) run() error {
 	h.t.Helper()
-	h.opts.UI = NewPlain(strings.NewReader(strings.Join(h.answers, "\n")+"\n"), &h.out)
+	// Every flow now ends at the autostart prompt, added after most of these
+	// scripts were written; a trailing default answer keeps them driving the
+	// same flow they always did. A test that cares about autostart answers it
+	// explicitly and this one goes unread, and an empty script stays empty —
+	// it asserts the EOF abort.
+	answers := h.answers
+	if len(answers) > 0 {
+		answers = append(answers, "")
+	}
+	h.opts.UI = NewPlain(strings.NewReader(strings.Join(answers, "\n")+"\n"), &h.out)
 	// A plain UI is not "interactive", which would divert Run to the quiet
 	// path; call the steps the way an interactive session does.
 	opts := h.opts
@@ -134,7 +149,7 @@ func (h *harness) run() error {
 	}
 	w := &wiz{cfg: cfg, ui: opts.UI, opts: opts}
 	for _, step := range []func(context.Context) error{
-		w.stepProvider, w.stepMemory, w.stepChannels, w.stepDesktop, w.stepFinish,
+		w.stepProvider, w.stepMemory, w.stepChannels, w.stepDesktop, w.stepAutostart, w.stepFinish,
 	} {
 		if err := step(context.Background()); err != nil {
 			return err
