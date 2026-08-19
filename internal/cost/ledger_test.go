@@ -75,6 +75,15 @@ func TestLedgerKeepsPendingCallsWhenTheWriteFails(t *testing.T) {
 	if err := l.Flush(); err == nil {
 		t.Error("flushing to an unwritable path reported success")
 	}
+	// The warning is said once, not on every call for as long as the disk
+	// stays broken.
+	if !l.warned {
+		t.Error("a ledger that cannot write said nothing about it")
+	}
+	l.Record("cli:main", "m", Totals{Input: 10, USD: 1, Calls: 1})
+	if len(l.pending) != 2 {
+		t.Errorf("pending = %d, want both calls held", len(l.pending))
+	}
 }
 
 func TestLedgerWithoutAPathCountsButPersistsNothing(t *testing.T) {

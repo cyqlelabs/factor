@@ -2,6 +2,7 @@ package cost
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"sort"
 	"sync"
@@ -90,6 +91,7 @@ type Ledger struct {
 	mu      sync.Mutex
 	book    book
 	pending []entry
+	warned  bool
 }
 
 // NewLedger opens the ledger at path, reading whatever is already there. A
@@ -113,14 +115,19 @@ func (l *Ledger) read() book {
 }
 
 // Record bills one provider call to a session and flushes it to disk. A
-// write that fails keeps the call pending, so the next one carries both.
+// write that fails keeps the call pending, so the next one carries both —
+// worth saying once, because the totals are then only as durable as the
+// process, but not worth saying on every call while the disk stays broken.
 func (l *Ledger) Record(sessionKey, model string, t Totals) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e := entry{at: l.now(), session: sessionKey, model: model, totals: t}
 	l.pending = append(l.pending, e)
 	apply(&l.book, e)
-	l.flushLocked()
+	if err := l.flushLocked(); err != nil && !l.warned {
+		l.warned = true
+		slog.Warn("usage totals are not reaching disk", "path", l.path, "error", err)
+	}
 }
 
 // Flush merges anything still pending into the file.

@@ -9,11 +9,11 @@ Commit messages follow [Conventional Commits v1.0.0](https://www.conventionalcom
 ## Commands
 
 ```bash
-make check                                  # full gate: vet + race tests + coverage ≥90% + gofmt check (what CI runs)
+make check                                  # gate: vet + race tests + coverage ≥90% + gofmt check
 go test ./internal/agent -run TestName      # single test
 make test-race                              # race detector (needs CGO_ENABLED=1; everything else is CGO-free)
 make cover                                  # statement coverage, fails under 90%
-make lint                                   # golangci-lint (.golangci.yml)
+make lint                                   # golangci-lint (.golangci.yml) — its own CI job, so `make check` alone is not enough
 make build                                  # local binary
 make build-tiny                             # -tags nobrowser strips the CDP browser suite (stubs in internal/browser/browser_stub.go)
 ```
