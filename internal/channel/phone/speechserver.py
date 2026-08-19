@@ -107,6 +107,12 @@ def mute_onnx_telemetry() -> None:
     device and session GUIDs, the model file name, and the interpreter
     path — which carries the user's name. A speech tier chosen because it
     is local should not be introducing itself to anyone.
+
+    This has to run before the first import that pulls onnxruntime in, which
+    is faster-whisper's VAD rather than Piper: the events that carry the
+    device data are queued while onnxruntime registers its execution
+    providers, and a switch thrown after that only silences what has not
+    been sent yet.
     """
     try:
         import onnxruntime
@@ -122,6 +128,7 @@ def load_models() -> None:
     load here is what keeps the first call of the day from opening with a
     twenty-second silence while a model is read off disk."""
     global _stt, _tts
+    mute_onnx_telemetry()
 
     from faster_whisper import WhisperModel
 
@@ -134,7 +141,6 @@ def load_models() -> None:
     )
 
     if PIPER_VOICE:
-        mute_onnx_telemetry()
         from piper import PiperVoice
 
         onnx = DATA_DIR / "piper" / f"{PIPER_VOICE}.onnx"
@@ -485,6 +491,7 @@ def prepare() -> None:
 
     if CFG.get("need_stt"):
         log("downloading the transcription model", model=model, device=device)
+        mute_onnx_telemetry()
         from faster_whisper import WhisperModel
 
         # Constructing it is what pulls the weights; doing it here means the

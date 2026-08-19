@@ -458,8 +458,9 @@ yet; the channel says so instead of pretending.
 The local tier keeps to itself, and that took one fix: Piper runs its voices on
 onnxruntime, which bundles Microsoft's telemetry client and posts your OS build,
 CPU model, memory, network type and interpreter path to
-`mobile.events.data.microsoft.com` on every model load. Factor switches it off
-before Piper is imported. A speech tier chosen because it is local should not be
+`mobile.events.data.microsoft.com`. Factor switches it off before the first
+import that loads onnxruntime — faster-whisper's voice-activity detector, which
+gets there before Piper does. A speech tier chosen because it is local should not be
 introducing itself to anyone.
 
 A spoken turn is also told it is being heard rather than read, so the reply is

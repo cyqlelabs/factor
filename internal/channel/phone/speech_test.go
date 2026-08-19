@@ -394,24 +394,50 @@ func TestPrepareSpeechPassesConfigThroughTheEnvironment(t *testing.T) {
 }
 
 // The local speech tier is chosen by people who do not want their machine
-// talking to anyone. onnxruntime, which Piper runs its voices on, ships
-// Microsoft's telemetry client and posts device data on every model load, so
-// the embedded server has to switch it off — before it imports Piper, which
-// is what pulls onnxruntime in.
-func TestEmbeddedSpeechServerSilencesOnnxTelemetry(t *testing.T) {
+// talking to anyone. onnxruntime, which the speech engines run on, ships
+// Microsoft's telemetry client and queues device data while it registers its
+// execution providers — during the import, before any model is loaded. The
+// switch therefore has to be thrown before the first import that pulls
+// onnxruntime in, and that is faster-whisper's VAD, not Piper. Getting this
+// order wrong still silences Piper and leaks everything anyway.
+func TestEmbeddedSpeechServerSilencesOnnxTelemetryBeforeAnyImport(t *testing.T) {
 	script := string(speechServerScript)
-	// The indented call, not the definition — which also matches the bare
-	// name and would let this pass with the call site deleted.
-	mute := strings.Index(script, "\n        mute_onnx_telemetry()\n")
-	define := strings.Index(script, "def mute_onnx_telemetry")
-	piper := strings.Index(script, "from piper import PiperVoice")
-	if define < 0 || mute < 0 || piper < 0 {
-		t.Fatalf("landmarks missing: define=%d call=%d piper=%d", define, mute, piper)
-	}
-	if mute > piper {
-		t.Error("telemetry is disabled only after Piper has already loaded onnxruntime")
-	}
 	if !strings.Contains(script, "disable_telemetry_events") {
-		t.Error("the script never calls onnxruntime's own switch")
+		t.Fatal("the script never calls onnxruntime's own switch")
+	}
+	if !strings.Contains(script, "def mute_onnx_telemetry") {
+		t.Fatal("the helper is gone")
+	}
+	// Every import that reaches onnxruntime must be preceded by a call. The
+	// definition also matches the bare name, so the call is matched with its
+	// indentation.
+	for _, importer := range []string{
+		"from faster_whisper import WhisperModel",
+		"from piper import PiperVoice",
+	} {
+		for _, at := range indexesOf(script, importer) {
+			if !mutedBefore(script[:at]) {
+				t.Errorf("%q at offset %d is reached without disabling telemetry first", importer, at)
+			}
+		}
+	}
+}
+
+// mutedBefore reports whether the script disables telemetry somewhere in the
+// text leading up to an import.
+func mutedBefore(prefix string) bool {
+	return strings.Contains(prefix, "\n    mute_onnx_telemetry()\n") ||
+		strings.Contains(prefix, "\n        mute_onnx_telemetry()\n")
+}
+
+func indexesOf(haystack, needle string) []int {
+	var out []int
+	for at := 0; ; {
+		i := strings.Index(haystack[at:], needle)
+		if i < 0 {
+			return out
+		}
+		out = append(out, at+i)
+		at += i + len(needle)
 	}
 }
