@@ -324,6 +324,7 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 	seg := newSegmenter(v.cfg.VADRatio, v.cfg.BargeRatio, v.cfg.SilenceMs)
 	frame := make([]byte, frameBytes)
 	barged := false
+	var utterStart time.Time
 	for {
 		if _, err := io.ReadFull(stream, frame); err != nil {
 			return err
@@ -345,6 +346,12 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 
 		playing := v.player.playing()
 		started, ended, utterance := seg.push(frame, playing)
+		if started {
+			// The activation windows are judged against this moment, not
+			// against when transcription finishes: a long sentence must not
+			// outlive the window it was begun in.
+			utterStart = time.Now()
+		}
 		if started && playing {
 			// A barge-in: hold the reply while the utterance is heard out,
 			// and remember the context — its transcript will carry the
@@ -365,7 +372,7 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 		}
 		slog.Debug("utterance captured", "ms", len(utterance)/2*1000/captureRate, "barge", wasBarge)
 		select {
-		case v.utts <- capturedUtterance{pcm: utterance, barged: wasBarge}:
+		case v.utts <- capturedUtterance{pcm: utterance, started: utterStart, barged: wasBarge}:
 		default:
 			slog.Warn("dropping an utterance: transcription is falling behind")
 			v.player.resume(ctx)
@@ -373,11 +380,13 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 	}
 }
 
-// capturedUtterance is one segment on its way to transcription; barged marks
-// one captured while the agent was speaking.
+// capturedUtterance is one segment on its way to transcription; started is
+// when its first frame opened the VAD, and barged marks one captured while
+// the agent was speaking.
 type capturedUtterance struct {
-	pcm    []byte
-	barged bool
+	pcm     []byte
+	started time.Time
+	barged  bool
 }
 
 // utteranceWorker transcribes and dispatches off the capture goroutine, so a
@@ -403,7 +412,7 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		v.player.resume(ctx)
 		return
 	}
-	dec := v.gate(text, utterance.barged)
+	dec := v.gate(text, utterance.started, utterance.barged)
 	// One line per detected utterance: what was heard and what became of it.
 	// This is what turns "I spoke and nothing happened" into a diagnosis —
 	// no line means the voice never reached the VAD, an empty text means the
@@ -438,20 +447,22 @@ type decision struct {
 	text        string
 }
 
-// gate decides an utterance's fate. barged marks one captured over the
-// agent's own voice: its transcript mixes the speakers' words with the
-// user's, so the wake word counts wherever it appears, not only up front.
-func (v *Voice) gate(text string, barged bool) decision {
+// gate decides an utterance's fate. started is when the user began the
+// utterance — the windows are held against that moment, because the seconds
+// the sentence itself and its transcription take are not the user hesitating.
+// barged marks one captured over the agent's own voice: its transcript mixes
+// the speakers' words with the user's, so the wake word counts wherever it
+// appears, not only up front.
+func (v *Voice) gate(text string, started time.Time, barged bool) decision {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return decision{}
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	now := time.Now()
 	// An armed push-to-talk admits the next utterance in any mode: it is the
 	// rescue for a wake word that misfires.
-	if now.Before(v.pttUntil) {
+	if started.Before(v.pttUntil) {
 		v.pttUntil = time.Time{}
 		return decision{accept: true, text: text}
 	}
@@ -461,12 +472,12 @@ func (v *Voice) gate(text string, barged bool) decision {
 	case activationWakeWord:
 		if stripped, ok := stripWakeWord(text, v.cfg.WakeWord, barged); ok {
 			if stripped == "" {
-				v.windowUntil = now.Add(v.followUp())
+				v.windowUntil = time.Now().Add(v.followUp())
 				return decision{acknowledge: true}
 			}
 			return decision{accept: true, text: stripped}
 		}
-		if now.Before(v.windowUntil) {
+		if started.Before(v.windowUntil) {
 			return decision{accept: true, text: text}
 		}
 		return decision{}

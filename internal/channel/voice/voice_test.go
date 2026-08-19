@@ -651,6 +651,12 @@ func TestVoiceChannelShape(t *testing.T) {
 	}
 }
 
+// gateNow judges an utterance that began this instant — the common case in
+// these tests, where capture latency is not what is being exercised.
+func (v *Voice) gateNow(text string, barged bool) decision {
+	return v.gate(text, time.Now(), barged)
+}
+
 func TestGateDecisions(t *testing.T) {
 	build := func(activation string) *Voice {
 		t.Setenv("FACTOR_HOME", t.TempDir())
@@ -664,50 +670,58 @@ func TestGateDecisions(t *testing.T) {
 	}
 
 	always := build("always")
-	if dec := always.gate("anything", false); !dec.accept || dec.text != "anything" {
+	if dec := always.gateNow("anything", false); !dec.accept || dec.text != "anything" {
 		t.Errorf("always: %+v", dec)
 	}
-	if dec := always.gate("  ", false); dec.accept {
+	if dec := always.gateNow("  ", false); dec.accept {
 		t.Error("an empty transcript was accepted")
 	}
 
 	ptt := build("push-to-talk")
-	if dec := ptt.gate("anything", false); dec.accept {
+	if dec := ptt.gateNow("anything", false); dec.accept {
 		t.Error("push-to-talk accepted without being armed")
 	}
 	ptt.mu.Lock()
 	ptt.pttUntil = time.Now().Add(time.Minute)
 	ptt.mu.Unlock()
-	if dec := ptt.gate("now", false); !dec.accept {
+	if dec := ptt.gateNow("now", false); !dec.accept {
 		t.Error("an armed push-to-talk rejected the utterance")
 	}
-	if dec := ptt.gate("again", false); dec.accept {
+	if dec := ptt.gateNow("again", false); dec.accept {
 		t.Error("one arm admitted two utterances")
 	}
 
 	wake := build("wake-word")
-	if dec := wake.gate("factor do the thing", false); !dec.accept || dec.text != "do the thing" {
+	if dec := wake.gateNow("factor do the thing", false); !dec.accept || dec.text != "do the thing" {
 		t.Errorf("wake word: %+v", dec)
 	}
-	if dec := wake.gate("do the thing", false); dec.accept {
+	if dec := wake.gateNow("do the thing", false); dec.accept {
 		t.Error("wake-word mode accepted an unaddressed utterance")
 	}
-	if dec := wake.gate("Factor", false); !dec.acknowledge || dec.accept {
+	if dec := wake.gateNow("Factor", false); !dec.acknowledge || dec.accept {
 		t.Errorf("the bare wake word should acknowledge: %+v", dec)
 	}
 	// The bare wake word opened the follow-up window.
-	if dec := wake.gate("do the thing", false); !dec.accept {
+	if dec := wake.gateNow("do the thing", false); !dec.accept {
 		t.Error("the follow-up window did not admit the next utterance")
 	}
 	wake.mu.Lock()
 	wake.windowUntil = time.Time{}
 	wake.mu.Unlock()
-	if dec := wake.gate("do the thing", false); dec.accept {
+	if dec := wake.gateNow("do the thing", false); dec.accept {
 		t.Error("a closed window still admitted utterances")
+	}
+	// A long sentence begun inside the window is admitted even though the
+	// window lapsed while it was being spoken and transcribed.
+	wake.mu.Lock()
+	wake.windowUntil = time.Now().Add(-time.Second)
+	wake.mu.Unlock()
+	if dec := wake.gate("do the thing", time.Now().Add(-2*time.Second), false); !dec.accept {
+		t.Error("an utterance was judged by when transcription finished, not when it began")
 	}
 	// Push-to-talk arms in wake-word mode too: the misfire rescue.
 	wake.ArmPTT()
-	if dec := wake.gate("no wake word here", false); !dec.accept {
+	if dec := wake.gateNow("no wake word here", false); !dec.accept {
 		t.Error("push-to-talk did not override the wake word")
 	}
 }
