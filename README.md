@@ -100,8 +100,8 @@ factor upgrade                             # replace this binary with the newest
 ```
 
 On a desktop, the running gateway puts an icon in the system tray. Click it
-for a small status overview — version and uptime, memory health, connected
-channels — and a quit item that stops the daemon cleanly. A headless box gets
+for a small status overview — version, uptime, memory health, connected
+channels, a row each — and a quit item that stops the daemon cleanly. A headless box gets
 no icon — and neither does macOS, whose tray would cost the build its CGO-free
 binaries.
 
@@ -340,8 +340,10 @@ channel report itself down instead. Silero voice-activity detection runs locally
 every tier.
 
 Roughly $0.04–0.06 per talk-minute on tier 1 plus your model's tokens, and about
-1.3¢ per SMS segment. Turns are not streamed yet, so a tool-using turn leans on the
-spoken filler while it works; simple questions land in the normal 1.5–3 s range.
+1.3¢ per SMS segment. The reply lands whole rather than token by token, but a
+tool-using turn still speaks: the line Factor says on its way to the answer is
+streamed into the live call while the tools run. Simple questions land in the normal
+1.5–3 s range.
 
 <details>
 <summary><b>Getting the line up, and the guardrails on it</b></summary>
