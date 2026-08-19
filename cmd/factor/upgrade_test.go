@@ -24,10 +24,22 @@ import (
 func stubUpgrade(t *testing.T, running string, latest func(context.Context) (upgrade.Release, error),
 	apply func(context.Context, upgrade.Release, upgrade.Progress) (string, error)) {
 	t.Helper()
+	// Neither is a live gateway on the machine running the tests: the pid
+	// lookup is pointed at an empty home, and a restart signal that escapes
+	// anyway fails the test. TestUpgradeInstalls once left both unguarded,
+	// and every test-suite run beside a running gateway SIGHUPed it into a
+	// restart. A test that wants the signal path overlays stubGateway.
+	testHome(t)
+	prevRestart := restartGateway
+	restartGateway = func(pid int) error {
+		t.Errorf("no gateway holds this home's pid file, yet pid %d was signalled", pid)
+		return nil
+	}
 	prevVersion, prevLatest, prevApply, prevEngine := version.Version, latestRelease, applyRelease, updateEngine
 	version.Version, latestRelease, applyRelease = running, latest, apply
 	updateEngine = func(context.Context, string, bool) error { return nil }
 	t.Cleanup(func() {
+		restartGateway = prevRestart
 		version.Version, latestRelease, applyRelease, updateEngine = prevVersion, prevLatest, prevApply, prevEngine
 	})
 }
