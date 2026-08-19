@@ -26,17 +26,26 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # The desktop grid-vision tests drive a real X server end to end. Without
-      # these helpers they skip themselves, so a hiccup here costs coverage,
-      # not a red build.
+      # The desktop grid-vision tests drive a real X server end to end, and a
+      # build that skipped them is a build whose desktop path nobody ran. So
+      # this is not best-effort: each attempt is bounded so a stalled mirror
+      # cannot hold the run (one did, for half an hour), it retries a
+      # transient failure, and if the helpers still will not install the job
+      # fails — no tag, no release, rather than a green tick over tests that
+      # never happened.
       - name: install desktop test helpers
-        continue-on-error: true
-        # Bounded, because this step is cosmetic and the job is not: without a
-        # limit a slow apt mirror hangs the run for hours, and the release
-        # behind it never happens. Missing helpers only cost the grid-vision
-        # tests, which skip themselves.
-        timeout-minutes: 5
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb scrot xdotool x11-apps
+        timeout-minutes: 12
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 120 sudo apt-get update && \
+               timeout 240 sudo apt-get install -y --no-install-recommends xvfb scrot xdotool x11-apps; then
+              exit 0
+            fi
+            echo "attempt $attempt did not install the helpers; retrying in 15s"
+            sleep 15
+          done
+          echo "the desktop test helpers could not be installed, so the grid-vision tests cannot run; failing rather than shipping untested"
+          exit 1
       - name: gofmt
         run: test -z "$(gofmt -l .)"
       - name: vet
