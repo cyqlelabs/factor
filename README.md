@@ -225,8 +225,21 @@ second engine for the cheap half:
 
 | Engine | Tools | Renders | Good for |
 |---|---|---|---|
-| **Chromium** — Helium, or the browser you already run | `browser_navigate` · `_read` · `_click` · `_fill` · `_screenshot` · `_eval` · `_back` | yes | anything interactive |
+| **Chromium** — Helium, or the browser you already run | `browser_navigate` · `_read` · `_scroll` · `_click` · `_fill` · `_screenshot` · `_eval` · `_back` | yes | anything interactive |
 | **Lightpanda** — opt-in, `browser.fast_path` | `browser_fetch` — title, text, links | never | reading a page for a fraction of the memory |
+
+**Browse as yourself.** Start your everyday browser with
+`--remote-debugging-port=9222` (or point `browser.attach_url` at it) and Factor
+attaches to that session instead of launching one of its own. It then sees the web
+the way you do — your logins, your cart, your cookies — and the sites that turn
+away a fresh automated profile serve it normally. A managed instance still works
+for everything else, and says in the log which one it took.
+
+A page read puts the main content first and the site navigation last, says how many
+controls it showed out of how many exist, and takes `filter` to narrow them — so a
+listing whose results sit behind two hundred nav links is still reachable, and a
+page that was truncated cannot be mistaken for a page that was empty. `browser_scroll`
+reaches the results that only load on the way down.
 
 Lightpanda runs the same JavaScript against a DOM and never starts a renderer, a GPU
 process, or a compositor. It cannot click, fill, or screenshot and it keeps no

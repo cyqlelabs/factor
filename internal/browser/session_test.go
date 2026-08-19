@@ -209,7 +209,7 @@ func TestBrowserToolsDeclareUsableSchemas(t *testing.T) {
 	defer closeFn()
 
 	want := []string{
-		"browser_navigate", "browser_read", "browser_click", "browser_fill",
+		"browser_navigate", "browser_read", "browser_scroll", "browser_click", "browser_fill",
 		"browser_screenshot", "browser_eval", "browser_back",
 	}
 	if len(suite) != len(want) {

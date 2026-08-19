@@ -27,7 +27,7 @@ type webFetchTool struct{ client *http.Client }
 
 func (t *webFetchTool) Name() string { return "web_fetch" }
 func (t *webFetchTool) Description() string {
-	return "Fetch a URL and return its readable text content (HTML is converted to text)."
+	return "Fetch a URL and return its readable text content (HTML is converted to text). It does not run JavaScript, so a modern site often answers with an empty shell: when the text comes back thin, blocked, or missing what was asked for, open the page with browser_navigate instead of reporting what the shell said."
 }
 func (t *webFetchTool) Parameters() map[string]any {
 	return map[string]any{
@@ -130,7 +130,7 @@ type webSearchTool struct {
 
 func (t *webSearchTool) Name() string { return "web_search" }
 func (t *webSearchTool) Description() string {
-	return "Search the web (DuckDuckGo). Returns titles, URLs, and snippets."
+	return "Search the web (DuckDuckGo). Returns titles, URLs, and snippets. Snippets are a starting point, not an answer: open the pages that matter."
 }
 func (t *webSearchTool) Parameters() map[string]any {
 	return map[string]any{

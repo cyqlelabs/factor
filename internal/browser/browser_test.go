@@ -128,3 +128,67 @@ func TestBrowserEndToEnd(t *testing.T) {
 		t.Errorf("screenshots on disk = %d", len(shots))
 	}
 }
+
+func TestElementHeaderSaysWhatItLeftOut(t *testing.T) {
+	shown := func(n int) []struct {
+		Ref      string `json:"ref"`
+		Tag      string `json:"tag"`
+		Type     string `json:"type"`
+		Label    string `json:"label"`
+		Selector string `json:"selector"`
+	} {
+		return make([]struct {
+			Ref      string `json:"ref"`
+			Tag      string `json:"tag"`
+			Type     string `json:"type"`
+			Label    string `json:"label"`
+			Selector string `json:"selector"`
+		}, n)
+	}
+	for _, tc := range []struct {
+		name       string
+		r          pageRead
+		want, deny string
+	}{
+		{"the whole page fits", pageRead{Elements: shown(5), MatchTotal: 5, ElementTotal: 5}, "5 shown;", "on the page"},
+		{"more than fit", pageRead{Elements: shown(100), MatchTotal: 422, ElementTotal: 422},
+			"100 shown of 422 on the page — narrow with filter, or raise limit", ""},
+		{"a filter that still overflows", pageRead{Elements: shown(3), MatchTotal: 12, ElementTotal: 400},
+			"3 shown of 12 matching, 400 on the page", ""},
+		{"a filter that fits", pageRead{Elements: shown(12), MatchTotal: 12, ElementTotal: 400},
+			"12 shown of 400 on the page, filtered", ""},
+	} {
+		got := elementHeader(&tc.r)
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%s: header = %q, want it to contain %q", tc.name, got, tc.want)
+		}
+		if tc.deny != "" && strings.Contains(got, tc.deny) {
+			t.Errorf("%s: header = %q, should not mention %q", tc.name, got, tc.deny)
+		}
+	}
+}
+
+func TestFormatReadReportsATruncatedPage(t *testing.T) {
+	full := formatRead(&pageRead{Title: "T", URL: "u", Text: "abc", TextTotal: 3})
+	if strings.Contains(full, "characters") || strings.Contains(full, "main content region") {
+		t.Errorf("a complete read claimed to be partial:\n%s", full)
+	}
+	cut := formatRead(&pageRead{Title: "T", URL: "u", Text: "abc", TextTotal: 9000, FromMain: true})
+	if !strings.Contains(cut, "showing 3 of 9000 characters") {
+		t.Errorf("a truncated read did not say so:\n%s", cut)
+	}
+	if !strings.Contains(cut, "main content region") {
+		t.Errorf("a read from the main region did not say where it came from:\n%s", cut)
+	}
+}
+
+func TestElementLimitStaysInsideWhatOneReadCanCarry(t *testing.T) {
+	for in, want := range map[int]int{
+		0: defaultElementLimit, -5: defaultElementLimit,
+		25: 25, maxElementLimit: maxElementLimit, 10000: maxElementLimit,
+	} {
+		if got := elementLimit(in); got != want {
+			t.Errorf("elementLimit(%d) = %d, want %d", in, got, want)
+		}
+	}
+}

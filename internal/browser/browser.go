@@ -13,11 +13,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -149,6 +151,11 @@ func (s *Session) ensure() (context.Context, error) {
 
 	var allocCtx context.Context
 	if attach != "" {
+		// The browser the user is already logged into is the one that sees
+		// the web the way they do: their cookies, their sessions, and a
+		// profile with history behind it, which the sites that turn away
+		// automation are far likelier to serve.
+		slog.Info("browser: attached to the browser already running here", "devtools", attach)
 		allocCtx, s.allocCancel = chromedp.NewRemoteAllocator(base, attach)
 	} else {
 		binary, err := FindBrowserBinary(s.cfg.Command)
@@ -183,6 +190,9 @@ func (s *Session) ensure() (context.Context, error) {
 		// Factor targets — can miss. The outer 45s guard below still bounds
 		// the whole start.
 		opts = append(opts, chromedp.WSURLReadTimeout(40*time.Second))
+		slog.Warn("browser: launching a profile of its own, which is logged in nowhere and which sites that block automation are likelier to refuse — "+
+			"start your own browser with --remote-debugging-port=9222, or point browser.attach_url at one, to browse as yourself",
+			"binary", binary)
 		allocCtx, s.allocCancel = chromedp.NewExecAllocator(base, opts...)
 	}
 
@@ -264,10 +274,19 @@ func (s *Session) selectorFor(refOrSelector string) string {
 
 // readScript enumerates page text and interactive elements with stable
 // generated selectors.
-const readScript = `(() => {
-  const els = document.querySelectorAll('a[href], button, input, select, textarea, [role=button], [onclick]');
-  const items = [];
-  let i = 0;
+// readTemplate renders the page for the model. The filter and limit are
+// spliced in as JSON literals by readPage.
+//
+// Two things here are the difference between a page the agent can work and a
+// page it can only describe. Elements inside the main content region come
+// first, because a listing page puts its skip links, shortcuts menu and
+// navigation first in the DOM — taking the first N in document order returns
+// the furniture and none of the results. And the text is read from that same
+// region when there is one, for the same reason.
+const readTemplate = `(() => {
+  const FILTER = %s, LIMIT = %s, MAX_TEXT = %s;
+  const sel = 'a[href], button, input, select, textarea, [role=button], [onclick]';
+  const main = document.querySelector('main, [role=main]');
   const cssPath = (el) => {
     const parts = [];
     while (el && el.nodeType === 1 && parts.length < 6) {
@@ -283,28 +302,75 @@ const readScript = `(() => {
     }
     return parts.join(' > ');
   };
-  for (const el of els) {
-    if (i >= 60) break;
+  const labelOf = (el) =>
+    (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.href || '')
+      .trim().replace(/\s+/g, ' ').slice(0, 80);
+
+  const visible = [];
+  for (const el of document.querySelectorAll(sel)) {
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) continue;
-    i++;
-    const label = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.href || '')
-      .trim().replace(/\s+/g, ' ').slice(0, 80);
-    items.push({ ref: 'e' + i, tag: el.tagName.toLowerCase(), type: el.type || '', label, selector: cssPath(el) });
+    visible.push(el);
   }
+  // Three tiers, content first: what the page is about, then the controls it
+  // offers over that content, then the site furniture wrapped around it. On a
+  // listing this is the difference between the first hundred refs being skip
+  // links and being results.
+  const CHROME = 'nav, aside, header, footer, [role=navigation], [role=complementary], [role=banner], [role=contentinfo], [role=search]';
+  const rank = (el) => {
+    const inMain = main ? main.contains(el) : true;
+    if (inMain && !el.closest(CHROME)) return 0;
+    return inMain ? 1 : 2;
+  };
+  const ordered = [];
+  for (const tier of [0, 1, 2]) { for (const el of visible) { if (rank(el) === tier) ordered.push(el); } }
+
+  const needle = FILTER.toLowerCase();
+  const matched = needle
+    ? ordered.filter((el) => (labelOf(el) + ' ' + (el.getAttribute('href') || '')).toLowerCase().includes(needle))
+    : ordered;
+
+  const items = matched.slice(0, LIMIT).map((el, i) => ({
+    ref: 'e' + (i + 1), tag: el.tagName.toLowerCase(), type: el.type || '',
+    label: labelOf(el), selector: cssPath(el),
+  }));
+
+  const region = main || document.body;
+  const text = (region ? region.innerText : '').replace(/\n{3,}/g, '\n\n');
   return {
     title: document.title,
     url: location.href,
-    text: (document.body ? document.body.innerText : '').replace(/\n{3,}/g, '\n\n').slice(0, 8000),
+    text: text.slice(0, MAX_TEXT),
+    textTotal: text.length,
+    fromMain: !!main,
     elements: items,
+    elementTotal: ordered.length,
+    matchTotal: matched.length,
   };
 })()`
 
+// maxTextChars is how much page text one read returns. pageRead.TextTotal
+// carries the length before the cut, which is what lets formatRead say a page
+// was truncated rather than leaving the model to assume it was short.
+const maxTextChars = 8000
+
+// Element budget for one read. The default is generous because the failure it
+// replaces was silent: a page with 560 controls handing back 60 of them, with
+// nothing in the output to say the other 500 existed.
+const (
+	defaultElementLimit = 100
+	maxElementLimit     = 300
+)
+
 type pageRead struct {
-	Title    string `json:"title"`
-	URL      string `json:"url"`
-	Text     string `json:"text"`
-	Elements []struct {
+	Title        string `json:"title"`
+	URL          string `json:"url"`
+	Text         string `json:"text"`
+	TextTotal    int    `json:"textTotal"`
+	FromMain     bool   `json:"fromMain"`
+	ElementTotal int    `json:"elementTotal"`
+	MatchTotal   int    `json:"matchTotal"`
+	Elements     []struct {
 		Ref      string `json:"ref"`
 		Tag      string `json:"tag"`
 		Type     string `json:"type"`
@@ -313,9 +379,29 @@ type pageRead struct {
 	} `json:"elements"`
 }
 
+// read returns the whole page at the default budget, which is what every
+// tool that ends by showing the user where it landed wants.
 func (s *Session) read(ctx context.Context) (*pageRead, error) {
+	return s.readPage(ctx, "", defaultElementLimit)
+}
+
+// elementLimit keeps a caller's budget inside what one read can usefully
+// carry: an absent or nonsense limit falls back to the default, and no limit
+// buys more than the page-sized ceiling.
+func elementLimit(limit int) int {
+	if limit <= 0 {
+		return defaultElementLimit
+	}
+	return min(limit, maxElementLimit)
+}
+
+func (s *Session) readPage(ctx context.Context, filter string, limit int) (*pageRead, error) {
+	filterJSON, _ := json.Marshal(filter)
+	limitJSON, _ := json.Marshal(elementLimit(limit))
+
 	var result pageRead
-	if err := s.run(ctx, 20*time.Second, chromedp.Evaluate(readScript, &result)); err != nil {
+	script := fmt.Sprintf(readTemplate, filterJSON, limitJSON, strconv.Itoa(maxTextChars))
+	if err := s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &result)); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -327,9 +413,20 @@ func (s *Session) read(ctx context.Context) (*pageRead, error) {
 	return &result, nil
 }
 
+// formatRead renders a read for the model, and says out loud what it left
+// out. A truncated page the model cannot tell is truncated is the difference
+// between "there are no results" and "the results are further down".
 func formatRead(r *pageRead) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s — %s\n\n%s\n\nInteractive elements (use refs with browser_click / browser_fill):\n", r.Title, r.URL, r.Text)
+	fmt.Fprintf(&b, "%s — %s\n", r.Title, r.URL)
+	if r.FromMain {
+		b.WriteString("(text read from the page's main content region)\n")
+	}
+	if r.TextTotal > len(r.Text) {
+		fmt.Fprintf(&b, "(showing %d of %d characters — browser_scroll or browser_eval can reach the rest)\n",
+			len(r.Text), r.TextTotal)
+	}
+	fmt.Fprintf(&b, "\n%s\n\n%s\n", r.Text, elementHeader(r))
 	for _, el := range r.Elements {
 		kind := el.Tag
 		if el.Type != "" {
@@ -338,6 +435,22 @@ func formatRead(r *pageRead) string {
 		fmt.Fprintf(&b, "  %s <%s> %q\n", el.Ref, kind, el.Label)
 	}
 	return b.String()
+}
+
+// elementHeader states the budget in the one place the model reads it, so a
+// page with more controls than fit reads as an invitation to narrow rather
+// than as the whole page.
+func elementHeader(r *pageRead) string {
+	head := fmt.Sprintf("Interactive elements (%d shown", len(r.Elements))
+	switch {
+	case r.MatchTotal > len(r.Elements) && r.MatchTotal < r.ElementTotal:
+		head += fmt.Sprintf(" of %d matching, %d on the page", r.MatchTotal, r.ElementTotal)
+	case r.MatchTotal > len(r.Elements):
+		head += fmt.Sprintf(" of %d on the page — narrow with filter, or raise limit", r.ElementTotal)
+	case r.MatchTotal < r.ElementTotal:
+		head += fmt.Sprintf(" of %d on the page, filtered", r.ElementTotal)
+	}
+	return head + "; use refs with browser_click / browser_fill):"
 }
 
 // Available reports whether this build carries the browser suite at all.
@@ -366,7 +479,7 @@ func Verify(ctx context.Context, cfg config.BrowserConfig) error {
 func NewTools(cfg config.BrowserConfig, workspace string) ([]tools.Tool, func()) {
 	s := NewSession(cfg, workspace)
 	suite := []tools.Tool{
-		&navigateTool{s}, &readTool{s}, &clickTool{s}, &fillTool{s},
+		&navigateTool{s}, &readTool{s}, &scrollTool{s}, &clickTool{s}, &fillTool{s},
 		&screenshotTool{s}, &evalTool{s}, &backTool{s},
 	}
 	if !cfg.FastPath {
@@ -383,7 +496,7 @@ type navigateTool struct{ s *Session }
 
 func (t *navigateTool) Name() string { return "browser_navigate" }
 func (t *navigateTool) Description() string {
-	return "Open a URL in the browser (a visible window unless configured headless), then read the page."
+	return "Open a URL in the browser and read the page. This is a real browser carrying the user's own session and cookies, so it sees what a plain fetch cannot: JavaScript-rendered pages, listings, logged-in areas, and anything that has to be scrolled, filled or clicked. Reach for it as soon as a fetch comes back thin rather than describing the empty shell."
 }
 func (t *navigateTool) Parameters() map[string]any {
 	return map[string]any{
@@ -411,13 +524,19 @@ type readTool struct{ s *Session }
 
 func (t *readTool) Name() string { return "browser_read" }
 func (t *readTool) Description() string {
-	return "Read the current page: title, text, and interactive elements with refs."
+	return "Read the current page: title, text, and interactive elements with refs to click or fill. Content inside the page's main region comes first, so results lead and site navigation follows. The output says how many elements exist and how many it showed — when it shows fewer than exist, pass filter (matches the label or href, e.g. filter='add to cart') or raise limit rather than concluding the page has nothing on it."
 }
 func (t *readTool) Parameters() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{}}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"filter": map[string]any{"type": "string", "description": "Only list elements whose label or link contains this text (case-insensitive)"},
+			"limit":  map[string]any{"type": "integer", "description": "How many elements to list (default 100, max 300)"},
+		},
+	}
 }
-func (t *readTool) Execute(ctx context.Context, _ map[string]any) *tools.Result {
-	r, err := t.s.read(ctx)
+func (t *readTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	r, err := t.s.readPage(ctx, tools.StringArg(args, "filter"), tools.IntArg(args, "limit", defaultElementLimit))
 	if err != nil {
 		return tools.Errorf("read failed: %v", err)
 	}
@@ -562,6 +681,60 @@ func (t *evalTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 		return tools.Errorf("eval failed: %v", err)
 	}
 	return tools.Textf("%v", result)
+}
+
+// scrollTool exists because a listing page loads as you travel down it: the
+// results past the first screen are not in the DOM until something scrolls,
+// so a page read at the top is a page with most of its content missing.
+type scrollTool struct{ s *Session }
+
+func (t *scrollTool) Name() string { return "browser_scroll" }
+func (t *scrollTool) Description() string {
+	return "Scroll the page and read where it lands. Use it to reach results that load as you go: to='bottom' jumps to the end (repeat it to pull in more of an infinite list), to='down' or 'up' moves one screen, to='top' returns. Lazily loaded content only exists after the scroll that reveals it."
+}
+func (t *scrollTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"to":     map[string]any{"type": "string", "enum": []any{"down", "up", "bottom", "top"}, "description": "Where to scroll (default down, one screen)"},
+			"filter": map[string]any{"type": "string", "description": "Passed to the read that follows, same meaning as browser_read's"},
+		},
+	}
+}
+func (t *scrollTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	to := tools.StringArg(args, "to")
+	var move string
+	switch to {
+	case "top":
+		move = "window.scrollTo(0, 0)"
+	case "up":
+		move = "window.scrollBy(0, -window.innerHeight * 0.9)"
+	case "bottom":
+		move = "window.scrollTo(0, document.body.scrollHeight)"
+	default:
+		to, move = "down", "window.scrollBy(0, window.innerHeight * 0.9)"
+	}
+	// The height before and after says whether the scroll actually pulled
+	// anything in, which is what "repeat it" needs to be answerable.
+	script := fmt.Sprintf(`(() => { const before = document.body.scrollHeight; %s; return before; })()`, move)
+	var before float64
+	if err := t.s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &before)); err != nil {
+		return tools.Errorf("scroll failed: %v", err)
+	}
+	time.Sleep(900 * time.Millisecond) // let lazily loaded content arrive
+	var after float64
+	if err := t.s.run(ctx, 20*time.Second, chromedp.Evaluate(`document.body.scrollHeight`, &after)); err != nil {
+		return tools.Errorf("scrolled, but the page could not be measured: %v", err)
+	}
+	r, err := t.s.readPage(ctx, tools.StringArg(args, "filter"), defaultElementLimit)
+	if err != nil {
+		return tools.Errorf("scrolled, but read failed: %v", err)
+	}
+	grew := ""
+	if after > before {
+		grew = fmt.Sprintf("Scrolling %s loaded more of the page (it grew from %.0f to %.0f pixels tall).\n", to, before, after)
+	}
+	return tools.Text(grew + formatRead(r))
 }
 
 type backTool struct{ s *Session }

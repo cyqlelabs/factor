@@ -173,7 +173,7 @@ type fetchTool struct{ f *fastSession }
 
 func (t *fetchTool) Name() string { return "browser_fetch" }
 func (t *fetchTool) Description() string {
-	return "Read one page with a lightweight engine that runs JavaScript but never renders: returns the title, text and links for a fraction of the memory a real browser costs. Use it to read or research a page. It cannot click, fill, or screenshot, and it keeps no session — use browser_navigate for anything interactive."
+	return "Read one page with a lightweight engine that runs JavaScript but never renders: returns the title, text and links for a fraction of the memory a real browser costs. Use it to read or research a page. It cannot click, fill, or screenshot, and it keeps no session — use browser_navigate for anything interactive, and also whenever what comes back here is thin, blocked, or missing what you asked for."
 }
 func (t *fetchTool) Parameters() map[string]any {
 	return map[string]any{
