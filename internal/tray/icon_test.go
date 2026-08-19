@@ -3,11 +3,12 @@ package tray
 import (
 	"bytes"
 	"encoding/binary"
+	"image"
 	"image/png"
 	"testing"
 )
 
-func TestPngIconIsTheDrawnMark(t *testing.T) {
+func TestPngIconIsTheFactorMark(t *testing.T) {
 	img, err := png.Decode(bytes.NewReader(pngIcon()))
 	if err != nil {
 		t.Fatal(err)
@@ -15,16 +16,28 @@ func TestPngIconIsTheDrawnMark(t *testing.T) {
 	if b := img.Bounds(); b.Dx() != iconSize || b.Dy() != iconSize {
 		t.Fatalf("icon is %dx%d, want %dx%d", b.Dx(), b.Dy(), iconSize, iconSize)
 	}
-	// The corner is transparent (the square is rounded), the stem is light on
-	// a dark ground — the three tones the mark is made of.
 	if _, _, _, a := img.At(0, 0).RGBA(); a != 0 {
-		t.Error("the corner outside the rounded square is not transparent")
+		t.Error("the corner outside the round plate is not transparent")
 	}
-	if r, _, _, a := img.At(32, 40).RGBA(); a == 0 || r < 0x8000 {
-		t.Error("the stem is missing its light foreground")
+	// The glyph is white: its dot near the top, and the upper bar below it.
+	for _, p := range []image.Point{{X: 32, Y: 14}, {X: 30, Y: 26}} {
+		r, g, b, a := img.At(p.X, p.Y).RGBA()
+		if a == 0 || r < 0xf000 || g < 0xf000 || b < 0xf000 {
+			t.Errorf("the glyph at %v is not white: %04x%04x%04x", p, r, g, b)
+		}
 	}
-	if r, _, _, a := img.At(10, 50).RGBA(); a == 0 || r > 0x8000 {
-		t.Error("the ground under the mark is not dark")
+	// The plate shows between the dot and the bar, and beside the glyph.
+	for _, p := range []image.Point{{X: 32, Y: 20}, {X: 8, Y: 32}} {
+		r, _, b, a := img.At(p.X, p.Y).RGBA()
+		if a == 0 || b <= r {
+			t.Errorf("the plate at %v is not blue: %04x..%04x", p, r, b)
+		}
+	}
+	// And it deepens down the diagonal, the way the brand gradient runs.
+	nearR, _, nearB, _ := img.At(16, 16).RGBA()
+	farR, _, farB, _ := img.At(48, 48).RGBA()
+	if nearB <= farB || nearR <= farR {
+		t.Errorf("the plate gradient does not deepen: %04x/%04x to %04x/%04x", nearR, nearB, farR, farB)
 	}
 }
 
