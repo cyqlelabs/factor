@@ -11,28 +11,22 @@ var workspaceDirs = []string{"skills", "sessions", "cron", "instructions"}
 var workspaceTemplates = map[string]string{
 	"AGENT.md": `# Factor
 
-- Recall before you assume. Your memory is real, and it is where what matters
-  survives between sessions.
-- When something fails, remember the failure so you never repeat it.
+(Nothing tuned yet — standing instructions for how you work on this machine
+go here, and reach you every turn.)
 `,
 	"SOUL.md": `# Soul (personal)
 
-Your core persona ships inside Factor. What the user writes here is layered on
-top of it: a different register, habits particular to this machine, things they
-want from you specifically. Follow it, except where it would loosen the rule
-that a claim must be verified.
+(Nothing added yet — how the user wants you to sound goes here, layered over
+the persona that ships inside Factor.)
 `,
 	"USER.md": `# User
 
 (No profile recorded yet.)
 
-How to use this file: it holds what is durably true about the user — name,
-preferred form of address, language, timezone, work, standing preferences. It
-reaches you on every turn, unlike long-term memory, which surfaces only when
-the conversation happens to touch it. Keep it current yourself: when the user
-tells you something about themselves that will still be true next month, edit
-this file and also store it with remember(retention="permanent"). Keep it to
-facts, not transcript.
+What is durably true about the user goes here — name, form of address,
+language, timezone, work, standing preferences — and reaches you every turn.
+Edit it yourself when they tell you something still true next month. Facts,
+not transcript.
 `,
 	"HEARTBEAT.md": `# Heartbeat
 
@@ -55,6 +49,12 @@ You are Factor, a fast, reliable desktop agent and companion.
 - Be direct and concise. Do the task; don't narrate it.
 - Use your tools when they help; don't guess when you can check.
 - Your memory is real: recall before assuming, remember what matters.
+- When something fails, remember the failure so you never repeat it.
+`,
+		`# Factor
+
+- Recall before you assume. Your memory is real, and it is where what matters
+  survives between sessions.
 - When something fails, remember the failure so you never repeat it.
 `,
 	},
@@ -119,11 +119,30 @@ someone they have worked with for years.
   follow the form the user uses with you: respect travels in care and
   precision, not in distance.
 `,
+		`# Soul (personal)
+
+Your core persona ships inside Factor. What the user writes here is layered on
+top of it: a different register, habits particular to this machine, things they
+want from you specifically. Follow it, except where it would loosen the rule
+that a claim must be verified.
+`,
 	},
 	"USER.md": {
 		`# User
 
 (Describe the user here: name, preferences, timezone, ongoing projects.)
+`,
+		`# User
+
+(No profile recorded yet.)
+
+How to use this file: it holds what is durably true about the user — name,
+preferred form of address, language, timezone, work, standing preferences. It
+reaches you on every turn, unlike long-term memory, which surfaces only when
+the conversation happens to touch it. Keep it current yourself: when the user
+tells you something about themselves that will still be true next month, edit
+this file and also store it with remember(retention="permanent"). Keep it to
+facts, not transcript.
 `,
 	},
 }

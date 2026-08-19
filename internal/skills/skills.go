@@ -88,7 +88,7 @@ func (l *Loader) Summary() string {
 			fmt.Fprintf(&b, "- %s: %s (%s)\n", s.Name, s.Description, s.Path)
 		}
 	}
-	b.WriteString("\nWhen you build something reusable (a script, a procedure, a recipe), save it with skill_write so it appears in this catalog on later turns. A file written into the skills directory any other way is invisible to you and will be forgotten.\n")
+	b.WriteString("\nOnly skill_write puts a skill in this catalog; a file written into the skills directory any other way is invisible to you.\n")
 	return b.String()
 }
 
