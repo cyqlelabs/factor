@@ -123,13 +123,6 @@ func (t *rememberTool) Execute(ctx context.Context, args map[string]any) *tools.
 	if id == "" {
 		return tools.Text("Stored (filtered or deduplicated by the memory engine).")
 	}
-	// A permanent fact should also live in USER.md, which reaches every turn
-	// unconditionally — recall only surfaces what the conversation happens to
-	// resemble. The USER.md template says so, but an instruction buried in
-	// the prompt's middle loses to one delivered at the moment it applies.
-	if retention == "permanent" {
-		return tools.Textf("Stored memory %s. Also mirror this fact into USER.md (workspace) so it reaches every turn without depending on recall.", id)
-	}
 	return tools.Textf("Stored memory %s", id)
 }
 
