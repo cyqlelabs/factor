@@ -49,6 +49,7 @@ Usage:
 
 Flags:
   -c PATH      config file (default ~/.factor/config.json)
+  -d           gateway: run in the background (logs to ~/.factor/gateway.log)
   -y           init: skip the wizard and accept the defaults
   --no-install init: never install smrti, desktop helpers, or a browser
   --check      upgrade: report the newest release without installing it
@@ -59,6 +60,7 @@ func main() {
 	configPath := fs.String("c", "", "config file path")
 	message := fs.String("m", "", "one-shot message")
 	sessionName := fs.String("s", "main", "session name")
+	daemon := fs.Bool("d", false, "gateway: run in the background")
 	yes := fs.Bool("y", false, "init: skip the wizard, accept defaults")
 	noInstall := fs.Bool("no-install", false, "init: never install anything")
 	checkOnly := fs.Bool("check", false, "upgrade: report the newest release without installing it")
@@ -82,7 +84,7 @@ func main() {
 	case "upgrade":
 		err = runUpgrade(*configPath, *checkOnly)
 	case "gateway":
-		err = gateway.Run(*configPath)
+		err = runGateway(*configPath, *daemon)
 	case "talk":
 		err = runTalk(*configPath)
 	case "":
@@ -99,6 +101,21 @@ func main() {
 
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+// runGateway runs the daemon here, or hands it to a detached background
+// process when -d asks for that — in which case success means the child
+// confirmed it is serving, not that this process ran it.
+func runGateway(configPath string, detach bool) error {
+	if !detach {
+		return gateway.Run(configPath)
+	}
+	pid, err := daemonize(configPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("gateway running in the background (pid %d) — logs at %s\n", pid, gateway.LogPath())
+	return nil
 }
 
 func runInit(configPath string, nonInteractive, noInstall bool) error {
@@ -122,6 +139,7 @@ var (
 	latestRelease  = upgrade.Latest
 	applyRelease   = upgrade.Apply
 	restartGateway = gateway.SignalRestart
+	daemonize      = gateway.Daemonize
 	updateEngine   = func(ctx context.Context, configPath string, checkOnly bool) error {
 		cfg, err := config.Load(configPath)
 		if err != nil || cfg.Memory.Mode == "off" {
