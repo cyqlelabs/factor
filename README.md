@@ -99,9 +99,11 @@ factor status                              # daemon / provider / memory / phone 
 factor upgrade                             # replace this binary with the newest release
 ```
 
-On a desktop, the running gateway puts an icon in the system tray; quitting it
-there stops the daemon cleanly. A headless box gets no icon — and neither does
-macOS, whose tray would cost the build its CGO-free binaries.
+On a desktop, the running gateway puts an icon in the system tray. Click it
+for a small status overview — version and uptime, memory health, connected
+channels — and a quit item that stops the daemon cleanly. A headless box gets
+no icon — and neither does macOS, whose tray would cost the build its CGO-free
+binaries.
 
 Factor spawns and supervises the smrti sidecar automatically, restarts it with
 backoff, and degrades gracefully (empty recalls, dropped writes) when it's down.

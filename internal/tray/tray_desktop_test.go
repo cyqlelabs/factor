@@ -50,7 +50,7 @@ func TestRunWithoutASessionReturnsAtOnce(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		Run("test", func() {})
+		Run("test", func() []string { return nil }, func() {})
 		close(done)
 	}()
 	select {
@@ -69,7 +69,7 @@ func TestQuitEndsRun(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		Run("test", func() {})
+		Run("test", func() []string { return []string{"factor test — up moments"} }, func() {})
 		close(done)
 	}()
 	time.Sleep(200 * time.Millisecond) // let the loop come up before ending it

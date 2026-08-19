@@ -126,7 +126,7 @@ func runGateway(configPath string, detach bool) error {
 		trayQuit()
 		done <- err // sent last, so a returned runGateway has nothing in flight
 	}()
-	trayRun(version.Version, gateway.RequestStop)
+	trayRun(version.Version, gateway.StatusLines, gateway.RequestStop)
 	return <-done
 }
 

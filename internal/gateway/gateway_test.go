@@ -200,6 +200,15 @@ func TestRunShutsDownOnRequestStop(t *testing.T) {
 		t.Fatal("gateway never served /health")
 	}
 
+	// While it serves, the tray's overview reads from it: this config runs
+	// bare, and the rows must say so rather than claim more.
+	status := strings.Join(StatusLines(), "\n")
+	for _, want := range []string{"factor ", "— up ", "memory: off", "channels: none"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status %q is missing %q", status, want)
+		}
+	}
+
 	// The tray's quit item ends the daemon the way SIGTERM does — cleanly,
 	// and without coming back.
 	RequestStop()

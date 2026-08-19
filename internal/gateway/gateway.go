@@ -145,6 +145,7 @@ func serve(configPath string) (bool, error) {
 			a.Registry.Register(provider.Toolset()...)
 		}
 	}
+	began := time.Now()
 	manager := channel.NewManager(a.Bus, channels)
 	// Everything Factor says on its own initiative follows the user to the
 	// chat they last used — which is only an address while that connector is
@@ -153,6 +154,15 @@ func serve(configPath string) (bool, error) {
 	// told the tool succeeded, says it sent something it did not.
 	a.Loop.SetReachable(manager.Serves)
 	manager.Start(ctx)
+
+	// The tray's overview reads from here for as long as serve runs; the
+	// deferred nil runs before a.Close, so a late ask never reaches a closed
+	// engine.
+	setStatusSource(func() []string {
+		return statusLines(version.Version, time.Since(began),
+			a.Memory.Enabled(), a.Memory.Healthy(), manager.Names())
+	})
+	defer setStatusSource(nil)
 
 	// If the last process went down on purpose, say so: an upgrade asked over
 	// Telegram is only finished once the new binary answers in that chat.

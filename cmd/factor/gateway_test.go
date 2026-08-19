@@ -42,7 +42,7 @@ func TestRunGatewayTakesTheTrayDownWithIt(t *testing.T) {
 	swapGatewaySeams(t)
 	quit := make(chan struct{})
 	trayQuit = func() { close(quit) }
-	trayRun = func(string, func()) { <-quit } // blocks like the real loop
+	trayRun = func(string, func() []string, func()) { <-quit } // blocks like the real loop
 	gatewayRun = func(string) error { return errors.New("gateway ended") }
 
 	if err := runGateway("", false); err == nil || err.Error() != "gateway ended" {
@@ -59,7 +59,7 @@ func TestRunGatewayWithoutATrayJustWaits(t *testing.T) {
 	// A headless session: trayRun comes straight back, and runGateway must
 	// still wait out the gateway rather than return before it.
 	swapGatewaySeams(t)
-	trayRun = func(string, func()) {}
+	trayRun = func(string, func() []string, func()) {}
 	trayQuit = func() {}
 	served := false
 	gatewayRun = func(string) error { served = true; return nil }
