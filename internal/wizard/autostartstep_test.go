@@ -38,10 +38,10 @@ func TestWizardInstallsAutostartOnYes(t *testing.T) {
 	if !installed {
 		t.Error("saying yes did not install the login entry")
 	}
-	// The harness config sits at the default location under FACTOR_HOME, so
-	// the entry must not pin a -c path a fresh gateway would find anyway.
-	if gotConfig != "" {
-		t.Errorf("default-located config was pinned into the entry: %q", gotConfig)
+	// The harness runs under FACTOR_HOME, which a login entry's environment
+	// will not carry — the config path must be pinned in.
+	if gotConfig != h.path {
+		t.Errorf("entry config path = %q, want %q pinned in", gotConfig, h.path)
 	}
 	if !strings.Contains(h.out.String(), "start at login (systemd user service)") {
 		t.Errorf("output:\n%s", h.out.String())
@@ -163,5 +163,21 @@ func TestWizardAutostartPinsNonDefaultConfigPath(t *testing.T) {
 	w := &wiz{cfg: cfg}
 	if got := w.autostartConfigPath(); got != "/tmp/elsewhere/factor.json" {
 		t.Errorf("autostartConfigPath() = %q, want the explicit path", got)
+	}
+}
+
+func TestWizardAutostartOmitsTheTrulyDefaultConfigPath(t *testing.T) {
+	// No FACTOR_HOME and the default location: a login gateway finds this
+	// config on its own, so the entry stays free of a pinned path that would
+	// only go stale.
+	tempHome(t)
+	t.Setenv("FACTOR_HOME", "")
+	cfg, err := config.ReadFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &wiz{cfg: cfg}
+	if got := w.autostartConfigPath(); got != "" {
+		t.Errorf("autostartConfigPath() = %q, want it omitted", got)
 	}
 }

@@ -2059,10 +2059,13 @@ func (w *wiz) stepAutostart(ctx context.Context) error {
 	return nil
 }
 
-// autostartConfigPath names the config for the login entry only when it is
-// not the one a fresh gateway would find on its own.
+// autostartConfigPath names the config for the login entry only when a
+// gateway born at login would not find it on its own. That covers an explicit
+// -c path, but also a config that only looks default because FACTOR_HOME says
+// so — the login entry runs without this shell's environment, and would
+// otherwise read ~/.factor instead of the config the wizard just wrote.
 func (w *wiz) autostartConfigPath() string {
-	if w.cfg.Path() == config.DefaultPath() {
+	if w.cfg.Path() == config.DefaultPath() && os.Getenv("FACTOR_HOME") == "" {
 		return ""
 	}
 	return w.cfg.Path()
