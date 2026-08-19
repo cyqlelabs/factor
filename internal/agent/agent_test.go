@@ -769,3 +769,109 @@ func TestEveryCallOfATurnCarriesTheSessionItIsSpentFor(t *testing.T) {
 		}
 	}
 }
+
+// promptFor builds one turn's system prompt as the given channel would see it.
+func promptFor(t *testing.T, cb *ContextBuilder, channel string) string {
+	t.Helper()
+	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: channel, ChatID: "x", SessionKey: channel + ":x"})
+	return cb.SystemPrompt(ctx, nil, "q")
+}
+
+func TestSpokenChannelsAreToldTheyAreHeard(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Workspace = t.TempDir()
+	if err := config.EnsureWorkspace(cfg.Agent.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	cb := NewContextBuilder(cfg, skills.NewLoader(filepath.Join(cfg.Agent.Workspace, "skills")), nil)
+
+	for _, tc := range []struct{ channel, want string }{
+		{"voice", "spoken aloud on the user's speakers"},
+		{"phone", "live phone call"},
+		{"cron", "nobody watching"},
+	} {
+		if got := promptFor(t, cb, tc.channel); !strings.Contains(got, tc.want) {
+			t.Errorf("a %s turn was not told where it lands", tc.channel)
+		}
+	}
+	// A written channel gets no sentence about being written: it would change
+	// nothing and cost tokens on every turn.
+	for _, quiet := range []string{"cli", "telegram", "system", ""} {
+		got := promptFor(t, cb, quiet)
+		for _, phrase := range []string{"spoken aloud", "nobody watching"} {
+			if strings.Contains(got, phrase) {
+				t.Errorf("a %q turn was briefed as %q", quiet, phrase)
+			}
+		}
+	}
+}
+
+// The head of the prompt is one string shared by every session, and prompt
+// caching pays off only while it stays identical. The channel briefing must
+// therefore land after it, never inside it.
+func TestChannelBriefingDoesNotForkTheCachedHead(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Workspace = t.TempDir()
+	if err := config.EnsureWorkspace(cfg.Agent.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	cb := NewContextBuilder(cfg, skills.NewLoader(filepath.Join(cfg.Agent.Workspace, "skills")), nil)
+
+	head := cb.staticPart()
+	for _, channel := range []string{"voice", "phone", "cron", "cli", "telegram"} {
+		prompt := promptFor(t, cb, channel)
+		if !strings.HasPrefix(prompt, head) {
+			t.Fatalf("a %s turn changed the shared head of the prompt", channel)
+		}
+	}
+	if again := cb.staticPart(); again != head {
+		t.Error("building prompts for several channels rewrote the cached head")
+	}
+}
+
+// The briefing has to sit where it is still read: after the memory block,
+// with only the rules below it.
+func TestChannelBriefingSitsAtTheTail(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Workspace = t.TempDir()
+	if err := config.EnsureWorkspace(cfg.Agent.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	cb := NewContextBuilder(cfg, skills.NewLoader(filepath.Join(cfg.Agent.Workspace, "skills")), nil)
+	prompt := promptFor(t, cb, "voice")
+
+	brief := strings.Index(prompt, "spoken aloud on the user's speakers")
+	rules := strings.Index(prompt, "Rules:")
+	clock := strings.Index(prompt, "Current time:")
+	if brief < 0 || rules < 0 || clock < 0 {
+		t.Fatalf("prompt is missing a landmark: brief=%d rules=%d clock=%d", brief, rules, clock)
+	}
+	if clock >= brief || brief >= rules {
+		t.Errorf("briefing is out of place: clock=%d brief=%d rules=%d", clock, brief, rules)
+	}
+}
+
+// And it has to survive the trip through the loop: the channel reaches the
+// prompt through the tool context the turn runs under, not through an
+// argument anyone passes by hand.
+func TestATurnCarriesItsChannelIntoThePrompt(t *testing.T) {
+	h := newHarness(t, final("said"))
+	if _, err := h.loop.ProcessDirect(context.Background(), "hola", "voice:local"); err != nil {
+		t.Fatal(err)
+	}
+	system := h.chat.requests[0].Messages[0]
+	if system.Role != "system" {
+		t.Fatalf("first message is %q", system.Role)
+	}
+	if !strings.Contains(system.Content, "spoken aloud on the user's speakers") {
+		t.Error("a voice turn reached the provider without being told it is heard")
+	}
+
+	written := newHarness(t, final("written"))
+	if _, err := written.loop.ProcessDirect(context.Background(), "hola", "cli:main"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(written.chat.requests[0].Messages[0].Content, "spoken aloud") {
+		t.Error("a terminal turn was briefed as a spoken one")
+	}
+}

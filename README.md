@@ -455,6 +455,12 @@ talking over a reply stops it mid-word, and if a turn is still thinking, it is
 cancelled — the new utterance owns the conversation. Windows capture isn't wired up
 yet; the channel says so instead of pretending.
 
+A spoken turn is also told it is being heard rather than read, so the reply is
+composed to be said — no markdown, no bullet lists, no URLs spelled out — instead
+of being written for a screen and then stripped on the way to the speakers. The
+stripping still happens as a seatbelt; `voice_write` is how anything long or
+written reaches you in text instead.
+
 Who it answers is the `activation` setting:
 
 | Mode | It responds to |

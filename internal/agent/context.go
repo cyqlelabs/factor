@@ -18,6 +18,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/skills"
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 var bootstrapFiles = []string{"AGENT.md", "SOUL.md", "USER.md"}
@@ -57,7 +58,37 @@ func (cb *ContextBuilder) SystemPrompt(ctx context.Context, history []provider.M
 		}
 	}
 	parts = append(parts, "Current time: "+time.Now().Format("Monday 2006-01-02 15:04 MST"))
+	if brief := channelBriefing(tools.ToolContextFrom(ctx).Channel); brief != "" {
+		parts = append(parts, brief)
+	}
 	return strings.Join(append(parts, operatingRules), "\n\n")
+}
+
+// channelBriefing says where this reply is about to come out, for the three
+// channels where that changes what a good reply is. A spoken answer is
+// composed differently from a written one, and a scheduled turn is read by
+// someone who was not there when it ran.
+//
+// It rides the volatile tail rather than the cached head deliberately: the
+// head is one string shared by every session, and forking it per channel
+// would cost the prompt cache far more than these few lines are worth. The
+// channels not listed here — a terminal, a chat window — want an ordinary
+// written reply, and saying so would be a sentence that changes nothing.
+//
+// Voice and phone both strip markdown out of what they say, and the phone
+// bridge cuts a reply that runs long. That is a seatbelt, not a substitute:
+// a reply composed to be read and then stripped is still a list of bullet
+// points with the punctuation missing.
+func channelBriefing(channel string) string {
+	switch channel {
+	case "voice":
+		return "This reply is spoken aloud on the user's speakers, not read. Compose it to be said: no markdown, no lists, no code, no bare URLs, and a couple of sentences rather than a page. Anything long or written goes through voice_write instead."
+	case "phone":
+		return "This reply is spoken aloud on a live phone call, not read. Compose it to be said — no markdown, no lists, no code — lead with the answer, and keep it short: the user is holding a phone and can hang up mid-sentence."
+	case "cron":
+		return "This is a scheduled job running with nobody watching. Its reply is delivered to whichever chat the user last used, so it has to stand on its own: say what ran and what came of it, without leaning on a conversation the reader was not part of."
+	}
+	return ""
 }
 
 // sourcePaths returns every file whose mtime invalidates the static cache.
