@@ -160,13 +160,17 @@ func TestRememberTool(t *testing.T) {
 
 	// permanent retention translates client-side to the strongest write old
 	// engines accept: plain remember, type=belief, user source, no evidence.
-	tool.Execute(ctx, map[string]any{
+	res = tool.Execute(ctx, map[string]any{
 		"content": "Nicolás is married to Roxsana", "type": "episode",
 		"retention": "permanent", "evidence": "stated in chat",
 	})
 	if p := engine.remembered[1]; p.Type != "belief" || p.Source != SourceUser ||
 		p.Evidence != "" || p.Probability != 0.95 {
 		t.Errorf("permanent request = %+v", p)
+	}
+	// a permanent store reminds the agent to mirror the fact into USER.md
+	if !strings.Contains(res.ForLLM, "USER.md") {
+		t.Errorf("permanent result carries no USER.md nudge: %q", res.ForLLM)
 	}
 
 	// permanent keeps an explicit agent source
