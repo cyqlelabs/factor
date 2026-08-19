@@ -51,6 +51,7 @@ type Loop struct {
 
 	lastMu      sync.Mutex
 	lastChannel bus.InboundMessage
+	reachable   func(channel string) bool
 }
 
 func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry *tools.Registry,
@@ -146,7 +147,7 @@ func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 			return
 		}
 
-		reply, err := l.runTurn(ctx, msg, t)
+		reply, err := l.runTurn(ctx, msg, t, nil)
 		if err != nil {
 			slog.Error("turn failed", "session", key, "error", err)
 			reply = fmt.Sprintf("Something went wrong: %v", err)
@@ -158,10 +159,19 @@ func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 }
 
 // ProcessDirect runs a synchronous turn outside the bus (CLI one-shot,
-// cron, delegated jobs). It honors the one-live-turn-per-session invariant:
+// cron, delegated jobs) with nobody listening for progress.
+func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (string, error) {
+	return l.ProcessDirectNotice(ctx, content, sessionKey, nil)
+}
+
+// ProcessDirectNotice runs a synchronous turn outside the bus and reports
+// what the agent says on its way to the answer to notice, as it says it —
+// the connector running the turn is the only place that line can arrive
+// while it is still news. It honors the one-live-turn-per-session invariant:
 // if the session is busy (e.g. an overlapping cron firing), it waits for
 // the claim instead of interleaving histories.
-func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (string, error) {
+func (l *Loop) ProcessDirectNotice(ctx context.Context, content, sessionKey string,
+	notice func(string)) (string, error) {
 	msg := bus.InboundMessage{Channel: "cli", ChatID: strings.TrimPrefix(sessionKey, "cli:"), Content: content}
 	if idx := strings.IndexByte(sessionKey, ':'); idx > 0 {
 		msg.Channel, msg.ChatID = sessionKey[:idx], sessionKey[idx+1:]
@@ -183,7 +193,7 @@ func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (s
 			l.bus.PublishInbound(missed)
 		}
 	}()
-	return l.runTurn(ctx, msg, t)
+	return l.runTurn(ctx, msg, t, notice)
 }
 
 // ProcessEphemeral runs a history-less, memory-less turn (heartbeat).
@@ -200,13 +210,18 @@ type turnInput struct {
 	sessionKey string
 	content    string
 	ephemeral  bool
-	toolCtx    tools.ToolContext
+	// notice hands the line the agent says on its way to an answer straight
+	// back to whoever is running this turn, while it is still true. Nil for
+	// turns nobody is waiting on synchronously; those are watched instead.
+	notice  func(string)
+	toolCtx tools.ToolContext
 }
 
-func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn) (string, error) {
+func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, notice func(string)) (string, error) {
 	reply, err := l.execute(ctx, turnInput{
 		sessionKey: msg.SessionKey(),
 		content:    msg.Content,
+		notice:     notice,
 		toolCtx:    tools.ToolContext{Channel: msg.Channel, ChatID: msg.ChatID, SessionKey: msg.SessionKey()},
 	}, t)
 	if err == nil && l.ambient != nil {
@@ -316,6 +331,9 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		// silent minute and a conversation.
 		if notice := strings.TrimSpace(resp.Content); notice != "" && !in.ephemeral {
 			l.emit(in.sessionKey, PhaseNotice, notice)
+			if in.notice != nil {
+				in.notice(notice)
+			}
 		}
 
 		for _, call := range resp.ToolCalls {
@@ -468,13 +486,28 @@ func (l *Loop) recordLastChannel(msg bus.InboundMessage) {
 	}
 }
 
+// SetReachable teaches the loop which channels have a connector behind them
+// right now, so LastChannel never hands out an address nothing can deliver
+// to. Unset — the CLI, tests — every channel counts as reachable.
+func (l *Loop) SetReachable(fn func(channel string) bool) {
+	l.lastMu.Lock()
+	defer l.lastMu.Unlock()
+	l.reachable = fn
+}
+
 // LastChannel returns the most recent external channel/chat, for heartbeat
 // and cron delivery. It survives a restart — the address is on disk — so
-// ok is false only until the user's first ever message.
+// ok is false until the user's first ever message, and again whenever that
+// chat's connector is not running: an address whose channel was switched off
+// is not somewhere Factor can reach anyone, and a caller that treats it as
+// one reports a delivery that never happened.
 func (l *Loop) LastChannel() (channel, chatID string, ok bool) {
 	l.lastMu.Lock()
 	defer l.lastMu.Unlock()
 	if l.lastChannel.Channel == "" {
+		return "", "", false
+	}
+	if l.reachable != nil && !l.reachable(l.lastChannel.Channel) {
 		return "", "", false
 	}
 	return l.lastChannel.Channel, l.lastChannel.ChatID, true

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -97,6 +98,16 @@ func TestNotifyReloadTurnsSighupIntoARequest(t *testing.T) {
 func TestRunRestartsIntoTheNewBinary(t *testing.T) {
 	fastSettle(t)
 	cfg, path := gatewayConfig(t)
+	// The chat below is only an address while its connector is running, so
+	// the daemon under test has to be the one that serves it.
+	tg := fakeTelegram(t)
+	cfg.Channels = map[string]json.RawMessage{
+		"telegram": json.RawMessage(fmt.Sprintf(
+			`{"token":"test-token","api_base":%q,"allow_from":["1"]}`, tg.URL)),
+	}
+	if err := os.WriteFile(path, mustJSON(t, cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	healthURL := fmt.Sprintf("http://%s/health", net.JoinHostPort(cfg.Gateway.Host, strconv.Itoa(cfg.Gateway.Port)))
 
 	var relaunched atomic.Bool
@@ -216,5 +227,47 @@ func TestShutdownDoesNotRelaunch(t *testing.T) {
 	}
 	if relaunched.Load() {
 		t.Error("a plain shutdown restarted the daemon")
+	}
+}
+
+// The same chat, with its connector switched off. Nothing downstream may be
+// told that address: the pump would drop whatever was sent to it, and the
+// agent — voice_write, a cron result, this notice — would have reported a
+// delivery that never happened.
+func TestRestartLeavesNoNoticeForAChannelThisGatewayDoesNotRun(t *testing.T) {
+	fastSettle(t)
+	cfg, path := gatewayConfig(t)
+	healthURL := fmt.Sprintf("http://%s/health", net.JoinHostPort(cfg.Gateway.Host, strconv.Itoa(cfg.Gateway.Port)))
+
+	prev := relaunch
+	relaunch = func() error { return nil }
+	t.Cleanup(func() { relaunch = prev })
+
+	if err := os.WriteFile(filepath.Join(config.Home(), "last-channel.json"),
+		[]byte(`{"channel":"telegram","chat_id":"42"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- Run(path) }()
+	if waitForHealth(t, healthURL, 20*time.Second) == nil {
+		t.Fatal("gateway never served /health")
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Run returned %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not return after a restart request")
+	}
+
+	var sent []bus.OutboundMessage
+	announceRestart(collector(&sent))
+	if len(sent) != 0 {
+		t.Errorf("a notice was left for an unreachable chat: %+v", sent)
 	}
 }

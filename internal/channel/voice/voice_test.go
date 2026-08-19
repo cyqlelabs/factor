@@ -103,10 +103,11 @@ type voiceHarness struct {
 	speaker *fakeSpeaker
 	turns   chan turnCall
 
-	mu    sync.Mutex
-	reply string
-	err   error
-	block bool // the runner waits for cancellation instead of answering
+	mu     sync.Mutex
+	reply  string
+	err    error
+	block  bool   // the runner waits for cancellation instead of answering
+	notice string // said on the way to the answer, as before a tool call
 }
 
 func newVoiceHarness(t *testing.T, mutate func(*Config)) *voiceHarness {
@@ -142,11 +143,20 @@ func newVoiceHarness(t *testing.T, mutate func(*Config)) *voiceHarness {
 		Capture: h.mic.capture,
 		Play:    h.speaker.play,
 	}
-	v.BindTurnRunner(func(ctx context.Context, content, session string) (string, error) {
+	v.BindTurnRunner(func(ctx context.Context, content, session string, notice func(string)) (string, error) {
 		h.mu.Lock()
-		reply, err, block := h.reply, h.err, h.block
+		reply, err, block, note := h.reply, h.err, h.block, h.notice
 		h.mu.Unlock()
 		h.turns <- turnCall{ctx: ctx, content: content, session: session}
+		if note != "" {
+			notice(note)
+			// The whole point of a filler line is that it is heard while the
+			// turn works, so this turn does not answer until it has been.
+			deadline := time.Now().Add(10 * time.Second)
+			for !h.spoke(note) && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
 		if block {
 			<-ctx.Done()
 			return "", ctx.Err()
@@ -205,6 +215,22 @@ func (h *voiceHarness) synthesized() []string {
 		}
 	}
 	return texts
+}
+
+// spoke reports whether text has been handed to the TTS endpoint.
+func (h *voiceHarness) spoke(text string) bool {
+	for _, said := range h.synthesized() {
+		if said == text {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *voiceHarness) setNotice(text string) {
+	h.mu.Lock()
+	h.notice = text
+	h.mu.Unlock()
 }
 
 func (h *voiceHarness) setTranscript(text string) {
@@ -486,6 +512,30 @@ func TestVoiceSendSpeaksProactiveMessagesAndDropsInterims(t *testing.T) {
 	}
 }
 
+// Silence is the only thing a spoken turn gives the user to go on, so what
+// the agent says before reaching for a tool is spoken while it works — ahead
+// of the answer it precedes, not after it.
+func TestVoiceSpeaksWhatATurnSaysOnItsWayToTheAnswer(t *testing.T) {
+	const note = "one moment, looking that up"
+	h := newVoiceHarness(t, nil)
+	h.setNotice(note)
+	h.start()
+
+	h.say()
+	h.turn(10 * time.Second)
+	waitUntil(t, func() bool { return h.spoke("as you wish") })
+
+	var order []string
+	for _, said := range h.synthesized() {
+		if said == note || said == "as you wish" {
+			order = append(order, said)
+		}
+	}
+	if len(order) != 2 || order[0] != note || order[1] != "as you wish" {
+		t.Errorf("spoken order = %q, want the note then the answer", order)
+	}
+}
+
 func TestVoiceSendRefusesBeforeTheChannelIsReady(t *testing.T) {
 	h := newVoiceHarness(t, nil)
 	if err := h.v.Send(context.Background(), bus.OutboundMessage{Content: "x"}); err == nil {
@@ -573,7 +623,7 @@ func TestVoiceStartFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deaf.BindTurnRunner(func(context.Context, string, string) (string, error) { return "", nil })
+	deaf.BindTurnRunner(func(context.Context, string, string, func(string)) (string, error) { return "", nil })
 	deaf.env = scriptedEnv("linux") // no helpers at all
 	if err := deaf.Start(context.Background()); err == nil || !contains(err.Error(), "helper") {
 		t.Errorf("Start without helpers = %v", err)
@@ -588,7 +638,7 @@ func TestVoiceStartFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocked.BindTurnRunner(func(context.Context, string, string) (string, error) { return "", nil })
+	blocked.BindTurnRunner(func(context.Context, string, string, func(string)) (string, error) { return "", nil })
 	blocked.env = scriptedEnv("linux", "parec", "paplay")
 	if err := blocked.Start(context.Background()); err == nil || !contains(err.Error(), "control") {
 		t.Errorf("Start on a taken port = %v", err)

@@ -187,8 +187,10 @@ func (p *Phone) Down() string  { return p.shell.Down() }
 // agent wants to say when the user is not on the line. How it arrives is the
 // user's choice: a text (default), a phone call, or nothing at all.
 func (p *Phone) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	// "Let me look that up" is worth a chat bubble, never a text message or a
-	// second call: on this channel the answer alone is worth reaching for.
+	// "Let me look that up" belongs on the call it was said on, where the
+	// bridge streams it as the turn says it — never as a text message or a
+	// second call. One arriving here is off the line, where only an answer is
+	// worth reaching for.
 	if msg.Interim {
 		return nil
 	}

@@ -26,8 +26,9 @@ import (
 // It never leaves 127.0.0.1 and it is guarded by a bearer secret regenerated
 // on every boot and handed to the voice shell through its environment.
 
-// TurnFunc runs one synchronous turn (wired to Loop.ProcessDirect).
-type TurnFunc func(ctx context.Context, content, sessionKey string) (string, error)
+// TurnFunc runs one synchronous turn (wired to Loop.ProcessDirectNotice).
+// notice carries what the agent says on its way to the reply, as it says it.
+type TurnFunc func(ctx context.Context, content, sessionKey string, notice func(string)) (string, error)
 
 // origin is the session a call was started from, so its outcome can be
 // reported back where the user asked for it.
@@ -245,7 +246,18 @@ func (b *bridge) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	content = b.brief(info, r, content)
 
-	reply, err := run(r.Context(), content, "phone:"+caller)
+	// A turn that stops to use tools would otherwise be dead air on the line.
+	// What the agent says before reaching for one goes down the wire the
+	// moment it says it, as an ordinary content delta — the caller hears
+	// "let me look that up" while the looking up happens.
+	notice := func(string) {}
+	var stream *sseStream
+	if req.Stream {
+		stream = &sseStream{w: w, id: completionID(callID), created: time.Now().Unix()}
+		notice = stream.say
+	}
+
+	reply, err := run(r.Context(), content, "phone:"+caller, notice)
 	if r.Context().Err() != nil {
 		// Barge-in or hang-up: the shell already abandoned this request.
 		return
@@ -254,12 +266,12 @@ func (b *bridge) handleChat(w http.ResponseWriter, r *http.Request) {
 		slog.Error("voice turn failed", "caller", caller, "call", callID, "error", err)
 		reply = spokenFailure
 	}
-	if strings.TrimSpace(reply) == "" {
+	if strings.TrimSpace(reply) == "" && !stream.spoke() {
 		reply = "…"
 	}
 
-	if req.Stream {
-		b.writeSSE(w, reply)
+	if stream != nil {
+		stream.finish(reply)
 		return
 	}
 	writeJSON(w, http.StatusOK, chatResponse{
@@ -373,41 +385,80 @@ func lastUserMessage(messages []chatMessage) string {
 	return ""
 }
 
-// writeSSE emits the reply as a spec-shaped chat-completion stream. Factor's
-// provider layer is not streaming, so the whole turn arrives as one delta —
-// the framing is what the voice shell needs, not the token cadence.
-func (b *bridge) writeSSE(w http.ResponseWriter, reply string) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
+// sseStream emits one turn as a spec-shaped chat-completion stream. Factor's
+// provider layer is not streaming, so the answer still arrives as a single
+// delta — the framing is what the voice shell needs, not the token cadence.
+// What streaming buys here is time: a note the agent makes mid-turn is a
+// delta of its own, sent while the turn is still running.
+//
+// The header is written on the first delta rather than up front, so a turn
+// that never says anything until it answers puts exactly the same bytes on
+// the wire as it always did.
+type sseStream struct {
+	w       http.ResponseWriter
+	id      string
+	created int64
+	open    bool
+	notes   int
+}
 
-	id := completionID("")
-	created := time.Now().Unix()
-	chunk := func(delta chatMessage, reason *string) {
-		payload, err := json.Marshal(chatResponse{
-			ID:      id,
-			Object:  "chat.completion.chunk",
-			Created: created,
-			Model:   bridgeModel,
-			Choices: []chatChoice{{Index: 0, Delta: &delta, FinishReason: reason}},
-		})
-		if err != nil {
-			return
-		}
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
-		if flusher != nil {
-			flusher.Flush()
-		}
+func (s *sseStream) begin() {
+	if s.open {
+		return
 	}
-	chunk(chatMessage{Role: "assistant"}, nil)
-	chunk(chatMessage{Content: reply}, nil)
-	chunk(chatMessage{}, finish("stop"))
-	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-	if flusher != nil {
+	s.open = true
+	s.w.Header().Set("Content-Type", "text/event-stream")
+	s.w.Header().Set("Cache-Control", "no-cache")
+	s.w.Header().Set("Connection", "keep-alive")
+	s.w.WriteHeader(http.StatusOK)
+	s.chunk(chatMessage{Role: "assistant"}, nil)
+}
+
+func (s *sseStream) chunk(delta chatMessage, reason *string) {
+	payload, err := json.Marshal(chatResponse{
+		ID:      s.id,
+		Object:  "chat.completion.chunk",
+		Created: s.created,
+		Model:   bridgeModel,
+		Choices: []chatChoice{{Index: 0, Delta: &delta, FinishReason: reason}},
+	})
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(s.w, "data: %s\n\n", payload)
+	s.flush()
+}
+
+func (s *sseStream) flush() {
+	if flusher, ok := s.w.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// say speaks one mid-turn note into the live stream. It runs on the turn's
+// goroutine, so it does no more than write and flush.
+func (s *sseStream) say(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	s.begin()
+	s.notes++
+	s.chunk(chatMessage{Content: line + " "}, nil)
+}
+
+// spoke reports whether anything has already reached the caller, so an empty
+// answer after a note is silence rather than a placeholder read aloud.
+func (s *sseStream) spoke() bool { return s != nil && s.notes > 0 }
+
+func (s *sseStream) finish(reply string) {
+	s.begin()
+	if reply != "" {
+		s.chunk(chatMessage{Content: reply}, nil)
+	}
+	s.chunk(chatMessage{}, finish("stop"))
+	_, _ = fmt.Fprint(s.w, "data: [DONE]\n\n")
+	s.flush()
 }
 
 func finish(reason string) *string { return &reason }

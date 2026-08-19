@@ -29,9 +29,13 @@ type Typer interface {
 	SetTyping(chatID string, on bool)
 }
 
-// TurnFunc runs one synchronous turn and returns the reply
-// (wired to Loop.ProcessDirect).
-type TurnFunc func(ctx context.Context, content, sessionKey string) (string, error)
+// TurnFunc runs one synchronous turn and returns the reply (wired to
+// Loop.ProcessDirectNotice). notice is called with each line the agent says
+// on its way to that reply — "let me look that up" — as it says it, so a turn
+// spent in tool calls is audible progress rather than a silence the user
+// cannot tell from a hang. It runs on the turn's own goroutine, so a
+// connector that takes time to deliver a note must not block in it.
+type TurnFunc func(ctx context.Context, content, sessionKey string, notice func(string)) (string, error)
 
 // TurnRunner is the optional capability of a connector that runs turns itself
 // instead of publishing them onto the bus. A phone call is synchronous — the

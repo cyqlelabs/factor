@@ -97,6 +97,11 @@ type Voice struct {
 	micFloor  atomic.Uint64 // float64 bits
 	micSilent atomic.Bool
 
+	// speakMu keeps one voice in the room: a note from a turn still working,
+	// the answer that follows it, and a proactive message all reach for the
+	// same speakers, and they must queue rather than mix.
+	speakMu sync.Mutex
+
 	mu          sync.Mutex
 	stopped     bool
 	effective   Config
@@ -224,8 +229,9 @@ func (v *Voice) Stop() error {
 // Send delivers a bus message — a cron result, a finished job, a heartbeat —
 // by speaking it once the floor is free.
 func (v *Voice) Send(_ context.Context, msg bus.OutboundMessage) error {
-	// A note about work in progress is worth a chat bubble, not a voice
-	// interrupting the room.
+	// This channel runs its own turns, so it hears their notes from the turn
+	// itself (see turn) rather than off the bus, in time to be worth saying.
+	// One arriving here belongs to a turn that is already over.
 	if msg.Interim {
 		return nil
 	}
@@ -503,7 +509,14 @@ func (v *Voice) turn(parent context.Context, text string) {
 		v.mu.Unlock()
 	}()
 
-	reply, err := v.runner(ctx, content, sessionKey)
+	// What the agent says before a tool call is spoken as it happens, on its
+	// own goroutine: the point of a filler line is to fill the time the tools
+	// take, not to be queued behind them. speak serialises it against the
+	// answer, so the two arrive in the order they were written.
+	notice := func(line string) {
+		v.spawn(func() { v.speak(ctx, line) })
+	}
+	reply, err := v.runner(ctx, content, sessionKey, notice)
 	if ctx.Err() != nil {
 		return // barged in on — the next utterance owns the conversation
 	}
@@ -524,6 +537,11 @@ func (v *Voice) speak(ctx context.Context, text string) {
 	client := v.speechClient()
 	if client == nil {
 		return
+	}
+	v.speakMu.Lock()
+	defer v.speakMu.Unlock()
+	if ctx.Err() != nil {
+		return // the floor was taken while this waited its turn
 	}
 	defer v.armWindow()
 	text = spokenText(text, v.cfg.Language)

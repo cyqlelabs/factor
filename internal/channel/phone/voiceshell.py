@@ -382,8 +382,9 @@ def build_llm():
     This release's OpenAI adapter stamps no per-request header, so a turn
     arrives at the bridge untagged and is matched to the call that is up — the
     single-live-call path the bridge already keeps for exactly this. The
-    spoken filler for a long turn goes the same way: the adapter has nowhere
-    to put it, so a tool-using turn rides on Patter's own turn-taking."""
+    spoken filler for a long turn needs no header either: the bridge sends it
+    as an early content delta on the turn's own stream, so it reaches the
+    caller through the same adapter, ahead of the answer."""
     from getpatter import OpenAILLM
 
     # Patter's OpenAI provider builds its own client and takes no endpoint, so

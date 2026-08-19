@@ -120,7 +120,7 @@ func serve(configPath string) (bool, error) {
 	// sees a tool that has no connector behind it.
 	for _, ch := range channels {
 		if runner, ok := ch.(channel.TurnRunner); ok {
-			runner.BindTurnRunner(a.Loop.ProcessDirect)
+			runner.BindTurnRunner(a.Loop.ProcessDirectNotice)
 		}
 		if guarded, ok := ch.(channel.Guarded); ok {
 			guarded.BindPathGuard(a.Guard)
@@ -133,6 +133,12 @@ func serve(configPath string) (bool, error) {
 		}
 	}
 	manager := channel.NewManager(a.Bus, channels)
+	// Everything Factor says on its own initiative follows the user to the
+	// chat they last used — which is only an address while that connector is
+	// running. Without this, a gateway started with Telegram switched off
+	// keeps writing to it: the message is dropped by the pump, and the agent,
+	// told the tool succeeded, says it sent something it did not.
+	a.Loop.SetReachable(manager.Serves)
 	manager.Start(ctx)
 
 	// If the last process went down on purpose, say so: an upgrade asked over

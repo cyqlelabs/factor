@@ -51,7 +51,7 @@ func newTestBridge(t *testing.T, run TurnFunc) *testBridge {
 			return true
 		})
 	if run == nil {
-		run = func(_ context.Context, content, sessionKey string) (string, error) {
+		run = func(_ context.Context, content, sessionKey string, _ func(string)) (string, error) {
 			tb.turns <- content
 			tb.sessions <- sessionKey
 			return "the agent replied", nil
@@ -216,7 +216,7 @@ func TestBridgeRejectsTheWrongBearer(t *testing.T) {
 func TestBridgeCancellationReachesTheTurn(t *testing.T) {
 	started := make(chan struct{})
 	cancelled := make(chan error, 1)
-	tb := newTestBridge(t, func(ctx context.Context, _, _ string) (string, error) {
+	tb := newTestBridge(t, func(ctx context.Context, _, _ string, _ func(string)) (string, error) {
 		close(started)
 		<-ctx.Done()
 		cancelled <- ctx.Err()
@@ -353,7 +353,7 @@ func TestBridgeRefusesCallersOutsideTheAllowlist(t *testing.T) {
 	tb.bridge = newBridge("bridge-secret",
 		func(number string) bool { return number == "+15550001111" },
 		func(bus.InboundMessage) bool { return true })
-	tb.bindRunner(func(_ context.Context, _, sessionKey string) (string, error) {
+	tb.bindRunner(func(_ context.Context, _, sessionKey string, _ func(string)) (string, error) {
 		tb.sessions <- sessionKey
 		return "should never be spoken", nil
 	})
@@ -395,7 +395,7 @@ func TestBridgeWithoutARunnerIsHonestAboutIt(t *testing.T) {
 // A failed turn must still produce speech: dead air on a phone call reads as a
 // dropped call, and the error text itself must not be spoken aloud.
 func TestBridgeSpeaksAnApologyWhenATurnFails(t *testing.T) {
-	tb := newTestBridge(t, func(context.Context, string, string) (string, error) {
+	tb := newTestBridge(t, func(context.Context, string, string, func(string)) (string, error) {
 		return "", fmt.Errorf("provider chain exhausted: api key sk-secret rejected")
 	})
 	resp := tb.post(t, "/v1/chat/completions", chatBody("hello", false),
@@ -417,7 +417,7 @@ func TestBridgeSpeaksAnApologyWhenATurnFails(t *testing.T) {
 }
 
 func TestBridgeNeverSpeaksAnEmptyReply(t *testing.T) {
-	tb := newTestBridge(t, func(context.Context, string, string) (string, error) { return "  ", nil })
+	tb := newTestBridge(t, func(context.Context, string, string, func(string)) (string, error) { return "  ", nil })
 	resp := tb.post(t, "/v1/chat/completions", chatBody("hello", false),
 		map[string]string{"X-Factor-Caller": "+15550001111"})
 	var parsed chatResponse
@@ -612,4 +612,73 @@ func TestBridgeListenReportsAPortClash(t *testing.T) {
 	}
 	// Shutting down a bridge that never listened must not panic.
 	second.shutdown()
+}
+
+// A turn that stops to use tools must not be dead air: what the agent says
+// on its way to the answer reaches the caller while the turn is still
+// running, as an ordinary content delta ahead of the reply.
+func TestBridgeStreamsAMidTurnNoteBeforeTheAnswer(t *testing.T) {
+	heard := make(chan struct{})
+	tb := newTestBridge(t, func(_ context.Context, _, _ string, notice func(string)) (string, error) {
+		notice("one moment, checking that")
+		// The note is only useful if it lands before the answer does; a
+		// bridge that held it back would deadlock here, so it fails instead.
+		select {
+		case <-heard:
+		case <-time.After(10 * time.Second):
+			return "", fmt.Errorf("the note never reached the caller during the turn")
+		}
+		return "it is on Thursday", nil
+	})
+	tb.startCall(t, "CA9", "CA9", "+15550001111")
+
+	resp := tb.post(t, "/v1/chat/completions", chatBody("when is my meeting", true),
+		map[string]string{"X-Factor-Call-Id": sessionIDPrefix + "CA9"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	var spoken []string
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		payload, found := strings.CutPrefix(strings.TrimSpace(scanner.Text()), "data: ")
+		if !found || payload == "[DONE]" {
+			continue
+		}
+		var chunk chatResponse
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			t.Fatalf("chunk %q is not JSON: %v", payload, err)
+		}
+		if text := strings.TrimSpace(chunk.Choices[0].Delta.Content); text != "" {
+			spoken = append(spoken, text)
+			if len(spoken) == 1 {
+				close(heard) // proof it arrived without waiting for the reply
+			}
+		}
+	}
+	want := []string{"one moment, checking that", "it is on Thursday"}
+	if len(spoken) != len(want) || spoken[0] != want[0] || spoken[1] != want[1] {
+		t.Errorf("spoken = %q, want %q", spoken, want)
+	}
+}
+
+// A turn that says something and then answers with nothing has already
+// spoken: the placeholder that keeps a silent turn from being an empty
+// completion would be read out on top of it.
+func TestBridgeDoesNotPadAnAnswerlessTurnThatAlreadySpoke(t *testing.T) {
+	tb := newTestBridge(t, func(_ context.Context, _, _ string, notice func(string)) (string, error) {
+		notice("on it")
+		return "", nil
+	})
+	tb.startCall(t, "CA10", "CA10", "+15550001111")
+
+	resp := tb.post(t, "/v1/chat/completions", chatBody("do the thing", true),
+		map[string]string{"X-Factor-Call-Id": sessionIDPrefix + "CA10"})
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "…") {
+		t.Errorf("a turn that already spoke was padded: %s", body)
+	}
 }

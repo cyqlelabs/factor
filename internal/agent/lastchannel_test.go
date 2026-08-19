@@ -67,3 +67,23 @@ func TestLastChannelKeptInMemoryWhenTheDiskRefuses(t *testing.T) {
 		t.Errorf("LastChannel = %q %q %v after a failed write", ch, chat, ok)
 	}
 }
+
+// The address the user last wrote from is only an address while a connector
+// is running for it. A gateway started with that channel switched off must
+// not hand it out: everything downstream would report a delivery that the
+// outbound pump then drops.
+func TestLastChannelWithholdsAChannelNothingServes(t *testing.T) {
+	h := newHarness(t)
+	h.loop.recordLastChannel(bus.InboundMessage{Channel: "telegram", ChatID: "42"})
+
+	running := map[string]bool{"voice": true}
+	h.loop.SetReachable(func(name string) bool { return running[name] })
+	if ch, chat, ok := h.loop.LastChannel(); ok {
+		t.Errorf("LastChannel = %q %q while no connector serves it", ch, chat)
+	}
+
+	running["telegram"] = true
+	if ch, chat, ok := h.loop.LastChannel(); !ok || ch != "telegram" || chat != "42" {
+		t.Errorf("LastChannel = %q %q %v once its connector is up", ch, chat, ok)
+	}
+}
