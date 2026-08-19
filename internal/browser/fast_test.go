@@ -19,7 +19,7 @@ import (
 
 func TestFastPathToolIsRegisteredOnlyWhenAskedFor(t *testing.T) {
 	cfg := config.BrowserConfig{Enabled: true}
-	suite, closeFn := NewTools(cfg, t.TempDir())
+	suite, closeFn := NewTools(cfg, t.TempDir(), nil)
 	defer closeFn()
 	for _, tool := range suite {
 		if tool.Name() == "browser_fetch" {
@@ -28,7 +28,7 @@ func TestFastPathToolIsRegisteredOnlyWhenAskedFor(t *testing.T) {
 	}
 
 	cfg.FastPath = true
-	suite, closeFn = NewTools(cfg, t.TempDir())
+	suite, closeFn = NewTools(cfg, t.TempDir(), nil)
 	defer closeFn()
 	var found bool
 	for _, tool := range suite {

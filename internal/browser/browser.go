@@ -24,7 +24,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 
 	"github.com/cyqlelabs/factor/internal/config"
@@ -32,19 +34,39 @@ import (
 )
 
 // Session lazily owns one browser connection shared by all browser tools.
+//
+// The connection and the tabs on it are deliberately separate lifetimes.
+// browserCtx is a bare connection that never owns a tab, so releasing it
+// closes nothing; every tab hangs off it as its own context. That split is
+// what lets the agent move between the user's tabs at all: chromedp closes a
+// tab when its context is cancelled, so a session that kept one tab context
+// and re-made it on every switch would close the user's tabs as it went.
 type Session struct {
 	cfg       config.BrowserConfig
 	workspace string
+	guard     *tools.PathGuard
 
 	mu          sync.Mutex
+	allocCtx    context.Context
 	allocCancel context.CancelFunc
-	tabCtx      context.Context
-	tabCancel   context.CancelFunc
+	browserCtx  context.Context
+	browserStop context.CancelFunc
+	attached    bool // driving the user's own browser rather than one Factor launched
+	tabs        map[target.ID]*tabHandle
+	cur         *tabHandle
+	tabRefs     map[int]target.ID // tab number from the last listing -> target
 	refs        map[string]string // eN -> CSS selector from the last read
 }
 
-func NewSession(cfg config.BrowserConfig, workspace string) *Session {
-	return &Session{cfg: cfg, workspace: workspace, refs: map[string]string{}}
+func NewSession(cfg config.BrowserConfig, workspace string, guard *tools.PathGuard) *Session {
+	return &Session{
+		cfg:       cfg,
+		workspace: workspace,
+		guard:     guard,
+		tabs:      map[target.ID]*tabHandle{},
+		tabRefs:   map[int]target.ID{},
+		refs:      map[string]string{},
+	}
 }
 
 var chromeCandidates = []string{"helium", "chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser", "microsoft-edge", "chrome"}
@@ -124,6 +146,12 @@ func displayAvailable() bool {
 	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
 }
 
+// devtoolsProbe is where a browser the user is already running is expected to
+// be listening. It is a variable so the live tests can point it at a dead
+// port: a test that attached to the developer's own browser would open and
+// close tabs in it, which is neither a fixture nor a fair test.
+var devtoolsProbe = "http://127.0.0.1:9222"
+
 func devtoolsAlive(url string) bool {
 	client := &http.Client{Timeout: time.Second}
 	resp, err := client.Get(url + "/json/version")
@@ -138,16 +166,35 @@ func devtoolsAlive(url string) bool {
 func (s *Session) ensure() (context.Context, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.tabCtx != nil && s.tabCtx.Err() == nil {
-		return s.tabCtx, nil
+	if s.cur != nil && s.cur.ctx.Err() == nil {
+		return s.cur.ctx, nil
 	}
+	if s.browserCtx == nil || s.browserCtx.Err() != nil {
+		if err := s.connectLocked(); err != nil {
+			return nil, err
+		}
+	}
+	h, err := s.openTabLocked()
+	if err != nil {
+		return nil, err
+	}
+	s.cur = h
+	return h.ctx, nil
+}
+
+// connectLocked opens the browser connection without claiming a tab on it.
+// Materializing through Targets rather than an ordinary action is the point:
+// a chromedp context that has never run a page action owns no target, so
+// releasing this one later closes nothing the user was looking at.
+func (s *Session) connectLocked() error {
 	s.teardownLocked()
 
 	base := context.Background()
 	attach := s.cfg.AttachURL
-	if attach == "" && devtoolsAlive("http://127.0.0.1:9222") {
-		attach = "http://127.0.0.1:9222"
+	if attach == "" && devtoolsAlive(devtoolsProbe) {
+		attach = devtoolsProbe
 	}
+	s.attached = attach != ""
 
 	var allocCtx context.Context
 	if attach != "" {
@@ -160,7 +207,7 @@ func (s *Session) ensure() (context.Context, error) {
 	} else {
 		binary, err := FindBrowserBinary(s.cfg.Command)
 		if err != nil {
-			return nil, fmt.Errorf("%v — set browser.attach_url to an existing browser's DevTools port, or install one", err)
+			return fmt.Errorf("%v — set browser.attach_url to an existing browser's DevTools port, or install one", err)
 		}
 		opts := []chromedp.ExecAllocatorOption{
 			chromedp.ExecPath(binary),
@@ -196,14 +243,84 @@ func (s *Session) ensure() (context.Context, error) {
 		allocCtx, s.allocCancel = chromedp.NewExecAllocator(base, opts...)
 	}
 
-	s.tabCtx, s.tabCancel = chromedp.NewContext(allocCtx)
+	s.allocCtx = allocCtx
+	s.browserCtx, s.browserStop = chromedp.NewContext(allocCtx)
 	// Materialize the browser now so failures surface here, not mid-action.
-	// The first Run must receive the tab context itself: the browser's
-	// lifetime binds to the context of that first call, so a timeout
-	// wrapper here would kill the browser the moment it fired/cancelled.
+	// The first call must receive the browser context itself: the browser's
+	// lifetime binds to the context of that first call, so a timeout wrapper
+	// here would kill the browser the moment it fired/cancelled.
 	done := make(chan error, 1)
 	go func() {
-		done <- chromedp.Run(s.tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		_, err := chromedp.Targets(s.browserCtx)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			s.teardownLocked()
+			return fmt.Errorf("browser start failed: %w", err)
+		}
+	case <-time.After(45 * time.Second):
+		s.teardownLocked()
+		return fmt.Errorf("browser start timed out")
+	}
+	return nil
+}
+
+// openTabLocked puts a tab of Factor's own on the connection. On the user's
+// own browser this is always a fresh tab: adopting whatever they happened to
+// be reading would mean typing into it. On a browser Factor launched, the
+// blank tab it came up with is adopted instead, so the window does not end up
+// with a stray empty tab beside the one being driven.
+func (s *Session) openTabLocked() (*tabHandle, error) {
+	if !s.attached {
+		if infos, err := chromedp.Targets(s.browserCtx); err == nil {
+			var pages []*target.Info
+			for _, t := range infos {
+				if interesting(t) {
+					pages = append(pages, t)
+				}
+			}
+			if len(pages) == 1 && len(s.tabs) == 0 {
+				return s.attachLocked(pages[0].TargetID, true)
+			}
+		}
+	}
+	tabCtx, cancel := chromedp.NewContext(s.browserCtx)
+	h := &tabHandle{ctx: tabCtx, cancel: cancel, owned: true}
+	if err := s.materialize(h); err != nil {
+		cancel()
+		return nil, err
+	}
+	return h, nil
+}
+
+// attachLocked binds a tab that already exists. owned says whether closing it
+// later is Factor's business: a tab it opened may be closed with its context,
+// one it merely borrowed may not.
+func (s *Session) attachLocked(id target.ID, owned bool) (*tabHandle, error) {
+	parent := s.browserCtx
+	if !owned {
+		// Severed from the connection on purpose: cancelling a chromedp
+		// context closes its tab, and this tab is the user's. Shutting this
+		// session down must not take their tab with it.
+		parent = context.WithoutCancel(s.browserCtx)
+	}
+	tabCtx, cancel := chromedp.NewContext(parent, chromedp.WithTargetID(id))
+	h := &tabHandle{ctx: tabCtx, cancel: cancel, id: id, owned: owned}
+	if err := s.materialize(h); err != nil {
+		cancel()
+		return nil, err
+	}
+	return h, nil
+}
+
+// materialize attaches the tab and installs the stealth script on it, then
+// records which target it landed on.
+func (s *Session) materialize(h *tabHandle) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- chromedp.Run(h.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 			_, err := page.AddScriptToEvaluateOnNewDocument(stealthJS).Do(ctx)
 			return err
 		}))
@@ -211,29 +328,61 @@ func (s *Session) ensure() (context.Context, error) {
 	select {
 	case err := <-done:
 		if err != nil {
-			s.teardownLocked()
-			return nil, fmt.Errorf("browser start failed: %w", err)
+			return fmt.Errorf("attaching to the tab failed: %w", err)
 		}
 	case <-time.After(45 * time.Second):
-		s.teardownLocked()
-		return nil, fmt.Errorf("browser start timed out")
+		return fmt.Errorf("attaching to the tab timed out")
 	}
-	return s.tabCtx, nil
+	if c := chromedp.FromContext(h.ctx); c != nil && c.Target != nil {
+		h.id = c.Target.TargetID
+	}
+	if h.id != "" {
+		s.tabs[h.id] = h
+	}
+	return nil
+}
+
+// openTab opens a fresh tab and makes it current.
+func (s *Session) openTab(ctx context.Context) error {
+	if _, err := s.ensure(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tabCtx, cancel := chromedp.NewContext(s.browserCtx)
+	h := &tabHandle{ctx: tabCtx, cancel: cancel, owned: true}
+	if err := s.materialize(h); err != nil {
+		cancel()
+		return err
+	}
+	s.cur = h
+	s.refs = map[string]string{}
+	return nil
 }
 
 // teardownLocked releases the current browser handles exactly once. Calling
 // chromedp's cancel funcs twice on a half-started browser blocks forever, so
 // every field is cleared as it is released. The caller holds s.mu.
 func (s *Session) teardownLocked() {
-	if s.tabCancel != nil {
-		s.tabCancel()
-		s.tabCancel = nil
+	// Only tabs Factor opened are cancelled: cancelling an adopted one would
+	// close a tab of the user's, so those are released by letting go of them
+	// and leaving the tab exactly as it was found.
+	for id, h := range s.tabs {
+		if h.owned {
+			h.cancel()
+		}
+		delete(s.tabs, id)
+	}
+	s.cur = nil
+	if s.browserStop != nil {
+		s.browserStop()
+		s.browserStop = nil
 	}
 	if s.allocCancel != nil {
 		s.allocCancel()
 		s.allocCancel = nil
 	}
-	s.tabCtx = nil
+	s.browserCtx, s.allocCtx = nil, nil
 }
 
 // Close shuts the managed browser down.
@@ -363,6 +512,11 @@ const (
 )
 
 type pageRead struct {
+	// OtherTabs is filled in after the page itself is read, from the browser
+	// rather than the page. It is the difference between an agent that knows
+	// the user already has the right account open in the next tab and one
+	// that can only find out by looking at the screen.
+	OtherTabs    []string
 	Title        string `json:"title"`
 	URL          string `json:"url"`
 	Text         string `json:"text"`
@@ -410,6 +564,7 @@ func (s *Session) readPage(ctx context.Context, filter string, limit int) (*page
 		s.refs[el.Ref] = el.Selector
 	}
 	s.mu.Unlock()
+	result.OtherTabs = s.otherTabs(ctx)
 	return &result, nil
 }
 
@@ -433,6 +588,9 @@ func formatRead(r *pageRead) string {
 			kind += ":" + el.Type
 		}
 		fmt.Fprintf(&b, "  %s <%s> %q\n", el.Ref, kind, el.Label)
+	}
+	if len(r.OtherTabs) > 0 {
+		fmt.Fprintf(&b, "\nAlso open in this browser (browser_tabs to switch):\n%s\n", strings.Join(r.OtherTabs, "\n"))
 	}
 	return b.String()
 }
@@ -461,7 +619,7 @@ func Available() bool { return true }
 // one that merely exists on disk. Every other wizard step checks itself the
 // same way.
 func Verify(ctx context.Context, cfg config.BrowserConfig) error {
-	s := NewSession(cfg, "")
+	s := NewSession(cfg, "", nil)
 	defer s.Close()
 	var state string
 	if err := s.run(ctx, 90*time.Second,
@@ -476,11 +634,12 @@ func Verify(ctx context.Context, cfg config.BrowserConfig) error {
 }
 
 // NewTools returns the browser tool suite sharing one session.
-func NewTools(cfg config.BrowserConfig, workspace string) ([]tools.Tool, func()) {
-	s := NewSession(cfg, workspace)
+func NewTools(cfg config.BrowserConfig, workspace string, guard *tools.PathGuard) ([]tools.Tool, func()) {
+	s := NewSession(cfg, workspace, guard)
 	suite := []tools.Tool{
 		&navigateTool{s}, &readTool{s}, &scrollTool{s}, &clickTool{s}, &fillTool{s},
 		&screenshotTool{s}, &evalTool{s}, &backTool{s},
+		&tabsTool{s}, &uploadTool{s}, &keysTool{s},
 	}
 	if !cfg.FastPath {
 		return suite, s.Close
@@ -587,7 +746,7 @@ type fillTool struct{ s *Session }
 
 func (t *fillTool) Name() string { return "browser_fill" }
 func (t *fillTool) Description() string {
-	return "Type text into an input by ref or CSS selector; optionally press Enter to submit."
+	return "Type text into a field by ref or CSS selector — a text input, a textarea, a dropdown, or a rich editor like an email body. The text is typed through the browser rather than assigned, so fields that only react to real typing (address chips, autocomplete suggestions, editors) behave as they do for a person. Optionally press Enter to submit."
 }
 func (t *fillTool) Parameters() map[string]any {
 	return map[string]any{
@@ -600,39 +759,129 @@ func (t *fillTool) Parameters() map[string]any {
 		"required": []any{"target", "text"},
 	}
 }
+
+// focusScript prepares a field to be typed into and reports what kind of
+// field it turned out to be. Clearing happens by selecting what is there, so
+// the typing that follows replaces it the way it would for a person: a
+// dropdown and a rich text editor have no .value to assign, and an address
+// field that builds chips as you type ignores one that is.
+const focusScript = `(() => {
+  const el = document.querySelector(%s);
+  if (!el) return {kind: "missing"};
+  el.scrollIntoView({block: "center"});
+  const tag = el.tagName.toLowerCase();
+  if (tag === "select") return {kind: "select"};
+  el.focus();
+  if (el.isContentEditable) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    if (%s) { document.execCommand("delete"); }
+    return {kind: "editable"};
+  }
+  if (typeof el.select === "function") { el.select(); }
+  if (%s) {
+    const proto = tag === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value");
+    if (setter && setter.set) { setter.set.call(el, ""); } else { el.value = ""; }
+    el.dispatchEvent(new Event("input", {bubbles: true}));
+    el.dispatchEvent(new Event("change", {bubbles: true}));
+  }
+  return {kind: "field"};
+})()`
+
+// selectScript picks a dropdown option by value or by the text a person reads.
+const selectScript = `(() => {
+  const el = document.querySelector(%s), want = %s;
+  if (!el) return {kind: "missing"};
+  const options = Array.from(el.options || []);
+  const match = options.find((o) => o.value === want) ||
+    options.find((o) => o.text.trim().toLowerCase() === want.trim().toLowerCase()) ||
+    options.find((o) => o.text.toLowerCase().includes(want.trim().toLowerCase()));
+  if (!match) return {kind: "no-option", options: options.slice(0, 20).map((o) => o.text.trim())};
+  el.value = match.value;
+  el.dispatchEvent(new Event("input", {bubbles: true}));
+  el.dispatchEvent(new Event("change", {bubbles: true}));
+  return {kind: "select", chosen: match.text.trim()};
+})()`
+
+// readBackScript reports what the field ended up holding, which is the only
+// way to notice that a page reformatted, truncated or ignored the input.
+const readBackScript = `(() => {
+  const el = document.querySelector(%s);
+  if (!el) return "";
+  return (el.isContentEditable ? el.innerText : el.value) || "";
+})()`
+
+type fillOutcome struct {
+	Kind    string   `json:"kind"`
+	Chosen  string   `json:"chosen"`
+	Options []string `json:"options"`
+}
+
 func (t *fillTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
 	sel := t.s.selectorFor(tools.StringArg(args, "target"))
+	text := tools.StringArg(args, "text")
 	selJSON, _ := json.Marshal(sel)
-	textJSON, _ := json.Marshal(tools.StringArg(args, "text"))
-	submitJSON, _ := json.Marshal(tools.BoolArg(args, "submit", false))
-	script := fmt.Sprintf(`(() => {
-		const el = document.querySelector(%s);
-		if (!el) return "missing";
-		el.scrollIntoView({block: "center"});
-		el.focus();
-		const setter = Object.getOwnPropertyDescriptor(
-			el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, "value");
-		if (setter && setter.set) { setter.set.call(el, %s); } else { el.value = %s; }
-		el.dispatchEvent(new Event("input", {bubbles: true}));
-		el.dispatchEvent(new Event("change", {bubbles: true}));
-		if (%s) {
-			if (el.form && el.form.requestSubmit) { el.form.requestSubmit(); }
-			else {
-				const opts = {key: "Enter", code: "Enter", keyCode: 13, bubbles: true};
-				el.dispatchEvent(new KeyboardEvent("keydown", opts));
-				el.dispatchEvent(new KeyboardEvent("keyup", opts));
-			}
-		}
-		return "ok";
-	})()`, selJSON, textJSON, textJSON, submitJSON)
-	var outcome string
-	if err := t.s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &outcome)); err != nil {
+	textJSON, _ := json.Marshal(text)
+	clearJSON, _ := json.Marshal(text == "")
+
+	var out fillOutcome
+	if err := t.s.run(ctx, 20*time.Second,
+		chromedp.Evaluate(fmt.Sprintf(focusScript, selJSON, clearJSON, clearJSON), &out)); err != nil {
 		return tools.Errorf("fill %q failed: %v", sel, err)
 	}
-	if outcome == "missing" {
+	switch out.Kind {
+	case "missing":
 		return tools.Errorf("no element matches %q — run browser_read for fresh refs", sel)
+	case "select":
+		if err := t.s.run(ctx, 20*time.Second,
+			chromedp.Evaluate(fmt.Sprintf(selectScript, selJSON, textJSON), &out)); err != nil {
+			return tools.Errorf("selecting in %q failed: %v", sel, err)
+		}
+		if out.Kind == "no-option" {
+			return tools.Errorf("no option in %s matches %q; it offers: %s", sel, text, strings.Join(out.Options, ", "))
+		}
+		return tools.Textf("Selected %q in %s.", out.Chosen, sel)
 	}
-	return tools.Textf("Filled %s.", sel)
+
+	// Typed over the protocol rather than assigned: this goes through the
+	// browser's own editing path, so every event a page waits for fires in the
+	// order it expects — which is what a contenteditable body needs, and what
+	// turns a typed address into a recipient chip.
+	if text != "" {
+		if err := t.s.run(ctx, 20*time.Second, chromedp.ActionFunc(func(c context.Context) error {
+			return input.InsertText(text).Do(c)
+		})); err != nil {
+			return tools.Errorf("typing into %q failed: %v", sel, err)
+		}
+	}
+
+	var actual string
+	if err := t.s.run(ctx, 15*time.Second,
+		chromedp.Evaluate(fmt.Sprintf(readBackScript, selJSON), &actual)); err != nil {
+		actual = text // reading back is a courtesy; a failure here is not a failed fill
+	}
+
+	if tools.BoolArg(args, "submit", false) {
+		if err := t.s.run(ctx, 20*time.Second, chromedp.ActionFunc(func(c context.Context) error {
+			return pressChord(c, 0, "Enter", "Enter", 13)
+		})); err != nil {
+			return tools.Errorf("typed into %s, but submitting failed: %v", sel, err)
+		}
+		time.Sleep(700 * time.Millisecond)
+	}
+
+	msg := fmt.Sprintf("Filled %s with %q.", sel, text)
+	if strings.TrimSpace(actual) != strings.TrimSpace(text) {
+		// Not an error: a chip field empties itself once it has the address,
+		// and a formatter rewrites what it was given. Saying so lets the model
+		// judge, rather than reporting a success it cannot see.
+		msg += fmt.Sprintf(" The field now reads %q — the page may have reformatted, consumed or rejected it; check before continuing.", actual)
+	}
+	return tools.Text(msg)
 }
 
 type screenshotTool struct{ s *Session }

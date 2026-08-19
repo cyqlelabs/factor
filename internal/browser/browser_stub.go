@@ -12,7 +12,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/tools"
 )
 
-func NewTools(_ config.BrowserConfig, _ string) ([]tools.Tool, func()) {
+func NewTools(_ config.BrowserConfig, _ string, _ *tools.PathGuard) ([]tools.Tool, func()) {
 	return nil, func() {}
 }
 

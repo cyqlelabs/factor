@@ -142,7 +142,7 @@ func blockDevToolsProbe(t *testing.T) {
 
 func TestSessionEnsureExplainsHowToRecoverWithoutABrowser(t *testing.T) {
 	blockDevToolsProbe(t)
-	s := NewSession(config.BrowserConfig{Command: "factor-nonexistent-browser"}, t.TempDir())
+	s := NewSession(config.BrowserConfig{Command: "factor-nonexistent-browser"}, t.TempDir(), nil)
 	defer s.Close()
 
 	_, err := s.ensure()
@@ -165,7 +165,7 @@ func TestSessionEnsureReportsAFailedAttach(t *testing.T) {
 	// chromedp's cancel func may only be called once when allocation failed,
 	// and ensure has already called it on this session's behalf; a second call
 	// (from Close, or from the next tool call) blocks forever.
-	s := NewSession(config.BrowserConfig{AttachURL: deadURL}, t.TempDir())
+	s := NewSession(config.BrowserConfig{AttachURL: deadURL}, t.TempDir(), nil)
 
 	_, err := s.ensure()
 	if err == nil {
@@ -180,7 +180,7 @@ func TestSessionEnsureReportsAFailedAttach(t *testing.T) {
 // hand the model the same recovery hint ensure produces.
 func TestBrowserToolsExplainWhenNoBrowserCanStart(t *testing.T) {
 	blockDevToolsProbe(t)
-	s := NewSession(config.BrowserConfig{Command: "factor-nonexistent-browser"}, t.TempDir())
+	s := NewSession(config.BrowserConfig{Command: "factor-nonexistent-browser"}, t.TempDir(), nil)
 	defer s.Close() // safe here: nothing was allocated before the failure
 
 	res := (&readTool{s}).Execute(context.Background(), nil)
@@ -195,22 +195,23 @@ func TestBrowserToolsExplainWhenNoBrowserCanStart(t *testing.T) {
 }
 
 func TestSessionCloseIsSafeBeforeUseAndWhenRepeated(t *testing.T) {
-	s := NewSession(config.BrowserConfig{}, t.TempDir())
+	s := NewSession(config.BrowserConfig{}, t.TempDir(), nil)
 	s.Close()
 	s.Close()
 
-	_, closeFn := NewTools(config.BrowserConfig{}, t.TempDir())
+	_, closeFn := NewTools(config.BrowserConfig{}, t.TempDir(), nil)
 	closeFn()
 	closeFn()
 }
 
 func TestBrowserToolsDeclareUsableSchemas(t *testing.T) {
-	suite, closeFn := NewTools(config.BrowserConfig{}, t.TempDir())
+	suite, closeFn := NewTools(config.BrowserConfig{}, t.TempDir(), nil)
 	defer closeFn()
 
 	want := []string{
 		"browser_navigate", "browser_read", "browser_scroll", "browser_click", "browser_fill",
 		"browser_screenshot", "browser_eval", "browser_back",
+		"browser_tabs", "browser_upload", "browser_keys",
 	}
 	if len(suite) != len(want) {
 		t.Fatalf("suite size = %d, want %d", len(suite), len(want))

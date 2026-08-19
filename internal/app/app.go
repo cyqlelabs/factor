@@ -141,7 +141,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	closeBrowser := func() {}
 	if cfg.Browser.Enabled {
 		var browserTools []tools.Tool
-		browserTools, closeBrowser = browser.NewTools(cfg.Browser, ws)
+		browserTools, closeBrowser = browser.NewTools(cfg.Browser, ws, guard)
 		registry.Register(browserTools...)
 	}
 

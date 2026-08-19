@@ -49,6 +49,15 @@ func servePage(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// TestMain points the auto-attach probe at a dead port for the whole package.
+// A developer running these tests usually has their own browser open with a
+// DevTools port, and without this the live tests would attach to it and drive
+// their real tabs instead of a fixture.
+func TestMain(m *testing.M) {
+	devtoolsProbe = "http://127.0.0.1:1"
+	os.Exit(m.Run())
+}
+
 // liveConfig is the browser setup every live test starts from. CI runners and
 // containers restrict unprivileged user namespaces, which stops Chrome from
 // starting at all; the sandbox is not what these tests are about.
@@ -79,7 +88,7 @@ func liveProfileDir(t *testing.T) string {
 func liveSuite(t *testing.T) map[string]tools.Tool {
 	t.Helper()
 	ws := t.TempDir()
-	suite, closeFn := NewTools(liveConfig(), ws)
+	suite, closeFn := NewTools(liveConfig(), ws, nil)
 	t.Cleanup(closeFn)
 	byName := map[string]tools.Tool{}
 	for _, tool := range suite {
@@ -238,7 +247,7 @@ func TestBrowserScreenshotReportsWorkspaceFailures(t *testing.T) {
 	if err := os.WriteFile(blocked, []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := NewSession(liveConfig(), blocked)
+	s := NewSession(liveConfig(), blocked, nil)
 	defer s.Close()
 	shot := &screenshotTool{s}
 	ctx := context.Background()
@@ -265,7 +274,7 @@ func TestBrowserScreenshotReportsWorkspaceFailures(t *testing.T) {
 func TestRunStopsWhenTheCallerCancels(t *testing.T) {
 	requireBrowser(t)
 	ws := t.TempDir()
-	s := NewSession(liveConfig(), ws)
+	s := NewSession(liveConfig(), ws, nil)
 	defer s.Close()
 	if _, err := s.ensure(); err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -288,7 +297,7 @@ func TestSessionLaunchesAManagedBrowserWhenNoDevToolsPortIsOpen(t *testing.T) {
 	profile := liveProfileDir(t)
 	cfg := liveConfig()
 	cfg.UserDataDir = filepath.Join(profile, "nested")
-	s := NewSession(cfg, t.TempDir())
+	s := NewSession(cfg, t.TempDir(), nil)
 	defer s.Close()
 
 	res := (&navigateTool{s}).Execute(context.Background(), map[string]any{"url": srv.URL})
@@ -308,7 +317,7 @@ func TestSessionStartsAFreshBrowserAfterClose(t *testing.T) {
 	requireBrowser(t)
 	srv := servePage(t)
 	ws := t.TempDir()
-	s := NewSession(liveConfig(), ws)
+	s := NewSession(liveConfig(), ws, nil)
 	defer s.Close()
 
 	nav := &navigateTool{s}

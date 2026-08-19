@@ -1,0 +1,225 @@
+//go:build !nobrowser
+
+package browser
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/cyqlelabs/factor/internal/tools"
+)
+
+// composePage is the shape of the thing that started all this: a compose form
+// whose body is a contenteditable rather than a textarea, whose attach control
+// is a styled button in front of a hidden file input, and which sends on
+// Ctrl+Enter. Every one of those is a place the old suite could not reach.
+const composePage = `<html><head><title>Compose</title></head><body>
+<main>
+  <input id="to" type="text" placeholder="Recipients">
+  <select id="priority"><option value="lo">Low priority</option><option value="hi">High priority</option></select>
+  <div id="body" contenteditable="true">draft text</div>
+  <button id="attach" onclick="document.getElementById('file').click()">Attach files</button>
+  <input id="file" type="file" style="display:none">
+  <div id="status">nothing yet</div>
+  <div id="attached"></div>
+</main>
+<script>
+  document.getElementById('file').addEventListener('change', (e) => {
+    document.getElementById('attached').textContent =
+      'attached: ' + Array.from(e.target.files).map(f => f.name + ' (' + f.size + ' bytes)').join(', ');
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.ctrlKey) { document.getElementById('status').textContent = 'sent'; }
+  });
+  document.getElementById('to').addEventListener('input', (e) => {
+    // A recipient field that rewrites what it is given, like the real ones do.
+    if (e.target.value.includes('@')) { document.getElementById('status').textContent = 'recipient ok'; }
+  });
+</script>
+</body></html>`
+
+func serveCompose(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if r.URL.Path == "/second" {
+			fmt.Fprint(w, `<html><head><title>Second Tab</title></head><body>second tab body</body></html>`)
+			return
+		}
+		fmt.Fprint(w, composePage)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func mustRun(t *testing.T, tool tools.Tool, args map[string]any) string {
+	t.Helper()
+	res := tool.Execute(context.Background(), args)
+	if res.IsError {
+		t.Fatalf("%s: %s", tool.Name(), res.ForLLM)
+	}
+	return res.ForLLM
+}
+
+func TestFillTypesIntoContentEditableAndSelect(t *testing.T) {
+	requireBrowser(t)
+	srv := serveCompose(t)
+	byName := liveSuite(t)
+	mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+
+	// A contenteditable has no .value to assign: the old fill silently did
+	// nothing here, which is how an email body stayed empty.
+	mustRun(t, byName["browser_fill"], map[string]any{"target": "#body", "text": "hello from factor"})
+	out := mustRun(t, byName["browser_read"], nil)
+	if !strings.Contains(out, "hello from factor") {
+		t.Errorf("contenteditable was not typed into:\n%s", out)
+	}
+	if strings.Contains(out, "draft text") {
+		t.Errorf("previous content was not replaced:\n%s", out)
+	}
+
+	// A real input must fire the events the page listens for, or a recipient
+	// never becomes a recipient.
+	mustRun(t, byName["browser_fill"], map[string]any{"target": "#to", "text": "nico@example.com"})
+	out = mustRun(t, byName["browser_read"], nil)
+	if !strings.Contains(out, "recipient ok") {
+		t.Errorf("input events did not reach the page:\n%s", out)
+	}
+
+	res := byName["browser_fill"].Execute(context.Background(), map[string]any{"target": "#priority", "text": "High priority"})
+	if res.IsError || !strings.Contains(res.ForLLM, "High priority") {
+		t.Errorf("select by visible text: %s", res.ForLLM)
+	}
+	if res := byName["browser_fill"].Execute(context.Background(),
+		map[string]any{"target": "#priority", "text": "nonexistent"}); !res.IsError {
+		t.Error("an option that does not exist was reported as selected")
+	}
+}
+
+func TestUploadAttachesFileBehindHiddenInput(t *testing.T) {
+	requireBrowser(t)
+	srv := serveCompose(t)
+	ws := t.TempDir()
+	suite, closeFn := NewTools(liveConfig(), ws, tools.NewPathGuard(ws, true, false, nil))
+	t.Cleanup(closeFn)
+	byName := map[string]tools.Tool{}
+	for _, tool := range suite {
+		byName[tool.Name()] = tool
+	}
+
+	doc := filepath.Join(ws, "report.html")
+	if err := os.WriteFile(doc, []byte("<html>report</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+
+	// target names the visible button; the file has to reach the hidden input
+	// behind it, which is the whole difficulty.
+	out := mustRun(t, byName["browser_upload"], map[string]any{"path": doc, "target": "#attach"})
+	if !strings.Contains(out, "report.html (19 bytes)") {
+		t.Errorf("the page never saw the file:\n%s", out)
+	}
+}
+
+func TestKeysSendsShortcutToThePage(t *testing.T) {
+	requireBrowser(t)
+	srv := serveCompose(t)
+	byName := liveSuite(t)
+	mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+
+	out := mustRun(t, byName["browser_keys"], map[string]any{"keys": "Control+Enter"})
+	if !strings.Contains(out, "sent") {
+		t.Errorf("the shortcut did not reach the page:\n%s", out)
+	}
+}
+
+func TestTabsListSwitchAndClose(t *testing.T) {
+	requireBrowser(t)
+	srv := serveCompose(t)
+	byName := liveSuite(t)
+	ctx := context.Background()
+	mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+
+	mustRun(t, byName["browser_tabs"], map[string]any{"action": "open", "url": srv.URL + "/second"})
+	out := mustRun(t, byName["browser_tabs"], map[string]any{"action": "list"})
+	if !strings.Contains(out, "Compose") || !strings.Contains(out, "Second Tab") {
+		t.Fatalf("both tabs should be listed:\n%s", out)
+	}
+
+	// Switching by text is what makes this usable when the numbering moves.
+	out = mustRun(t, byName["browser_tabs"], map[string]any{"action": "switch", "target": "Compose"})
+	if !strings.Contains(out, "Compose") {
+		t.Errorf("did not land on the compose tab:\n%s", out)
+	}
+	// And the tab left behind must be visible from the page that is current,
+	// which is the line that tells the agent the user's own tab exists at all.
+	if !strings.Contains(out, "Also open in this browser") || !strings.Contains(out, "Second Tab") {
+		t.Errorf("read does not mention the other tab:\n%s", out)
+	}
+
+	out = mustRun(t, byName["browser_tabs"], map[string]any{"action": "close", "target": "Second Tab"})
+	if !strings.Contains(out, "Closed tab") {
+		t.Errorf("close result: %s", out)
+	}
+	out = mustRun(t, byName["browser_tabs"], map[string]any{"action": "list"})
+	if strings.Contains(out, "Second Tab") {
+		t.Errorf("closed tab still listed:\n%s", out)
+	}
+
+	// The last tab is the one being driven; closing it would leave the suite
+	// with nothing to act on.
+	if res := byName["browser_tabs"].Execute(ctx, map[string]any{"action": "close", "target": "Compose"}); !res.IsError {
+		t.Error("closing the only tab was allowed")
+	}
+}
+
+// TestAdoptedTabSurvivesSessionClose is the guarantee that matters most in
+// this file: chromedp closes a tab when its context is cancelled, so a session
+// that adopted the user's tab and then shut down would take the tab with it.
+func TestAdoptedTabSurvivesSessionClose(t *testing.T) {
+	requireBrowser(t)
+	srv := serveCompose(t)
+	ws := t.TempDir()
+	s := NewSession(liveConfig(), ws, nil)
+	ctx := context.Background()
+
+	// Open a second tab, then adopt it the way a switch does.
+	if err := s.openTab(ctx); err != nil {
+		t.Fatalf("open tab: %v", err)
+	}
+	if _, err := s.readPage(ctx, "", 10); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	tabs, err := s.listTabs(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tabs) < 2 {
+		t.Skipf("browser did not keep two tabs open (%d)", len(tabs))
+	}
+	id := tabs[0].ID
+	if tabs[0].Current {
+		id = tabs[1].ID
+	}
+	s.mu.Lock()
+	h, err := s.attachLocked(id, false)
+	s.mu.Unlock()
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if h.owned {
+		t.Fatal("an adopted tab must not be marked owned")
+	}
+
+	s.Close()
+	if h.ctx.Err() != nil {
+		t.Error("closing the session cancelled the adopted tab's context, which closes the user's tab")
+	}
+	_ = srv
+}

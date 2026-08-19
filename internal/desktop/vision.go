@@ -125,7 +125,8 @@ func (t *screenViewTool) Name() string { return "screen_view" }
 func (t *screenViewTool) Description() string {
 	return "Look at the screen: capture it and attach the image with a battleship coordinate grid (columns A,B,C…, rows 1,2,3…) overlaid. " +
 		"To act on something you see: small or dense targets deserve a screen_zoom on their cell first (finer grid, better precision); then click with mouse cell=... . " +
-		"Run it again after acting to see the result. Needs a vision-capable model."
+		"Run it again after acting to see the result. Needs a vision-capable model. " +
+		"This is for native applications. For anything in a web page use the browser tools instead — they read the page's own elements, cost a fraction of a screenshot, and are not disturbed by the user moving the mouse or changing windows."
 }
 func (t *screenViewTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}

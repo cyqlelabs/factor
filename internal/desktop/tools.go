@@ -262,7 +262,7 @@ type mouseTool struct{ *deps }
 
 func (t *mouseTool) Name() string { return "mouse" }
 func (t *mouseTool) Description() string {
-	return "Control the pointer: move it, or click at a position (or wherever it currently is). Target either a grid cell from the latest screen_view/screen_zoom image (cell=D4), or absolute screen pixels from the top-left (x/y); desktop_info reports the screen size."
+	return "Control the pointer: move it, or click at a position (or wherever it currently is). Target either a grid cell from the latest screen_view/screen_zoom image (cell=D4), or absolute screen pixels from the top-left (x/y); desktop_info reports the screen size. To click something in a web page, use browser_click instead: it addresses the element rather than a spot on the glass, so it still lands when the window moves or the user takes the mouse."
 }
 func (t *mouseTool) Parameters() map[string]any {
 	return map[string]any{

@@ -17,7 +17,7 @@ import (
 )
 
 func TestSelectorForRefMapping(t *testing.T) {
-	s := NewSession(config.BrowserConfig{}, t.TempDir())
+	s := NewSession(config.BrowserConfig{}, t.TempDir(), nil)
 	s.refs["e1"] = "div > button:nth-child(2)"
 	if got := s.selectorFor("e1"); got != "div > button:nth-child(2)" {
 		t.Errorf("ref lookup = %q", got)
@@ -72,7 +72,7 @@ func TestBrowserEndToEnd(t *testing.T) {
 	ws := t.TempDir()
 	cfg := liveConfig()
 	cfg.UserDataDir = filepath.Join(liveProfileDir(t), "profile")
-	suite, closeFn := NewTools(cfg, ws)
+	suite, closeFn := NewTools(cfg, ws, nil)
 	defer closeFn()
 	byName := map[string]tools.Tool{}
 	for _, tool := range suite {
