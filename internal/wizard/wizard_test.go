@@ -217,6 +217,7 @@ func TestWizardHappyPath(t *testing.T) {
 		"1",                // memory: managed sidecar
 		"y",                // install smrti
 		"3",                // personality: curious
+		"",                 // extraction model: the one Factor thinks with
 		"y",                // set up telegram
 		"123:secret",       // bot token
 		"12345, 67890",     // allowed senders
@@ -374,7 +375,8 @@ func TestWizardSmrtiInstallFailureIsNotFatal(t *testing.T) {
 		"llama3", // model (no live list)
 		"3",      // continue anyway after the check fails
 		"1", "y", // memory sidecar, install smrti
-		"", "n", "n", "", "", "",
+		"", "", // personality, extraction model: both default
+		"n", "n", "", "", "",
 	)
 	h.opts.EnsureSmrti = func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
 		return "", false, fmt.Errorf("no Python installer found")
@@ -986,7 +988,7 @@ func TestWizardPhoneSkippedWithoutCarrierCredentials(t *testing.T) {
 // to install one on top of it is how `factor init` ended up asking a user to
 // install something they were already running.
 func TestWizardDoesNotOfferSmrtiOverALiveEngine(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "1", "3", "n", "n", "", "n")
+	h := newHarness(t, "5", "llama3", "3", "1", "3", "", "n", "n", "", "n")
 	h.opts.MemoryAnswering = func(context.Context, config.MemoryConfig) bool { return true }
 	h.opts.EnsureSmrti = func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
 		t.Error("offered to install smrti while one was already answering")

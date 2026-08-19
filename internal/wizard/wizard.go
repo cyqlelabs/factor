@@ -726,6 +726,117 @@ func (w *wiz) stepMemory(ctx context.Context) error {
 		return err
 	}
 	w.cfg.Memory.Personality = personalities[pIdx].Label
+	return w.askExtractModel(ctx)
+}
+
+// extractCandidate describes the endpoint smrti will call for extraction as a
+// candidate the probes understand. DeriveExtract strips the /v1 smrti appends
+// itself, so the probes need it back; ok is false when extraction runs purely
+// locally and there is no model to pick. The settings come back derived
+// without the configured override, so extract.Model is what that endpoint
+// would use on its own — the thing the override is being chosen against.
+func extractCandidate(cfg *config.Config) (config.Candidate, memory.ExtractSettings, bool) {
+	mem := cfg.Memory
+	mem.ExtractModel = ""
+	extract := memory.DeriveExtract(mem, cfg.Provider)
+	if extract.Mode == "local" || extract.URL == "" {
+		return config.Candidate{}, extract, false
+	}
+	cand := config.Candidate{
+		Type:    cfg.Provider.Type,
+		APIBase: strings.TrimSuffix(extract.URL, "/") + "/v1",
+		APIKey:  extract.Key,
+	}
+	if cand.Type == "anthropic" {
+		// The extraction endpoint is a fallback candidate, not the primary:
+		// probing it as "anthropic" would send the wrong headers.
+		cand.Type = "custom"
+	}
+	return cand, extract, true
+}
+
+// askExtractModel picks the model smrti calls to pull entities out of turns
+// and says when the choice will actually take: an engine that is already up
+// was spawned with the old environment and keeps it until Factor starts the
+// next one.
+func (w *wiz) askExtractModel(ctx context.Context) error {
+	before := w.cfg.Memory.ExtractModel
+	if err := w.chooseExtractModel(ctx); err != nil {
+		return err
+	}
+	if w.cfg.Memory.ExtractModel != before && w.opts.MemoryAnswering(ctx, w.cfg.Memory) {
+		w.ui.Note("the smrti already running keeps its current extraction model until it is restarted")
+	}
+	return nil
+}
+
+// chooseExtractModel asks the question. The extraction pass runs on every
+// stored message, so it is the one model worth choosing small: the thinking
+// model is usually far more than it needs. Only a managed sidecar takes the
+// setting — an external engine reads its own environment, and a value written
+// here would never reach it.
+func (w *wiz) chooseExtractModel(ctx context.Context) error {
+	if w.cfg.Memory.Mode != "sidecar" {
+		return nil
+	}
+	cand, extract, ok := extractCandidate(w.cfg)
+	if !ok {
+		w.ui.Note("memory extraction runs locally — no OpenAI-compatible endpoint to call a model on")
+		return nil
+	}
+
+	w.ui.Note("smrti extracts entities from every turn; a small model keeps that cheap")
+	def := 0
+	if w.cfg.Memory.ExtractModel != "" {
+		def = 1
+	}
+	follow := Option{Label: "The one Factor thinks with", Hint: extract.Model}
+	if extract.Model == "" { // an extract_url of its own: smrti picks the model there
+		follow = Option{Label: "Whatever the endpoint defaults to", Hint: host(cand.APIBase)}
+	}
+	idx, err := w.ui.Select("Which model should extract memories?", []Option{
+		follow,
+		{Label: "A cheaper one", Hint: "pick from " + host(cand.APIBase)},
+	}, def)
+	if err != nil {
+		return err
+	}
+	if idx == 0 {
+		w.cfg.Memory.ExtractModel = ""
+		return nil
+	}
+
+	var models []string
+	_ = w.ui.Task("fetching the model list", func() error {
+		var err error
+		models, err = ListModels(ctx, w.opts.HTTP, cand)
+		return err
+	})
+	for attempt := 0; attempt < maxVerifyAttempts; attempt++ {
+		model, err := w.chooseModel(models, firstNonEmpty(w.cfg.Memory.ExtractModel, extract.Model))
+		if err != nil {
+			return err
+		}
+		cand.Model = model
+		checkErr := w.ui.Task(fmt.Sprintf("checking %s", model), func() error {
+			return CheckProvider(ctx, cand)
+		})
+		if checkErr == nil {
+			w.cfg.Memory.ExtractModel = model
+			return nil
+		}
+		again, err := w.ui.Confirm("That model did not answer. Pick another?", true)
+		if err != nil {
+			return err
+		}
+		if !again {
+			w.cfg.Memory.ExtractModel = model
+			w.ui.Warn("keeping %s unverified — memory extraction fails silently if it is wrong", model)
+			return nil
+		}
+	}
+	w.cfg.Memory.ExtractModel = ""
+	w.ui.Warn("no model answered — extraction keeps using %s", firstNonEmpty(extract.Model, "smrti's own default"))
 	return nil
 }
 
@@ -2109,7 +2220,11 @@ func (w *wiz) memorySummary() string {
 	case "external":
 		return "external · " + w.cfg.Memory.BaseURL()
 	default:
-		return fmt.Sprintf("sidecar · %s · port %d", w.cfg.Memory.Personality, w.cfg.Memory.Port)
+		line := fmt.Sprintf("sidecar · %s · port %d", w.cfg.Memory.Personality, w.cfg.Memory.Port)
+		if w.cfg.Memory.ExtractModel != "" {
+			line += " · extract " + w.cfg.Memory.ExtractModel
+		}
+		return line
 	}
 }
 
