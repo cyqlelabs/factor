@@ -83,18 +83,25 @@ Then it installs what's missing instead of handing you a list — smrti (`uv` �
 `pipx` → `pip --user` → private venv, no root needed), a browser, the helpers your
 desktop backend wants. It looks for that desktop on the machine rather than in this
 shell, so `factor init` over ssh still sets up the desktop the box is running.
-`factor init -y` takes the defaults for scripting; `--no-install` keeps it from
-installing anything.
+It also asks whether Factor should start when you log in and, if so, puts the
+entry in place itself: a systemd user service or XDG autostart on Linux, a
+launchd agent on macOS, the Run key on Windows. `factor init -y` takes the
+defaults for scripting; `--no-install` keeps it from installing anything.
 
 ```bash
 export FACTOR_PROVIDER_API_KEY=sk-or-...   # OpenRouter by default
 factor                                     # interactive chat
 factor -m "what's on my disk?"             # one-shot
 factor gateway                             # daemon: Telegram, phone, PC voice, cron, heartbeat, jobs
+factor gateway -d                          # the same, detached from this terminal (~/.factor/gateway.log)
 factor talk                                # push-to-talk: arm the PC voice microphone
 factor status                              # daemon / provider / memory / phone / voice / desktop health
 factor upgrade                             # replace this binary with the newest release
 ```
+
+On a desktop, the running gateway puts an icon in the system tray; quitting it
+there stops the daemon cleanly. A headless box gets no icon — and neither does
+macOS, whose tray would cost the build its CGO-free binaries.
 
 Factor spawns and supervises the smrti sidecar automatically, restarts it with
 backoff, and degrades gracefully (empty recalls, dropped writes) when it's down.
