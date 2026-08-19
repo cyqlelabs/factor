@@ -34,9 +34,9 @@ func StatusLines() []string {
 	return fn()
 }
 
-// statusLines renders the overview: what is running, whether memory answers,
-// and which connectors are up — the three facts that say "everything is fine"
-// or name what is not.
+// statusLines renders the overview: what is running and for how long, whether
+// memory answers, and which connectors are up — the facts that say
+// "everything is fine" or name what is not, one per row.
 func statusLines(version string, up time.Duration, memOn, memHealthy bool, channels []string) []string {
 	mem := "memory: off"
 	if memOn {
@@ -49,18 +49,19 @@ func statusLines(version string, up time.Duration, memOn, memHealthy bool, chann
 		chs = "channels: " + strings.Join(channels, ", ")
 	}
 	return []string{
-		fmt.Sprintf("factor %s — up %s", version, upWords(up)),
+		"factor " + version,
+		"up " + upWords(up),
 		mem,
 		chs,
 	}
 }
 
 // upWords says how long the daemon has been up, at the precision a glance
-// wants: no seconds ticking by, days once hours stop meaning much.
+// wants: seconds only in the first minute, days once hours stop meaning much.
 func upWords(d time.Duration) string {
 	switch {
 	case d < time.Minute:
-		return "moments"
+		return fmt.Sprintf("%ds", int(d.Seconds()))
 	case d < time.Hour:
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	case d < 24*time.Hour:

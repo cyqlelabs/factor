@@ -203,7 +203,7 @@ func TestRunShutsDownOnRequestStop(t *testing.T) {
 	// While it serves, the tray's overview reads from it: this config runs
 	// bare, and the rows must say so rather than claim more.
 	status := strings.Join(StatusLines(), "\n")
-	for _, want := range []string{"factor ", "— up ", "memory: off", "channels: none"} {
+	for _, want := range []string{"factor ", "\nup ", "memory: off", "channels: none"} {
 		if !strings.Contains(status, want) {
 			t.Errorf("status %q is missing %q", status, want)
 		}

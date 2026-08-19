@@ -69,7 +69,7 @@ func TestQuitEndsRun(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		Run("test", func() []string { return []string{"factor test — up moments"} }, func() {})
+		Run("test", func() []string { return []string{"factor test", "up 3s"} }, func() {})
 		close(done)
 	}()
 	time.Sleep(200 * time.Millisecond) // let the loop come up before ending it
