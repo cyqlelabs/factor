@@ -13,6 +13,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/cdproto/input"
@@ -722,19 +724,53 @@ func (t *navigateTool) Parameters() map[string]any {
 		"required":   []any{"url"},
 	}
 }
+
+// navigateWait bounds how long a navigation may spend reaching the page's
+// load event. A var so the live tests can shrink it: proving the salvage below
+// works must not cost a test 45 real seconds of waiting.
+var navigateWait = 45 * time.Second
+
 func (t *navigateTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
 	url := tools.StringArg(args, "url")
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		url = "https://" + url
 	}
-	if err := t.s.run(ctx, 45*time.Second, chromedp.Navigate(url), chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
+	// chromedp's Navigate refuses to return before the page's load event, and
+	// that event waits on every script and image: a heavy page on a slow
+	// machine spends tens of seconds past DOM-ready in assets, and one with a
+	// stalled asset never fires it at all. committed records that the main
+	// frame really navigated, which is what separates "the site never
+	// answered" from "the page is there but still loading" once the wait runs
+	// out — the second is a page to read and label, not a failure to report.
+	var committed atomic.Bool
+	err := t.s.run(ctx, navigateWait,
+		chromedp.ActionFunc(func(c context.Context) error {
+			chromedp.ListenTarget(c, func(ev any) {
+				if fn, ok := ev.(*page.EventFrameNavigated); ok && fn.Frame != nil && fn.Frame.ParentID == "" {
+					committed.Store(true)
+				}
+			})
+			return nil
+		}),
+		chromedp.Navigate(url),
+		chromedp.WaitReady("body", chromedp.ByQuery),
+	)
+	stillLoading := err != nil && committed.Load() && errors.Is(err, context.DeadlineExceeded)
+	if err != nil && !stillLoading {
 		return tools.Errorf("navigate failed: %v", err)
 	}
-	r, err := t.s.read(ctx)
-	if err != nil {
-		return tools.Errorf("page loaded but read failed: %v", err)
+	r, rerr := t.s.read(ctx)
+	if rerr != nil {
+		if err != nil {
+			return tools.Errorf("navigate failed: %v", err)
+		}
+		return tools.Errorf("page loaded but read failed: %v", rerr)
 	}
-	return tools.Text(formatRead(r))
+	out := formatRead(r)
+	if stillLoading {
+		out = "The page was still loading when it was read — parts of it may not have arrived yet; browser_read again once it settles.\n\n" + out
+	}
+	return tools.Text(out)
 }
 
 type readTool struct{ s *Session }

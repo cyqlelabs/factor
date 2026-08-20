@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -310,6 +312,89 @@ func TestSessionLaunchesAManagedBrowserWhenNoDevToolsPortIsOpen(t *testing.T) {
 	// The configured profile directory is created on demand and used.
 	if entries, err := os.ReadDir(filepath.Join(profile, "nested")); err != nil || len(entries) == 0 {
 		t.Errorf("configured user data dir was not used: %v (%d entries)", err, len(entries))
+	}
+}
+
+// A page can be readable long before its load event: a slow machine spends
+// tens of seconds in scripts and images after the DOM is there, and a page
+// with one stalled asset never fires load at all. Navigate must hand over
+// what the page holds and say it was still loading — reporting a dead site
+// while the browser sits on a readable page sends the model down a rabbit
+// hole of retries against a URL that works.
+func TestBrowserNavigateReadsAPageWhoseLoadEventNeverFires(t *testing.T) {
+	requireBrowser(t)
+	// The page's img hangs until teardown, so the load event never fires
+	// while the document itself is parsed and readable.
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hang" {
+			select {
+			case <-hang:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		fmt.Fprint(w, `<html><head><title>Slow Assets</title></head><body><p>content arrived early</p><img src="/hang"></body></html>`)
+	}))
+	t.Cleanup(srv.Close)
+
+	old := navigateWait
+	navigateWait = 4 * time.Second
+	t.Cleanup(func() { navigateWait = old })
+
+	res := liveSuite(t)["browser_navigate"].Execute(context.Background(), map[string]any{"url": srv.URL})
+	if res.IsError {
+		t.Fatalf("navigate reported failure for a readable page: %s", res.ForLLM)
+	}
+	for _, want := range []string{"still loading", "content arrived early", "Slow Assets"} {
+		if !strings.Contains(res.ForLLM, want) {
+			t.Errorf("result does not mention %q:\n%s", want, res.ForLLM)
+		}
+	}
+}
+
+// The salvage must not trigger when the navigation never happened: a host
+// that accepts the connection and then says nothing keeps the browser on the
+// page it was already showing, and reporting that page as the destination
+// would be a lie.
+func TestBrowserNavigateStillFailsWhenTheSiteNeverAnswers(t *testing.T) {
+	requireBrowser(t)
+	srv := servePage(t)
+	byName := liveSuite(t)
+	ctx := context.Background()
+
+	if res := byName["browser_navigate"].Execute(ctx, map[string]any{"url": srv.URL}); res.IsError {
+		t.Fatalf("navigate to the real page: %s", res.ForLLM)
+	}
+
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { silent.Close() })
+	go func() {
+		for {
+			conn, err := silent.Accept()
+			if err != nil {
+				return
+			}
+			// Hold the connection open without ever answering; the browser
+			// closes it when the test tears the tab down.
+			go func() { _, _ = io.Copy(io.Discard, conn) }()
+		}
+	}()
+
+	old := navigateWait
+	navigateWait = 4 * time.Second
+	t.Cleanup(func() { navigateWait = old })
+
+	res := byName["browser_navigate"].Execute(ctx, map[string]any{"url": "http://" + silent.Addr().String()})
+	if !res.IsError || !strings.Contains(res.ForLLM, "navigate failed") {
+		t.Fatalf("a silent host did not fail: %+v", res)
+	}
+	if strings.Contains(res.ForLLM, "Factor Test Page") {
+		t.Errorf("the previous page was reported as the destination:\n%s", res.ForLLM)
 	}
 }
 
