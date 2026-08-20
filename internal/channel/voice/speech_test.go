@@ -24,12 +24,40 @@ type fakeSpeechAPI struct {
 	text     string // transcription reply
 	pcm      []byte // synthesis reply
 	status   int
+	hold     chan struct{} // when non-nil, every handler waits here first
+}
+
+// stall makes every request wait until release, like a speech server still
+// loading its models.
+func (f *fakeSpeechAPI) stall() {
+	f.mu.Lock()
+	f.hold = make(chan struct{})
+	f.mu.Unlock()
+}
+
+func (f *fakeSpeechAPI) release() {
+	f.mu.Lock()
+	if f.hold != nil {
+		close(f.hold)
+		f.hold = nil
+	}
+	f.mu.Unlock()
 }
 
 func newFakeSpeechAPI(t *testing.T) *fakeSpeechAPI {
 	t.Helper()
 	f := &fakeSpeechAPI{text: "hello there", pcm: []byte("pcm-audio"), status: http.StatusOK}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		hold := f.hold
+		f.mu.Unlock()
+		if hold != nil {
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		f.mu.Lock()
 		f.requests = append(f.requests, r.Clone(context.Background()))
 		status := f.status

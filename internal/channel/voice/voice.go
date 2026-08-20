@@ -219,7 +219,7 @@ func (v *Voice) Stop() error {
 }
 
 // Send delivers a bus message — a cron result, a finished job, a heartbeat —
-// by speaking it once the floor is free.
+// by speaking it once the channel can speak and the floor is free.
 func (v *Voice) Send(_ context.Context, msg bus.OutboundMessage) error {
 	// This channel runs its own turns, so it hears their notes from the turn
 	// itself (see turn) rather than off the bus, in time to be worth saying.
@@ -227,8 +227,8 @@ func (v *Voice) Send(_ context.Context, msg bus.OutboundMessage) error {
 	if msg.Interim {
 		return nil
 	}
-	if v.speechClient() == nil {
-		return fmt.Errorf("the voice channel is still starting")
+	if v.runCtx == nil {
+		return fmt.Errorf("the voice channel never started")
 	}
 	if !v.spawn(func() { v.speakWhenIdle(v.runCtx, msg.Content) }) {
 		return fmt.Errorf("the voice channel is stopping")
@@ -583,9 +583,25 @@ func (v *Voice) armWindow() {
 	v.mu.Unlock()
 }
 
-// speakWhenIdle waits for the floor before a proactive message: it must not
-// talk over a reply, or over the user's turn in progress.
+// speakWhenIdle waits for the channel to be able to speak, then for the floor,
+// before a proactive message: it must not talk over a reply, or over the
+// user's turn in progress. The startup wait matters most to the restart
+// notice, which the gateway delivers the moment it boots — while the local
+// speech server is still loading its models.
 func (v *Voice) speakWhenIdle(ctx context.Context, text string) {
+	started := time.Now()
+	for v.speechClient() == nil {
+		if ctx.Err() != nil {
+			return
+		}
+		// run settles the tier within speechWait plus one probe, one way or
+		// the other; past that the channel is down and has said so.
+		if time.Since(started) > v.speechWait+30*time.Second {
+			slog.Warn("dropping a spoken message: the speech tier never came up", "text", text)
+			return
+		}
+		sleepCtx(ctx, 500*time.Millisecond)
+	}
 	deadline := time.Now().Add(2 * time.Minute)
 	for ctx.Err() == nil && time.Now().Before(deadline) {
 		if !v.player.busy() && !v.turnInFlight() {
@@ -593,6 +609,9 @@ func (v *Voice) speakWhenIdle(ctx context.Context, text string) {
 			return
 		}
 		sleepCtx(ctx, 500*time.Millisecond)
+	}
+	if ctx.Err() == nil {
+		slog.Warn("dropping a spoken message: the floor was never free to say it", "text", text)
 	}
 }
 

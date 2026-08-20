@@ -506,6 +506,33 @@ func TestVoicePushToTalkOnlyHearsWhenArmed(t *testing.T) {
 	}
 }
 
+// A restart notice arrives the moment the gateway boots, while the local
+// speech server is still loading its models: it must wait for the tier to
+// resolve, not bounce off the channel as an error.
+func TestVoiceSendDuringStartupWaitsForTheSpeechTier(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.api.stall()
+	if err := h.v.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = h.v.Stop() })
+
+	if err := h.v.Send(context.Background(), bus.OutboundMessage{Channel: "voice", Content: "back after the upgrade"}); err != nil {
+		t.Fatalf("a message during startup was refused: %v", err)
+	}
+	h.api.release()
+	waitUntil(t, func() bool { return h.spoke("back after the upgrade") })
+}
+
+// A channel whose Start never ran (or failed before the run context existed)
+// must refuse the message, not accept it into a goroutine that panics.
+func TestVoiceSendBeforeStartRefuses(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	if err := h.v.Send(context.Background(), bus.OutboundMessage{Channel: "voice", Content: "x"}); err == nil {
+		t.Error("a never-started channel accepted a message")
+	}
+}
+
 func TestVoiceSendSpeaksProactiveMessagesAndDropsInterims(t *testing.T) {
 	h := newVoiceHarness(t, nil)
 	h.start()
@@ -552,13 +579,6 @@ func TestVoiceSpeaksWhatATurnSaysOnItsWayToTheAnswer(t *testing.T) {
 	}
 	if len(order) != 2 || order[0] != note || order[1] != "as you wish" {
 		t.Errorf("spoken order = %q, want the note then the answer", order)
-	}
-}
-
-func TestVoiceSendRefusesBeforeTheChannelIsReady(t *testing.T) {
-	h := newVoiceHarness(t, nil)
-	if err := h.v.Send(context.Background(), bus.OutboundMessage{Content: "x"}); err == nil {
-		t.Error("Send before Start should fail so the manager retries")
 	}
 }
 
