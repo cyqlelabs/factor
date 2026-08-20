@@ -146,12 +146,15 @@ func (s *Service) Add(schedule, message, channelName, chatID string) (Job, error
 		delete(s.jobs, job.ID)
 		s.seq--
 	}
+	// Copied under the lock: once woken, the scheduler writes LastRun on the
+	// stored job, and a dereference after Unlock races it.
+	out := *job
 	s.mu.Unlock()
 	if err != nil {
 		return Job{}, err
 	}
 	s.wake()
-	return *job, nil
+	return out, nil
 }
 
 // Remove deletes a job.
