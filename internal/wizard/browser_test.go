@@ -42,6 +42,33 @@ func TestWizardInstallsBrowserWhenMissing(t *testing.T) {
 	}
 }
 
+// A failed install must say why and leave the tools on: setup carrying on
+// silently is how a box ends up with the browser tools registered, no browser
+// behind them, and nothing left that would ever install one.
+func TestWizardReportsAFailedBrowserInstall(t *testing.T) {
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y", "n")
+	if err := os.Remove(filepath.Join(h.home, "bin", "chromium")); err != nil {
+		t.Fatal(err)
+	}
+	h.opts.EnsureBrowser = func(context.Context, browser.Progress) (string, bool, error) {
+		return "", false, errors.New("no Helium build for this architecture")
+	}
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	cfg := h.saved()
+	if !cfg.Browser.Enabled || cfg.Browser.Command != "" {
+		t.Errorf("browser = %+v, want it left enabled with no command", cfg.Browser)
+	}
+	out := h.out.String()
+	if !strings.Contains(out, "no Helium build for this architecture") {
+		t.Errorf("the failure reason is missing from setup's output:\n%s", out)
+	}
+	if !strings.Contains(out, "try this again on their first call") {
+		t.Errorf("setup does not say the tools retry:\n%s", out)
+	}
+}
+
 func TestWizardKeepsBrowserToolsWhenInstallDeclined(t *testing.T) {
 	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n", "n")
 	if err := os.Remove(filepath.Join(h.home, "bin", "chromium")); err != nil {

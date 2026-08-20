@@ -2072,7 +2072,7 @@ func (w *wiz) provisionBrowser(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if !install {
-		w.ui.Note("the tools stay on and will pick up a browser as soon as one is installed")
+		w.ui.Note("the tools stay on and install a browser themselves the first time they are used")
 		return "", nil
 	}
 	progress := w.ui.Progress()
@@ -2082,7 +2082,11 @@ func (w *wiz) provisionBrowser(ctx context.Context) (string, error) {
 		path = p
 		return err
 	}); err != nil {
-		w.ui.Note("install Chrome, Chromium, or Helium (https://helium.computer) and re-run factor init")
+		// Setup finishing over a failed install is deliberate — a browser is
+		// not worth blocking the rest of it — but the reason above is the
+		// whole value of this line, and telling the user to re-run init would
+		// only repeat it. The tools retry on their own from here.
+		w.ui.Note("the browser tools will try this again on their first call; installing Chrome, Chromium or Helium (https://helium.computer) by hand also works")
 		return "", nil
 	}
 	return path, nil
