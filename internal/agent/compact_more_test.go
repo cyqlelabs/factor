@@ -66,10 +66,40 @@ func TestNeedsCompaction(t *testing.T) {
 		t.Error("token threshold not applied")
 	}
 
-	// a zero budget disables the token check without panicking
+	// 0 is not "off" but "auto": with no catalog wired it budgets against
+	// the default window, which this small history does not approach.
 	h.loop.cfg.Agent.ContextWindowTokens = 0
 	if h.loop.needsCompaction(heavy) {
-		t.Error("zero context window should disable the token check")
+		t.Error("a small history beat the default window")
+	}
+}
+
+// The window compaction budgets against comes from the model catalog first,
+// shrunk — never grown — by config, with a fixed default when neither knows.
+func TestContextWindowResolution(t *testing.T) {
+	h := newHarness(t)
+	for _, tc := range []struct {
+		name       string
+		catalog    int
+		configured int
+		want       int
+	}{
+		{"catalog alone", 200000, 0, 200000},
+		{"config shrinks the catalog", 200000, 32000, 32000},
+		{"config cannot grow the catalog", 32000, 200000, 32000},
+		{"config alone", 0, 32000, 32000},
+		{"neither knows", 0, 0, defaultContextWindow},
+	} {
+		h.loop.cfg.Agent.ContextWindowTokens = tc.configured
+		h.loop.SetContextWindow(func() int { return tc.catalog })
+		if got := h.loop.contextWindow(); got != tc.want {
+			t.Errorf("%s: contextWindow = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+	h.loop.windowFor = nil
+	h.loop.cfg.Agent.ContextWindowTokens = 0
+	if got := h.loop.contextWindow(); got != defaultContextWindow {
+		t.Errorf("no resolver wired: contextWindow = %d, want %d", got, defaultContextWindow)
 	}
 }
 

@@ -92,11 +92,38 @@ func findSafeBoundary(msgs []provider.Message, target int) int {
 	return -1
 }
 
+// defaultContextWindow is the assumption of last resort, for a model neither
+// the catalog nor the config can size.
+const defaultContextWindow = 65536
+
+// contextWindow is the context length compaction budgets against, resolved on
+// every check: the models in play can gain a catalog entry after startup, and
+// the answer must follow. The catalog's answer wins; config can only shrink
+// it, the same clamp-only rule Claude Code applies, because a config larger
+// than the model does not make the model larger.
+func (l *Loop) contextWindow() int {
+	window := 0
+	if l.windowFor != nil {
+		window = l.windowFor()
+	}
+	configured := l.cfg.Agent.ContextWindowTokens
+	switch {
+	case window > 0 && configured > 0 && configured < window:
+		return configured
+	case window > 0:
+		return window
+	case configured > 0:
+		return configured
+	default:
+		return defaultContextWindow
+	}
+}
+
 func (l *Loop) needsCompaction(history []provider.Message) bool {
 	if len(history) > l.cfg.Agent.SummarizeAtMessages {
 		return true
 	}
-	budget := l.cfg.Agent.ContextWindowTokens * l.cfg.Agent.SummarizeAtPercent / 100
+	budget := l.contextWindow() * l.cfg.Agent.SummarizeAtPercent / 100
 	return budget > 0 && estimateTokens(history) > budget
 }
 

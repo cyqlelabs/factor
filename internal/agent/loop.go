@@ -53,6 +53,8 @@ type Loop struct {
 	lastMu      sync.Mutex
 	lastChannel bus.InboundMessage
 	reachable   func(channel string) bool
+
+	windowFor func() int // context length of the models in play; 0 = unknown
 }
 
 func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry *tools.Registry,
@@ -491,6 +493,15 @@ func (l *Loop) recordLastChannel(msg bus.InboundMessage) {
 	if moved {
 		saveLastChannel(msg)
 	}
+}
+
+// SetContextWindow teaches the loop how much context the models in play
+// carry, so compaction triggers against the real window instead of an
+// assumption. fn answers 0 when nothing knows — the loop then falls back to
+// config, and past that to a fixed default. It is consulted on every check:
+// the answer can improve after startup, once the model catalog arrives.
+func (l *Loop) SetContextWindow(fn func() int) {
+	l.windowFor = fn
 }
 
 // SetReachable teaches the loop which channels have a connector behind them
