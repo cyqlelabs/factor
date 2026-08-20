@@ -276,7 +276,7 @@ func TestRunStopsWhenTheCallerCancels(t *testing.T) {
 	ws := t.TempDir()
 	s := NewSession(liveConfig(), ws, nil)
 	defer s.Close()
-	if _, err := s.ensure(); err != nil {
+	if _, err := s.ensure(context.Background()); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 

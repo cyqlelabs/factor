@@ -4,9 +4,10 @@
 // Protocol (chromedp): it attaches to the user's running Chrome/Chromium/
 // Brave when a DevTools port is open, otherwise launches a managed instance
 // — visible by default, so the user can watch the agent work. When the
-// machine has no Chromium-family browser at all, `factor init` provisions one
-// (see install.go). Build with -tags nobrowser to strip the whole suite from
-// the binary.
+// machine has no Chromium-family browser at all, one is provisioned on the
+// spot (see install.go): `factor init` does it up front, and a session that
+// finds none does it rather than reporting the suite unavailable. Build with
+// -tags nobrowser to strip the whole suite from the binary.
 package browser
 
 import (
@@ -152,6 +153,11 @@ func displayAvailable() bool {
 // close tabs in it, which is neither a fixture nor a fair test.
 var devtoolsProbe = "http://127.0.0.1:9222"
 
+// provisionEngine is EnsureEngine behind a seam, so a test can exercise the
+// provisioning path — and a CI box without a browser can be stopped from
+// downloading one — without reaching the network.
+var provisionEngine = EnsureEngine
+
 func devtoolsAlive(url string) bool {
 	client := &http.Client{Timeout: time.Second}
 	resp, err := client.Get(url + "/json/version")
@@ -163,14 +169,41 @@ func devtoolsAlive(url string) bool {
 }
 
 // ensure returns a live tab context, attaching or launching on first use.
-func (s *Session) ensure() (context.Context, error) {
+//
+// Deciding what to launch happens outside the lock because it can mean
+// downloading a browser, and a session that held its mutex through a hundred
+// megabytes would stall its own shutdown behind the download.
+func (s *Session) ensure(ctx context.Context) (context.Context, error) {
+	s.mu.Lock()
+	if s.cur != nil && s.cur.ctx.Err() == nil {
+		defer s.mu.Unlock()
+		return s.cur.ctx, nil
+	}
+	connected := s.browserCtx != nil && s.browserCtx.Err() == nil
+	s.mu.Unlock()
+
+	var attach, binary string
+	if !connected {
+		attach = s.cfg.AttachURL
+		if attach == "" && devtoolsAlive(devtoolsProbe) {
+			attach = devtoolsProbe
+		}
+		if attach == "" {
+			var err error
+			if binary, err = s.ensureBinary(ctx); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Another caller may have connected while the lock was open.
 	if s.cur != nil && s.cur.ctx.Err() == nil {
 		return s.cur.ctx, nil
 	}
 	if s.browserCtx == nil || s.browserCtx.Err() != nil {
-		if err := s.connectLocked(); err != nil {
+		if err := s.connectLocked(attach, binary); err != nil {
 			return nil, err
 		}
 	}
@@ -182,18 +215,44 @@ func (s *Session) ensure() (context.Context, error) {
 	return h.ctx, nil
 }
 
+// ensureBinary resolves the browser to launch, provisioning one when the
+// machine has none. Handing the user a command to run instead is not an
+// option: on the boxes that most need this — a stripped distribution with no
+// package manager Factor could call anyway — that answer never becomes a
+// working browser, and the suite would stay dead for the life of the install.
+func (s *Session) ensureBinary(ctx context.Context) (string, error) {
+	path, err := FindBrowserBinary(s.cfg.Command)
+	if err == nil {
+		return path, nil
+	}
+	if s.cfg.Command != "" {
+		// A configured browser that is not there is a mistake to report, not
+		// something to quietly substitute a different browser for.
+		return "", fmt.Errorf("the configured browser %q was not found (%w) — correct browser.command, or set browser.attach_url to an existing browser's DevTools port", s.cfg.Command, err)
+	}
+	slog.Info("browser: no browser on this machine, provisioning one")
+	installCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+	path, installed, err := provisionEngine(installCtx, config.Home(), func(format string, args ...any) {
+		slog.Info("browser: " + fmt.Sprintf(format, args...))
+	})
+	if err != nil {
+		return "", fmt.Errorf("no browser is installed and provisioning one failed: %w", err)
+	}
+	if installed {
+		slog.Info("browser: provisioned", "binary", path)
+	}
+	return path, nil
+}
+
 // connectLocked opens the browser connection without claiming a tab on it.
 // Materializing through Targets rather than an ordinary action is the point:
 // a chromedp context that has never run a page action owns no target, so
 // releasing this one later closes nothing the user was looking at.
-func (s *Session) connectLocked() error {
+func (s *Session) connectLocked(attach, binary string) error {
 	s.teardownLocked()
 
 	base := context.Background()
-	attach := s.cfg.AttachURL
-	if attach == "" && devtoolsAlive(devtoolsProbe) {
-		attach = devtoolsProbe
-	}
 	s.attached = attach != ""
 
 	var allocCtx context.Context
@@ -205,9 +264,8 @@ func (s *Session) connectLocked() error {
 		slog.Info("browser: attached to the browser already running here", "devtools", attach)
 		allocCtx, s.allocCancel = chromedp.NewRemoteAllocator(base, attach)
 	} else {
-		binary, err := FindBrowserBinary(s.cfg.Command)
-		if err != nil {
-			return fmt.Errorf("%v — set browser.attach_url to an existing browser's DevTools port, or install one", err)
+		if binary == "" {
+			return fmt.Errorf("no browser to launch and none could be provisioned")
 		}
 		opts := []chromedp.ExecAllocatorOption{
 			chromedp.ExecPath(binary),
@@ -344,7 +402,7 @@ func (s *Session) materialize(h *tabHandle) error {
 
 // openTab opens a fresh tab and makes it current.
 func (s *Session) openTab(ctx context.Context) error {
-	if _, err := s.ensure(); err != nil {
+	if _, err := s.ensure(ctx); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -394,7 +452,7 @@ func (s *Session) Close() {
 
 // run executes chromedp actions with a per-call timeout.
 func (s *Session) run(ctx context.Context, timeout time.Duration, actions ...chromedp.Action) error {
-	tab, err := s.ensure()
+	tab, err := s.ensure(ctx)
 	if err != nil {
 		return err
 	}

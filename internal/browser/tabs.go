@@ -43,7 +43,7 @@ type tabInfo struct {
 
 // targets asks the browser — not the tab — what it has open.
 func (s *Session) targets(ctx context.Context, timeout time.Duration) ([]*target.Info, error) {
-	tab, err := s.ensure()
+	tab, err := s.ensure(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +160,7 @@ func (s *Session) resolveTab(tabs []tabInfo, query string) (tabInfo, error) {
 
 // switchTo makes an already-open tab the one every browser tool acts on.
 func (s *Session) switchTo(ctx context.Context, id target.ID) error {
-	if _, err := s.ensure(); err != nil { // the browser connection, not the tab
+	if _, err := s.ensure(ctx); err != nil { // the browser connection, not the tab
 		return err
 	}
 	s.mu.Lock()

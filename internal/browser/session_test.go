@@ -5,6 +5,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -145,7 +146,7 @@ func TestSessionEnsureExplainsHowToRecoverWithoutABrowser(t *testing.T) {
 	s := NewSession(config.BrowserConfig{Command: "factor-nonexistent-browser"}, t.TempDir(), nil)
 	defer s.Close()
 
-	_, err := s.ensure()
+	_, err := s.ensure(context.Background())
 	if err == nil {
 		t.Fatal("expected ensure to fail with no browser to launch")
 	}
@@ -167,7 +168,7 @@ func TestSessionEnsureReportsAFailedAttach(t *testing.T) {
 	// (from Close, or from the next tool call) blocks forever.
 	s := NewSession(config.BrowserConfig{AttachURL: deadURL}, t.TempDir(), nil)
 
-	_, err := s.ensure()
+	_, err := s.ensure(context.Background())
 	if err == nil {
 		t.Fatal("attaching to a dead endpoint succeeded")
 	}
@@ -191,6 +192,90 @@ func TestBrowserToolsExplainWhenNoBrowserCanStart(t *testing.T) {
 		if !strings.Contains(res.ForLLM, want) {
 			t.Errorf("error %q does not mention %q", res.ForLLM, want)
 		}
+	}
+}
+
+// stubProvisioning replaces the engine install for the duration of a test, so
+// the provisioning path can be exercised without downloading a browser.
+func stubProvisioning(t *testing.T, path string, err error) *int {
+	t.Helper()
+	calls := 0
+	original := provisionEngine
+	provisionEngine = func(context.Context, string, Progress) (string, bool, error) {
+		calls++
+		return path, err == nil, err
+	}
+	t.Cleanup(func() { provisionEngine = original })
+	return &calls
+}
+
+// A machine with no browser must end up with one. Reporting the suite as
+// unavailable strands it: the boxes this happens on are the stripped ones with
+// no package manager, where "install Chromium yourself" is not a step the user
+// can take and the browser tools would stay dead forever.
+func TestSessionProvisionsABrowserWhenTheMachineHasNone(t *testing.T) {
+	blockDevToolsProbe(t)
+	noBrowserAnywhere(t)
+	installed := filepath.Join(t.TempDir(), "helium")
+	calls := stubProvisioning(t, installed, nil)
+
+	s := NewSession(config.BrowserConfig{}, t.TempDir(), nil)
+	got, err := s.ensureBinary(context.Background())
+	if err != nil {
+		t.Fatalf("ensureBinary: %v", err)
+	}
+	if got != installed {
+		t.Errorf("binary = %q, want the provisioned %q", got, installed)
+	}
+	if *calls != 1 {
+		t.Errorf("provisioning ran %d times, want 1", *calls)
+	}
+}
+
+func TestSessionReportsAFailedProvisioning(t *testing.T) {
+	blockDevToolsProbe(t)
+	noBrowserAnywhere(t)
+	stubProvisioning(t, "", errors.New("github unreachable"))
+
+	s := NewSession(config.BrowserConfig{}, t.TempDir(), nil)
+	_, err := s.ensureBinary(context.Background())
+	if err == nil {
+		t.Fatal("a failed provisioning was reported as success")
+	}
+	for _, want := range []string{"provisioning one failed", "github unreachable"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// A browser that is already installed must not be downloaded again.
+func TestSessionSkipsProvisioningWhenABrowserExists(t *testing.T) {
+	fakeBrowserOnPath(t, "chromium")
+	calls := stubProvisioning(t, "unused", nil)
+
+	s := NewSession(config.BrowserConfig{}, t.TempDir(), nil)
+	if _, err := s.ensureBinary(context.Background()); err != nil {
+		t.Fatalf("ensureBinary: %v", err)
+	}
+	if *calls != 0 {
+		t.Errorf("provisioning ran %d times with a browser already present", *calls)
+	}
+}
+
+// A configured browser that is missing is the user's mistake to see, not a
+// reason to silently download a different one.
+func TestSessionDoesNotProvisionOverAConfiguredBrowser(t *testing.T) {
+	blockDevToolsProbe(t)
+	noBrowserAnywhere(t)
+	calls := stubProvisioning(t, "unused", nil)
+
+	s := NewSession(config.BrowserConfig{Command: "factor-nonexistent-browser"}, t.TempDir(), nil)
+	if _, err := s.ensureBinary(context.Background()); err == nil {
+		t.Fatal("a missing configured browser was accepted")
+	}
+	if *calls != 0 {
+		t.Errorf("provisioning ran %d times over a configured browser", *calls)
 	}
 }
 
