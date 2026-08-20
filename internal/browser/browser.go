@@ -333,17 +333,33 @@ func (s *Session) connectLocked(attach, binary string) error {
 // blank tab it came up with is adopted instead, so the window does not end up
 // with a stray empty tab beside the one being driven.
 func (s *Session) openTabLocked() (*tabHandle, error) {
-	if !s.attached {
-		if infos, err := chromedp.Targets(s.browserCtx); err == nil {
-			var pages []*target.Info
-			for _, t := range infos {
-				if interesting(t) {
-					pages = append(pages, t)
+	if !s.attached && len(s.tabs) == 0 {
+		// A launched browser's first blank tab can lag the connection on a
+		// slow cold start, and racing it costs more than tidiness: a session
+		// that opens its own tab beside the one still materializing strands a
+		// blank tab that inflates every tab count from then on — including
+		// the guard that refuses to close the only open tab, which then lets
+		// the only real tab be closed. Wait for the tab rather than race it.
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			if infos, err := chromedp.Targets(s.browserCtx); err == nil {
+				var pages []*target.Info
+				for _, t := range infos {
+					if interesting(t) {
+						pages = append(pages, t)
+					}
+				}
+				if len(pages) == 1 {
+					return s.attachLocked(pages[0].TargetID, true)
+				}
+				if len(pages) > 1 {
+					break // a browser already carrying tabs: open one of our own
 				}
 			}
-			if len(pages) == 1 && len(s.tabs) == 0 {
-				return s.attachLocked(pages[0].TargetID, true)
+			if time.Now().After(deadline) {
+				break
 			}
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 	tabCtx, cancel := chromedp.NewContext(s.browserCtx)

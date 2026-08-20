@@ -315,6 +315,29 @@ func TestSessionLaunchesAManagedBrowserWhenNoDevToolsPortIsOpen(t *testing.T) {
 	}
 }
 
+// A launched browser comes up with one blank tab of its own, and on a slow
+// cold start that tab can materialize after the session first asks what is
+// open. The session must wait for it and drive it — losing the race strands
+// a blank tab beside the driven one, and every tab count from then on is off
+// by one, which is how "refusing to close the only open tab" once let the
+// only real tab be closed.
+func TestSessionAdoptsTheLaunchedBrowsersOnlyTab(t *testing.T) {
+	requireBrowser(t)
+	blockDevToolsProbe(t)
+	s := NewSession(liveConfig(), t.TempDir(), nil)
+	defer s.Close()
+	if _, err := s.ensure(context.Background()); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	tabs, err := s.listTabs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tabs) != 1 {
+		t.Errorf("a fresh session should drive the browser's own single tab, got %d: %+v", len(tabs), tabs)
+	}
+}
+
 // A page can be readable long before its load event: a slow machine spends
 // tens of seconds in scripts and images after the DOM is there, and a page
 // with one stalled asset never fires load at all. Navigate must hand over
