@@ -86,7 +86,9 @@ func TestExtractSettingsHaveEnvOverrides(t *testing.T) {
 	}
 }
 
-func TestContextWindowDerivedFromMaxTokens(t *testing.T) {
+// A zero context window is not backfilled: it means auto — the model catalog
+// answers at runtime, per model.
+func TestContextWindowZeroSurvivesAsAuto(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FACTOR_HOME", dir)
 	path := filepath.Join(dir, "config.json")
@@ -98,8 +100,8 @@ func TestContextWindowDerivedFromMaxTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Agent.ContextWindowTokens != 8000 {
-		t.Errorf("ContextWindowTokens = %d, want 8000", cfg.Agent.ContextWindowTokens)
+	if cfg.Agent.ContextWindowTokens != 0 {
+		t.Errorf("ContextWindowTokens = %d, want 0 (auto)", cfg.Agent.ContextWindowTokens)
 	}
 }
 

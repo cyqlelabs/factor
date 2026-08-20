@@ -35,9 +35,12 @@ type Config struct {
 }
 
 type AgentConfig struct {
-	Workspace           string `json:"workspace" env:"FACTOR_WORKSPACE"`
-	MaxToolIterations   int    `json:"max_tool_iterations" env:"FACTOR_MAX_TOOL_ITERATIONS"`
-	MaxConcurrentTurns  int    `json:"max_concurrent_turns"`
+	Workspace          string `json:"workspace" env:"FACTOR_WORKSPACE"`
+	MaxToolIterations  int    `json:"max_tool_iterations" env:"FACTOR_MAX_TOOL_ITERATIONS"`
+	MaxConcurrentTurns int    `json:"max_concurrent_turns"`
+	// ContextWindowTokens caps the window compaction budgets against. 0 means
+	// auto: the model catalog answers per model. A set value can only shrink
+	// what the catalog says, and stands alone for models it does not carry.
 	ContextWindowTokens int    `json:"context_window_tokens"`
 	SummarizeAtPercent  int    `json:"summarize_at_percent"`
 	SummarizeAtMessages int    `json:"summarize_at_messages"`
@@ -291,7 +294,6 @@ func Default() *Config {
 			Workspace:           filepath.Join(home, "workspace"),
 			MaxToolIterations:   20,
 			MaxConcurrentTurns:  4,
-			ContextWindowTokens: 65536,
 			SummarizeAtPercent:  75,
 			SummarizeAtMessages: 40,
 			KeepRecentMessages:  8,
@@ -450,9 +452,6 @@ func (c *Config) normalize() {
 	}
 	if c.Provider.MaxTokens <= 0 {
 		c.Provider.MaxTokens = 4096
-	}
-	if c.Agent.ContextWindowTokens <= 0 {
-		c.Agent.ContextWindowTokens = 4 * c.Provider.MaxTokens
 	}
 	if c.Cost.RefreshHours <= 0 {
 		c.Cost.RefreshHours = 24

@@ -155,6 +155,19 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	builder := agent.NewContextBuilder(cfg, skillLoader, ambient)
 	b := bus.New()
 	loop := agent.NewLoop(cfg, b, meter, registry, sessions, builder, ambient)
+	// Compaction budgets against the tightest window among the models the
+	// chain can serve a turn with — failover must not overflow the fallback.
+	// A model the catalog cannot size (locally served ones, above all) does
+	// not shrink the answer; the loop falls back to config for those.
+	loop.SetContextWindow(func() int {
+		window := 0
+		for _, cand := range cfg.Provider.Candidates() {
+			if w := catalog.Window(cand.Model); w > 0 && (window == 0 || w < window) {
+				window = w
+			}
+		}
+		return window
+	})
 
 	// Background jobs: completion events re-enter the originating session as
 	// inbound messages, so the agent proactively reports back to the user

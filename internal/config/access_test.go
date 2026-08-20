@@ -91,12 +91,12 @@ func TestSet(t *testing.T) {
 		t.Errorf("servers = %+v", cfg.MCP.Servers)
 	}
 
-	// normalize runs after Set: a zero context window is re-derived
+	// a zero context window survives Set: it means auto, not a gap to refill
 	if err := cfg.Set("agent.context_window_tokens", 0); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Agent.ContextWindowTokens != 4*cfg.Provider.MaxTokens {
-		t.Errorf("normalize not applied after Set: %d", cfg.Agent.ContextWindowTokens)
+	if cfg.Agent.ContextWindowTokens != 0 {
+		t.Errorf("zero did not survive Set: %d", cfg.Agent.ContextWindowTokens)
 	}
 	// the path survives replacement of the struct
 	if cfg.Path() != filepath.Join(Home(), "config.json") {
