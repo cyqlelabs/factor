@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -515,3 +516,205 @@ func TestEmbeddedSpeechServerSetsTelemetryOffBeforeAnyImport(t *testing.T) {
 		t.Error("the script calls disable_telemetry_events, which cannot stop initialization telemetry")
 	}
 }
+
+// loadCall is one call the scripted onnx-asr saw.
+type loadCall struct {
+	Model        string `json:"model"`
+	Path         string `json:"path"`
+	Quantization string `json:"quantization"`
+	Existed      bool   `json:"existed"`
+}
+
+// runLoadParakeet executes the embedded server's load_parakeet against a
+// scripted onnx-asr (and a scripted FastAPI, so the script imports on a
+// machine that has neither), returning what the loader was handed and the
+// data directory it worked in. leftover, when set, is written into the target
+// as the half-finished download of an install that was cut short.
+func runLoadParakeet(t *testing.T, failWhenExists bool, leftover []byte) ([]loadCall, string) {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed on this machine")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "speechserver.py")
+	if err := WriteSpeechScript(script); err != nil {
+		t.Fatal(err)
+	}
+	stubs := filepath.Join(dir, "stubs")
+	for name, body := range map[string]string{
+		"fastapi/__init__.py":  stubFastAPI,
+		"fastapi/responses.py": stubFastAPIResponses,
+		"onnx_asr/__init__.py": stubOnnxAsr,
+		"onnx_asr/utils.py":    stubOnnxAsrUtils,
+	} {
+		path := filepath.Join(stubs, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	data := filepath.Join(dir, "data")
+	target := filepath.Join(data, "parakeet", "nemo-parakeet-tdt-0.6b-v3")
+	if leftover != nil {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, "encoder-model.int8.onnx.incomplete"), leftover, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	calls := filepath.Join(dir, "calls.jsonl")
+	cmd := exec.Command(python, "-c", `
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("speechserver", os.environ["SCRIPT"])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["speechserver"] = mod
+spec.loader.exec_module(mod)
+mod.load_parakeet(mod.PARAKEET_MODEL)
+`)
+	cfg, err := json.Marshal(map[string]any{"data_dir": data, "stt_engine": "parakeet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(os.Environ(),
+		"PYTHONPATH="+stubs,
+		"SCRIPT="+script,
+		"ONNX_ASR_CALLS="+calls,
+		"ONNX_ASR_FAIL_WHEN_EXISTS="+map[bool]string{true: "1", false: "0"}[failWhenExists],
+		"FACTOR_SPEECH_CONFIG="+string(cfg))
+	out, err := cmd.CombinedOutput()
+	if strings.Contains(string(out), "No module named 'audioop'") {
+		t.Skip("this python has no audioop and the server's resampler needs it")
+	}
+	if err != nil {
+		t.Fatalf("load_parakeet failed: %v\n%s", err, out)
+	}
+
+	recorded, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatalf("the scripted loader recorded nothing: %v\n%s", err, out)
+	}
+	var seen []loadCall
+	for _, line := range strings.Split(strings.TrimSpace(string(recorded)), "\n") {
+		var call loadCall
+		if err := json.Unmarshal([]byte(line), &call); err != nil {
+			t.Fatalf("recorded line %q: %v", line, err)
+		}
+		seen = append(seen, call)
+	}
+	return seen, data
+}
+
+// The weights are downloaded by loading the model, and onnx-asr reads a
+// directory that already exists as "they are already here" — it goes offline
+// and looks for files nobody fetched. A load_parakeet that creates its target
+// first is therefore a transducer that never downloads on any machine that
+// does not already have it, which is every fresh install.
+func TestLoadParakeetLeavesTheTargetForOnnxAsrToCreate(t *testing.T) {
+	calls, _ := runLoadParakeet(t, false, nil)
+	if len(calls) != 1 {
+		t.Fatalf("want one load, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Existed {
+		t.Error("the target directory was made before onnx-asr saw it, so the weights would never download")
+	}
+	if calls[0].Model != "nemo-parakeet-tdt-0.6b-v3" || calls[0].Quantization != "int8" {
+		t.Errorf("loaded %+v", calls[0])
+	}
+}
+
+// A download cut short leaves a directory that exists and cannot be loaded
+// from — the one state onnx-asr answers the same way for good. It is cleared
+// and fetched again rather than left wedged behind an error about a missing
+// file the user never had.
+func TestLoadParakeetClearsAnIncompleteDownload(t *testing.T) {
+	calls, data := runLoadParakeet(t, true, []byte("half an encoder"))
+	if len(calls) != 2 {
+		t.Fatalf("want a retry after the incomplete load, got %d: %+v", len(calls), calls)
+	}
+	if !calls[0].Existed {
+		t.Error("the incomplete download was not the state the loader saw first")
+	}
+	if calls[1].Existed {
+		t.Error("the retry ran against the same unloadable directory")
+	}
+	stale := filepath.Join(data, "parakeet", "nemo-parakeet-tdt-0.6b-v3", "encoder-model.int8.onnx.incomplete")
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("the half-finished download survived: %v", err)
+	}
+}
+
+const stubOnnxAsr = `
+import json, os
+
+
+class _Adapter:
+    def with_timestamps(self):
+        return self
+
+
+def load_model(model, path=None, *, quantization=None, **kwargs):
+    existed = path is not None and os.path.exists(path)
+    with open(os.environ["ONNX_ASR_CALLS"], "a") as f:
+        f.write(json.dumps({"model": model, "path": str(path),
+                            "quantization": quantization, "existed": existed}) + "\n")
+    if existed and os.environ.get("ONNX_ASR_FAIL_WHEN_EXISTS") == "1":
+        from onnx_asr.utils import ModelFileNotFoundError
+
+        raise ModelFileNotFoundError("no model files in " + str(path))
+    return _Adapter()
+`
+
+const stubOnnxAsrUtils = `
+class ModelLoadingError(Exception):
+    pass
+
+
+class ModelFileNotFoundError(ModelLoadingError, FileNotFoundError):
+    pass
+`
+
+const stubFastAPI = `
+class FastAPI:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def get(self, *args, **kwargs):
+        return lambda fn: fn
+
+    def post(self, *args, **kwargs):
+        return lambda fn: fn
+
+
+class HTTPException(Exception):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args)
+
+
+class UploadFile:
+    pass
+
+
+def _param(default=None, **kwargs):
+    return default
+
+
+Body = File = Form = Header = _param
+`
+
+const stubFastAPIResponses = `
+class JSONResponse:
+    def __init__(self, *args, **kwargs):
+        pass
+
+
+class Response:
+    def __init__(self, *args, **kwargs):
+        pass
+`

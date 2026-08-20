@@ -35,6 +35,7 @@ import audioop
 import io
 import json
 import os
+import shutil
 import sys
 import threading
 import wave
@@ -183,11 +184,24 @@ def load_parakeet(model: str):
     verbose_json with a real avg_logprob instead of a made-up one — Patter
     turns that number into the confidence it acts on."""
     import onnx_asr
+    from onnx_asr.utils import ModelLoadingError
 
     log("loading speech-to-text", engine="parakeet", model=model, quantization=PARAKEET_QUANTIZATION)
+    # The directory is deliberately not created first: onnx-asr reads one that
+    # already exists as "the weights are here" and switches itself offline, so
+    # a target made in advance is a model that never downloads. A download cut
+    # short leaves exactly that state behind — a directory that exists and
+    # cannot be loaded from — so it is cleared and fetched again rather than
+    # reported as a missing file for good.
     target = DATA_DIR / "parakeet" / model
-    target.mkdir(parents=True, exist_ok=True)
-    return onnx_asr.load_model(model, str(target), quantization=PARAKEET_QUANTIZATION).with_timestamps()
+    try:
+        return onnx_asr.load_model(model, str(target), quantization=PARAKEET_QUANTIZATION).with_timestamps()
+    except ModelLoadingError:
+        if not target.exists():
+            raise
+        log("the transducer on disk is incomplete; downloading it again", model=model)
+        shutil.rmtree(target)
+        return onnx_asr.load_model(model, str(target), quantization=PARAKEET_QUANTIZATION).with_timestamps()
 
 
 @asynccontextmanager
