@@ -187,3 +187,24 @@ func TestDefaultConfigAsksForMaximumReasoning(t *testing.T) {
 		t.Errorf("default reasoning effort = %q", def.Provider.Reasoning.Effort)
 	}
 }
+
+// EffortBudget is what the wizard quotes when it explains that Anthropic
+// takes a budget rather than an effort. It must be the very number the
+// Anthropic request would carry, or setup promises one thing and the provider
+// sends another.
+func TestEffortBudgetMatchesWhatAnthropicIsSent(t *testing.T) {
+	for _, effort := range []string{"minimal", "low", "medium", "high", "xhigh"} {
+		quoted := EffortBudget(effort)
+		if quoted <= 0 {
+			t.Errorf("EffortBudget(%q) = %d; the wizard would quote a nonsense budget", effort, quoted)
+			continue
+		}
+		r := &Reasoning{Effort: effort}
+		if sent := r.budget(); sent != quoted {
+			t.Errorf("%s: wizard quotes %d tokens but the request carries %d", effort, quoted, sent)
+		}
+	}
+	if got := EffortBudget("turbo"); got != 0 {
+		t.Errorf("an unknown effort must have no budget, got %d", got)
+	}
+}

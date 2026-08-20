@@ -120,6 +120,14 @@ func TestEveryToolSchemaIsModelReady(t *testing.T) {
 					t.Errorf("property %q declares an enum with no usable string values", key)
 				}
 			}
+			// A required field the schema never describes is a field the model
+			// is told to send and given nothing to fill it with; strict
+			// providers reject the whole schema over it.
+			for _, req := range tools.SchemaStrings(def.Parameters["required"]) {
+				if _, described := props[req]; !described {
+					t.Errorf("%q is required but not among the described properties", req)
+				}
+			}
 		})
 	}
 }

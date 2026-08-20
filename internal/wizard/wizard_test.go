@@ -1103,3 +1103,113 @@ func TestQuietRunInstallsDesktopHelpers(t *testing.T) {
 		t.Errorf("the scriptable path ignored the desktop helpers:\n%s", out.String())
 	}
 }
+
+// verifyWiz drives verifyProvider alone, the way a piped stdin drives the
+// whole wizard: numbered menu answers and lines of text.
+func verifyWiz(t *testing.T, cfg *config.Config, answers ...string) (*wiz, *bytes.Buffer) {
+	t.Helper()
+	out := &bytes.Buffer{}
+	opts := Options{Version: "test", Home: t.TempDir(), HTTP: http.DefaultClient}
+	opts.UI = NewPlain(strings.NewReader(strings.Join(answers, "\n")+"\n"), out)
+	opts.defaults()
+	return &wiz{cfg: cfg, ui: opts.UI, opts: opts}, out
+}
+
+// A key typed with a typo is the most ordinary way setup fails, and retyping
+// it has to actually re-verify — a wizard that accepted the second key
+// without checking would hand back a config that cannot talk to anything.
+func TestVerifyProviderRetriesWithACorrectedKey(t *testing.T) {
+	srv := fakeProvider(t, "big-model") // only sk-test is accepted
+	cfg := config.Default()
+	cfg.Provider = config.ProviderConfig{Type: "openai", Model: "big-model", APIBase: srv.URL + "/v1", APIKey: "sk-wrong"}
+	cand := cfg.Provider.Candidates()[0]
+
+	w, out := verifyWiz(t, cfg, "1", "sk-test") // "Re-enter the API key", then the good one
+	if err := w.verifyProvider(context.Background(), cand); err != nil {
+		t.Fatalf("verifyProvider: %v", err)
+	}
+	if cfg.Provider.APIKey != "sk-test" {
+		t.Errorf("saved key = %q, want the corrected one", cfg.Provider.APIKey)
+	}
+	if strings.Contains(out.String(), "unverified provider") {
+		t.Error("the corrected key was never re-checked; the wizard gave up instead")
+	}
+}
+
+// The other ordinary failure is a model the account cannot reach. Picking a
+// different one from the list has to re-verify and keep the choice.
+func TestVerifyProviderRetriesWithADifferentModel(t *testing.T) {
+	// This endpoint offers two models but only serves one of them.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{
+			{"id": "locked-model"}, {"id": "open-model"},
+		}})
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Model != "open-model" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"message":"your account cannot use this model"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "ok"}}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := config.Default()
+	cfg.Provider = config.ProviderConfig{Type: "openai", Model: "locked-model", APIBase: srv.URL + "/v1", APIKey: "sk-test"}
+	cand := cfg.Provider.Candidates()[0]
+
+	w, out := verifyWiz(t, cfg, "2", "2") // "Pick a different model", then the second offered
+	if err := w.verifyProvider(context.Background(), cand); err != nil {
+		t.Fatalf("verifyProvider: %v", err)
+	}
+	if cfg.Provider.Model != "open-model" {
+		t.Errorf("saved model = %q, want the one the account can actually use", cfg.Provider.Model)
+	}
+	if strings.Contains(out.String(), "unverified provider") {
+		t.Error("the new model was never re-checked; the wizard gave up instead")
+	}
+}
+
+// Setup must never become unfinishable because a provider is down: the user
+// can carry on with an unverified one, and the wizard says so rather than
+// implying the check passed.
+func TestVerifyProviderLetsTheUserContinueUnverified(t *testing.T) {
+	cfg := config.Default()
+	cfg.Provider = config.ProviderConfig{Type: "openai", Model: "m", APIBase: "http://127.0.0.1:1/v1", APIKey: "k"}
+	cand := cfg.Provider.Candidates()[0]
+
+	w, _ := verifyWiz(t, cfg, "3") // "Continue anyway"
+	if err := w.verifyProvider(context.Background(), cand); err != nil {
+		t.Fatalf("verifyProvider: %v", err)
+	}
+}
+
+// A provider that never comes back must not trap the wizard in a loop: after
+// a few attempts it gives up, warns, and moves on.
+func TestVerifyProviderGivesUpAfterRepeatedFailures(t *testing.T) {
+	cfg := config.Default()
+	cfg.Provider = config.ProviderConfig{Type: "openai", Model: "m", APIBase: "http://127.0.0.1:1/v1", APIKey: "k"}
+	cand := cfg.Provider.Candidates()[0]
+
+	// Re-enter the key every time; it never helps, because nothing answers.
+	answers := []string{}
+	for range maxVerifyAttempts {
+		answers = append(answers, "1", "sk-still-wrong")
+	}
+	w, out := verifyWiz(t, cfg, answers...)
+	if err := w.verifyProvider(context.Background(), cand); err != nil {
+		t.Fatalf("verifyProvider: %v", err)
+	}
+	if !strings.Contains(out.String(), "unverified provider") {
+		t.Errorf("the user was never told the provider is unverified:\n%s", out.String())
+	}
+}

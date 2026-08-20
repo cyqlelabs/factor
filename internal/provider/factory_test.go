@@ -223,3 +223,43 @@ func TestOpenAICompatibleEndpointFalseWhenOnlyAnthropic(t *testing.T) {
 		t.Errorf("want zero values on miss, got %q, %q, %q", base, key, model)
 	}
 }
+
+// DefaultAPIBase is what the wizard shows a user and what the price catalog
+// uses to decide a model is served locally and therefore free. A wrong
+// endpoint here bills a local model or points setup at a host nobody runs.
+func TestDefaultAPIBaseNamesEveryBuiltInEndpoint(t *testing.T) {
+	for providerType, want := range map[string]string{
+		"anthropic":  "https://api.anthropic.com/v1",
+		"openai":     "https://api.openai.com/v1",
+		"openrouter": "https://openrouter.ai/api/v1",
+		"groq":       "https://api.groq.com/openai/v1",
+		"ollama":     "http://127.0.0.1:11434/v1",
+		"lmstudio":   "http://127.0.0.1:1234/v1",
+		"llamacpp":   "http://127.0.0.1:8080/v1",
+	} {
+		if got := DefaultAPIBase(providerType); got != want {
+			t.Errorf("DefaultAPIBase(%q) = %q, want %q", providerType, got, want)
+		}
+	}
+	if got := DefaultAPIBase("some-gateway"); got != "" {
+		t.Errorf("an unknown type must have no default, got %q — api_base is required for it", got)
+	}
+}
+
+// New and DefaultAPIBase must agree: the endpoint the wizard reports is the
+// one the provider will actually call.
+func TestDefaultAPIBaseMatchesWhatNewBuilds(t *testing.T) {
+	for _, providerType := range []string{"openai", "openrouter", "groq", "ollama", "lmstudio", "llamacpp"} {
+		p, err := New(config.Candidate{Type: providerType, APIKey: "k", Model: "m"})
+		if err != nil {
+			t.Fatalf("New(%q): %v", providerType, err)
+		}
+		o, ok := p.(*OpenAI)
+		if !ok {
+			t.Fatalf("provider for %q = %T, want *OpenAI", providerType, p)
+		}
+		if o.apiBase != DefaultAPIBase(providerType) {
+			t.Errorf("%s: built with %q but DefaultAPIBase reports %q", providerType, o.apiBase, DefaultAPIBase(providerType))
+		}
+	}
+}

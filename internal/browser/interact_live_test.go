@@ -223,3 +223,55 @@ func TestAdoptedTabSurvivesSessionClose(t *testing.T) {
 	}
 	_ = srv
 }
+
+// Naming a tab that is not open, or naming nothing at all, has to come back
+// as an answer the model can act on — the tools it would reach for next are
+// a fresh listing and a different name, and a bare protocol error says
+// neither.
+func TestTabsRejectsTargetsThatMatchNoOpenTab(t *testing.T) {
+	requireBrowser(t)
+	srv := serveCompose(t)
+	byName := liveSuite(t)
+	ctx := context.Background()
+	mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+
+	for _, tc := range []struct {
+		name   string
+		args   map[string]any
+		wantIn string
+	}{
+		{"switch to a title nothing carries", map[string]any{"action": "switch", "target": "invoices"}, `no open tab matches "invoices"`},
+		{"switch to a number nothing has", map[string]any{"action": "switch", "target": "9"}, "no tab 9 is open"},
+		{"switch with no target at all", map[string]any{"action": "switch"}, "which tab?"},
+		{"close a title nothing carries", map[string]any{"action": "close", "target": "invoices"}, "refusing to close the only open tab"},
+	} {
+		res := byName["browser_tabs"].Execute(ctx, tc.args)
+		if !res.IsError {
+			t.Errorf("%s: reported success (%q)", tc.name, res.ForLLM)
+			continue
+		}
+		if !strings.Contains(res.ForLLM, tc.wantIn) {
+			t.Errorf("%s: error %q does not mention %q", tc.name, res.ForLLM, tc.wantIn)
+		}
+	}
+}
+
+// Opening a tab with no URL is a blank tab, not a failure — and the session
+// must be driving it afterwards, or the next tool would act on the old page.
+func TestTabsOpenWithoutAURLLandsOnABlankTab(t *testing.T) {
+	requireBrowser(t)
+	srv := serveCompose(t)
+	byName := liveSuite(t)
+	mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+
+	if out := mustRun(t, byName["browser_tabs"], map[string]any{"action": "open"}); !strings.Contains(out, "Opened a new tab") {
+		t.Errorf("open result: %s", out)
+	}
+	if out := mustRun(t, byName["browser_read"], nil); !strings.Contains(out, "about:blank") {
+		t.Errorf("the session did not follow the tab it opened:\n%s", out)
+	}
+	// The page left behind is still there, and still reachable by name.
+	if out := mustRun(t, byName["browser_tabs"], map[string]any{"action": "switch", "target": "Compose"}); !strings.Contains(out, "Compose") {
+		t.Errorf("could not switch back to the original tab:\n%s", out)
+	}
+}

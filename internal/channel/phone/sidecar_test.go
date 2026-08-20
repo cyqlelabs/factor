@@ -404,3 +404,51 @@ func TestControlClientHealthRejectsAnUnhappyStatus(t *testing.T) {
 		t.Error("health accepted a 503")
 	}
 }
+
+// With auto_install off, a machine that has no voice shell must say exactly
+// that and how to get one — not retry an install it was told not to run.
+func TestResolveCommandRefusesToInstallWhenAutoInstallIsOff(t *testing.T) {
+	off := false
+	s, _ := supervisorFor(t, "serve", func(c *Config) {
+		c.Command = "" // nothing configured: resolution falls to the venv, then install
+		c.AutoInstall = &off
+	})
+	s.home = t.TempDir() // an empty home has no voice shell in it
+
+	_, err := s.resolveCommand(context.Background())
+	if err == nil {
+		t.Fatal("resolveCommand produced an interpreter out of an empty home")
+	}
+	for _, want := range []string{"auto_install is off", InstallHint} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// A failed install must be attempted once, not on every restart: the machines
+// that cannot install Patter are exactly the ones where retrying costs
+// minutes each time round the supervisor loop.
+func TestResolveCommandInstallsAtMostOncePerProcess(t *testing.T) {
+	s, _ := supervisorFor(t, "serve", func(c *Config) { c.Command = "" })
+	s.home = t.TempDir()
+
+	attempts := 0
+	restore := installVoiceShell
+	installVoiceShell = func(context.Context, string, Progress) (string, error) {
+		attempts++
+		return "", fmt.Errorf("no usable python on this machine")
+	}
+	t.Cleanup(func() { installVoiceShell = restore })
+
+	if _, err := s.resolveCommand(context.Background()); err == nil {
+		t.Fatal("a failed install reported success")
+	}
+	_, err := s.resolveCommand(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already failed this run") {
+		t.Errorf("second attempt error = %v, want it to say the install already failed", err)
+	}
+	if attempts != 1 {
+		t.Errorf("install ran %d times, want exactly 1", attempts)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 func writeSkill(t *testing.T, root, dir, content string) {
@@ -163,5 +165,57 @@ func TestInstallToolLocalDir(t *testing.T) {
 	res = tool.Execute(context.Background(), map[string]any{"source": src, "name": "../escape"})
 	if !res.IsError {
 		t.Error("path-traversal name accepted")
+	}
+}
+
+// Every skill tool is handed to the model as a name, a description and a JSON
+// schema. A schema that requires a field it never describes, or a tool that
+// arrives without a description, is unusable at the far end — and nothing on
+// the way there checks it.
+func TestSkillToolsDeclareUsableSchemas(t *testing.T) {
+	root := t.TempDir()
+	suite := []tools.Tool{
+		&WriteTool{Root: root},
+		&RemoveTool{Root: root},
+		&InstallTool{Root: root},
+		&FindTool{Registry: &Registry{}},
+	}
+	seen := map[string]bool{}
+	for _, tool := range suite {
+		name := tool.Name()
+		if !strings.HasPrefix(name, "skill_") {
+			t.Errorf("tool %q does not belong to the skill_ family", name)
+		}
+		if seen[name] {
+			t.Errorf("two tools answer to %q; the later one would win silently", name)
+		}
+		seen[name] = true
+
+		if len(strings.TrimSpace(tool.Description())) < 20 {
+			t.Errorf("%s has no description the model can route on", name)
+		}
+		params := tool.Parameters()
+		if params["type"] != "object" {
+			t.Errorf("%s schema type = %v, want object", name, params["type"])
+		}
+		props, ok := params["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s declares no properties map", name)
+		}
+		for key, raw := range props {
+			spec, ok := raw.(map[string]any)
+			if !ok {
+				t.Errorf("%s property %q is %T, want map[string]any", name, key, raw)
+				continue
+			}
+			if desc, _ := spec["description"].(string); strings.TrimSpace(desc) == "" {
+				t.Errorf("%s property %q has no description", name, key)
+			}
+		}
+		for _, req := range tools.SchemaStrings(params["required"]) {
+			if _, described := props[req]; !described {
+				t.Errorf("%s requires %q but never describes it", name, req)
+			}
+		}
 	}
 }

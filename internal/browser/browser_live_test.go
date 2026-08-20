@@ -438,3 +438,29 @@ func TestSessionStartsAFreshBrowserAfterClose(t *testing.T) {
 		t.Fatalf("navigate after close: %s", res.ForLLM)
 	}
 }
+
+// Verify is what `factor init` reports the browser step on: it must drive a
+// real round-trip, not merely find a binary. Available is the build-tag
+// answer that decides whether the step is offered at all.
+func TestVerifyDrivesARealRoundTrip(t *testing.T) {
+	requireBrowser(t)
+	blockDevToolsProbe(t)
+	if !Available() {
+		t.Fatal("the browser suite is compiled in, but Available() says otherwise")
+	}
+	if err := Verify(context.Background(), liveConfig()); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}
+
+// A browser that cannot start must fail setup rather than pass it: the whole
+// point of the step is that a green tick means a working browser.
+func TestVerifyFailsWhenNoBrowserCanStart(t *testing.T) {
+	blockDevToolsProbe(t)
+	noBrowserAnywhere(t)
+	cfg := liveConfig()
+	cfg.Command = "factor-nonexistent-browser"
+	if err := Verify(context.Background(), cfg); err == nil {
+		t.Error("verify passed with no browser to drive")
+	}
+}

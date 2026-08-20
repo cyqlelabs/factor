@@ -139,6 +139,11 @@ func (s *supervisor) pollWhileHealthy(ctx context.Context) {
 	}
 }
 
+// installVoiceShell is Install behind a seam, so a test can exercise the
+// install path — and a CI box without Python can be stopped from attempting
+// one — without a multi-minute download.
+var installVoiceShell = Install
+
 // resolveCommand locates the Python that runs the voice shell, installing
 // Patter into a private venv when it is missing. The install is attempted at
 // most once per process: a machine without a usable Python must not re-run a
@@ -157,7 +162,7 @@ func (s *supervisor) resolveCommand(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("the Patter voice shell is not installed and the automatic install already failed this run")
 	}
 	slog.Info("voice shell dependencies missing; installing Patter automatically")
-	path, err := Install(ctx, s.home, func(format string, args ...any) {
+	path, err := installVoiceShell(ctx, s.home, func(format string, args ...any) {
 		slog.Info("patter install: " + fmt.Sprintf(format, args...))
 	})
 	if err != nil {

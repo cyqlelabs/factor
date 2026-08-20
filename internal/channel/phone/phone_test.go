@@ -653,3 +653,31 @@ func TestManagerDeliversAProactiveMessageAsSMS(t *testing.T) {
 		t.Errorf("Body = %q", got)
 	}
 }
+
+// Healthy and Down are what `factor status` and the tray row read: the phone
+// must answer for the speech shell it depends on, not for itself. A channel
+// that reports healthy while its shell is dead sends the user to look for the
+// fault everywhere except where it is.
+func TestPhoneHealthFollowsTheSpeechShell(t *testing.T) {
+	p, _, _ := newTestPhone(t, nil)
+
+	// Nothing has probed the shell yet, so nothing is claimed for it.
+	if p.Healthy() {
+		t.Error("the phone reported healthy before its shell was ever probed")
+	}
+
+	p.shell.healthy.Store(true)
+	p.shell.down.Store("")
+	if !p.Healthy() || p.Down() != "" {
+		t.Errorf("with a live shell: Healthy=%v Down=%q", p.Healthy(), p.Down())
+	}
+
+	p.shell.healthy.Store(false)
+	p.shell.setDown("the speech process exited (%s)", "signal: killed")
+	if p.Healthy() {
+		t.Error("the phone still reports healthy with a dead shell")
+	}
+	if !strings.Contains(p.Down(), "signal: killed") {
+		t.Errorf("Down() = %q; it does not carry the shell's reason", p.Down())
+	}
+}

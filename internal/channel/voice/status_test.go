@@ -177,3 +177,32 @@ func TestRedactKeepsSecretsOutOfErrors(t *testing.T) {
 		t.Error("redact(nil) != nil")
 	}
 }
+
+// Meter is what the chat bar's level display and the tray read. It has to
+// track the live microphone — a bar frozen at zero while sound is arriving
+// is worse than no bar, and Silent is the wrong-capture-device signature the
+// wizard and /health both surface.
+func TestMeterTracksTheLiveMicrophone(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.start()
+
+	if m := h.v.Meter(); !m.Ready {
+		t.Error("the microphone is open, but the meter reports it is not")
+	}
+
+	// A stream of exact zeroes is the signature of a source delivering
+	// nothing: the meter must call it out rather than show a quiet room.
+	// Ten seconds of exact zeroes is what the loop calls a silent stream.
+	h.mic.feed(repeat(silenceFrame(), 10*1000/frameMs+5)...)
+	waitUntil(t, func() bool { return h.v.Meter().Silent })
+	if level := h.v.Meter().Level; level != 0 {
+		t.Errorf("digital silence measured %v, want 0", level)
+	}
+
+	// Real sound clears the silence flag and moves the level above the floor.
+	h.mic.feed(repeat(toneFrame(8000), 30)...)
+	waitUntil(t, func() bool {
+		m := h.v.Meter()
+		return !m.Silent && m.Level > m.Floor
+	})
+}

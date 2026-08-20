@@ -3,6 +3,7 @@ package wizard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -268,5 +269,53 @@ func TestSmallHelpers(t *testing.T) {
 	}
 	if onPath(filepath.Join(dir, "nope")) {
 		t.Error("onPath accepted a directory that is not on PATH")
+	}
+}
+
+// A carrier credential must never reach the screen. Transport errors quote
+// the request, so a probe that fails against a URL carrying the token would
+// print it — which is why every carrier probe redacts before it reports.
+func TestCarrierProbesKeepCredentialsOutOfTheirErrors(t *testing.T) {
+	const token = "super-secret-auth-token"
+	// A transport that fails with the credential in the message is the worst
+	// case these call sites exist to contain.
+	client := &http.Client{Transport: stubTransport(func(r *http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("dial tcp: proxy rejected %s?auth=%s", r.URL.Host, token)
+	})}
+	ctx := context.Background()
+
+	probes := map[string]func() error{
+		"twilio": func() error {
+			_, err := CheckTwilio(ctx, client, "https://api.twilio.test", "AC123", token)
+			return err
+		},
+		"telnyx": func() error {
+			_, err := CheckTelnyx(ctx, client, "https://api.telnyx.test", token, "conn-1")
+			return err
+		},
+		"elevenlabs": func() error {
+			_, err := CheckElevenLabs(ctx, client, "https://api.elevenlabs.test", token)
+			return err
+		},
+	}
+	for name, probe := range probes {
+		err := probe()
+		if err == nil {
+			t.Errorf("%s: an unreachable carrier reported success", name)
+			continue
+		}
+		if strings.Contains(err.Error(), token) {
+			t.Errorf("%s leaked the credential: %s", name, err)
+		}
+		if !strings.Contains(err.Error(), "[redacted]") {
+			t.Errorf("%s error does not show the redaction: %s", name, err)
+		}
+	}
+}
+
+func TestRedactSecretLeavesTextAloneWithoutASecret(t *testing.T) {
+	msg := "dial tcp 127.0.0.1:443: connection refused"
+	if got := redactSecret(msg, ""); got != msg {
+		t.Errorf("an empty secret rewrote the message: %q", got)
 	}
 }

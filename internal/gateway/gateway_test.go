@@ -333,3 +333,33 @@ func TestAnnounceRelease(t *testing.T) {
 		}
 	}
 }
+
+// A newer engine image is reported, never installed on its own: swapping it
+// is the user's call even though it never takes Factor down.
+func TestAnnounceEngine(t *testing.T) {
+	var sent []bus.OutboundMessage
+	publish := func(m bus.OutboundMessage) bool { sent = append(sent, m); return true }
+	rel := upgrade.SmrtiRelease{Version: "0.9.1", Running: "0.9.0"}
+
+	// No external chat has been used yet: there is nobody to tell.
+	announceEngine(rel, func() (string, string, bool) { return "", "", false }, publish)
+	if len(sent) != 0 {
+		t.Fatalf("announced into the void: %+v", sent)
+	}
+
+	announceEngine(rel, func() (string, string, bool) { return "telegram", "42", true }, publish)
+	if len(sent) != 1 {
+		t.Fatalf("sent %d messages", len(sent))
+	}
+	got := sent[0]
+	if got.Channel != "telegram" || got.ChatID != "42" {
+		t.Errorf("addressed to %s:%s", got.Channel, got.ChatID)
+	}
+	// Both versions have to be in the line, or "is out" says nothing about
+	// whether this machine is behind.
+	for _, want := range []string{"0.9.1", "0.9.0", "factor upgrade"} {
+		if !strings.Contains(got.Content, want) {
+			t.Errorf("message %q is missing %q", got.Content, want)
+		}
+	}
+}

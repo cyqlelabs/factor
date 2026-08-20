@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -309,5 +310,64 @@ func TestNewEngineModes(t *testing.T) {
 	}
 	if _, err := NewEngine(context.Background(), config.MemoryConfig{Mode: "bogus"}, ExtractSettings{}, ""); err == nil {
 		t.Error("bogus mode accepted")
+	}
+}
+
+// Answering is what stops the wizard offering to install an engine on top of
+// a working one: a smrti in Docker, in a venv, or on another box is a working
+// memory whatever this filesystem holds.
+func TestAnsweringRecognizesALiveEngine(t *testing.T) {
+	srv, _ := fakeSmrti(t)
+	cfg := config.Default().Memory
+	cfg.Mode = "external"
+	cfg.URL = srv.URL
+	if !Answering(context.Background(), cfg) {
+		t.Error("a live engine was not recognized; setup would offer to install over it")
+	}
+}
+
+func TestAnsweringReportsNothingListening(t *testing.T) {
+	cfg := config.Default().Memory
+	cfg.Mode = "external"
+	cfg.URL = fmt.Sprintf("http://127.0.0.1:%d", freePort(t))
+	if Answering(context.Background(), cfg) {
+		t.Error("nothing is listening, yet an engine was reported answering")
+	}
+}
+
+// Space routing is only claimed when the engine confirmed it. Noop is the
+// memory-off engine, and claiming support it does not have would route writes
+// to a space nothing reads.
+func TestNoopReportsNoSpaceSupport(t *testing.T) {
+	ok, space := Noop{}.SpaceSupport()
+	if ok || space != "" {
+		t.Errorf("Noop.SpaceSupport() = (%v, %q), want (false, \"\")", ok, space)
+	}
+}
+
+// The sidecar owns no routing state of its own: it answers with what the
+// client learned from the engine's last status, or the space warning would
+// contradict where writes actually land.
+func TestSidecarSpaceSupportComesFromTheClient(t *testing.T) {
+	srv, _ := fakeSmrti(t) // its /status advertises a "spaces" key
+	cfg := config.Default().Memory
+	cfg.URL = srv.URL
+	s := &Sidecar{client: NewClient(srv.URL, "", ""), cfg: cfg, external: true}
+
+	// Nothing has been asked of the engine yet, so nothing is known about it:
+	// an unprobed engine must not be reported as routing-capable.
+	if ok, space := s.SpaceSupport(); ok || space != "" {
+		t.Errorf("unprobed engine reports (%v, %q); routing was claimed on nothing", ok, space)
+	}
+
+	if _, err := s.Status(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ok, space := s.SpaceSupport()
+	if !ok {
+		t.Error("the engine advertised spaces, but the sidecar does not report support")
+	}
+	if space != "" {
+		t.Errorf("engine space = %q; this engine names none", space)
 	}
 }

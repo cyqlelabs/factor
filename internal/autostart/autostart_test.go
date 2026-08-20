@@ -246,3 +246,38 @@ func TestInstallSurfacesSystemctlFailure(t *testing.T) {
 		t.Errorf("Install = %v, want the systemctl failure", err)
 	}
 }
+
+// Where the login entry lands is decided by XDG_CONFIG_HOME when the session
+// sets one. A machine that keeps its config elsewhere would otherwise get an
+// autostart entry in a directory nothing reads — an install that reports
+// success and never starts anything.
+func TestConfigDirFollowsXDGConfigHome(t *testing.T) {
+	env := desktop.Env{Getenv: func(key string) string {
+		if key == "XDG_CONFIG_HOME" {
+			return "/custom/config"
+		}
+		return ""
+	}}
+	if got := configDir(env); got != "/custom/config" {
+		t.Errorf("configDir = %q, want the XDG override", got)
+	}
+}
+
+// Without the variable the entry belongs under the user's own home, which is
+// where every desktop looks by default.
+func TestConfigDirFallsBackToTheUsersHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory on this machine: %v", err)
+	}
+	want := filepath.Join(home, ".config")
+
+	unset := desktop.Env{Getenv: func(string) string { return "" }}
+	if got := configDir(unset); got != want {
+		t.Errorf("configDir with an empty XDG_CONFIG_HOME = %q, want %q", got, want)
+	}
+	// An Env that cannot read the environment at all must still answer.
+	if got := configDir(desktop.Env{}); got != want {
+		t.Errorf("configDir without a Getenv = %q, want %q", got, want)
+	}
+}

@@ -618,3 +618,53 @@ func TestConfigSetOnAnUnwritablePathFails(t *testing.T) {
 		t.Errorf("res = %+v, want the corrupt file to surface as an error", res)
 	}
 }
+
+// --- DetectSystemManager ---
+
+// The wizard names the exact packages a distribution needs, so the manager it
+// detects has to be the one this machine really has. The probe order matters
+// on boxes carrying more than one: the distribution's own manager wins.
+func TestDetectSystemManagerPicksTheDistributionsOwn(t *testing.T) {
+	fakeManagersOnPath(t, "pkg", "apt-get") // Puppy's pkg beside a stray apt-get
+	if got := DetectSystemManager(); got != "apt" {
+		t.Errorf("manager = %q, want apt — it is probed before pkg", got)
+	}
+
+	fakeManagersOnPath(t, "pkg")
+	if got := DetectSystemManager(); got != "pkg" {
+		t.Errorf("manager = %q, want pkg", got)
+	}
+}
+
+// A machine with no supported system manager must say so rather than name one
+// whose install command would fail — that answer is what makes the wizard
+// offer a different route instead of a command that cannot work.
+func TestDetectSystemManagerReportsNothingWhenNoneIsInstalled(t *testing.T) {
+	fakeManagersOnPath(t)
+	if got := DetectSystemManager(); got != "" {
+		t.Errorf("manager = %q on a machine with none installed", got)
+	}
+}
+
+// Only system managers are detected here: pip and npm install for a user, and
+// naming one as *the* system manager would send a distribution package to the
+// wrong installer.
+func TestDetectSystemManagerIgnoresUserLevelInstallers(t *testing.T) {
+	fakeManagersOnPath(t, "pip", "pipx", "uv", "npm")
+	if got := DetectSystemManager(); got != "" {
+		t.Errorf("manager = %q, want none — those are user-level installers", got)
+	}
+}
+
+// fakeManagersOnPath makes PATH contain exactly the named probe binaries, so
+// detection is decided by the test rather than by the host machine.
+func fakeManagersOnPath(t *testing.T, probes ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range probes {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+}
