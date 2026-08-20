@@ -84,6 +84,50 @@ func TestShortIDDropsWhatVendorsDecorateWith(t *testing.T) {
 	}
 }
 
+// The catalog rows carry each model's context length; compaction budgets
+// against it, looked up the same two ways prices are.
+func TestCatalogKnowsEachModelsWindow(t *testing.T) {
+	srv, _ := priceServer(t, `{"data":[
+		{"id":"anthropic/claude-sonnet-4-5","context_length":1000000,"pricing":{"prompt":"0.000003","completion":"0.000015"}},
+		{"id":"vendor/small-model","pricing":{"prompt":"0.000001","completion":"0.000002"}}]}`)
+	c := NewCatalog(config.CostConfig{Track: true, PricesURL: srv.URL},
+		[]config.Candidate{{Type: "openrouter", Model: "anthropic/claude-sonnet-4-5"}},
+		filepath.Join(t.TempDir(), "pricing.json"))
+	if err := c.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if w := c.Window("anthropic/claude-sonnet-4-5"); w != 1000000 {
+		t.Errorf("Window by id = %d, want 1000000", w)
+	}
+	if w := c.Window("claude-sonnet-4-5-20250929"); w != 1000000 {
+		t.Errorf("Window by short id = %d, want 1000000", w)
+	}
+	if w := c.Window("vendor/small-model"); w != 0 {
+		t.Errorf("a row without context_length reported window %d, want 0", w)
+	}
+	if w := c.Window("nobody/knows-this"); w != 0 {
+		t.Errorf("an unknown model reported window %d, want 0", w)
+	}
+}
+
+// A cache from before windows existed has no "models" key: it is ignored and
+// the next refresh rewrites it, rather than serving prices without windows.
+func TestCatalogIgnoresThePreWindowCacheFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pricing.json")
+	old := `{"fetched_at":"2026-08-19T00:00:00Z","source":"x","prices":{"a/b":{"input":1,"output":2}}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := NewCatalog(config.CostConfig{Track: true},
+		[]config.Candidate{{Type: "openrouter", Model: "a/b"}}, path)
+	if _, ok := c.Price("a/b"); ok {
+		t.Error("the pre-window cache format was served instead of ignored")
+	}
+	if c.Fresh() {
+		t.Error("an ignored cache still counted as fresh")
+	}
+}
+
 func TestCatalogPrefersOverridesThenLocalThenTheFetchedBook(t *testing.T) {
 	srv, _ := priceServer(t, catalogJSON(map[string][2]string{
 		"anthropic/claude-sonnet-4-5": {"0.000003", "0.000015"},

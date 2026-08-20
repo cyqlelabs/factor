@@ -75,10 +75,18 @@ func localEndpoint(base string) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
-// Catalog answers what a model costs. Overrides from config win, models
-// served locally are free, and everything else comes from the fetched
-// catalog — by exact id first, then by the vendor-and-date-insensitive form
-// that lets a native Anthropic model id find its OpenRouter twin.
+// Model is one catalog row: what the model charges, and how much context it
+// takes — the window compaction budgets against.
+type Model struct {
+	Price  Price `json:"price"`
+	Window int   `json:"window,omitempty"`
+}
+
+// Catalog answers what a model costs and how much context it carries.
+// Overrides from config win, models served locally are free, and everything
+// else comes from the fetched catalog — by exact id first, then by the
+// vendor-and-date-insensitive form that lets a native Anthropic model id find
+// its OpenRouter twin.
 type Catalog struct {
 	path   string
 	url    string
@@ -92,8 +100,8 @@ type Catalog struct {
 	paid     bool             // at least one candidate bills per token
 
 	mu      sync.RWMutex
-	byID    map[string]Price
-	byShort map[string]Price
+	byID    map[string]Model
+	byShort map[string]Model
 	fetched time.Time
 }
 
@@ -101,7 +109,7 @@ type Catalog struct {
 type cacheFile struct {
 	FetchedAt time.Time        `json:"fetched_at"`
 	Source    string           `json:"source"`
-	Prices    map[string]Price `json:"prices"`
+	Models    map[string]Model `json:"models"`
 }
 
 // NewCatalog builds the price book for one configuration. It reads whatever
@@ -117,8 +125,8 @@ func NewCatalog(cfg config.CostConfig, candidates []config.Candidate, cachePath 
 		after:    time.After,
 		override: map[string]Price{},
 		free:     map[string]bool{},
-		byID:     map[string]Price{},
-		byShort:  map[string]Price{},
+		byID:     map[string]Model{},
+		byShort:  map[string]Model{},
 	}
 	if c.url == "" {
 		c.url = DefaultPricesURL
@@ -162,13 +170,32 @@ func (c *Catalog) Price(model string) (Price, bool) {
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if p, ok := c.byID[key]; ok {
-		return p, true
+	if m, ok := c.byID[key]; ok {
+		return m.Price, true
 	}
-	if p, ok := c.byShort[shortID(key)]; ok {
-		return p, true
+	if m, ok := c.byShort[shortID(key)]; ok {
+		return m.Price, true
 	}
 	return Price{}, false
+}
+
+// Window returns a model's context length in tokens, or 0 when the catalog
+// does not know it — locally served models among them, whose window only
+// their own configuration knows.
+func (c *Catalog) Window(model string) int {
+	key := strings.ToLower(strings.TrimSpace(model))
+	if key == "" {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if m, ok := c.byID[key]; ok {
+		return m.Window
+	}
+	if m, ok := c.byShort[shortID(key)]; ok {
+		return m.Window
+	}
+	return 0
 }
 
 // dateSuffix is the release stamp vendors append to a model id
@@ -202,15 +229,15 @@ func (c *Catalog) Refresh(ctx context.Context) error {
 	if !c.paid || c.Fresh() {
 		return nil
 	}
-	prices, err := c.fetch(ctx)
+	models, err := c.fetch(ctx)
 	if err != nil {
 		return err
 	}
-	c.adopt(prices, c.now())
-	return c.saveCache(prices)
+	c.adopt(models, c.now())
+	return c.saveCache(models)
 }
 
-func (c *Catalog) fetch(ctx context.Context) (map[string]Price, error) {
+func (c *Catalog) fetch(ctx context.Context) (map[string]Model, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
 		return nil, err
@@ -229,8 +256,9 @@ func (c *Catalog) fetch(ctx context.Context) (map[string]Price, error) {
 	}
 	var body struct {
 		Data []struct {
-			ID      string `json:"id"`
-			Pricing struct {
+			ID            string `json:"id"`
+			ContextLength int    `json:"context_length"`
+			Pricing       struct {
 				Prompt     string `json:"prompt"`
 				Completion string `json:"completion"`
 			} `json:"pricing"`
@@ -239,7 +267,7 @@ func (c *Catalog) fetch(ctx context.Context) (map[string]Price, error) {
 	if err := json.Unmarshal(data, &body); err != nil {
 		return nil, fmt.Errorf("decoding model prices: %w", err)
 	}
-	prices := make(map[string]Price, len(body.Data))
+	models := make(map[string]Model, len(body.Data))
 	for _, m := range body.Data {
 		if m.ID == "" {
 			continue
@@ -251,36 +279,39 @@ func (c *Catalog) fetch(ctx context.Context) (map[string]Price, error) {
 		if err1 != nil || err2 != nil {
 			continue
 		}
-		prices[strings.ToLower(m.ID)] = Price{Input: in * 1e6, Output: out * 1e6}
+		models[strings.ToLower(m.ID)] = Model{
+			Price:  Price{Input: in * 1e6, Output: out * 1e6},
+			Window: m.ContextLength,
+		}
 	}
-	if len(prices) == 0 {
+	if len(models) == 0 {
 		return nil, fmt.Errorf("model price catalog at %s carried no priced models", c.url)
 	}
-	return prices, nil
+	return models, nil
 }
 
 // adopt installs a fetched catalog, building the short-id index alongside it.
-// A short id two vendors both claim at different rates is dropped: an
-// unpriced model is a gap the usage report names, while a wrong price is a
+// A short id two vendors both claim at different rates or windows is dropped:
+// an unpriced model is a gap the usage report names, while a wrong price is a
 // number nobody can tell is wrong.
-func (c *Catalog) adopt(prices map[string]Price, at time.Time) {
-	short := make(map[string]Price, len(prices))
+func (c *Catalog) adopt(models map[string]Model, at time.Time) {
+	short := make(map[string]Model, len(models))
 	clashed := map[string]bool{}
-	for id, p := range prices {
+	for id, m := range models {
 		s := shortID(id)
 		if s == "" || clashed[s] {
 			continue
 		}
-		if prev, ok := short[s]; ok && prev != p {
+		if prev, ok := short[s]; ok && prev != m {
 			delete(short, s)
 			clashed[s] = true
 			continue
 		}
-		short[s] = p
+		short[s] = m
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.byID, c.byShort, c.fetched = prices, short, at
+	c.byID, c.byShort, c.fetched = models, short, at
 }
 
 func (c *Catalog) loadCache() {
@@ -292,17 +323,19 @@ func (c *Catalog) loadCache() {
 		return
 	}
 	var f cacheFile
-	if err := json.Unmarshal(data, &f); err != nil || len(f.Prices) == 0 {
+	// A cache in the pre-window format has no "models" key: it is simply
+	// ignored, and the next refresh rewrites it.
+	if err := json.Unmarshal(data, &f); err != nil || len(f.Models) == 0 {
 		return
 	}
-	c.adopt(f.Prices, f.FetchedAt)
+	c.adopt(f.Models, f.FetchedAt)
 }
 
-func (c *Catalog) saveCache(prices map[string]Price) error {
+func (c *Catalog) saveCache(models map[string]Model) error {
 	if c.path == "" {
 		return nil
 	}
-	data, err := json.Marshal(cacheFile{FetchedAt: c.now(), Source: c.url, Prices: prices})
+	data, err := json.Marshal(cacheFile{FetchedAt: c.now(), Source: c.url, Models: models})
 	if err != nil {
 		return err
 	}
