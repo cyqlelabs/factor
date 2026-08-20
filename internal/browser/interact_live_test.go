@@ -189,19 +189,20 @@ func TestAdoptedTabSurvivesSessionClose(t *testing.T) {
 	s := NewSession(liveConfig(), ws, nil)
 	ctx := context.Background()
 
-	// Open a second tab, then adopt it the way a switch does.
-	if err := s.openTab(ctx); err != nil {
-		t.Fatalf("open tab: %v", err)
-	}
+	// Claim a tab, then open a second one beside it, so there is a tab to
+	// adopt the way a switch does.
 	if _, err := s.readPage(ctx, "", 10); err != nil {
 		t.Fatalf("read: %v", err)
+	}
+	if err := s.openTab(ctx); err != nil {
+		t.Fatalf("open tab: %v", err)
 	}
 	tabs, err := s.listTabs(ctx)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(tabs) < 2 {
-		t.Skipf("browser did not keep two tabs open (%d)", len(tabs))
+	if len(tabs) != 2 {
+		t.Fatalf("want two open tabs, got %d: %+v", len(tabs), tabs)
 	}
 	id := tabs[0].ID
 	if tabs[0].Current {
@@ -273,5 +274,33 @@ func TestTabsOpenWithoutAURLLandsOnABlankTab(t *testing.T) {
 	// The page left behind is still there, and still reachable by name.
 	if out := mustRun(t, byName["browser_tabs"], map[string]any{"action": "switch", "target": "Compose"}); !strings.Contains(out, "Compose") {
 		t.Errorf("could not switch back to the original tab:\n%s", out)
+	}
+}
+
+// TestListingTabsDoesNotOpenOne guards the blank tab the user could not get
+// rid of. Asking the browser what it has open used to claim a tab of Factor's
+// own to ask with, so closing that tab re-created it — and the close itself,
+// which waits for the target to disappear by listing, re-created it before it
+// even returned. From the user's side a blank tab reappeared however often
+// they shut it, and Factor could not say why.
+func TestListingTabsDoesNotOpenOne(t *testing.T) {
+	requireBrowser(t)
+	srv := serveCompose(t)
+	byName := liveSuite(t)
+	mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+	mustRun(t, byName["browser_tabs"], map[string]any{"action": "open", "url": srv.URL + "/second"})
+
+	// Closing the tab being driven leaves the session with no tab of its own,
+	// which is exactly when a listing used to conjure one.
+	out := mustRun(t, byName["browser_tabs"], map[string]any{"action": "close", "target": "Second Tab"})
+	if !strings.Contains(out, "Closed tab") {
+		t.Fatalf("close result: %s", out)
+	}
+	out = mustRun(t, byName["browser_tabs"], map[string]any{"action": "list"})
+	if !strings.HasPrefix(out, "1 open tabs") {
+		t.Errorf("a tab was opened to answer the listing:\n%s", out)
+	}
+	if strings.Contains(out, "about:blank") {
+		t.Errorf("a blank tab was opened to answer the listing:\n%s", out)
 	}
 }

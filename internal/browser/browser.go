@@ -170,44 +170,67 @@ func devtoolsAlive(url string) bool {
 	return resp.StatusCode == 200
 }
 
-// ensure returns a live tab context, attaching or launching on first use.
+// ensureBrowser returns a live browser connection, attaching or launching on
+// first use, without claiming a tab. Asking the browser what it has open must
+// not add a tab to the answer: the tools that only need the connection —
+// listing, switching, waiting for a close — used to open one of Factor's own
+// as a side effect, so closing that stray tab re-created it on the very next
+// listing and the user watched a blank tab come back however often they shut
+// it.
 //
 // Deciding what to launch happens outside the lock because it can mean
 // downloading a browser, and a session that held its mutex through a hundred
 // megabytes would stall its own shutdown behind the download.
-func (s *Session) ensure(ctx context.Context) (context.Context, error) {
+func (s *Session) ensureBrowser(ctx context.Context) (context.Context, error) {
 	s.mu.Lock()
-	if s.cur != nil && s.cur.ctx.Err() == nil {
+	if s.browserCtx != nil && s.browserCtx.Err() == nil {
 		defer s.mu.Unlock()
-		return s.cur.ctx, nil
+		return s.browserCtx, nil
 	}
-	connected := s.browserCtx != nil && s.browserCtx.Err() == nil
 	s.mu.Unlock()
 
-	var attach, binary string
-	if !connected {
-		attach = s.cfg.AttachURL
-		if attach == "" && devtoolsAlive(devtoolsProbe) {
-			attach = devtoolsProbe
-		}
-		if attach == "" {
-			var err error
-			if binary, err = s.ensureBinary(ctx); err != nil {
-				return nil, err
-			}
+	attach := s.cfg.AttachURL
+	var binary string
+	if attach == "" && devtoolsAlive(devtoolsProbe) {
+		attach = devtoolsProbe
+	}
+	if attach == "" {
+		var err error
+		if binary, err = s.ensureBinary(ctx); err != nil {
+			return nil, err
 		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Another caller may have connected while the lock was open.
-	if s.cur != nil && s.cur.ctx.Err() == nil {
-		return s.cur.ctx, nil
-	}
 	if s.browserCtx == nil || s.browserCtx.Err() != nil {
 		if err := s.connectLocked(attach, binary); err != nil {
 			return nil, err
 		}
+	}
+	return s.browserCtx, nil
+}
+
+// ensure returns a live tab context, connecting and claiming a tab on first
+// use. This is the entry point for everything that acts on a page; anything
+// that only asks the browser a question wants ensureBrowser instead.
+func (s *Session) ensure(ctx context.Context) (context.Context, error) {
+	s.mu.Lock()
+	if s.cur != nil && s.cur.ctx.Err() == nil {
+		defer s.mu.Unlock()
+		return s.cur.ctx, nil
+	}
+	s.mu.Unlock()
+
+	if _, err := s.ensureBrowser(ctx); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cur != nil && s.cur.ctx.Err() == nil {
+		return s.cur.ctx, nil
 	}
 	h, err := s.openTabLocked()
 	if err != nil {
@@ -418,17 +441,17 @@ func (s *Session) materialize(h *tabHandle) error {
 	return nil
 }
 
-// openTab opens a fresh tab and makes it current.
+// openTab opens a fresh tab and makes it current. A session that has no tab
+// yet gets its first one here rather than a second one beside it: on a
+// browser Factor launched, that means adopting the blank tab it came up with.
 func (s *Session) openTab(ctx context.Context) error {
-	if _, err := s.ensure(ctx); err != nil {
+	if _, err := s.ensureBrowser(ctx); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tabCtx, cancel := chromedp.NewContext(s.browserCtx)
-	h := &tabHandle{ctx: tabCtx, cancel: cancel, owned: true}
-	if err := s.materialize(h); err != nil {
-		cancel()
+	h, err := s.openTabLocked()
+	if err != nil {
 		return err
 	}
 	s.cur = h
