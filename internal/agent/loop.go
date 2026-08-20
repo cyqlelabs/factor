@@ -25,6 +25,13 @@ type ChatProvider interface {
 
 const steeringBuffer = 8
 
+// interruptedTool stands in for a tool result a cancelled turn never got. It
+// says the turn was interrupted and says nothing about the tool, because the
+// next turn reads this line as fact — and a bare "context canceled" reads as
+// the tool being broken when all that happened is that the user spoke again.
+const interruptedTool = "This tool call was cut short: the turn was interrupted before it finished. " +
+	"That says nothing about whether the tool works — do not report it as a failure."
+
 // turn tracks one in-flight session turn; extra inbound messages for the
 // same session land in the steering queue and are injected between
 // iterations instead of queuing a second turn.
@@ -346,11 +353,29 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		}
 
 		for _, call := range resp.ToolCalls {
+			if ctx.Err() != nil {
+				// The turn is over — on voice, because the user talked over
+				// it. Every tool call still needs a result beside it or the
+				// history stops replaying, but that result must not read as
+				// the tool having failed: the next turn treats what it finds
+				// here as evidence, and a "context canceled" left by an
+				// interruption has been read back as a broken browser.
+				if err := l.persist(in, provider.Message{Role: "tool", ToolCallID: call.ID, Content: interruptedTool}); err != nil {
+					return "", err
+				}
+				continue
+			}
 			l.emit(in.sessionKey, PhaseTool, call.Name)
 			result := l.registry.Execute(ctx, call.Name, call.Args)
 			content := result.ForLLM
 			if result.IsError {
 				content = "ERROR: " + content
+			}
+			if ctx.Err() != nil {
+				// Cancelled while the tool was running: whatever it returned
+				// is the cancellation, not a verdict on the tool.
+				content = interruptedTool
+				result.Images = nil
 			}
 			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: content}
 			if err := l.persist(in, toolMsg); err != nil {
@@ -374,6 +399,9 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 				})
 				pruneImages(messages)
 			}
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
 		}
 		messages = append(messages, l.drainSteering(in, t)...)
 	}

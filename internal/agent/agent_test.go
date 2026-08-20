@@ -875,3 +875,79 @@ func TestATurnCarriesItsChannelIntoThePrompt(t *testing.T) {
 		t.Error("a terminal turn was briefed as a spoken one")
 	}
 }
+
+// cancelTool stands in for a tool the user talks over: it cancels the turn
+// the way the voice channel does, then returns what the browser suite returns
+// when its run is cut short.
+type cancelTool struct {
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (c *cancelTool) Name() string               { return "navigate" }
+func (c *cancelTool) Description() string        { return "test navigate" }
+func (c *cancelTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
+func (c *cancelTool) Execute(ctx context.Context, _ map[string]any) *tools.Result {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	c.cancel()
+	<-ctx.Done()
+	return tools.Errorf("navigate failed: %v", ctx.Err())
+}
+
+// TestAnInterruptedTurnIsNotRecordedAsAToolFailure is the guard against the
+// worst kind of wrong answer: a turn the user talked over used to persist
+// "ERROR: navigate failed: context canceled" as its tool result, and the next
+// turn read that back as proof the browser was broken and said so out loud.
+func TestAnInterruptedTurnIsNotRecordedAsAToolFailure(t *testing.T) {
+	h := newHarness(t, func(*provider.Request) (*provider.Response, error) {
+		return &provider.Response{
+			Content: "Voy a abrir la página.",
+			ToolCalls: []provider.ToolCall{
+				{ID: "tc1", Name: "navigate", Args: map[string]any{}},
+				{ID: "tc2", Name: "navigate", Args: map[string]any{}},
+			},
+		}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tool := &cancelTool{cancel: cancel}
+	h.registry.Register(tool)
+
+	if _, err := h.loop.ProcessDirect(ctx, "abrí la página", "cli:test"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+
+	history, err := h.store.History("cli:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every tool call still needs a result beside it, or the history stops
+	// replaying on any provider that validates the pairing.
+	answered := map[string]string{}
+	for _, m := range history {
+		if m.Role == "tool" {
+			answered[m.ToolCallID] = m.Content
+		}
+		if strings.Contains(m.Content, "context canceled") {
+			t.Errorf("the cancellation was written into history as content: %q", m.Content)
+		}
+	}
+	for _, id := range []string{"tc1", "tc2"} {
+		got, ok := answered[id]
+		if !ok {
+			t.Fatalf("tool call %s has no result: %+v", id, history)
+		}
+		if got != interruptedTool {
+			t.Errorf("result for %s = %q, want the interrupted note", id, got)
+		}
+	}
+	// The second call is not attempted once the turn is over.
+	tool.mu.Lock()
+	defer tool.mu.Unlock()
+	if tool.calls != 1 {
+		t.Errorf("tool ran %d times, want 1", tool.calls)
+	}
+}
