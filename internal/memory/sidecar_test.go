@@ -274,6 +274,61 @@ func TestSidecarReprobesAfterHealthPoisoned(t *testing.T) {
 	}
 }
 
+// A held port with no health behind it must not trigger a spawn: an engine
+// wedged mid-request — or orphaned across a gateway upgrade — still owns the
+// port, and a child spawned against it exits on arrival with "a rest server
+// is already running", a restart loop no backoff escapes. The supervisor
+// waits for the incumbent, and only spawns once the port is free.
+func TestSidecarWaitsInsteadOfSpawningWhenThePortIsHeld(t *testing.T) {
+	cfg := sidecarConfig(t, "serve")
+	cfg.Command = "/nonexistent-binary-must-not-spawn"
+	cfg.AutoInstall = false
+
+	// Hold the port with a listener that drops connections on arrival, so a
+	// TCP connect succeeds while every health check fails fast.
+	ln, err := net.Listen("tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	s := &Sidecar{
+		client:        NewClient(cfg.BaseURL(), "", ""),
+		cfg:           cfg,
+		extract:       ExtractSettings{Mode: "local"},
+		probeInterval: 50 * time.Millisecond,
+	}
+	s.start(context.Background())
+	defer func() { _ = s.Close() }()
+
+	// A spawn attempt would resolve the bogus command, fail, and flip the
+	// engine disabled; waiting on the incumbent keeps it enabled.
+	time.Sleep(500 * time.Millisecond)
+	if !s.Enabled() {
+		t.Fatal("the supervisor spawned against a held port")
+	}
+
+	// Once the port frees up, the supervisor must go back to spawning — the
+	// bogus command failing to resolve is what makes the attempt observable.
+	ln.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && s.Enabled() {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if s.Enabled() {
+		t.Error("the supervisor never resumed spawning after the port was released")
+	}
+}
+
 func TestSidecarWithoutKeepAliveStopsTheProcess(t *testing.T) {
 	cfg := sidecarConfig(t, "serve")
 	cfg.KeepAlive = false

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -154,9 +155,11 @@ func (s *Sidecar) start(parent context.Context) {
 func (s *Sidecar) run(ctx context.Context) {
 	defer s.wg.Done()
 	backoff := 5 * time.Second
+	heldWarned := false
 	for ctx.Err() == nil {
 		if s.client.CheckHealth(ctx) == nil {
 			backoff = 5 * time.Second
+			heldWarned = false
 			s.pollWhileHealthy(ctx)
 			continue
 		}
@@ -164,6 +167,21 @@ func (s *Sidecar) run(ctx context.Context) {
 			sleepCtx(ctx, 15*time.Second)
 			continue
 		}
+		if s.portHeld() {
+			// An engine owns the port but does not answer health: wedged
+			// mid-request, still warming, or an orphan kept alive across a
+			// gateway upgrade. Spawning against it only forks a child that
+			// finds the port taken and exits on arrival — a restart loop no
+			// backoff escapes — so wait for the incumbent to recover or die.
+			if !heldWarned {
+				slog.Warn("something already holds the memory port but does not answer health; waiting for it rather than spawning a duplicate",
+					"port", s.cfg.Port)
+				heldWarned = true
+			}
+			sleepCtx(ctx, s.reprobeInterval())
+			continue
+		}
+		heldWarned = false
 		err := s.spawnAndWait(ctx)
 		if ctx.Err() != nil {
 			return
@@ -174,6 +192,16 @@ func (s *Sidecar) run(ctx context.Context) {
 			backoff = time.Minute
 		}
 	}
+}
+
+// portHeld reports whether anything listens on the sidecar's address.
+func (s *Sidecar) portHeld() bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port)), time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func (s *Sidecar) pollWhileHealthy(ctx context.Context) {
