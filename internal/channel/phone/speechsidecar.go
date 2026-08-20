@@ -175,6 +175,12 @@ func (s *speechSupervisor) resolveCommand(ctx context.Context) (string, error) {
 // adopt records what the installer chose, so the server that starts next runs
 // the weights that were actually downloaded.
 func (s *speechSupervisor) adopt(choices SpeechChoices) {
+	if choices.SttEngine != "" {
+		s.cfg.SttEngine = choices.SttEngine
+	}
+	if choices.SttModel != "" {
+		s.cfg.SttModel = choices.SttModel
+	}
 	if choices.WhisperModel != "" {
 		s.cfg.WhisperModel = choices.WhisperModel
 	}
@@ -194,7 +200,7 @@ func (s *speechSupervisor) adopt(choices SpeechChoices) {
 // wizard's picker or a hand edit — needs its files actually on disk, or the
 // server would crash-loop against a voice it cannot load.
 func (s *speechSupervisor) needsPrepare() bool {
-	if s.needSTT && s.cfg.WhisperModel == "" {
+	if s.needSTT && s.cfg.WhisperModel == "" && s.cfg.SttModel == "" {
 		return true
 	}
 	if !s.needTTS {
@@ -255,8 +261,12 @@ func (s *speechSupervisor) spawnAndWait(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	stt := s.cfg.WhisperModel
+	if s.cfg.SttEngine == "parakeet" {
+		stt = s.cfg.SttModel
+	}
 	slog.Info("speech server started",
-		"pid", cmd.Process.Pid, "port", speechPort(s.cfg), "stt", s.cfg.WhisperModel, "tts", s.cfg.PiperVoice)
+		"pid", cmd.Process.Pid, "port", speechPort(s.cfg), "stt", stt, "tts", s.cfg.PiperVoice)
 
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()

@@ -283,9 +283,9 @@ OpenAI-compatible endpoint that never leaves `127.0.0.1`.
 | Tier | Speech-to-text | Text-to-speech | Extra RAM | When |
 |---|---|---|---|---|
 | **1 · cloud** (default) | Deepgram nova-3 | ElevenLabs flash v2.5 (µ-law 8 kHz, no transcode) | ~150–300 MB | any machine; lowest latency, least to go wrong |
-| **2 · local STT** | faster-whisper | ElevenLabs | +0.5–2 GB | transcription stays home; wants a GPU |
+| **2 · local STT** | Parakeet / Whisper | ElevenLabs | +0.5–2 GB | transcription stays home |
 | **3 · local TTS** | Deepgram | Piper | +0.3 GB | Piper's ~100 ms render beats the cloud, on any CPU |
-| **4 · fully local** | faster-whisper | Piper | +1–2 GB | no audio leaves the machine, no per-minute audio cost |
+| **4 · fully local** | Parakeet / Whisper | Piper | +1–2 GB | no audio leaves the machine, no per-minute audio cost |
 
 A tier picks who serves each half of the pipeline; everything else is the same call:
 
@@ -294,7 +294,7 @@ flowchart LR
     SHELL["voice shell · Patter"] -->|hears with| STT{{speech-to-text}}
     SHELL -->|speaks with| TTS{{text-to-speech}}
     subgraph LOCAL ["Factor's own speech server · 127.0.0.1"]
-        WH["faster-whisper"]
+        WH["Parakeet · Whisper"]
         PI[Piper]
     end
     subgraph CLOUD [audio leaves the machine]
@@ -309,7 +309,7 @@ flowchart LR
 
 Pick a local tier and Factor installs it — engines in their own virtualenv, your
 language's models on disk before setup finishes, nothing to start by hand.
-Transcription covers Whisper's ~99 languages; voices come from Piper's catalogue of
+Transcription covers Whisper's ~99 languages (with Parakeet serving its 25 at higher accuracy where the machine allows); voices come from Piper's catalogue of
 **49**, resolved from your `language` setting with the exact locale winning where it
 exists (`es-MX` gets a Mexican voice, not a Castilian one). You can also pick the
 voice by name: the wizard lists your ElevenLabs voices on the cloud tier and the
@@ -322,21 +322,28 @@ a tool-using turn still speaks: the line Factor says on its way to the answer is
 streamed into the live call while the tools run.
 
 <details>
-<summary><b>Why a GPU changes which tier to pick</b></summary>
+<summary><b>Which transcriber a machine gets, and why</b></summary>
 
 Whisper decodes a fixed 30-second window however little audio it gets, and the phone
-pipeline feeds it about a second at a time — so cost is per chunk, not per second of
-speech. Measured on this design:
+pipeline feeds it about a second at a time — so its cost is per chunk, not per second
+of speech. Measured on this design: `small` takes ~2.4 s per 1 s chunk on a CPU and
+falls behind while you talk; `base` keeps up at ~0.9 s but mishears more. That used
+to be the CPU's ceiling.
 
-| Model | Device | Per 1 s chunk | Verdict |
-|---|---|---|---|
-| `small` | CUDA | ~0.14 s | keeps up comfortably |
-| `base` | CPU | ~0.9 s | keeps up, mishears more |
-| `small` | CPU | ~2.4 s | falls behind; the backlog grows while you talk |
+[Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) breaks the
+trade: a transducer's cost scales with the audio it is handed, not a fixed window,
+and its accuracy benchmarks at Whisper large-v3 level. So the installer picks:
 
-Local transcription therefore runs `small` on a GPU and drops to `base` on a CPU,
-and the wizard says so when it does. **With no GPU, tier 3 is the better trade**:
-Piper renders in ~100 ms on any CPU and transcription stays in the cloud.
+| Machine | Transcriber |
+|---|---|
+| GPU | Whisper `large-v3-turbo` — every language, large-class accuracy |
+| CPU, ≥4 GB RAM, one of Parakeet's 25 languages | Parakeet TDT int8 (~1 GB resident) |
+| CPU otherwise | Whisper `base`/`tiny`, as before |
+
+`speech_server.stt_engine` (`parakeet` / `whisper`) or `speech_server.whisper_model`
+override the choice. On a machine that lands on `base`, tier 3 — Piper's ~100 ms
+render locally, transcription in the cloud — is still the better trade, and the
+wizard says so.
 
 </details>
 
