@@ -210,6 +210,8 @@ func TestSpeechSupervisorAdoptsWhatTheInstallerChose(t *testing.T) {
 		c.PiperVoice = ""
 	})
 	s.adopt(SpeechChoices{
+		SttEngine:    "parakeet",
+		SttModel:     "nemo-parakeet-tdt-0.6b-v3",
 		WhisperModel: "small", WhisperDevice: "cuda", WhisperCompute: "float16",
 		PiperVoice: "es_MX-ald-medium",
 	})
@@ -219,11 +221,33 @@ func TestSpeechSupervisorAdoptsWhatTheInstallerChose(t *testing.T) {
 	if s.cfg.WhisperDevice != "cuda" || s.cfg.WhisperCompute != "float16" {
 		t.Errorf("hardware choices lost: %+v", s.cfg)
 	}
+	if s.cfg.SttEngine != "parakeet" || s.cfg.SttModel != "nemo-parakeet-tdt-0.6b-v3" {
+		t.Errorf("engine choice lost: %+v", s.cfg)
+	}
 
 	// An empty choice must not erase a configured one.
 	s.adopt(SpeechChoices{})
 	if s.cfg.WhisperModel != "small" || s.cfg.PiperVoice != "es_MX-ald-medium" {
 		t.Errorf("an empty result overwrote the configuration: %+v", s.cfg)
+	}
+	if s.cfg.SttEngine != "parakeet" || s.cfg.SttModel != "nemo-parakeet-tdt-0.6b-v3" {
+		t.Errorf("an empty result erased the engine: %+v", s.cfg)
+	}
+}
+
+// A settled Parakeet choice names no Whisper model at all, and must read as
+// prepared — or every boot would re-run the installer.
+func TestSpeechSupervisorSettledParakeetNeedsNoPrepare(t *testing.T) {
+	home := t.TempDir()
+	settled := newSpeechSupervisor(SpeechConfig{
+		SttEngine: "parakeet", SttModel: "nemo-parakeet-tdt-0.6b-v3",
+	}, home, "es", "tok", true, false)
+	if settled.needsPrepare() {
+		t.Error("a settled parakeet choice was re-prepared")
+	}
+	unchosen := newSpeechSupervisor(SpeechConfig{SttEngine: "parakeet"}, home, "es", "tok", true, false)
+	if !unchosen.needsPrepare() {
+		t.Error("an engine with no model chosen was treated as prepared")
 	}
 }
 

@@ -78,6 +78,8 @@ func Describe(ctx context.Context, raw json.RawMessage, home string) Status {
 // installer left on disk, and whether it is answering now.
 func (s *Status) describeSpeech(ctx context.Context, cfg Config, home string) {
 	s.Speech = SpeechChoices{
+		SttEngine:     cfg.SpeechServer.SttEngine,
+		SttModel:      cfg.SpeechServer.SttModel,
 		WhisperModel:  cfg.SpeechServer.WhisperModel,
 		WhisperDevice: cfg.SpeechServer.WhisperDevice,
 		PiperVoice:    cfg.SpeechServer.PiperVoice,

@@ -171,6 +171,11 @@ func TestSpeechChoicesSummary(t *testing.T) {
 		{SpeechChoices{WhisperModel: "small", WhisperDevice: "cuda", PiperVoice: "en_US-lessac-medium"},
 			"small on cuda · en_US-lessac-medium"},
 		{SpeechChoices{WhisperModel: "base", WhisperDevice: "cpu"}, "base"},
+		{SpeechChoices{SttEngine: "parakeet", SttModel: "nemo-parakeet-tdt-0.6b-v3",
+			PiperVoice: "es_ES-davefx-medium"},
+			"nemo-parakeet-tdt-0.6b-v3 · es_ES-davefx-medium"},
+		// A parakeet choice with no model named still says which engine runs.
+		{SpeechChoices{SttEngine: "parakeet"}, "parakeet"},
 	}
 	for _, c := range cases {
 		if got := c.choices.Summary(); got != c.want {
@@ -196,6 +201,23 @@ func TestParseSpeechChoices(t *testing.T) {
 	}
 	if choices.WhisperDevice != "cuda" || choices.WhisperCompute != "float16" {
 		t.Errorf("hardware choices lost: %+v", choices)
+	}
+}
+
+// A Parakeet result names no Whisper model at all — the config must not claim
+// weights the disk does not have — so the parser accepts stt_model as the
+// sign that the installer answered.
+func TestParseSpeechChoicesAcceptsAParakeetResult(t *testing.T) {
+	out := `{"stt_engine":"parakeet","stt_model":"nemo-parakeet-tdt-0.6b-v3","whisper_model":"","piper_voice":"es_ES-davefx-medium"}`
+	choices, err := parseSpeechChoices(out)
+	if err != nil {
+		t.Fatalf("parseSpeechChoices: %v", err)
+	}
+	if choices.SttEngine != "parakeet" || choices.SttModel != "nemo-parakeet-tdt-0.6b-v3" {
+		t.Errorf("parsed %+v", choices)
+	}
+	if choices.WhisperModel != "" {
+		t.Errorf("a whisper model appeared from nowhere: %+v", choices)
 	}
 }
 
@@ -230,9 +252,20 @@ func TestFindSpeechPythonRequiresTheEngines(t *testing.T) {
 		t.Error("a venv missing the engines should not be reported as usable")
 	}
 
-	runCmd = func(context.Context, []string) (string, error) { return "", nil }
+	var probe string
+	runCmd = func(_ context.Context, argv []string) (string, error) {
+		probe = strings.Join(argv, " ")
+		return "", nil
+	}
 	if _, ok := FindSpeechPython(home); !ok {
 		t.Error("a venv with the engines should be usable")
+	}
+	// All three engines are load-bearing: a venv from before Parakeet existed
+	// must read as not-installed, so the upgrade path reinstalls it.
+	for _, want := range []string{"faster-whisper", "piper-tts", "onnx-asr"} {
+		if !strings.Contains(probe, want) {
+			t.Errorf("the engine probe does not check %q: %s", want, probe)
+		}
 	}
 }
 
@@ -240,7 +273,7 @@ func TestFindSpeechPythonRequiresTheEngines(t *testing.T) {
 // resampling wheel that 3.13 needs has to be in it.
 func TestSpeechPackagesPinTheEngines(t *testing.T) {
 	joined := strings.Join(speechPackages(), " ")
-	for _, want := range []string{fasterWhisperSpec, piperSpec, "audioop-lts", "python_version"} {
+	for _, want := range []string{fasterWhisperSpec, piperSpec, onnxAsrSpec, "audioop-lts", "python_version"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("speechPackages() is missing %q: %v", want, speechPackages())
 		}
@@ -390,6 +423,48 @@ func TestPrepareSpeechPassesConfigThroughTheEnvironment(t *testing.T) {
 	}
 	if _, err := os.Stat(speechScriptPath(home)); err != nil {
 		t.Errorf("the speech server script was not written: %v", err)
+	}
+}
+
+// The engine choice has to reach the server process, or prepare would decide
+// Parakeet and the runtime would load Whisper.
+func TestRenderSpeechConfigCarriesTheEngine(t *testing.T) {
+	cfg := SpeechConfig{
+		SttEngine: "parakeet",
+		SttModel:  "nemo-parakeet-tdt-0.6b-v3",
+	}
+	rendered := renderSpeechConfig(cfg, t.TempDir(), "es", "tok", true, false)
+	if rendered.SttEngine != "parakeet" || rendered.SttModel != "nemo-parakeet-tdt-0.6b-v3" {
+		t.Errorf("rendered = %+v", rendered)
+	}
+}
+
+// The embedded server is where the engine ladder actually lives; these are the
+// load-bearing pieces whose silent loss the Go side would never notice.
+func TestEmbeddedSpeechServerKnowsBothEngines(t *testing.T) {
+	script := string(speechServerScript)
+	for _, want := range []string{
+		// The transducer, its pinned default, and the quantization the RAM
+		// budget in the docs is measured against.
+		"import onnx_asr",
+		`PARAKEET_MODEL = "nemo-parakeet-tdt-0.6b-v3"`,
+		`PARAKEET_QUANTIZATION = "int8"`,
+		// The GPU spends its headroom on accuracy, not on keeping up.
+		`return "large-v3-turbo", device, compute`,
+		// with_timestamps is the adapter that carries token log-probabilities:
+		// without it, verbose_json would answer Patter's confidence read-back
+		// with a number nobody computed.
+		".with_timestamps()",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("speechserver.py lost %q", want)
+		}
+	}
+	// Parakeet emits no tokens over silence, so a segment that exists was
+	// heard — but Whisper's thresholds must not be applied to a transducer's
+	// logprob scale.
+	if !strings.Contains(script, "def transcribe_parakeet") {
+		t.Error("the parakeet transcription path is gone")
 	}
 }
 

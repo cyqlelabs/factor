@@ -32,6 +32,12 @@ const (
 	fasterWhisperSpec = "faster-whisper==1.2.1"
 	piperSpec         = "piper-tts==1.6.1"
 
+	// onnx-asr carries the Parakeet transducer the CPU tier prefers. The cpu
+	// extra names onnxruntime (already in the venv under Piper, but depending
+	// on it here keeps the resolver honest) and hub is what downloads the
+	// weights.
+	onnxAsrSpec = "onnx-asr[cpu,hub]==0.12.0"
+
 	// SpeechInstallTimeout bounds one install. The wheels run to a few hundred
 	// megabytes and the model weights follow them, on whatever connection the
 	// user has.
@@ -54,6 +60,7 @@ func speechPackages() []string {
 	return []string{
 		fasterWhisperSpec,
 		piperSpec,
+		onnxAsrSpec,
 		"fastapi>=0.115.0",
 		"uvicorn[standard]>=0.30.0",
 		"python-multipart>=0.0.20",
@@ -66,6 +73,17 @@ func speechPackages() []string {
 // suit the machine and the language, and writes them back here.
 type SpeechConfig struct {
 	Port int `json:"port,omitempty"`
+
+	// SttEngine picks the transcription engine: "parakeet" (the TDT
+	// transducer, best accuracy a CPU can afford, 25 languages) or "whisper"
+	// (every language). Blank lets the installer choose for this machine and
+	// language. Setting whisper_model alone also forces Whisper, so a config
+	// written before engines existed keeps meaning what it meant.
+	SttEngine string `json:"stt_engine,omitempty"`
+
+	// SttModel names the Parakeet model. Blank means the installer's default
+	// (nemo-parakeet-tdt-0.6b-v3).
+	SttModel string `json:"stt_model,omitempty"`
 
 	// WhisperModel is a faster-whisper size ("tiny", "base", "small", …) or a
 	// Hugging Face repo. Blank lets the installer choose for this machine.
@@ -134,13 +152,15 @@ func hasSpeechEngines(python string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	_, err := runCmd(ctx, []string{python, "-c",
-		"import importlib.metadata as m; m.version('faster-whisper'); m.version('piper-tts')"})
+		"import importlib.metadata as m; m.version('faster-whisper'); m.version('piper-tts'); m.version('onnx-asr')"})
 	return err == nil
 }
 
 // SpeechChoices is what the installer settled on, which Factor writes back
 // into the config so a call never has to rediscover it.
 type SpeechChoices struct {
+	SttEngine      string `json:"stt_engine"`
+	SttModel       string `json:"stt_model"`
 	WhisperModel   string `json:"whisper_model"`
 	WhisperDevice  string `json:"whisper_device"`
 	WhisperCompute string `json:"whisper_compute"`
@@ -231,7 +251,8 @@ func parseSpeechChoices(out string) (SpeechChoices, error) {
 		if !strings.HasPrefix(line, "{") {
 			continue
 		}
-		if err := json.Unmarshal([]byte(line), &choices); err == nil && choices.WhisperModel != "" {
+		if err := json.Unmarshal([]byte(line), &choices); err == nil &&
+			(choices.WhisperModel != "" || choices.SttModel != "") {
 			return choices, nil
 		}
 	}
@@ -241,7 +262,12 @@ func parseSpeechChoices(out string) (SpeechChoices, error) {
 // Summary describes the installed stack in one line, for the wizard and status.
 func (c SpeechChoices) Summary() string {
 	stt := c.WhisperModel
-	if c.WhisperDevice != "" && c.WhisperDevice != "cpu" {
+	if c.SttEngine == "parakeet" {
+		stt = c.SttModel
+		if stt == "" {
+			stt = "parakeet"
+		}
+	} else if c.WhisperDevice != "" && c.WhisperDevice != "cpu" {
 		stt += " on " + c.WhisperDevice
 	}
 	if c.PiperVoice == "" {
@@ -269,6 +295,8 @@ type speechServerConfig struct {
 	DataDir  string `json:"data_dir"`
 	Language string `json:"language"`
 
+	SttEngine      string `json:"stt_engine,omitempty"`
+	SttModel       string `json:"stt_model,omitempty"`
 	WhisperModel   string `json:"whisper_model,omitempty"`
 	WhisperDevice  string `json:"whisper_device,omitempty"`
 	WhisperCompute string `json:"whisper_compute,omitempty"`
@@ -287,6 +315,8 @@ func renderSpeechConfig(cfg SpeechConfig, home, language, token string, needSTT,
 		Token:          token,
 		DataDir:        speechDataDir(cfg, home),
 		Language:       language,
+		SttEngine:      cfg.SttEngine,
+		SttModel:       cfg.SttModel,
 		WhisperModel:   cfg.WhisperModel,
 		WhisperDevice:  cfg.WhisperDevice,
 		WhisperCompute: cfg.WhisperCompute,

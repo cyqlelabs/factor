@@ -19,9 +19,13 @@ its adapters expect:
     response_format="pcm" and resamples 24 kHz down to the 8 kHz phone band, so
     anything else arrives at the caller's ear transposed.
 
-Speech-to-text is faster-whisper (multilingual, so every language Whisper
-knows), text-to-speech is Piper (49 language families, and its wheel carries
-its own espeak-ng, so no system package has to be installed for any of them).
+Speech-to-text is one of two engines, chosen by prepare() for the machine and
+the language: Parakeet TDT (a transducer — it encodes the audio it was given
+rather than a fixed window, which is what makes accuracy affordable on a CPU)
+where its 25 languages reach, faster-whisper everywhere else (multilingual, so
+every language Whisper knows). Text-to-speech is Piper (49 language families,
+and its wheel carries its own espeak-ng, so no system package has to be
+installed for any of them).
 """
 
 from __future__ import annotations
@@ -83,6 +87,8 @@ TOKEN = CFG.get("token") or ""
 DATA_DIR = Path(CFG.get("data_dir") or ".")
 LANGUAGE = (CFG.get("language") or "en").split("-")[0].lower()
 
+STT_ENGINE = (CFG.get("stt_engine") or "whisper").lower()
+STT_MODEL = CFG.get("stt_model") or ""
 WHISPER_MODEL = CFG.get("whisper_model") or "base"
 WHISPER_DEVICE = CFG.get("whisper_device") or "cpu"
 WHISPER_COMPUTE = CFG.get("whisper_compute") or "int8"
@@ -99,6 +105,27 @@ OUTPUT_RATE = int(CFG.get("output_sample_rate") or 24000)
 MIN_TRANSCRIBE_SECONDS = 0.2
 MAX_NO_SPEECH_PROB = 0.6
 MIN_AVG_LOGPROB = -1.0
+
+# The CPU transcriber of choice. A transducer's cost scales with the audio it
+# is handed, where Whisper pays for a thirty-second window per call however
+# short the chunk — and Patter calls once a second. int8 keeps it inside small
+# machines; the WER cost of the quantization is far below the gap to the
+# whisper size a CPU can otherwise afford.
+PARAKEET_MODEL = "nemo-parakeet-tdt-0.6b-v3"
+PARAKEET_QUANTIZATION = "int8"
+
+# The 25 languages Parakeet TDT 0.6B v3 is trained on (NVIDIA's model card).
+# A language outside this set is served by Whisper, whose coverage is ~99.
+PARAKEET_LANGUAGES = {
+    "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu",
+    "it", "lv", "lt", "mt", "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv",
+    "uk",
+}
+
+# Loaded int8 the model sits around a gigabyte of resident memory, so a small
+# machine that could serve whisper base cannot serve this; measured on the
+# int8 export at prepare time. Below the bar, whisper base stays the answer.
+PARAKEET_MIN_RAM_GB = 4.0
 
 # ------------------------------------------------------------------- the models
 
@@ -117,15 +144,18 @@ def load_models() -> None:
     twenty-second silence while a model is read off disk."""
     global _stt, _tts
 
-    from faster_whisper import WhisperModel
+    if STT_ENGINE == "parakeet":
+        _stt = load_parakeet(STT_MODEL or PARAKEET_MODEL)
+    else:
+        from faster_whisper import WhisperModel
 
-    log("loading speech-to-text", model=WHISPER_MODEL, device=WHISPER_DEVICE, compute=WHISPER_COMPUTE)
-    _stt = WhisperModel(
-        WHISPER_MODEL,
-        device=WHISPER_DEVICE,
-        compute_type=WHISPER_COMPUTE,
-        download_root=str(DATA_DIR / "whisper"),
-    )
+        log("loading speech-to-text", model=WHISPER_MODEL, device=WHISPER_DEVICE, compute=WHISPER_COMPUTE)
+        _stt = WhisperModel(
+            WHISPER_MODEL,
+            device=WHISPER_DEVICE,
+            compute_type=WHISPER_COMPUTE,
+            download_root=str(DATA_DIR / "whisper"),
+        )
 
     if PIPER_VOICE:
         from piper import PiperVoice
@@ -136,7 +166,28 @@ def load_models() -> None:
         log("loading text-to-speech", voice=PIPER_VOICE)
         _tts = PiperVoice.load(str(onnx))
 
-    log("ready", stt=WHISPER_MODEL, tts=PIPER_VOICE or "disabled", rate=OUTPUT_RATE)
+    log("ready", stt=stt_name(), tts=PIPER_VOICE or "disabled", rate=OUTPUT_RATE)
+
+
+def stt_name() -> str:
+    if STT_ENGINE == "parakeet":
+        return STT_MODEL or PARAKEET_MODEL
+    return WHISPER_MODEL
+
+
+def load_parakeet(model: str):
+    """Load (downloading if needed) the transducer, ready to transcribe.
+
+    with_timestamps() is not about timestamps: it is the adapter that carries
+    per-token log-probabilities, which is what lets a transducer answer
+    verbose_json with a real avg_logprob instead of a made-up one — Patter
+    turns that number into the confidence it acts on."""
+    import onnx_asr
+
+    log("loading speech-to-text", engine="parakeet", model=model, quantization=PARAKEET_QUANTIZATION)
+    target = DATA_DIR / "parakeet" / model
+    target.mkdir(parents=True, exist_ok=True)
+    return onnx_asr.load_model(model, str(target), quantization=PARAKEET_QUANTIZATION).with_timestamps()
 
 
 @asynccontextmanager
@@ -173,7 +224,8 @@ def health() -> JSONResponse:
 @app.get("/v1/models")
 def models() -> dict:
     """The catalogue Factor's startup probe reads to tell that we are alive."""
-    listed = [{"id": WHISPER_MODEL, "object": "model", "owned_by": "faster-whisper"}]
+    owner = "onnx-asr" if STT_ENGINE == "parakeet" else "faster-whisper"
+    listed = [{"id": stt_name(), "object": "model", "owned_by": owner}]
     if PIPER_VOICE:
         listed.append({"id": PIPER_VOICE, "object": "model", "owned_by": "piper"})
     return {"object": "list", "data": listed}
@@ -204,11 +256,39 @@ def transcriptions(
     # flushed at end-of-utterance comes back as "thanks for watching!" and
     # reaches the agent as though the caller had said it. Below a fifth of a
     # second there is nothing a caller could have said anyway.
-    if wav_duration(raw) < MIN_TRANSCRIBE_SECONDS:
+    duration = wav_duration(raw)
+    if duration < MIN_TRANSCRIBE_SECONDS:
         return {"text": ""}
 
     # The model name on the wire is Patter's ("whisper-1"): it names the
     # protocol, not the weights, which are whichever ones Factor installed.
+    if STT_ENGINE == "parakeet":
+        with _stt_lock:
+            text, avg_logprob = transcribe_parakeet(raw)
+        if response_format != "verbose_json":
+            return {"text": text}
+        return {
+            "task": "transcribe",
+            "language": language or LANGUAGE,
+            "duration": duration,
+            "text": text,
+            # One segment for the whole utterance: a transducer decodes the
+            # chunk it was given, and Patter only reads the fields back out
+            # per upload anyway. avg_logprob is real — the mean of the
+            # decoder's own token log-probabilities — and no_speech_prob is
+            # the one Whisper-ism with no transducer equivalent: silence
+            # comes back as no tokens (an empty list, not a segment), so a
+            # segment that exists was heard.
+            "segments": [] if not text else [{
+                "id": 0,
+                "start": 0.0,
+                "end": duration,
+                "text": text,
+                "avg_logprob": avg_logprob,
+                "no_speech_prob": 0.0,
+            }],
+        }
+
     with _stt_lock:
         segments, info = _stt.transcribe(
             io.BytesIO(raw),
@@ -293,6 +373,39 @@ def is_hallucination(segment) -> bool:
     if getattr(segment, "no_speech_prob", 0.0) > MAX_NO_SPEECH_PROB:
         return True
     return getattr(segment, "avg_logprob", 0.0) < MIN_AVG_LOGPROB
+
+
+def transcribe_parakeet(raw: bytes) -> tuple[str, float]:
+    """One buffered chunk through the transducer.
+
+    Returns the text and the mean of the decoder's per-token
+    log-probabilities. is_hallucination deliberately does not apply here: its
+    thresholds are tuned to Whisper's decoder, whose habit of inventing
+    speech over silence is the thing being defended against — a transducer
+    handed silence emits no tokens at all, and the VAD gates upstream (
+    Patter's, and MIN_TRANSCRIBE_SECONDS here) already drop what little gets
+    through."""
+    import numpy as np
+
+    with wave.open(io.BytesIO(raw), "rb") as wav:
+        rate = wav.getframerate()
+        channels = wav.getnchannels()
+        width = wav.getsampwidth()
+        frames = wav.readframes(wav.getnframes())
+    # Patter uploads 16 kHz mono PCM16, but this server is also reachable by
+    # the PC voice channel and by hand, so normalize rather than assume.
+    if width != 2:
+        frames = audioop.lin2lin(frames, width, 2)
+    if channels != 1:
+        frames = audioop.tomono(frames, 2, 0.5, 0.5)
+    if rate != 16000:
+        frames, _ = audioop.ratecv(frames, 2, 1, rate, 16000, None)
+    waveform = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+    result = _stt.recognize(waveform, sample_rate=16000)
+    logprobs = result.logprobs or []
+    avg = sum(logprobs) / len(logprobs) if logprobs else 0.0
+    return result.text.strip(), avg
 
 
 def synthesize(text: str) -> tuple[bytes, int, int, int]:
@@ -406,32 +519,66 @@ def resolve_voice(language: str, catalogue: dict) -> str | None:
     return None
 
 
+def whisper_device() -> tuple[str, str]:
+    """Where faster-whisper would run on this machine."""
+    try:
+        import ctranslate2
+
+        if ctranslate2.get_cuda_device_count() > 0:
+            return "cuda", "float16"
+    except Exception:  # noqa: BLE001 - no CUDA is the common case, not an error
+        pass
+    return "cpu", "int8"
+
+
 def pick_whisper(explicit: str) -> tuple[str, str, str]:
-    """Choose the transcription model this machine can actually keep up with.
+    """Choose the Whisper size this machine can actually keep up with.
 
     Whisper decodes a fixed thirty-second window however little audio it is
     given, so cost is per call, not per second of speech — and Patter calls
     once a second. Measured on this design: small takes ~2.4 s per chunk on a
     CPU and falls further behind with every word, while on CUDA it takes
-    ~0.14 s. base keeps up on a CPU at ~0.9 s, which is why it is the fallback
-    rather than the recommendation."""
-    device, compute = "cpu", "int8"
-    try:
-        import ctranslate2
-
-        if ctranslate2.get_cuda_device_count() > 0:
-            device, compute = "cuda", "float16"
-    except Exception:  # noqa: BLE001 - no CUDA is the common case, not an error
-        pass
+    ~0.14 s; base keeps up on a CPU at ~0.9 s. A GPU has the headroom to
+    spend on accuracy instead, and large-v3-turbo is where it goes furthest:
+    large-v3's encoder with the decoder cut to four layers, so it prices like
+    the small end and hears like the large one."""
+    device, compute = whisper_device()
 
     if explicit:
         return explicit, device, compute
     if device == "cuda":
-        return "small", device, compute
+        return "large-v3-turbo", device, compute
     # No GPU: accuracy has to give way to keeping up, because a transcriber
     # that falls behind does not produce a late answer, it produces a growing
-    # backlog and a caller talking to nobody.
+    # backlog and a caller talking to nobody. (The languages Parakeet covers
+    # do not land here at all — pick_stt keeps them off Whisper on a CPU.)
     return ("base" if total_ram_gb() >= 2 else "tiny"), device, compute
+
+
+def pick_stt(explicit_engine: str, explicit_whisper: str, explicit_model: str) -> tuple[str, str, str, str]:
+    """Choose the transcription engine and model for this machine and language.
+
+    Returns (engine, model, device, compute); device and compute are
+    Whisper's and echo what a fallback would use when the engine is Parakeet.
+    The ladder: an explicit choice always wins; a GPU runs Whisper
+    large-v3-turbo (every language, and the window cost that rules Whisper
+    out on a CPU is noise there); a CPU speaking one of Parakeet's languages
+    runs Parakeet, whose accuracy a CPU could never buy from Whisper; the
+    rest keep the Whisper size the machine can afford."""
+    device, compute = whisper_device()
+
+    if explicit_engine == "parakeet":
+        model = explicit_model or PARAKEET_MODEL
+        return "parakeet", model, device, compute
+    if explicit_engine == "whisper" or explicit_whisper:
+        model, device, compute = pick_whisper(explicit_whisper)
+        return "whisper", model, device, compute
+
+    if device == "cpu" and LANGUAGE in PARAKEET_LANGUAGES and total_ram_gb() >= PARAKEET_MIN_RAM_GB:
+        return "parakeet", PARAKEET_MODEL, device, compute
+
+    model, device, compute = pick_whisper("")
+    return "whisper", model, device, compute
 
 
 def total_ram_gb() -> float:
@@ -448,18 +595,38 @@ def prepare() -> None:
     so the first phone call finds the weights already on disk and the choices
     already made."""
     result: dict = {}
-    model, device, compute = pick_whisper(CFG.get("whisper_model") or "")
-    result["whisper_model"] = model
-    result["whisper_device"] = device
-    result["whisper_compute"] = compute
-    if CFG.get("need_stt") and device == "cpu":
-        # Say it plainly rather than let the user discover it on a call: this
-        # machine can run local transcription, but not well.
-        result["warning"] = (
-            f"no GPU here, so transcription runs {model} on the CPU — it keeps up, but it "
-            "mishears more than the cloud does, especially outside English. Cloud "
-            "speech-to-text with a local voice (tier 3) is the better trade on this machine."
-        )
+    engine, model, device, compute = pick_stt(
+        (CFG.get("stt_engine") or "").lower(),
+        CFG.get("whisper_model") or "",
+        CFG.get("stt_model") or "",
+    )
+    result["stt_engine"] = engine
+    if engine == "parakeet":
+        result["stt_model"] = model
+        # The Whisper keys stay empty on purpose: writing a fallback nobody
+        # downloaded would make the config claim weights the disk does not
+        # have.
+        result["whisper_model"] = ""
+        if LANGUAGE not in PARAKEET_LANGUAGES:
+            result["warning"] = (
+                f"Parakeet was asked for explicitly, but it is not trained on {LANGUAGE!r} — "
+                "expect transcription in the wrong language. Unset stt_engine to let "
+                "Factor choose Whisper here."
+            )
+    else:
+        result["whisper_model"] = model
+        result["whisper_device"] = device
+        result["whisper_compute"] = compute
+        if CFG.get("need_stt") and device == "cpu":
+            # Say it plainly rather than let the user discover it on a call:
+            # this machine can run local transcription, but not well. The
+            # languages Parakeet covers never land here — this is the long
+            # tail Whisper serves alone.
+            result["warning"] = (
+                f"no GPU here, so transcription runs {model} on the CPU — it keeps up, but it "
+                "mishears more than the cloud does, especially outside English. Cloud "
+                "speech-to-text with a local voice (tier 3) is the better trade on this machine."
+            )
 
     voice = CFG.get("piper_voice") or ""
     if CFG.get("need_tts"):
@@ -477,13 +644,17 @@ def prepare() -> None:
     result["piper_voice"] = voice
 
     if CFG.get("need_stt"):
-        log("downloading the transcription model", model=model, device=device)
-        from faster_whisper import WhisperModel
+        log("downloading the transcription model", engine=engine, model=model)
+        # Constructing the model is what pulls the weights; doing it here
+        # means the download happens under the installer's progress, not
+        # mid-call.
+        if engine == "parakeet":
+            load_parakeet(model)
+        else:
+            from faster_whisper import WhisperModel
 
-        # Constructing it is what pulls the weights; doing it here means the
-        # download happens under the installer's progress, not mid-call.
-        WhisperModel(model, device=device, compute_type=compute,
-                     download_root=str(DATA_DIR / "whisper"))
+            WhisperModel(model, device=device, compute_type=compute,
+                         download_root=str(DATA_DIR / "whisper"))
 
     print(json.dumps(result), flush=True)
 

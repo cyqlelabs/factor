@@ -1059,6 +1059,8 @@ type phoneSection struct {
 
 // speechSection mirrors channels.phone.speech_server.
 type speechSection struct {
+	SttEngine      string `json:"stt_engine,omitempty"`
+	SttModel       string `json:"stt_model,omitempty"`
 	WhisperModel   string `json:"whisper_model,omitempty"`
 	WhisperDevice  string `json:"whisper_device,omitempty"`
 	WhisperCompute string `json:"whisper_compute,omitempty"`
@@ -1411,6 +1413,8 @@ func (w *wiz) installLocalSpeech(ctx context.Context, section *phoneSection, loc
 	}
 
 	section.SpeechServer = &speechSection{
+		SttEngine:      choices.SttEngine,
+		SttModel:       choices.SttModel,
 		WhisperModel:   choices.WhisperModel,
 		WhisperDevice:  choices.WhisperDevice,
 		WhisperCompute: choices.WhisperCompute,
@@ -1872,6 +1876,8 @@ func (w *wiz) setUpLocalVoiceSpeech(ctx context.Context, section *voiceSection, 
 			return nil
 		}
 		section.SpeechServer = &speechSection{
+			SttEngine:      choices.SttEngine,
+			SttModel:       choices.SttModel,
 			WhisperModel:   choices.WhisperModel,
 			WhisperDevice:  choices.WhisperDevice,
 			WhisperCompute: choices.WhisperCompute,
