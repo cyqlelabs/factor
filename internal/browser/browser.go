@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/target"
@@ -385,13 +386,29 @@ func (s *Session) openTabLocked() (*tabHandle, error) {
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
-	tabCtx, cancel := chromedp.NewContext(s.browserCtx)
-	h := &tabHandle{ctx: tabCtx, cancel: cancel, owned: true}
-	if err := s.materialize(h); err != nil {
-		cancel()
+	id, err := s.createTabLocked()
+	if err != nil {
 		return nil, err
 	}
-	return h, nil
+	return s.attachLocked(id, true)
+}
+
+// createTabLocked opens a tab on the connection and returns its target.
+//
+// chromedp creates every target of its own with newWindow: true, which on the
+// browser the user is already working in means each tab Factor opens is a
+// separate window landing on top of theirs — the whole point of attaching to
+// their browser is to be somewhere they already are. The target is created
+// here with the flag left off, so it opens as a tab in the window they are
+// looking at, and the tab context is bound to it afterwards by id.
+func (s *Session) createTabLocked() (target.ID, error) {
+	c := chromedp.FromContext(s.browserCtx)
+	if c == nil || c.Browser == nil {
+		return "", fmt.Errorf("no browser connection")
+	}
+	ctx, cancel := context.WithTimeout(s.browserCtx, 45*time.Second)
+	defer cancel()
+	return target.CreateTarget("about:blank").Do(cdp.WithExecutor(ctx, c.Browser))
 }
 
 // attachLocked binds a tab that already exists. owned says whether closing it
@@ -759,7 +776,7 @@ func (t *navigateTool) Description() string {
 func (t *navigateTool) Parameters() map[string]any {
 	return map[string]any{
 		"type":       "object",
-		"properties": map[string]any{"url": map[string]any{"type": "string", "description": "Absolute URL including the scheme, e.g. https://example.com"}},
+		"properties": map[string]any{"url": map[string]any{"type": "string", "description": "Absolute URL including the scheme, e.g. https://example.com, or a local file as file:///path/to/page.html"}},
 		"required":   []any{"url"},
 	}
 }
@@ -769,10 +786,38 @@ func (t *navigateTool) Parameters() map[string]any {
 // works must not cost a test 45 real seconds of waiting.
 var navigateWait = 45 * time.Second
 
+// localOrRemote resolves what the model passed into something the browser can
+// load. Everything that is not already a URL used to have https:// pinned to
+// the front of it, which turned a local file into a hostname that resolves
+// nowhere — and the model read that DNS failure back as "this browser cannot
+// open local files" and told the user so. A file is a read like any other, so
+// the same guard the upload tool applies decides whether it may be opened.
+func (t *navigateTool) localOrRemote(url string) (string, error) {
+	path := ""
+	switch {
+	case strings.HasPrefix(url, "http://"), strings.HasPrefix(url, "https://"):
+		return url, nil
+	case strings.HasPrefix(url, "file://"):
+		path = strings.TrimPrefix(url, "file://")
+	case strings.HasPrefix(url, "/"):
+		path = url // a bare absolute path is a file, never a host
+	default:
+		return "https://" + url, nil
+	}
+	if t.s.guard == nil {
+		return "file://" + path, nil
+	}
+	resolved, err := t.s.guard.CheckRead(path)
+	if err != nil {
+		return "", err
+	}
+	return "file://" + resolved, nil
+}
+
 func (t *navigateTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
-	url := tools.StringArg(args, "url")
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		url = "https://" + url
+	url, err := t.localOrRemote(tools.StringArg(args, "url"))
+	if err != nil {
+		return tools.Errorf("%v", err)
 	}
 	// chromedp's Navigate refuses to return before the page's load event, and
 	// that event waits on every script and image: a heavy page on a slow
@@ -782,7 +827,7 @@ func (t *navigateTool) Execute(ctx context.Context, args map[string]any) *tools.
 	// answered" from "the page is there but still loading" once the wait runs
 	// out — the second is a page to read and label, not a failure to report.
 	var committed atomic.Bool
-	err := t.s.run(ctx, navigateWait,
+	err = t.s.run(ctx, navigateWait,
 		chromedp.ActionFunc(func(c context.Context) error {
 			chromedp.ListenTarget(c, func(ev any) {
 				if fn, ok := ev.(*page.EventFrameNavigated); ok && fn.Frame != nil && fn.Frame.ParentID == "" {

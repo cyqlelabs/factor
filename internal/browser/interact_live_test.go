@@ -12,6 +12,11 @@ import (
 	"strings"
 	"testing"
 
+	cdpbrowser "github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/target"
+	"github.com/chromedp/chromedp"
+
 	"github.com/cyqlelabs/factor/internal/tools"
 )
 
@@ -302,5 +307,85 @@ func TestListingTabsDoesNotOpenOne(t *testing.T) {
 	}
 	if strings.Contains(out, "about:blank") {
 		t.Errorf("a blank tab was opened to answer the listing:\n%s", out)
+	}
+}
+
+// windowOf asks the browser which window a target lives in — the difference
+// between a tab and a window, which the target list itself does not show.
+func windowOf(t *testing.T, s *Session, id target.ID) cdpbrowser.WindowID {
+	t.Helper()
+	s.mu.Lock()
+	bctx := s.browserCtx
+	s.mu.Unlock()
+	c := chromedp.FromContext(bctx)
+	if c == nil || c.Browser == nil {
+		t.Fatal("session has no browser connection")
+	}
+	win, _, err := cdpbrowser.GetWindowForTarget().WithTargetID(id).Do(cdp.WithExecutor(bctx, c.Browser))
+	if err != nil {
+		t.Fatalf("window for %s: %v", id, err)
+	}
+	return win
+}
+
+// TestTabsOpenInTheWindowAlreadyOpen is the difference between attaching to
+// the user's browser and interrupting it. chromedp creates every target of
+// its own with newWindow: true, so each tab Factor opened arrived as a bare
+// window on top of whatever the user was doing — and closing it left them
+// hunting an empty window they never asked for.
+func TestTabsOpenInTheWindowAlreadyOpen(t *testing.T) {
+	requireBrowser(t)
+	s := NewSession(liveConfig(), t.TempDir(), nil)
+	t.Cleanup(s.Close)
+	ctx := context.Background()
+
+	if err := s.openTab(ctx); err != nil {
+		t.Fatalf("first tab: %v", err)
+	}
+	first := s.currentID()
+	if err := s.openTab(ctx); err != nil {
+		t.Fatalf("second tab: %v", err)
+	}
+	second := s.currentID()
+	if first == "" || second == "" || first == second {
+		t.Fatalf("want two distinct tabs, got %q and %q", first, second)
+	}
+	if a, b := windowOf(t, s, first), windowOf(t, s, second); a != b {
+		t.Errorf("the second tab opened in a window of its own (%d, not %d)", b, a)
+	}
+}
+
+// TestNavigateOpensALocalFile covers the report the agent writes and then has
+// to show. Every URL that was not already http used to get https:// pinned to
+// the front of it, so a file:// path became a hostname that resolves nowhere
+// — and the model reported that back as the browser being unable to open
+// local files at all.
+func TestNavigateOpensALocalFile(t *testing.T) {
+	requireBrowser(t)
+	ws := t.TempDir()
+	report := filepath.Join(ws, "report.html")
+	if err := os.WriteFile(report, []byte(`<html><head><title>Report</title></head><body><h1>local report body</h1></body></html>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	suite, closeFn := NewTools(liveConfig(), ws, tools.NewPathGuard(ws, true, false, nil))
+	t.Cleanup(closeFn)
+	byName := map[string]tools.Tool{}
+	for _, tool := range suite {
+		byName[tool.Name()] = tool
+	}
+
+	out := mustRun(t, byName["browser_navigate"], map[string]any{"url": "file://" + report})
+	if !strings.Contains(out, "local report body") {
+		t.Errorf("the local file was not rendered:\n%s", out)
+	}
+	// A bare absolute path is a file too, never a hostname.
+	out = mustRun(t, byName["browser_navigate"], map[string]any{"url": report})
+	if !strings.Contains(out, "local report body") {
+		t.Errorf("a bare path was not read as a file:\n%s", out)
+	}
+	// And a path the workspace does not cover is refused as the read it is.
+	res := byName["browser_navigate"].Execute(context.Background(), map[string]any{"url": "file:///etc/hostname"})
+	if !res.IsError || !strings.Contains(res.ForLLM, "outside workspace") {
+		t.Errorf("the guard did not refuse the read: %+v", res)
 	}
 }
