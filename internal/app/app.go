@@ -110,9 +110,12 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(tools.NewWebTools()...)
 	registry.Register(memory.NewTools(engine, spaces)...)
 	skillsRoot := filepath.Join(ws, "skills")
-	registry.Register(&skills.InstallTool{Root: skillsRoot})
+	skillLoader := skills.NewLoader(skillsRoot, filepath.Join(config.Home(), "skills"))
+	skillReg := skills.NewRegistry(cfg.Tools.SkillRegistryURL)
+	registry.Register(&skills.InstallTool{Root: skillsRoot, Registry: skillReg})
 	registry.Register(&skills.WriteTool{Root: skillsRoot})
 	registry.Register(&skills.RemoveTool{Root: skillsRoot})
+	registry.Register(&skills.FindTool{Registry: skillReg, Installed: skillLoader})
 	registry.Register(tools.NewConfigTools(cfg)...)
 	registry.Register(cost.NewTool(meter)...)
 	registry.Register(tools.NewPkgInstallTool())
@@ -149,8 +152,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(mcp.NewTools(mcpManager)...)
 	go mcpManager.StartAll(ctx) // dead servers must not stall startup
 
-	loader := skills.NewLoader(filepath.Join(ws, "skills"), filepath.Join(config.Home(), "skills"))
-	builder := agent.NewContextBuilder(cfg, loader, ambient)
+	builder := agent.NewContextBuilder(cfg, skillLoader, ambient)
 	b := bus.New()
 	loop := agent.NewLoop(cfg, b, meter, registry, sessions, builder, ambient)
 
@@ -196,7 +198,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Registry: registry,
 		Guard:    guard,
 		Sessions: sessions,
-		Skills:   loader,
+		Skills:   skillLoader,
 		Loop:     loop,
 		Jobs:     jobEngine,
 		Cron:     cronService,

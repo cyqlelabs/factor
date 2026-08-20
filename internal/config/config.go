@@ -165,6 +165,9 @@ type ToolsConfig struct {
 	EnableDenyPatterns        bool     `json:"enable_deny_patterns"`
 	CustomDenyPatterns        []string `json:"custom_deny_patterns,omitempty"`
 	AllowInstall              bool     `json:"allow_install"`
+	// SkillRegistryURL points skill_find and skill_install at something other
+	// than skills.sh: a mirror, a private index, a stub in a test.
+	SkillRegistryURL string `json:"skill_registry_url,omitempty" env:"FACTOR_SKILL_REGISTRY_URL"`
 }
 
 // IsToolEnabled reports whether a tool name survives the user's disabled list.

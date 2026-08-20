@@ -88,7 +88,7 @@ func (l *Loader) Summary() string {
 			fmt.Fprintf(&b, "- %s: %s (%s)\n", s.Name, s.Description, s.Path)
 		}
 	}
-	b.WriteString("\nOnly skill_write puts a skill in this catalog; a file written into the skills directory any other way is invisible to you.\n")
+	b.WriteString("\nOnly skill_write puts a skill in this catalog; a file written into the skills directory any other way is invisible to you. Nothing here for the job at hand? skill_find searches the public registry before you build one from nothing.\n")
 	return b.String()
 }
 
@@ -130,21 +130,28 @@ func firstParagraph(body string) string {
 
 var skillNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
-// InstallTool installs a skill from a git URL or local directory into the
-// workspace skills root.
+// registrySlugRe matches an owner/repo/skill slug as skill_find returns it.
+// Three segments and no scheme is what separates a registry slug from the
+// other two sources; an existing directory of that shape still wins, since a
+// path the user can point at is never a guess.
+var registrySlugRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$`)
+
+// InstallTool installs a skill from the public registry, a git URL, or a
+// local directory into the workspace skills root.
 type InstallTool struct {
-	Root string // workspace/skills
+	Root     string // workspace/skills
+	Registry *Registry
 }
 
 func (t *InstallTool) Name() string { return "skill_install" }
 func (t *InstallTool) Description() string {
-	return "Install a skill into the workspace from a git repository URL or a local directory containing SKILL.md."
+	return "Install a skill into the workspace from an owner/repo/skill slug returned by skill_find, a git repository URL whose root holds a SKILL.md, or a local directory."
 }
 func (t *InstallTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"source": map[string]any{"type": "string", "description": "git URL (https://...) or local directory path"},
+			"source": map[string]any{"type": "string", "description": "owner/repo/skill slug from skill_find, git URL (https://...), or local directory path"},
 			"name":   map[string]any{"type": "string", "description": "Skill directory name (defaults to source basename)"},
 		},
 		"required": []any{"source"},
@@ -165,16 +172,21 @@ func (t *InstallTool) Execute(ctx context.Context, args map[string]any) *tools.R
 		return tools.Errorf("skill %q already exists at %s", name, dest)
 	}
 
-	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") || strings.HasPrefix(source, "git@") {
+	switch info, statErr := os.Stat(source); {
+	case strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") || strings.HasPrefix(source, "git@"):
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", source, dest)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return tools.Errorf("git clone failed: %v\n%s", err, out)
 		}
-	} else {
-		info, err := os.Stat(source)
-		if err != nil || !info.IsDir() {
+	case statErr != nil && registrySlugRe.MatchString(source):
+		if err := t.installFromRegistry(ctx, source, dest); err != nil {
+			_ = os.RemoveAll(dest)
+			return tools.Errorf("registry install failed: %v", err)
+		}
+	default:
+		if statErr != nil || !info.IsDir() {
 			return tools.Errorf("source %q is not a directory", source)
 		}
 		if err := os.CopyFS(dest, os.DirFS(source)); err != nil {
@@ -187,6 +199,36 @@ func (t *InstallTool) Execute(ctx context.Context, args map[string]any) *tools.R
 		return tools.Errorf("source has no SKILL.md at its root; not a skill")
 	}
 	return tools.Textf("Installed skill %q to %s", name, dest)
+}
+
+// installFromRegistry writes a registry snapshot into dest. A snapshot is
+// files chosen by a stranger's repository and carried over HTTP, so every path
+// is resolved under dest before anything is written: it is data, not a say in
+// where on the disk it lands.
+func (t *InstallTool) installFromRegistry(ctx context.Context, slug, dest string) error {
+	reg := t.Registry
+	if reg == nil {
+		reg = NewRegistry("")
+	}
+	files, err := reg.Download(ctx, slug)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		rel := filepath.Clean(filepath.FromSlash(strings.TrimSpace(f.Path)))
+		up := ".." + string(filepath.Separator)
+		if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, up) {
+			return fmt.Errorf("snapshot file %q would be written outside the skill directory", f.Path)
+		}
+		full := filepath.Join(dest, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return fmt.Errorf("create %s: %w", filepath.Dir(rel), err)
+		}
+		if err := os.WriteFile(full, []byte(f.Contents), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", rel, err)
+		}
+	}
+	return nil
 }
 
 // WriteTool authors a skill in place. Without it the model writes loose scripts
