@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,8 +32,26 @@ const DefaultCheckInterval = 24 * time.Hour
 // Overridable seams so the whole path is testable without the network or a
 // real binary to overwrite.
 var (
-	releaseAPI     = "https://api.github.com/repos/" + repo + "/releases/latest"
-	httpClient     = &http.Client{Timeout: 15 * time.Minute}
+	releaseAPI = "https://api.github.com/repos/" + repo + "/releases/latest"
+	// Every request here is a rare one-off — a check a day, a download now and
+	// then — so a pooled connection buys nothing and costs everything: the one
+	// kept from the last lookup is the one the network quietly dropped in
+	// between, and an HTTP/2 stream reopened on it answers nothing while the
+	// download's fifteen minutes run out. A fresh HTTP/1.1 connection per
+	// request cannot wedge that way, and the dial and the wait for headers are
+	// bounded so only the body may take its time.
+	httpClient = &http.Client{
+		Timeout: 15 * time.Minute,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 15 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			DisableKeepAlives:     true,
+		},
+	}
+	// A lookup is one small JSON GET; the budget above is the download's.
+	lookupTimeout  = 30 * time.Second
 	executablePath = os.Executable
 	goos           = runtime.GOOS
 	goarch         = runtime.GOARCH
@@ -67,6 +86,8 @@ func AssetName() string {
 // Latest returns the newest published release, resolved to the asset this
 // machine can actually run.
 func Latest(ctx context.Context) (Release, error) {
+	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releaseAPI, nil)
 	if err != nil {
 		return Release{}, err

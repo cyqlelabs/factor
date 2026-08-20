@@ -460,3 +460,36 @@ func TestApplyIntoAnUnwritableDirectory(t *testing.T) {
 		t.Errorf("binary content = %q", got)
 	}
 }
+
+// A lookup must give up rather than hang. GitHub can accept the connection
+// and then answer nothing at all — a connection the network dropped while it
+// sat idle looks exactly like this — and a turn that asked Factor to upgrade
+// itself would otherwise sit silent for the whole download budget.
+func TestLatestGivesUpOnAServerThatNeverAnswers(t *testing.T) {
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block
+	}))
+	t.Cleanup(func() {
+		close(block)
+		srv.Close()
+	})
+
+	prevAPI, prevTimeout := releaseAPI, lookupTimeout
+	releaseAPI, lookupTimeout = srv.URL+"/releases/latest", 100*time.Millisecond
+	t.Cleanup(func() { releaseAPI, lookupTimeout = prevAPI, prevTimeout })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Latest(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("want an error from a server that never answers")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Latest hung on a server that never answers")
+	}
+}
