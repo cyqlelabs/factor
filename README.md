@@ -20,31 +20,30 @@
 **A fast, lightweight AI agent that lives on your machine — with hands on your
 desktop, a voice on the phone, and a real memory.**
 
-Factor is a single static Go binary. Chat with it in the terminal, message it on
-Telegram, call its phone number, or just talk to the machine itself: the same agent
-picks up every time, with the same tools and the same memory. It drives a real browser, works your
-desktop, keeps long tasks running in the background, and calls or texts you when one
-lands. Its long-term memory is [smrti](https://github.com/cyqlelabs/smrti) — Bayesian
-truth values, attention economics, emotional valence — so Factor doesn't just log
-what you said: it consolidates, prioritizes, and *never repeats a critical mistake*.
+Factor is a single static Go binary. Talk to it in the terminal, on Telegram, over
+the phone, or out loud to the machine itself — same agent, same tools, same memory
+every time. It drives a real browser, works your desktop, runs long tasks in the
+background, and calls or texts you when one lands. Long-term memory is
+[smrti](https://github.com/cyqlelabs/smrti): it consolidates and prioritizes rather
+than logging, so past failures become constraints it doesn't repeat.
 
 ## Highlights
 
 | | |
 |---|---|
-| 🧠 **Memory as the soul** | Salience-ranked recall every turn; past failures become hard constraints; consolidation decays, promotes, and prunes — plus deliberate `remember` / `recall` / `forget` / `reflect` tools |
-| ⚡ **Never keeps you waiting** | A turn opens with a line on what Factor is about to do, sent while the tools are still running — and long work becomes a background job it acks instantly, then messages you when the result lands, even mid-conversation |
-| 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations instead of queuing |
-| 🔁 **Provider failover that works** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with error classification, per-candidate cooldowns, and overflow-triggered compaction |
-| 💸 **Counts what it spends** | Every provider call is priced from the live model catalog and billed to the session that made it — in the chat status bar, in the tray, and in a `usage` tool — with per-session and global caps that refuse the next call rather than the one already paid for |
-| 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning` (OpenRouter), `reasoning_effort` (OpenAI/Groq), or a `thinking` budget (Anthropic) |
-| ☎️ **Answers the phone** | A real number: call it and talk to Factor out loud, or have it call and text you — barge-in, voicemail detection, and a fully local speech tier if you want no audio leaving the machine ([Phone](#phone-calls-and-sms)) |
-| 🎙️ **Listens in the room** | Talk to the machine itself: mic in, speakers out, with barge-in, an optional wake word, and push-to-talk via `factor talk` — on the same speech tiers as the phone ([PC voice](#pc-voice-mic-and-speakers)) |
-| 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications — X11, Wayland, macOS, Windows; auto-registered when a display exists — plus **grid vision**: a vision model sees the screen under a coordinate grid, zooms a cell, and clicks it by name ([Desktop](#desktop)) |
-| 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed instance, visible by default so you can watch it work — and setup installs one when the machine has none ([Browser](#browser)) |
-| 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills, drop-in instructions — see [Extending](#extending-factor) |
-| 🔧 **Self-managing** | Edits its own config, installs packages (apt/dnf/pip/npm/…), upgrades and restarts itself into the newest release, runs cron schedules and `HEARTBEAT.md` checks that cost zero LLM calls when idle |
-| 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, secrets scrubbed from every tool result — rails, not a sandbox ([Security](#security-model)) |
+| 🧠 **Memory as the soul** | Salience-ranked recall every turn, consolidation that decays and prunes, plus `remember` / `recall` / `forget` / `reflect` tools |
+| ⚡ **Never keeps you waiting** | Says what it's about to do while the tools run; long work becomes a background job that messages you when it lands |
+| 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations, not queued |
+| 🔁 **Provider failover** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with per-candidate cooldowns and overflow compaction |
+| 💸 **Counts what it spends** | Every call priced and billed to its session — status bar, tray, `usage` tool — with per-session and global caps |
+| 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning`, `reasoning_effort`, or a `thinking` budget |
+| ☎️ **Answers the phone** | A real number to call, or it calls and texts you — barge-in, voicemail detection, optional fully local speech ([Phone](#phone-calls-and-sms)) |
+| 🎙️ **Listens in the room** | Mic in, speakers out, barge-in, optional wake word, push-to-talk via `factor talk` ([PC voice](#pc-voice-mic-and-speakers)) |
+| 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications on X11/Wayland/macOS/Windows — plus grid vision ([Desktop](#desktop)) |
+| 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed one ([Browser](#browser)) |
+| 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills ([Extending](#extending-factor)) |
+| 🔧 **Self-managing** | Edits its own config, installs packages, upgrades and restarts itself, runs cron and `HEARTBEAT.md` checks that cost nothing when idle |
+| 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, scrubbed secrets — rails, not a sandbox ([Security](#security-model)) |
 
 ## How it works
 
@@ -65,8 +64,8 @@ flowchart LR
 ```
 
 Bus + bounded workers, mid-turn steering, narrow pluggable seams, CGO-free
-portability — the architecture of [PicoClaw](https://github.com/sipeed/picoclaw)
-distilled into a codebase that runs happily on an old Puppy Linux box.
+portability — [PicoClaw](https://github.com/sipeed/picoclaw)'s architecture in a
+codebase that runs happily on an old Puppy Linux box.
 
 ## Get started
 
@@ -77,58 +76,45 @@ go install github.com/cyqlelabs/factor/cmd/factor@latest
 factor init      # interactive setup wizard
 ```
 
-The wizard verifies every step live: the provider with a real completion, the model
-picked from the endpoint's live list, the Telegram token with `getMe`, the carrier
-and voice credentials against their own APIs, the browser with a real page load.
-Then it installs what's missing instead of handing you a list — smrti (`uv` →
-`pipx` → `pip --user` → private venv, no root needed), a browser, the helpers your
-desktop backend wants. It looks for that desktop on the machine rather than in this
-shell, so `factor init` over ssh still sets up the desktop the box is running.
-It also asks whether Factor should start when you log in and, if so, puts the
-entry in place itself: a systemd user service or XDG autostart on Linux, a
-launchd agent on macOS, the Run key on Windows. `factor init -y` takes the
-defaults for scripting; `--no-install` keeps it from installing anything.
+The wizard verifies every step live — a real provider completion, the endpoint's
+model list, Telegram's `getMe`, carrier and voice credentials, an actual page load —
+and installs what's missing: smrti, a browser, your desktop backend's helpers. It
+probes the machine's display rather than this shell, so setup over ssh targets the
+right desktop, and it can add a login entry (systemd or XDG autostart, launchd, the
+Windows Run key). `factor init -y` takes the defaults; `--no-install` installs
+nothing.
 
 ```bash
 export FACTOR_PROVIDER_API_KEY=sk-or-...   # OpenRouter by default
 factor                                     # interactive chat
 factor -m "what's on my disk?"             # one-shot
 factor gateway                             # daemon: Telegram, phone, PC voice, cron, heartbeat, jobs
-factor gateway -d                          # the same, detached from this terminal (~/.factor/gateway.log)
+factor gateway -d                          # the same, detached (~/.factor/gateway.log)
 factor talk                                # push-to-talk: arm the PC voice microphone
 factor status                              # daemon / provider / memory / phone / voice / desktop health
 factor upgrade                             # replace this binary with the newest release
 factor -p 127.0.0.1:8080                   # route HTTP through a proxy and watch every call
 ```
 
-`-p` sends Factor's HTTP through any proxy — mitmproxy, Burp, ZAP, a corporate
-egress, a SOCKS5 listener — so you can read the LLM traffic it is actually
-sending: prompts, tool schemas, replies, token counts. Loopback is left direct,
-so the memory and speech sidecars are not caught in the capture, and every child
-process inherits the setting, which is how smrti's own extraction calls show up
-too. A proxy that intercepts TLS needs its certificate authority trusted:
-`--proxy-ca /path/to/ca.pem`, or leave it out and Factor looks where mitmproxy
-and Burp put theirs. It probes once at startup, so a certificate it cannot trust
-is a sentence on the way in rather than an x509 error an hour later. The browser
-is not routed — it has its own trust store and its own proxy setting.
+`-p` routes Factor's HTTP through any proxy — mitmproxy, Burp, ZAP, SOCKS5 — so you
+can read the prompts, tool schemas, replies and token counts it actually sends.
+Loopback stays direct and child processes inherit the setting, so smrti's calls show
+up but the local sidecars aren't caught. `--proxy-ca` trusts an intercepting proxy's
+CA, probed once at startup. The browser isn't routed; it has its own trust store.
 
-On a desktop, the running gateway puts an icon in the system tray. Click it
-for a small status overview — version, uptime, memory health, connected
-channels, a row each — and a quit item that stops the daemon cleanly. A headless box gets
-no icon — and neither does macOS, whose tray would cost the build its CGO-free
-binaries.
+On a desktop, the running gateway puts a status icon in the system tray — version,
+uptime, memory health, connected channels, and a clean quit. Not on a headless box,
+and not on macOS, whose tray would cost the build its CGO-free binaries.
 
-Factor spawns and supervises the smrti sidecar automatically, restarts it with
-backoff, and degrades gracefully (empty recalls, dropped writes) when it's down.
-Point `memory.mode: "external"` + `memory.url` at a shared smrti if you run one.
+Factor supervises the smrti sidecar, restarts it with backoff, and degrades
+gracefully (empty recalls, dropped writes) when it's down. Point
+`memory.mode: "external"` + `memory.url` at a shared smrti if you run one.
 
-`factor upgrade` downloads the release built for this machine, checks it against the
-published `SHA256SUMS`, and swaps the binary in place; `--check` only reports what's
-out. A running gateway then restarts itself into the new binary — once it has
-finished answering, and without changing pid, so systemd never sees it stop. It
-looks for releases once a day and tells you in whichever chat you last used, but
-never installs behind your back. Asking Factor to upgrade itself is the same path:
-it installs, says goodbye, and messages you from the new binary a few seconds later.
+`factor upgrade` downloads the release for this machine, verifies it against the
+published `SHA256SUMS`, and swaps the binary in place (`--check` only reports). A
+running gateway restarts into it once the turn in flight is answered, keeping its
+pid so systemd never sees it stop. Factor checks daily and tells you, never
+installing unasked.
 
 ## Configuration
 
@@ -209,28 +195,25 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
 
 </details>
 
-Spend is priced from the model catalog Factor caches in `~/.factor/pricing.json` and totalled
-in `~/.factor/usage.json`, per session and overall, so both survive a restart. A model this
-machine serves is free; one the catalog does not list is counted in tokens and left unpriced
-rather than guessed at. A cap is checked before the call it would pay for, and the turn answers
-with a line saying what stopped instead of failing. Ask for `usage` to see the breakdown;
-what the memory sidecar spends on its own extraction calls is not part of it.
+Spend is priced from the model catalog cached in `~/.factor/pricing.json` and
+totalled in `~/.factor/usage.json`, per session and overall. Locally served models
+are free; models the catalog doesn't list are counted in tokens rather than guessed
+at. Caps are checked before the call, and the turn answers with a line saying what
+stopped. Ask for `usage` to see the breakdown.
 
-The workspace (`~/.factor/workspace`) is the agent's home. Its persona is built into
-the binary, so an upgrade improves it everywhere at once; `SOUL.md` layers your own
-on top, `USER.md` holds what Factor should always know about you, and `AGENT.md`
-tunes how it works. `HEARTBEAT.md` lists proactive tasks; `instructions/`, `skills/`,
+The workspace (`~/.factor/workspace`) is the agent's home. The persona is built into
+the binary, so an upgrade improves it everywhere at once; `SOUL.md` layers yours on
+top, `USER.md` holds what Factor should always know about you, `AGENT.md` tunes how
+it works, `HEARTBEAT.md` lists proactive tasks, and `instructions/`, `skills/`,
 `sessions/`, `cron/` do what they say.
 
 ## Browser
 
 Factor drives a real browser over DevTools: it attaches to your running
 Chrome/Chromium/Brave, or launches a managed instance that stays visible so you can
-watch it work. A machine with no browser gets one — `factor init` installs
-[Helium](https://helium.computer) under `~/.factor/engine`, from a portable tarball
-that needs no package manager and no root. Helium is ungoogled-chromium with the
-telemetry stripped, the anti-fingerprinting patches in, and uBlock Origin bundled,
-which is what actually keeps a tab's memory down on a small box.
+watch it work. A machine with none gets [Helium](https://helium.computer) installed
+under `~/.factor/engine` — ungoogled-chromium with uBlock Origin bundled, from a
+portable tarball that needs no package manager and no root.
 
 Reading a page and driving a page cost wildly different amounts, so you can add a
 second engine for the cheap half:
@@ -241,58 +224,44 @@ second engine for the cheap half:
 | **Lightpanda** — opt-in, `browser.fast_path` | `browser_fetch` — title, text, links | never | reading a page for a fraction of the memory |
 
 **Browse as yourself.** Start your everyday browser with
-`--remote-debugging-port=9222` (or point `browser.attach_url` at it) and Factor
-attaches to that session instead of launching one of its own. It then sees the web
-the way you do — your logins, your cart, your cookies — and the sites that turn
-away a fresh automated profile serve it normally. A managed instance still works
-for everything else, and says in the log which one it took.
+`--remote-debugging-port=9222` (or point `browser.attach_url` at it) and Factor uses
+that session instead of launching one — your logins, your cart, your cookies — so
+sites that turn away a fresh automated profile serve it normally.
 
-A page read puts the main content first and the site navigation last, says how many
-controls it showed out of how many exist, and takes `filter` to narrow them — so a
-listing whose results sit behind two hundred nav links is still reachable, and a
-page that was truncated cannot be mistaken for a page that was empty. `browser_scroll`
-reaches the results that only load on the way down.
-
-Lightpanda runs the same JavaScript against a DOM and never starts a renderer, a GPU
-process, or a compositor. It cannot click, fill, or screenshot and it keeps no
-session, so it supplements the real browser instead of replacing it — the agent
-picks whichever the job needs. The wizard offers it only where it runs: its builds
-need glibc 2.34, and the check happens before the 150 MB download, not after.
+`browser_read` puts main content first and site furniture last, says how much it
+withheld, and takes `filter`/`limit`; `browser_scroll` reaches what only loads on
+the way down. Lightpanda keeps no session and can't click, fill or screenshot, so it
+supplements the real browser rather than replacing it; its builds need glibc 2.34,
+which the wizard checks before the 150 MB download.
 
 ## Desktop
 
 Factor works the graphical session through the desktop's own helper programs
-(xdotool, wmctrl, scrot and friends on X11; grim/wtype on Wayland; osascript on
-macOS; PowerShell on Windows) — no CGO bindings, so the binary stays static and the
-tools cost nothing on a headless box, where they simply don't register.
+(xdotool, wmctrl, scrot on X11; grim/wtype on Wayland; osascript on macOS;
+PowerShell on Windows) — no CGO bindings, and nothing registers on a headless box.
 
-On top of the plain window/mouse/keyboard/clipboard tools sits **grid vision**, a
-two-pass pointing loop for vision-capable models:
+On top of the window/mouse/keyboard/clipboard tools sits **grid vision**, a two-pass
+pointing loop for vision-capable models:
 
-1. `screen_view` captures the screen and attaches it with a battleship coordinate
-   grid overlaid — columns A, B, C…, rows 1, 2, 3… The model doesn't guess pixel
-   coordinates (which vision models are famously bad at); it names the cell it can
-   see: "the icon is in D4".
-2. `screen_zoom cell=D4` magnifies that cell (or any pixel region, e.g. a window's
-   geometry from `window_list`) under a finer sub-grid, taking precision from
-   ~cell-size down to ~10px in one more look.
-3. `mouse action=click cell=B3` clicks the named cell's center — cells resolve back
-   to native screen pixels automatically, on either view.
+1. `screen_view` captures the screen under a battleship coordinate grid — columns
+   A, B, C…, rows 1, 2, 3…. The model names the cell it sees ("the icon is in D4")
+   instead of guessing pixel coordinates, which vision models are bad at.
+2. `screen_zoom cell=D4` magnifies that cell — or any pixel region, e.g. a window's
+   geometry from `window_list` — under a finer sub-grid, down to ~10px precision.
+3. `mouse action=click cell=B3` clicks the cell's center, resolved back to native
+   screen pixels on either view.
 
-Everything is pure Go image math: no OpenCV, no OCR models, no extra helpers beyond
-the screenshot program already required. Frames sent to the model are capped at
-1568px on the longest side (clicks still land at native resolution), only the two
-newest frames stay in context, and image bytes never touch session history — so a
-long desktop session stays cheap in tokens and in disk, which is the point on a
-small box. Non-vision models can keep the rest of the desktop suite and disable the
-two vision tools via `tools.disabled`.
+Pure Go image math — no OpenCV, no OCR, no helpers beyond the screenshot program.
+Frames are capped at 1568px on the longest side (clicks still land at native
+resolution), only the two newest stay in context, and image bytes never touch
+session history. Non-vision models can disable both vision tools via
+`tools.disabled`.
 
 ## Phone calls and SMS
 
 Give Factor a phone number and it picks up: you talk, it answers out loud, with the
-same memory, tools, and session history it has everywhere else. It can also call or
-text *you* — a finished job, a cron result, or because you asked it to ring someone
-and report back.
+same memory, tools, and history it has everywhere else. It can also call or text
+*you* — a finished job, a cron result, or because you asked it to ring someone.
 
 ```bash
 factor init        # the Channels step walks through the carrier and the speech tier
@@ -300,18 +269,16 @@ factor gateway     # brings the line up
 factor status      # number, speech tier, voice-shell health
 ```
 
-Setting up the carrier is a page of its own — portal steps, config, and what to check
-when a call does not connect: **[Twilio](docs/phone-twilio.md)** ·
+Carrier setup has a page of its own: **[Twilio](docs/phone-twilio.md)** ·
 **[Telnyx](docs/phone-telnyx.md)**.
 
-The voice shell is [Patter](https://github.com/PatterAI/Patter) running as a
-supervised sidecar — exactly like the smrti memory engine, into its own virtualenv,
-installed on demand. It terminates the carrier's media stream and owns the parts of
-a phone call that are hard: turn-taking, barge-in, voice activity detection,
-answering-machine detection, transcoding. Factor is its brain, plugged in over
-loopback as an OpenAI-compatible endpoint that never leaves `127.0.0.1`.
+The voice shell is [Patter](https://github.com/PatterAI/Patter), supervised in its
+own virtualenv like the smrti sidecar and installed on demand. It terminates the
+carrier's media stream and owns turn-taking, barge-in, voice activity detection,
+answering-machine detection and transcoding; Factor is its brain, over an
+OpenAI-compatible endpoint that never leaves `127.0.0.1`.
 
-**Speech tiers** — the one decision with real trade-offs, asked plainly by the wizard:
+**Speech tiers** — the one decision with real trade-offs, asked by the wizard:
 
 | Tier | Speech-to-text | Text-to-speech | Extra RAM | When |
 |---|---|---|---|---|
@@ -320,7 +287,7 @@ loopback as an OpenAI-compatible endpoint that never leaves `127.0.0.1`.
 | **3 · local TTS** | Deepgram | Piper | +0.3 GB | Piper's ~100 ms render beats the cloud, on any CPU |
 | **4 · fully local** | faster-whisper | Piper | +1–2 GB | no audio leaves the machine, no per-minute audio cost |
 
-A tier picks who serves each half of the speech pipeline. Everything else is the same call:
+A tier picks who serves each half of the pipeline; everything else is the same call:
 
 ```mermaid
 flowchart LR
@@ -340,26 +307,26 @@ flowchart LR
     TTS -.->|tiers 1, 2| EL
 ```
 
-**Pick a local tier and Factor installs it.** The engines go into their own
-virtualenv and your language's models download before setup finishes — so the first
-call finds everything on disk. No server to start, no model names to choose.
-`factor status` reports what it built.
+Pick a local tier and Factor installs it — engines in their own virtualenv, your
+language's models on disk before setup finishes, nothing to start by hand.
+Transcription covers Whisper's ~99 languages; voices come from Piper's catalogue of
+**49**, resolved from your `language` setting with the exact locale winning where it
+exists (`es-MX` gets a Mexican voice, not a Castilian one). You can also pick the
+voice by name: the wizard lists your ElevenLabs voices on the cloud tier and the
+catalogue's on the local one, and a voice named in `speech_server.piper_voice` is
+downloaded on the next start.
 
-**Languages and voices.** Transcription covers everything Whisper does, about 99
-languages. Voices come from Piper's catalogue: **49 languages**, resolved from your
-`language` setting. The exact locale wins where it exists — `es-MX` gets a Mexican
-voice, not a Castilian one — then the language at large. Spanish is first-class on
-every tier. You can also pick the voice yourself: the wizard lists your ElevenLabs
-account's voices by name on the cloud tier and the catalogue's voices for your
-language on the local one, and a voice named in `speech_server.piper_voice` is
-downloaded on the next start if its weights aren't on disk yet.
+Roughly $0.04–0.06 per talk-minute on tier 1 plus your model's tokens, and about
+1.3¢ per SMS segment. Simple questions land in 1.5–3 s. The reply arrives whole, but
+a tool-using turn still speaks: the line Factor says on its way to the answer is
+streamed into the live call while the tools run.
 
 <details>
 <summary><b>Why a GPU changes which tier to pick</b></summary>
 
 Whisper decodes a fixed 30-second window however little audio it gets, and the phone
-pipeline feeds it about a second at a time. Cost is therefore per chunk, not per
-second of speech. Measured on this design:
+pipeline feeds it about a second at a time — so cost is per chunk, not per second of
+speech. Measured on this design:
 
 | Model | Device | Per 1 s chunk | Verdict |
 |---|---|---|---|
@@ -367,32 +334,28 @@ second of speech. Measured on this design:
 | `base` | CPU | ~0.9 s | keeps up, mishears more |
 | `small` | CPU | ~2.4 s | falls behind; the backlog grows while you talk |
 
-So local transcription runs `small` on a GPU and drops to `base` on a CPU, and the
-wizard says so when it does. **On a machine with no GPU, tier 3 is the better
-trade**: Piper renders in ~100 ms on any CPU, and transcription stays in the cloud.
+Local transcription therefore runs `small` on a GPU and drops to `base` on a CPU,
+and the wizard says so when it does. **With no GPU, tier 3 is the better trade**:
+Piper renders in ~100 ms on any CPU and transcription stays in the cloud.
 
 </details>
 
-You can still point `stt.base_url` / `tts.base_url` at a speech server you run
-yourself — [Speaches](https://github.com/speaches-ai/speaches), or anything else
-OpenAI-compatible — and Factor will leave it alone and use it. Either way it probes
-at startup. If the server is not answering, Factor falls back to the cloud tier and
-says so rather than failing calls; set `local_audio_fallback: false` to have the
-channel report itself down instead. Silero voice-activity detection runs locally in
-every tier.
+<details>
+<summary><b>Bring your own speech server</b></summary>
 
-Roughly $0.04–0.06 per talk-minute on tier 1 plus your model's tokens, and about
-1.3¢ per SMS segment. The reply lands whole rather than token by token, but a
-tool-using turn still speaks: the line Factor says on its way to the answer is
-streamed into the live call while the tools run. Simple questions land in the normal
-1.5–3 s range.
+Point `stt.base_url` / `tts.base_url` at anything OpenAI-compatible —
+[Speaches](https://github.com/speaches-ai/speaches) or your own — and Factor uses it
+as-is. It probes at startup either way and falls back to the cloud tier if the
+server isn't answering; set `local_audio_fallback: false` to have the channel report
+itself down instead. Silero voice-activity detection runs locally in every tier.
+
+</details>
 
 <details>
 <summary><b>Getting the line up, and the guardrails on it</b></summary>
 
 Buy a number at Twilio or Telnyx, then run `factor init`. The wizard asks which one,
-takes the credentials it needs, and verifies them — along with the voice key — live
-before writing anything.
+takes the credentials, and verifies them live before writing anything.
 
 | | Twilio | Telnyx |
 |---|---|---|
@@ -401,37 +364,34 @@ before writing anything.
 | Cost | the baseline above | lower per minute and per text |
 | Step by step | [docs/phone-twilio.md](docs/phone-twilio.md) | [docs/phone-telnyx.md](docs/phone-telnyx.md) |
 
-Either way the carrier is pointed at the shell on every start — Patter does it for
-Twilio, Factor itself for Telnyx — so a rotating tunnel keeps working and there is
-nothing to click in the portal.
+The carrier is pointed at the shell on every start — Patter does it for Twilio,
+Factor for Telnyx — so a rotating tunnel keeps working with nothing to click.
 
-The carrier has to reach the voice shell, so it needs a public URL. `tunnel: "quick"`
-(the default) uses Patter's built-in Cloudflare quick tunnel — fine for trying it
-out, **not** for daily use: the hostname rotates and first legs occasionally drop.
-For real use set `tunnel: "none"` and a stable `webhook_url` from a named tunnel or
-a reverse proxy. Factor's own endpoints — the brain bridge and the shell's control
-API — always bind `127.0.0.1` and share a bearer secret regenerated every boot.
+The carrier needs a public URL to reach the shell. `tunnel: "quick"` (the default)
+uses Patter's Cloudflare quick tunnel — fine for trying it out, **not** for daily
+use: the hostname rotates and first legs occasionally drop. For real use set
+`tunnel: "none"` and a stable `webhook_url`. Factor's own endpoints always bind
+`127.0.0.1` behind a bearer secret regenerated every boot.
 
-Because a phone number is dialable by anyone and a phone call costs money, the rails
-are closed by default: only `user_number` may call in (add more with `allow_from`, or
-`"*"` for anyone, which logs a security warning), only `user_number` may be dialed
-(add more with `allow_call_to` — there is deliberately no wildcard), calls are cut
-off at `max_call_minutes`, and call transfer is off. A caller who is not allowed is
-hung up at the carrier *and* refused by the bridge.
+A phone number is dialable by anyone and every call costs money, so the rails are
+closed by default: only `user_number` may call in (`allow_from` adds more, `"*"`
+opens it and logs a warning) and only `user_number` may be dialed (`allow_call_to`
+adds more, deliberately with no wildcard); calls are cut off at `max_call_minutes`;
+transfer is off. A disallowed caller is hung up at the carrier *and* refused by the
+bridge.
 
 Two tools appear only when the channel is configured: `phone_sms` sends a text, and
-`phone_call` dials — returning immediately, then reporting the outcome (answered,
-no answer, busy, voicemail) with a transcript tail back into whichever conversation
-asked for the call.
+`phone_call` dials — returning immediately, then reporting the outcome (answered, no
+answer, busy, voicemail) with a transcript tail back into the conversation that
+asked.
 
 </details>
 
 ## PC voice: mic and speakers
 
 The same conversation without a phone bill: Factor listens on the machine's own
-microphone and answers through its speakers. The microphone opens whenever Factor
-runs — in `factor` (the terminal chat keeps working alongside) and in
-`factor gateway` alike.
+microphone and answers through its speakers. The mic opens whenever Factor runs — in
+`factor` (the terminal chat keeps working alongside) and in `factor gateway` alike.
 
 ```bash
 factor init        # the Channels step sets up the mic, the speech tier, and the activation
@@ -440,37 +400,29 @@ factor talk        # push-to-talk: arm the microphone from any terminal
 factor status      # tier, activation, helpers, and whether anything is listening
 ```
 
-Audio goes through the sound system's own helpers — `parec`/`paplay` on PulseAudio
-and PipeWire, `arecord`/`aplay` on bare ALSA, sox's `rec`/`play` on macOS, where
-playback also falls back to the built-in `afplay` — and the wizard installs what's
-missing. It also asks *which* microphone and then proves it live: you make a noise,
-it measures the signal, and a source delivering silence — the usual fate of a
-multichannel interface picked as the system default — is called out on the spot
-instead of at the first ignored wake word. In the chat, the status bar carries a
-live meter: `mic ▂▄▁` moves as the room does, turns green when it hears speech,
-`♪` lights up cyan while Factor talks, and a dead source shows `mic ✗`. Voice activity detection is pure Go: an adaptive
-noise floor, a pre-roll so the first syllable survives, and a higher bar while the
-agent is speaking, so the speakers can't barge in on themselves. You still can:
-talking over a reply stops it mid-word, and if a turn is still thinking, it is
-cancelled — the new utterance owns the conversation. Windows capture isn't wired up
-yet; the channel says so instead of pretending.
+Audio rides the sound system's own helpers — `parec`/`paplay`, `arecord`/`aplay`,
+sox's `rec`/`play` on macOS — installed by the wizard, which also asks *which*
+microphone and proves it live: you make a noise, it measures, and a silent source is
+called out on the spot. The chat's status bar carries a live meter — `mic ▂▄▁` moves
+with the room and turns green on speech, `♪` lights cyan while Factor talks, a dead
+source shows `mic ✗`.
 
-The local tier keeps to itself, and that took one fix: onnxruntime, which both
-speech engines run on, posts your OS build, CPU model, memory, network type, a
-persistent device id and the interpreter path (which carries your username) to
-`mobile.events.data.microsoft.com` as it initializes. Its own
-`disable_telemetry_events()` cannot stop that — the events are logged while the
-environment is being created, before any call can be made against it
-([onnxruntime#25573](https://github.com/microsoft/onnxruntime/issues/25573)) —
-so Factor sets `ORT_DISABLE_TELEMETRY=1` in the speech process's environment
-before it starts, which is the switch onnxruntime documents as keeping the
-uploader and the device id from existing at all.
+Voice activity detection is pure Go: adaptive noise floor, a pre-roll so the first
+syllable survives, and a higher bar while the agent speaks so the speakers can't
+barge in on themselves. You still can — talking over a reply stops it mid-word, and
+a turn that's still thinking is cancelled. Windows capture isn't wired up yet; the
+channel says so instead of pretending.
 
-A spoken turn is also told it is being heard rather than read, so the reply is
-composed to be said — no markdown, no bullet lists, no URLs spelled out — instead
-of being written for a screen and then stripped on the way to the speakers. The
-stripping still happens as a seatbelt; `voice_write` is how anything long or
-written reaches you in text instead.
+The local tier keeps to itself. Factor sets `ORT_DISABLE_TELEMETRY=1` in the speech
+process's environment before it starts, because onnxruntime otherwise uploads your
+OS build, CPU, memory and a persistent device id as it initializes, and its own
+`disable_telemetry_events()` runs too late to stop it
+([onnxruntime#25573](https://github.com/microsoft/onnxruntime/issues/25573)).
+
+A spoken turn is told it's being heard rather than read, so replies come out sayable
+— no markdown, no bullet lists, no spelled-out URLs. `voice_write` sends anything
+long or written to your terminal instead, or to the chat you last used when Factor
+runs as a daemon.
 
 Who it answers is the `activation` setting:
 
@@ -480,17 +432,12 @@ Who it answers is the `activation` setting:
 | `wake-word` | utterances that open with the wake word, plus a short window after each reply so follow-ups don't need it (the wizard preselects this) |
 | `push-to-talk` | nothing until `factor talk` arms the microphone |
 
-`factor talk` works in every mode: it is the rescue for a wake word that misfired,
-and it cuts off whatever is playing. Inside the chat, `/talk` does the same without
-leaving the prompt.
+`factor talk` works in every mode — it's the rescue for a misfired wake word, and it
+cuts off whatever is playing. Inside the chat, `/talk` does the same.
 
-The speech tiers are the phone's, chosen the same way in the wizard — cloud
-(Deepgram + ElevenLabs) or the managed local server (faster-whisper + Piper), which
-runs on its own port so the phone and the PC can both keep speech local on one
-machine. The voice is yours to pick either way: the wizard offers your ElevenLabs
-account's voices by name, or Piper's catalogue for your language. One tool comes with the channel: ask for something in writing and the agent
-uses `voice_write` — the text lands in your terminal, or in the chat you last used
-when Factor runs as a daemon, and the spoken reply stays short.
+The speech tiers are the phone's, chosen the same way in the wizard, with the local
+server on its own port so the phone and the PC can both keep speech local on one
+machine.
 
 ## Extending Factor
 
@@ -523,8 +470,8 @@ restriction, exec deny-patterns, allowlists, secret redaction) protect against
 accidents and casual prompt-injection — they are **not** a security boundary. Run it
 under your own account for yourself; set `channels.telegram.allow_from`; keep
 `restrict_to_workspace` on unless you know why you're turning it off. The phone
-channel is the one place where the default is *closed* rather than open — a number
-anyone can dial, and a bill attached to every minute, earn stricter rails.
+channel is the one place the default is *closed* rather than open — a number anyone
+can dial, with a bill attached to every minute, earns stricter rails.
 
 ## Development
 
