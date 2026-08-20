@@ -450,9 +450,11 @@ type decision struct {
 // gate decides an utterance's fate. started is when the user began the
 // utterance — the windows are held against that moment, because the seconds
 // the sentence itself and its transcription take are not the user hesitating.
-// barged marks one captured over the agent's own voice: its transcript mixes
-// the speakers' words with the user's, so the wake word counts wherever it
-// appears, not only up front.
+// barged marks one captured over the agent's own voice: speech deliberate
+// enough to clear the raised barge thresholds is an interruption in its own
+// right, so it is accepted without the wake word — which, when it does
+// survive transcription, still anchors where the speakers' words end and the
+// user's begin.
 func (v *Voice) gate(text string, started time.Time, barged bool) decision {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -476,6 +478,12 @@ func (v *Voice) gate(text string, started time.Time, barged bool) decision {
 				return decision{acknowledge: true}
 			}
 			return decision{accept: true, text: stripped}
+		}
+		if barged {
+			// Talking over the reply is the interruption; the wake word
+			// cannot be required of it, because it is spoken over the agent's
+			// own voice — the one word transcription mangles most.
+			return decision{accept: true, text: text}
 		}
 		if started.Before(v.windowUntil) {
 			return decision{accept: true, text: text}

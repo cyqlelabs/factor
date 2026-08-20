@@ -433,9 +433,35 @@ func TestVoiceBargeInHearsTheWakeWordMidTranscript(t *testing.T) {
 	h.noTurn(2 * time.Second)
 }
 
-// A rejected barge-in — background chatter in wake-word mode — resumes the
-// reply instead of abandoning it.
-func TestVoiceRejectedBargeInResumesTheReply(t *testing.T) {
+// A barge-in does not need the wake word: it is spoken over the agent's own
+// voice, so it is the word transcription mangles most — and talking over the
+// reply is already the interruption.
+func TestVoiceBargeInNeedsNoWakeWord(t *testing.T) {
+	h := newVoiceHarness(t, func(c *Config) {
+		c.Activation = "wake-word"
+		c.FollowUpSeconds = 1 // the window must lapse, or it would mask the barge
+	})
+	h.setReplyPCM(clip(120000))
+	h.start()
+
+	h.setTranscript("factor hello")
+	h.say()
+	h.turn(10 * time.Second)
+	waitUntil(t, func() bool { return len(h.speaker.heard()) > 0 })
+	time.Sleep(1100 * time.Millisecond) // let the wake-word window lapse
+
+	h.setTranscript("stop, delete them all")
+	h.mic.feed(repeat(toneFrame(16000), 12)...)
+	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
+
+	if call := h.turn(10 * time.Second); !contains(call.content, "delete them all") {
+		t.Errorf("the barge turn carried %q", call.content)
+	}
+}
+
+// A barge-in the transcriber hears nothing in — a slammed door loud enough to
+// open the mic — resumes the reply instead of abandoning it.
+func TestVoiceUnintelligibleBargeInResumesTheReply(t *testing.T) {
 	h := newVoiceHarness(t, func(c *Config) {
 		c.Activation = "wake-word"
 		c.FollowUpSeconds = 1 // the window after the reply must not mask the rejection
@@ -450,7 +476,7 @@ func TestVoiceRejectedBargeInResumesTheReply(t *testing.T) {
 	waitUntil(t, func() bool { return len(h.speaker.heard()) > 0 })
 	time.Sleep(1100 * time.Millisecond) // let the wake-word window lapse
 
-	h.setTranscript("unrelated room noise")
+	h.setTranscript("")
 	h.mic.feed(repeat(toneFrame(16000), 12)...)
 	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
 
@@ -723,6 +749,11 @@ func TestGateDecisions(t *testing.T) {
 	wake.ArmPTT()
 	if dec := wake.gateNow("no wake word here", false); !dec.accept {
 		t.Error("push-to-talk did not override the wake word")
+	}
+	// A barge-in — captured over the agent's own voice — is an interruption
+	// in its own right: no wake word, no window.
+	if dec := wake.gateNow("stop right there", true); !dec.accept || dec.text != "stop right there" {
+		t.Errorf("barge-in without the wake word: %+v", dec)
 	}
 }
 
