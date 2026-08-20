@@ -348,7 +348,59 @@ func (s *Session) connectLocked(attach, binary string) error {
 		s.teardownLocked()
 		return fmt.Errorf("browser start timed out")
 	}
+	s.watchClosedTabsLocked()
 	return nil
+}
+
+// watchClosedTabsLocked asks the browser to announce tabs coming and going.
+//
+// A tab the user closes in their own browser is the ordinary case, and
+// chromedp survives it badly: it drops the closed page from its routing table
+// and cancels nothing, so this session keeps a handle whose every command
+// waits for an answer that will never arrive. That is a full timeout per call
+// — 45 seconds of silence on a navigate — for the rest of the process's life,
+// which is what "the browser is hanging again" has meant every time. Hearing
+// the close is what lets the next call open a fresh tab instead.
+//
+// Losing the announcement costs the recovery, not the browser, so a refusal
+// here is a warning rather than a failed connection. The caller holds s.mu.
+func (s *Session) watchClosedTabsLocked() {
+	c := chromedp.FromContext(s.browserCtx)
+	if c == nil || c.Browser == nil {
+		return
+	}
+	pagesOnly := target.Filter{{Type: "page"}}
+	if err := target.SetDiscoverTargets(true).WithFilter(pagesOnly).
+		Do(cdp.WithExecutor(s.browserCtx, c.Browser)); err != nil {
+		slog.Warn("browser: cannot watch for closed tabs; a tab closed by hand will time out once before it is replaced", "error", err)
+		return
+	}
+	chromedp.ListenBrowser(s.browserCtx, func(ev any) {
+		gone, ok := ev.(*target.EventTargetDestroyed)
+		if !ok {
+			return
+		}
+		// On a goroutine, and never touching s.mu on this one: the browser
+		// runs its listeners inline on the connection's read loop, and this
+		// session holds that mutex across round trips of its own.
+		go s.forgetTab(gone.TargetID)
+	})
+}
+
+// forgetTab lets go of a tab that is gone, so the next call claims a live one.
+func (s *Session) forgetTab(id target.ID) {
+	s.mu.Lock()
+	h, held := s.tabs[id]
+	if held {
+		delete(s.tabs, id)
+		if s.cur == h {
+			s.cur = nil
+		}
+	}
+	s.mu.Unlock()
+	if held {
+		h.cancel()
+	}
 }
 
 // openTabLocked puts a tab of Factor's own on the connection. On the user's
@@ -408,7 +460,14 @@ func (s *Session) createTabLocked() (target.ID, error) {
 	}
 	ctx, cancel := context.WithTimeout(s.browserCtx, 45*time.Second)
 	defer cancel()
-	return target.CreateTarget("about:blank").Do(cdp.WithExecutor(ctx, c.Browser))
+	ex := cdp.WithExecutor(ctx, c.Browser)
+	id, err := target.CreateTarget("about:blank").Do(ex)
+	if err == nil {
+		return id, nil
+	}
+	// A browser whose last tab was just closed has no window to put a tab in
+	// and says so, and then a window is the only thing left to open.
+	return target.CreateTarget("about:blank").WithNewWindow(true).Do(ex)
 }
 
 // attachLocked binds a tab that already exists. owned says whether closing it

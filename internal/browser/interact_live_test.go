@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
@@ -388,4 +389,73 @@ func TestNavigateOpensALocalFile(t *testing.T) {
 	if !res.IsError || !strings.Contains(res.ForLLM, "outside workspace") {
 		t.Errorf("the guard did not refuse the read: %+v", res)
 	}
+}
+
+// closeOutOfBand closes a target the way the user closes a tab: through the
+// browser, behind the session's back.
+func closeOutOfBand(t *testing.T, s *Session, id target.ID) {
+	t.Helper()
+	s.mu.Lock()
+	bctx := s.browserCtx
+	s.mu.Unlock()
+	c := chromedp.FromContext(bctx)
+	if err := target.CloseTarget(id).Do(cdp.WithExecutor(bctx, c.Browser)); err != nil {
+		t.Fatalf("close %s: %v", id, err)
+	}
+	// The close is announced asynchronously; the session acts on the notice.
+	for range 40 {
+		s.mu.Lock()
+		held := s.tabs[id]
+		s.mu.Unlock()
+		if held == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("the session never heard that %s was closed", id)
+}
+
+// TestATabClosedByHandIsReplaced is the recurring "the browser is hanging"
+// report. chromedp drops a closed page from its routing table and cancels
+// nothing, so a tab the user closed left the session holding a handle whose
+// every command waited for an answer that never came: a full 45-second
+// timeout per call, for the life of the process, on a browser that was
+// working perfectly.
+func TestATabClosedByHandIsReplaced(t *testing.T) {
+	requireBrowser(t)
+	srv := servePage(t)
+	s := NewSession(liveConfig(), t.TempDir(), nil)
+	t.Cleanup(s.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := s.run(ctx, 20*time.Second, chromedp.Navigate(srv.URL)); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	if err := s.openTab(ctx); err != nil { // a second tab, as any real browser has
+		t.Fatalf("open tab: %v", err)
+	}
+
+	closeOutOfBand(t, s, s.currentID())
+	if _, err := s.readPage(ctx, "", 5); err != nil {
+		t.Fatalf("read after the tab was closed by hand: %v", err)
+	}
+
+	// And when the tab closed by hand was the browser's last one, there is no
+	// window left to put a tab in, so one has to be opened.
+	for _, tab := range mustList(t, s) {
+		closeOutOfBand(t, s, tab.ID)
+	}
+	if _, err := s.readPage(ctx, "", 5); err != nil {
+		t.Fatalf("read after every tab was closed by hand: %v", err)
+	}
+}
+
+func mustList(t *testing.T, s *Session) []tabInfo {
+	t.Helper()
+	tabs, err := s.listTabs(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	return tabs
 }
