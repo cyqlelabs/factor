@@ -197,7 +197,18 @@ func prune(b *book) {
 	for k := range b.Sessions {
 		keys = append(keys, k)
 	}
-	sort.Slice(keys, func(i, j int) bool { return b.Sessions[keys[i]].Last.After(b.Sessions[keys[j]].Last) })
+	// Newest first, and the key decides a tie. Sessions billed in the same
+	// instant are common — a burst of turns, or a fake clock in a test — and
+	// without the tie-break which of them survives comes down to map
+	// iteration order, so two processes merging the same ledger would prune
+	// it differently.
+	sort.Slice(keys, func(i, j int) bool {
+		a, z := b.Sessions[keys[i]].Last, b.Sessions[keys[j]].Last
+		if a.Equal(z) {
+			return keys[i] < keys[j]
+		}
+		return a.After(z)
+	})
 	for _, k := range keys[keepSessions:] {
 		delete(b.Sessions, k)
 	}

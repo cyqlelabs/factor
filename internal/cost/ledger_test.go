@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 	"time"
 )
@@ -120,7 +122,10 @@ func TestLedgerPrunesWhatNobodyAsksAbout(t *testing.T) {
 		atClock(l, start.AddDate(0, 0, i))
 		l.Record(fmt.Sprintf("cli:s%d", i), "m", Totals{Input: 1, Calls: 1})
 	}
+	// Each extra session gets its own instant, so "the newest survived" is a
+	// claim about recency rather than about how a tie happened to break.
 	for i := 0; i < keepSessions+5; i++ {
+		atClock(l, start.AddDate(0, 0, keepDays+10).Add(time.Duration(i)*time.Minute))
 		l.Record(fmt.Sprintf("cli:extra%d", i), "m", Totals{Input: 1, Calls: 1})
 	}
 	var b book
@@ -147,6 +152,39 @@ func TestLedgerPrunesWhatNobodyAsksAbout(t *testing.T) {
 	// The newest sessions are the ones that survived.
 	if _, ok := b.Sessions[fmt.Sprintf("cli:extra%d", keepSessions+4)]; !ok {
 		t.Error("the most recent session was pruned")
+	}
+	if _, ok := b.Sessions["cli:extra0"]; ok {
+		t.Error("the oldest extra session outlived newer ones")
+	}
+}
+
+// Sessions billed in the same instant are ordinary — a burst of turns shares
+// a timestamp — and which of them survives must not come down to map
+// iteration order: two processes merging the same ledger would then prune it
+// differently and disagree about what was spent.
+func TestLedgerPrunesTiedSessionsTheSameWayEveryTime(t *testing.T) {
+	survivors := func() []string {
+		l := NewLedger(filepath.Join(t.TempDir(), "usage.json"))
+		atClock(l, time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC))
+		for i := range keepSessions + 5 {
+			l.Record(fmt.Sprintf("cli:s%03d", i), "m", Totals{Input: 1, Calls: 1})
+		}
+		kept := make([]string, 0, len(l.book.Sessions))
+		for k := range l.book.Sessions {
+			kept = append(kept, k)
+		}
+		sort.Strings(kept)
+		return kept
+	}
+
+	first := survivors()
+	if len(first) != keepSessions {
+		t.Fatalf("sessions kept = %d, want %d", len(first), keepSessions)
+	}
+	for range 20 {
+		if got := survivors(); !slices.Equal(got, first) {
+			t.Fatalf("pruning tied sessions is not deterministic:\n first: %v\n then:  %v", first, got)
+		}
 	}
 }
 
