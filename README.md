@@ -34,6 +34,7 @@ than logging, so past failures become constraints it doesn't repeat.
 | 🧠 **Memory as the soul** | Salience-ranked recall every turn, consolidation that decays and prunes, plus `remember` / `recall` / `forget` / `reflect` tools |
 | ⚡ **Never keeps you waiting** | Says what it's about to do while the tools run; long work becomes a background job that messages you when it lands |
 | 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations, not queued |
+| ❓ **Asks when only you know** | `ask_user` opens a dialog on your desktop mid-turn, or numbers the options in the terminal you're already in — and times out rather than hanging the turn when you're away |
 | 🔁 **Provider failover** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with per-candidate cooldowns and overflow compaction |
 | 💸 **Counts what it spends** | Every call priced and billed to its session — status bar, tray, `usage` tool — with per-session and global caps |
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning`, `reasoning_effort`, or a `thinking` budget |
@@ -121,11 +122,23 @@ installing unasked.
 `~/.factor/config.json` — every key optional, defaults work. `FACTOR_*` env
 overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MODE`, …
 
+A running gateway watches the file. Save an edit, by hand or through the agent's own
+`config_set`, and it reloads within seconds — after the turn in flight is answered,
+and without restarting the sidecars — then names the changed sections in the chat it
+reports back to. A save that doesn't parse is warned about and retried, never applied.
+
 <details>
 <summary><b>Annotated example</b></summary>
 
 ```jsonc
 {
+  "log_level": "info",                       // debug | info | warn | error
+  "agent": {
+    "context_window_tokens": 0,              // 0 = ask the model catalog; a value only ever shrinks its answer
+    "max_tool_iterations": 20,
+    "summarize_at_percent": 75,              // how full the window gets before compaction
+    "keep_recent_messages": 8                // what survives it
+  },
   "provider": {
     "type": "openrouter",                    // openrouter|openai|groq|ollama|lmstudio|llamacpp|anthropic|custom
     "api_key": "sk-or-...",
@@ -165,7 +178,11 @@ overrides: `FACTOR_PROVIDER_API_KEY`, `FACTOR_PROVIDER_MODEL`, `FACTOR_MEMORY_MO
       "stt": { "provider": "deepgram" },       // deepgram | whisper | local-openai
       "stt_api_key": "...",                    // Deepgram
       "tts": { "provider": "elevenlabs" },     // elevenlabs | local-openai
-      "elevenlabs_api_key": "..."
+      "elevenlabs_api_key": "...",
+      "speaker_id": false,                     // tell the room apart; needs a local speech tier
+      "speaker_threshold": 0.5,                // similarity below which a voice is nobody enrolled
+      "unknown_speaker": "anonymous",          // anonymous | enroll
+      "output_volume": 100                     // 1–100; lower it when the speakers reach the mic
     }
   },
   "mcp": {
@@ -220,7 +237,7 @@ second engine for the cheap half:
 
 | Engine | Tools | Renders | Good for |
 |---|---|---|---|
-| **Chromium** — Helium, or the browser you already run | `browser_navigate` · `_read` · `_scroll` · `_click` · `_fill` · `_screenshot` · `_eval` · `_back` | yes | anything interactive |
+| **Chromium** — Helium, or the browser you already run | `browser_navigate` · `_read` · `_scroll` · `_click` · `_fill` · `_keys` · `_upload` · `_tabs` · `_screenshot` · `_eval` · `_back` | yes | anything interactive |
 | **Lightpanda** — opt-in, `browser.fast_path` | `browser_fetch` — title, text, links | never | reading a page for a fraction of the memory |
 
 **Browse as yourself.** Start your everyday browser with
@@ -374,23 +391,15 @@ takes the credentials, and verifies them live before writing anything.
 The carrier is pointed at the shell on every start — Patter does it for Twilio,
 Factor for Telnyx — so a rotating tunnel keeps working with nothing to click.
 
-The carrier needs a public URL to reach the shell. `tunnel: "quick"` (the default)
-uses Patter's Cloudflare quick tunnel — fine for trying it out, **not** for daily
-use: the hostname rotates and first legs occasionally drop. For real use set
-`tunnel: "none"` and a stable `webhook_url`. Factor's own endpoints always bind
-`127.0.0.1` behind a bearer secret regenerated every boot.
+The rails are closed by default, because a number is dialable by anyone and every
+minute costs money: only `user_number` may call in, only `user_number` may be
+dialed, calls are cut off at `max_call_minutes`, and transfer is off. Two tools
+appear once the channel is configured — `phone_sms` sends a text and `phone_call`
+dials, reporting the outcome with a transcript tail into the conversation that asked.
 
-A phone number is dialable by anyone and every call costs money, so the rails are
-closed by default: only `user_number` may call in (`allow_from` adds more, `"*"`
-opens it and logs a warning) and only `user_number` may be dialed (`allow_call_to`
-adds more, deliberately with no wildcard); calls are cut off at `max_call_minutes`;
-transfer is off. A disallowed caller is hung up at the carrier *and* refused by the
-bridge.
-
-Two tools appear only when the channel is configured: `phone_sms` sends a text, and
-`phone_call` dials — returning immediately, then reporting the outcome (answered, no
-answer, busy, voicemail) with a transcript tail back into the conversation that
-asked.
+Your carrier's page has the rest: the allowlist knobs that widen those rails, how to
+move off the default Cloudflare quick tunnel — fine for a first call, wrong for
+daily use — and what to check when the line does not come up.
 
 </details>
 
@@ -419,6 +428,22 @@ syllable survives, and a higher bar while the agent speaks so the speakers can't
 barge in on themselves. You still can — talking over a reply stops it mid-word, and
 a turn that's still thinking is cancelled. Windows capture isn't wired up yet; the
 channel says so instead of pretending.
+
+Speakers loud enough get past that raised bar anyway, so what got through is matched
+against the words Factor just sent to them: its own voice is dropped instead of
+answered, or stripped off the front of what you actually said. `output_volume` turns
+the reply down in rooms where the speakers overpower the microphone.
+
+**Who is talking.** With `speaker_id` on, every utterance's voice is matched against
+the profiles in `~/.factor/voice-speakers.json`. The first voice enrolled is the
+owner and holds the main conversation; a recognized guest gets a session of their
+own and is named to the agent as the person speaking, so two people in a room don't
+share one thread. `unknown_speaker` decides what a new voice gets — a profile on the
+spot, or the main conversation, unnamed — and the `voice_speakers` tool renames
+whoever spoke last, which is how a profile born `speaker-2` becomes Roxana. It needs
+a local speech tier, which is what computes the voice embeddings. Every decision
+lands in the log with the similarity behind it, so a turn answered as the wrong
+person is readable rather than a guess.
 
 The local tier keeps to itself. Factor sets `ORT_DISABLE_TELEMETRY=1` in the speech
 process's environment before it starts, because onnxruntime otherwise uploads your

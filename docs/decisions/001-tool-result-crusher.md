@@ -12,7 +12,7 @@ Proposed
 
 A tool result enters the model's context verbatim and is re-sent on every
 subsequent turn until compaction moves past it — and compaction then drops
-tool results from its summary transcript entirely (`internal/agent/compact.go:151-166`),
+tool results from its summary transcript entirely (`internal/agent/compact.go:178-192`),
 so whatever the result carried into the live window is all the model ever
 gets from it.
 
@@ -32,7 +32,7 @@ it back. On a structured result that is the worst possible cut — a 40 KB JSON
 array of 200 items keeps items 1–20 and 180–200 and loses everything between,
 including, possibly, the one error object the model called the tool to find.
 `browser_read` already solved this for its own output (rank what matters,
-state what was withheld, name the recovery path — `internal/browser/browser.go:419-438`);
+state what was withheld, name the recovery path — `internal/browser/browser.go:771-812`);
 nothing does it for the tools whose output Factor does not shape.
 
 The idea comes from analyzing [headroom](https://github.com/headroomlabs-ai/headroom),
