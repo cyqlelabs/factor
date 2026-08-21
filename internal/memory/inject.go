@@ -169,12 +169,75 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 	defer cancel()
 	// The loop stamps the turn's ToolContext on ctx before building the
 	// system prompt, so the channel is already here — no signature change.
-	mems, err := a.Engine.Recall(ctx, query, a.TopK, a.MinConfidence, a.scope(tools.ToolContextFrom(ctx).Channel))
+	return FormatMemories(
+		a.recall(ctx, query, strings.TrimSpace(current), a.scope(tools.ToolContextFrom(ctx).Channel)),
+		a.InjectMaxChars,
+	)
+}
+
+// recall asks twice and interleaves the answers: once with the turn's own
+// message, once with the conversation tail behind it. Neither query serves
+// both shapes of turn on its own. A message that changes the subject is a few
+// words inside a tail about something else — 5% of the text on the turn that
+// exposed this — so the tail's embedding buries it, and a question about a
+// person returns nothing about them while the fact sits in the graph. A
+// message that only refers back ("and her?", "look again") names no subject at
+// all, and the tail is the only thing that says what it is about. Capping how
+// much tail rides along cannot separate the two: measured against both, every
+// cap that rescued one lost the other. Asking twice serves both, and the
+// second query costs one more call to a sidecar on loopback.
+//
+// The two run concurrently because this sits on the turn's critical path,
+// before the model is called.
+func (a *Ambient) recall(ctx context.Context, query, current string, scope Scope) []Memory {
+	if current == "" || current == query {
+		return a.recallOne(ctx, query, scope)
+	}
+	var direct, contextual []Memory
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); direct = a.recallOne(ctx, current, scope) }()
+	go func() { defer wg.Done(); contextual = a.recallOne(ctx, query, scope) }()
+	wg.Wait()
+	return interleave(direct, contextual, a.TopK)
+}
+
+// recallOne is best-effort like everything else on this path: a failed recall
+// costs the turn its memory, never its reply.
+func (a *Ambient) recallOne(ctx context.Context, query string, scope Scope) []Memory {
+	mems, err := a.Engine.Recall(ctx, query, a.TopK, a.MinConfidence, scope)
 	if err != nil {
 		slog.Warn("memory recall failed", "error", err)
-		return ""
+		return nil
 	}
-	return FormatMemories(mems, a.InjectMaxChars)
+	return mems
+}
+
+// interleave merges two recalls, taking from the first list first so the
+// turn's own words always hold the top slot, and dropping what both queries
+// agreed on so a duplicate never costs a slot.
+func interleave(first, second []Memory, limit int) []Memory {
+	if limit <= 0 {
+		limit = len(first) + len(second)
+	}
+	merged := make([]Memory, 0, limit)
+	seen := make(map[string]struct{}, limit)
+	add := func(m Memory) {
+		if _, dup := seen[m.ID]; dup || len(merged) >= limit {
+			return
+		}
+		seen[m.ID] = struct{}{}
+		merged = append(merged, m)
+	}
+	for i := 0; i < len(first) || i < len(second); i++ {
+		if i < len(first) {
+			add(first[i])
+		}
+		if i < len(second) {
+			add(second[i])
+		}
+	}
+	return merged
 }
 
 // StoreExchange persists both sides of a completed turn as episodes, in the

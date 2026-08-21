@@ -3,11 +3,15 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/provider"
 )
 
 func TestBuildRecallQueryDefaults(t *testing.T) {
@@ -313,5 +317,99 @@ func TestStoreExchangeLeavesAnUnnamedSpeakerAlone(t *testing.T) {
 	a.StoreExchange("voice", "", "me gusta el café sin azúcar", "anotado")
 	if stored := engine.stored(); stored[0].Content != "me gusta el café sin azúcar" {
 		t.Errorf("an unattributed memory reads %q", stored[0].Content)
+	}
+}
+
+// recordingEngine answers each recall query from a script and remembers the
+// order the queries arrived in.
+type recordingEngine struct {
+	Noop
+	mu      sync.Mutex
+	queries []string
+	answers map[string][]Memory
+	err     error
+}
+
+func (e *recordingEngine) Healthy() bool { return true }
+func (e *recordingEngine) Recall(_ context.Context, query string, _ int, _ float64, _ Scope) ([]Memory, error) {
+	e.mu.Lock()
+	e.queries = append(e.queries, query)
+	e.mu.Unlock()
+	if e.err != nil {
+		return nil, e.err
+	}
+	return e.answers[query], nil
+}
+
+func TestInterleaveLeadsWithTheFirstListAndDropsDuplicates(t *testing.T) {
+	first := []Memory{{ID: "a", Content: "a"}, {ID: "b", Content: "b"}}
+	second := []Memory{{ID: "b", Content: "b"}, {ID: "c", Content: "c"}}
+	got := interleave(first, second, 5)
+	want := []string{"a", "b", "c"}
+	if len(got) != len(want) {
+		t.Fatalf("interleave returned %d memories, want %d: %+v", len(got), len(want), got)
+	}
+	for i, id := range want {
+		if got[i].ID != id {
+			t.Errorf("interleave[%d].ID = %q, want %q", i, got[i].ID, id)
+		}
+	}
+}
+
+func TestInterleaveRespectsTheLimit(t *testing.T) {
+	first := []Memory{{ID: "a"}, {ID: "b"}}
+	second := []Memory{{ID: "c"}, {ID: "d"}}
+	got := interleave(first, second, 3)
+	if len(got) != 3 {
+		t.Fatalf("interleave(limit 3) returned %d", len(got))
+	}
+	if got[0].ID != "a" || got[1].ID != "c" {
+		t.Errorf("interleave did not alternate: %q, %q", got[0].ID, got[1].ID)
+	}
+}
+
+func TestMemoryPromptAsksWithTheTurnsOwnMessageAndTheTail(t *testing.T) {
+	// The regression: a subject change is a few words inside a tail about
+	// something else, so the tail alone never returns the fact.
+	current := "qué sabes sobre Esmeralda?"
+	tail := "una charla larga sobre otra cosa\n" + current
+	eng := &recordingEngine{answers: map[string][]Memory{
+		current: {{ID: "fact", Content: "Esmeralda is his daughter", Confidence: 0.95}},
+		tail:    {{ID: "froth", Content: "otra cosa", Confidence: 0.6}},
+	}}
+	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, SpacePolicy{})
+	got := a.MemoryPrompt(context.Background(),
+		[]provider.Message{{Role: "user", Content: "una charla larga sobre otra cosa"}}, current)
+
+	if !strings.Contains(got, "Esmeralda is his daughter") {
+		t.Errorf("the turn's own message was never asked; prompt = %q", got)
+	}
+	if !strings.Contains(got, "otra cosa") {
+		t.Errorf("the conversation tail was never asked; prompt = %q", got)
+	}
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	if len(eng.queries) != 2 {
+		t.Fatalf("issued %d recalls, want 2: %q", len(eng.queries), eng.queries)
+	}
+}
+
+func TestMemoryPromptAsksOnceWhenThereIsNoHistory(t *testing.T) {
+	eng := &recordingEngine{answers: map[string][]Memory{"hola": {{ID: "x", Content: "x"}}}}
+	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, SpacePolicy{})
+	a.MemoryPrompt(context.Background(), nil, "hola")
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	if len(eng.queries) != 1 {
+		t.Errorf("issued %d recalls with no history, want 1: %q", len(eng.queries), eng.queries)
+	}
+}
+
+func TestMemoryPromptSurvivesAFailedRecall(t *testing.T) {
+	eng := &recordingEngine{err: errors.New("engine down")}
+	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, SpacePolicy{})
+	if got := a.MemoryPrompt(context.Background(),
+		[]provider.Message{{Role: "user", Content: "earlier"}}, "now"); got != "" {
+		t.Errorf("MemoryPrompt on a dead engine = %q, want \"\"", got)
 	}
 }
