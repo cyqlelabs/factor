@@ -17,6 +17,16 @@ import (
 	"github.com/cyqlelabs/factor/internal/channel/phone"
 )
 
+// What happens to a voice no enrolled profile matches.
+const (
+	unknownAnonymous = "anonymous"
+	unknownEnroll    = "enroll"
+
+	// defaultSpeakerThreshold is deliberately on the strict side: attributing
+	// a sentence to the wrong person costs more than not naming its speaker.
+	defaultSpeakerThreshold = 0.5
+)
+
 const (
 	// defaultControlPort is the loopback endpoint `factor talk` reaches; the
 	// default speech port sits clear of every port the phone channel uses
@@ -88,6 +98,20 @@ type Config struct {
 	InputDevice  string `json:"input_device,omitempty"`
 	OutputDevice string `json:"output_device,omitempty"`
 
+	// SpeakerID turns on speaker identification: each utterance's voice is
+	// matched against the enrolled profiles, so the people of one household
+	// hold separate conversations. It needs the managed local speech server
+	// (a local stt or tts tier with no base_url), which computes the voice
+	// embeddings.
+	SpeakerID bool `json:"speaker_id,omitempty"`
+	// SpeakerThreshold is the cosine similarity below which a voice is not
+	// anyone enrolled. 0 means the default.
+	SpeakerThreshold float64 `json:"speaker_threshold,omitempty"`
+	// UnknownSpeaker decides what happens to a voice no profile matches:
+	// "enroll" creates a profile for it on the spot, "anonymous" (the
+	// default) treats the utterance as the primary conversation, unnamed.
+	UnknownSpeaker string `json:"unknown_speaker,omitempty"`
+
 	// OutputVolume scales the synthesized voice before it reaches the
 	// speakers, as a percentage of full volume (1–100). Lowering it is the
 	// blunt lever against the speakers feeding back into the microphone;
@@ -145,6 +169,13 @@ func (c *Config) applyDefaults() {
 	}
 	if c.OutputVolume <= 0 {
 		c.OutputVolume = 100
+	}
+	c.UnknownSpeaker = strings.ToLower(strings.TrimSpace(c.UnknownSpeaker))
+	if c.UnknownSpeaker == "" {
+		c.UnknownSpeaker = unknownAnonymous
+	}
+	if c.SpeakerThreshold <= 0 {
+		c.SpeakerThreshold = defaultSpeakerThreshold
 	}
 	if c.VADRatio <= 0 {
 		c.VADRatio = defaultVADRatio
@@ -206,6 +237,19 @@ func (c Config) validate() error {
 	}
 	if c.OutputVolume > 100 {
 		return fmt.Errorf("output_volume %d is out of range (want 1–100)", c.OutputVolume)
+	}
+	if c.SpeakerID && !c.managedSpeech() {
+		return fmt.Errorf("speaker_id needs the managed local speech server, which computes the voice embeddings " +
+			"(pick a local stt or tts tier and leave its base_url blank)")
+	}
+	switch c.UnknownSpeaker {
+	case unknownAnonymous, unknownEnroll:
+	default:
+		return fmt.Errorf("unknown unknown_speaker %q (want %s or %s)",
+			c.UnknownSpeaker, unknownAnonymous, unknownEnroll)
+	}
+	if c.SpeakerThreshold > 1 {
+		return fmt.Errorf("speaker_threshold %v is out of range (cosine similarity, want 0–1)", c.SpeakerThreshold)
 	}
 	if c.managedSpeech() && c.SpeechServer.Port == c.ControlPort {
 		return fmt.Errorf("speech_server.port %d collides with control_port", c.SpeechServer.Port)

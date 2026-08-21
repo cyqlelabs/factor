@@ -17,14 +17,15 @@ import (
 // was asked, so tests can assert on the exact request that crossed the wire.
 type fakeSpeechAPI struct {
 	*httptest.Server
-	mu       sync.Mutex
-	requests []*http.Request
-	forms    []map[string]string
-	bodies   []map[string]any
-	text     string // transcription reply
-	pcm      []byte // synthesis reply
-	status   int
-	hold     chan struct{} // when non-nil, every handler waits here first
+	mu        sync.Mutex
+	requests  []*http.Request
+	forms     []map[string]string
+	bodies    []map[string]any
+	text      string    // transcription reply
+	pcm       []byte    // synthesis reply
+	embedding []float64 // speaker embedding reply
+	status    int
+	hold      chan struct{} // when non-nil, every handler waits here first
 }
 
 // stall makes every request wait until release, like a speech server still
@@ -87,6 +88,11 @@ func newFakeSpeechAPI(t *testing.T) *fakeSpeechAPI {
 			return
 		}
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/audio/embedding"):
+			f.mu.Lock()
+			embedding := f.embedding
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"embedding": embedding})
 		case strings.HasSuffix(r.URL.Path, "/audio/transcriptions"):
 			_ = json.NewEncoder(w).Encode(map[string]string{"text": text})
 		case strings.HasSuffix(r.URL.Path, "/listen"):

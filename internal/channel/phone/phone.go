@@ -73,7 +73,7 @@ func New(cfg Config, b *bus.MessageBus) (*Phone, error) {
 	p.shell = newSupervisor(cfg, p.home, p.token, p.shellConfig)
 	if cfg.managedSpeech() {
 		p.speech = newSpeechSupervisor(cfg.SpeechServer, p.home, cfg.Language, p.token,
-			cfg.localSTT(), cfg.localTTS())
+			cfg.localSTT(), cfg.localTTS(), false)
 	}
 
 	if cfg.allowAnyCaller() {

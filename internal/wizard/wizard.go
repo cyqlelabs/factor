@@ -111,7 +111,7 @@ func (o *Options) defaults() {
 		o.InstallSpeech = func(ctx context.Context, language, voice string, needSTT, needTTS bool,
 			progress phone.Progress) (phone.SpeechChoices, error) {
 			return phone.InstallSpeech(ctx, o.Home, language,
-				phone.SpeechConfig{PiperVoice: voice}, needSTT, needTTS, progress)
+				phone.SpeechConfig{PiperVoice: voice}, needSTT, needTTS, false, progress)
 		}
 	}
 	if o.EnsureBrowser == nil {

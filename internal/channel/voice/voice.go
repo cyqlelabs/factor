@@ -100,14 +100,20 @@ type Voice struct {
 	// instead of answered.
 	echo echoTracker
 
-	mu          sync.Mutex
-	stopped     bool
-	effective   Config
-	client      *speechClient
-	turnID      int
-	turnCancel  context.CancelFunc
-	pttUntil    time.Time
-	windowUntil time.Time
+	// speakers is who this machine knows by voice; nil when speaker
+	// identification is off.
+	speakers *speakerStore
+
+	mu            sync.Mutex
+	stopped       bool
+	effective     Config
+	client        *speechClient
+	turnID        int
+	turnCancel    context.CancelFunc
+	pttUntil      time.Time
+	windowUntil   time.Time
+	lastSpeaker   string
+	lastSpeakerAt time.Time
 }
 
 // New builds the connector from an already-decoded config section.
@@ -132,7 +138,10 @@ func New(cfg Config, b *bus.MessageBus) (*Voice, error) {
 	}
 	if cfg.managedSpeech() {
 		v.speech = phone.NewSpeechServer(cfg.SpeechServer, v.home, cfg.Language, v.token,
-			cfg.localSTT(), cfg.localTTS())
+			cfg.localSTT(), cfg.localTTS(), cfg.SpeakerID)
+	}
+	if cfg.SpeakerID {
+		v.speakers = newSpeakerStore(v.home)
 	}
 	return v, nil
 }
@@ -158,8 +167,14 @@ func (v *Voice) BindTurnRunner(run channel.TurnFunc) { v.runner = run }
 // is: the terminal session in CLI mode, the last external chat in the daemon.
 func (v *Voice) BindLastExternal(fn func() (string, string, bool)) { v.lastExternal = fn }
 
-// Toolset is the tool that only exists where a microphone does.
-func (v *Voice) Toolset() []tools.Tool { return []tools.Tool{&writeTool{voice: v}} }
+// Toolset is the tools that only exist where a microphone does.
+func (v *Voice) Toolset() []tools.Tool {
+	set := []tools.Tool{&writeTool{voice: v}}
+	if v.speakers != nil {
+		set = append(set, &speakersTool{voice: v})
+	}
+	return set
+}
 
 func (v *Voice) Start(ctx context.Context) error {
 	if v.runner == nil {
@@ -418,6 +433,10 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		return
 	}
 	dec := v.gate(text, utterance.started, utterance.barged)
+	var who speakerIdentity
+	if dec.accept {
+		who = v.identifySpeaker(ctx, utterance)
+	}
 	// One line per detected utterance: what was heard and what became of it.
 	// This is what turns "I spoke and nothing happened" into a diagnosis —
 	// no line means the voice never reached the VAD, an empty text means the
@@ -432,14 +451,18 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 	case dec.echo:
 		action = "echo"
 	}
-	slog.Info("voice heard", "text", text, "action", action)
+	if who.name != "" {
+		slog.Info("voice heard", "text", text, "action", action, "speaker", who.name)
+	} else {
+		slog.Info("voice heard", "text", text, "action", action)
+	}
 	switch {
 	case dec.accept:
 		// The new utterance owns the floor: whatever was playing is over,
 		// and a turn still thinking answers a question nobody is waiting on.
 		v.player.stop()
 		v.cancelTurn()
-		v.spawn(func() { v.turn(ctx, dec.text) })
+		v.spawn(func() { v.turn(ctx, dec.text, who) })
 	case dec.acknowledge:
 		v.player.stop()
 		v.spawn(func() { v.speak(ctx, ackLine(v.cfg.Language)) })
@@ -519,7 +542,7 @@ func (v *Voice) followUp() time.Duration {
 }
 
 // turn runs one utterance through the agent loop and speaks the reply.
-func (v *Voice) turn(parent context.Context, text string) {
+func (v *Voice) turn(parent context.Context, text string, who speakerIdentity) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	v.mu.Lock()
@@ -542,7 +565,7 @@ func (v *Voice) turn(parent context.Context, text string) {
 	notice := func(line string) {
 		v.spawn(func() { v.speak(ctx, line) })
 	}
-	reply, err := v.runner(ctx, text, sessionKey, notice)
+	reply, err := v.runner(ctx, who.content(text), who.session(), notice)
 	if ctx.Err() != nil {
 		return // barged in on — the next utterance owns the conversation
 	}
@@ -696,6 +719,8 @@ func (v *Voice) controlHandler() http.Handler {
 			"mic_level":  math.Round(math.Float64frombits(v.micLevel.Load())),
 			"mic_floor":  math.Round(math.Float64frombits(v.micFloor.Load())),
 			"mic_silent": v.micSilent.Load(),
+			// Who speaker identification last heard; "" when off or unknown.
+			"last_speaker": v.lastSpeakerName(),
 		})
 	})
 	mux.HandleFunc("POST /ptt", func(w http.ResponseWriter, _ *http.Request) {

@@ -68,7 +68,7 @@ func speechSupervisorFor(t *testing.T, mode string, mutate func(*SpeechConfig)) 
 		mutate(&cfg)
 	}
 	plantVoice(t, home, cfg.PiperVoice)
-	s := newSpeechSupervisor(cfg, home, "es", "test-token", true, true)
+	s := newSpeechSupervisor(cfg, home, "es", "test-token", true, true, false)
 	s.probeInterval = 50 * time.Millisecond
 	t.Cleanup(s.stop)
 	return s, home
@@ -79,7 +79,7 @@ func speechSupervisorFor(t *testing.T, mode string, mutate func(*SpeechConfig)) 
 func TestSpeechSupervisorPreparesAConfiguredVoiceMissingFromDisk(t *testing.T) {
 	home := t.TempDir()
 	cfg := SpeechConfig{WhisperModel: "base", PiperVoice: "es_AR-daniela-high"}
-	s := newSpeechSupervisor(cfg, home, "es", "tok", true, true)
+	s := newSpeechSupervisor(cfg, home, "es", "tok", true, true, false)
 	if !s.needsPrepare() {
 		t.Error("a voice with no weights on disk was treated as prepared")
 	}
@@ -89,11 +89,11 @@ func TestSpeechSupervisorPreparesAConfiguredVoiceMissingFromDisk(t *testing.T) {
 	}
 
 	// The other reasons to prepare still hold.
-	unchosen := newSpeechSupervisor(SpeechConfig{PiperVoice: "es_AR-daniela-high"}, home, "es", "tok", true, true)
+	unchosen := newSpeechSupervisor(SpeechConfig{PiperVoice: "es_AR-daniela-high"}, home, "es", "tok", true, true, false)
 	if !unchosen.needsPrepare() {
 		t.Error("an unchosen whisper model was treated as prepared")
 	}
-	sttOnly := newSpeechSupervisor(SpeechConfig{WhisperModel: "base"}, home, "es", "tok", true, false)
+	sttOnly := newSpeechSupervisor(SpeechConfig{WhisperModel: "base"}, home, "es", "tok", true, false, false)
 	if sttOnly.needsPrepare() {
 		t.Error("a transcription-only tier wanted a voice download")
 	}
@@ -189,7 +189,7 @@ func TestSpeechSupervisorHonoursAutoInstallOff(t *testing.T) {
 	off := false
 	home := t.TempDir()
 	cfg := SpeechConfig{Port: freePort(t), AutoInstall: &off}
-	s := newSpeechSupervisor(cfg, home, "en", "tok", true, true)
+	s := newSpeechSupervisor(cfg, home, "en", "tok", true, true, false)
 	s.probeInterval = 50 * time.Millisecond
 	t.Cleanup(s.stop)
 	s.start(context.Background())
@@ -241,11 +241,11 @@ func TestSpeechSupervisorSettledParakeetNeedsNoPrepare(t *testing.T) {
 	home := t.TempDir()
 	settled := newSpeechSupervisor(SpeechConfig{
 		SttEngine: "parakeet", SttModel: "nemo-parakeet-tdt-0.6b-v3",
-	}, home, "es", "tok", true, false)
+	}, home, "es", "tok", true, false, false)
 	if settled.needsPrepare() {
 		t.Error("a settled parakeet choice was re-prepared")
 	}
-	unchosen := newSpeechSupervisor(SpeechConfig{SttEngine: "parakeet"}, home, "es", "tok", true, false)
+	unchosen := newSpeechSupervisor(SpeechConfig{SttEngine: "parakeet"}, home, "es", "tok", true, false, false)
 	if !unchosen.needsPrepare() {
 		t.Error("an engine with no model chosen was treated as prepared")
 	}
@@ -304,7 +304,7 @@ func TestSpeechSupervisorAdoptsAServerAlreadyListening(t *testing.T) {
 	// No interpreter and no install: if the supervisor tried to spawn, it
 	// would fail loudly instead of finding what is already there.
 	off := false
-	s := newSpeechSupervisor(SpeechConfig{Port: port, AutoInstall: &off}, home, "en", "tok", true, true)
+	s := newSpeechSupervisor(SpeechConfig{Port: port, AutoInstall: &off}, home, "en", "tok", true, true, false)
 	s.probeInterval = 50 * time.Millisecond
 	t.Cleanup(s.stop)
 	s.start(context.Background())
@@ -360,7 +360,7 @@ func TestSpeechSupervisorInstallsWhenTheEnginesAreMissing(t *testing.T) {
 		return `{"whisper_model":"base","whisper_device":"cpu","whisper_compute":"int8","piper_voice":"en_US-lessac-medium"}`, nil
 	}
 
-	s := newSpeechSupervisor(SpeechConfig{Port: freePort(t)}, home, "en", "tok", true, true)
+	s := newSpeechSupervisor(SpeechConfig{Port: freePort(t)}, home, "en", "tok", true, true, false)
 	s.probeInterval = 50 * time.Millisecond
 	t.Cleanup(s.stop)
 
@@ -382,7 +382,7 @@ func TestSpeechSupervisorInstallsAtMostOnce(t *testing.T) {
 	t.Cleanup(func() { lookPath, runCmd = restorePath, restoreCmd })
 	lookPath = func(string) (string, error) { return "", errors.New("no python") }
 
-	s := newSpeechSupervisor(SpeechConfig{Port: freePort(t)}, t.TempDir(), "en", "tok", true, true)
+	s := newSpeechSupervisor(SpeechConfig{Port: freePort(t)}, t.TempDir(), "en", "tok", true, true, false)
 	if _, err := s.resolveCommand(context.Background()); err == nil {
 		t.Fatal("an install with no interpreter should fail")
 	}
@@ -403,7 +403,7 @@ func TestSpeechDataDirIsConfigurable(t *testing.T) {
 
 func TestSpeechSupervisorWaitHealthyGivesUp(t *testing.T) {
 	home := t.TempDir()
-	s := newSpeechSupervisor(SpeechConfig{Port: freePort(t)}, home, "en", "tok", true, true)
+	s := newSpeechSupervisor(SpeechConfig{Port: freePort(t)}, home, "en", "tok", true, true, false)
 	s.probeInterval = 50 * time.Millisecond
 	if s.waitHealthy(context.Background(), 200*time.Millisecond) {
 		t.Error("waitHealthy reported a server that was never started as ready")
@@ -422,7 +422,7 @@ func TestSpeechServerFacadeSupervisesTheServer(t *testing.T) {
 		PiperVoice:   "en_US-lessac-medium",
 	}
 	plantVoice(t, home, cfg.PiperVoice)
-	s := NewSpeechServer(cfg, home, "en", "boot-token", true, true)
+	s := NewSpeechServer(cfg, home, "en", "boot-token", true, true, false)
 	s.SetProbeInterval(50 * time.Millisecond)
 	t.Cleanup(s.Stop)
 	s.Start(context.Background())
@@ -448,7 +448,7 @@ func TestSpeechBaseURLNamesTheConfiguredPort(t *testing.T) {
 // and nothing should sit on a three-minute deadline.
 func TestSpeechSupervisorWaitHealthyStopsOnCancel(t *testing.T) {
 	home := t.TempDir()
-	s := newSpeechSupervisor(SpeechConfig{Port: freePort(t)}, home, "en", "tok", true, true)
+	s := newSpeechSupervisor(SpeechConfig{Port: freePort(t)}, home, "en", "tok", true, true, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start := time.Now()
@@ -457,5 +457,25 @@ func TestSpeechSupervisorWaitHealthyStopsOnCancel(t *testing.T) {
 	}
 	if time.Since(start) > 5*time.Second {
 		t.Error("a cancelled wait did not return promptly")
+	}
+}
+
+// A speaker tier whose model is not on disk must prepare before it spawns, or
+// the server would die on load and the supervisor would restart-loop it.
+func TestSpeechSupervisorSpeakerModelNeedsPrepare(t *testing.T) {
+	home := t.TempDir()
+	cfg := SpeechConfig{WhisperModel: "base"}
+	s := newSpeechSupervisor(cfg, home, "es", "tok", true, false, true)
+	if !s.needsPrepare() {
+		t.Error("a missing speaker model was treated as prepared")
+	}
+	if err := os.MkdirAll(filepath.Dir(speakerModelPath(cfg, home)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(speakerModelPath(cfg, home), []byte("onnx"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s.needsPrepare() {
+		t.Error("a speaker model on disk still asks to prepare")
 	}
 }

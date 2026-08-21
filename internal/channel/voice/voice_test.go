@@ -246,6 +246,30 @@ func (h *voiceHarness) setReplyPCM(pcm []byte) {
 	h.api.mu.Unlock()
 }
 
+func (h *voiceHarness) setEmbedding(embedding []float64) {
+	h.api.mu.Lock()
+	h.api.embedding = embedding
+	h.api.mu.Unlock()
+}
+
+// enableSpeakerID points the managed speech endpoint at the fake API and
+// turns identification on. Call before start.
+func (h *voiceHarness) enableSpeakerID(policy string) {
+	h.t.Helper()
+	h.v.cfg.SpeechServer.Port = portOf(h.t, h.api.URL)
+	h.v.cfg.SpeakerID = true
+	h.v.cfg.SpeakerThreshold = defaultSpeakerThreshold
+	h.v.cfg.UnknownSpeaker = policy
+	h.v.speakers = newSpeakerStore(h.v.home)
+}
+
+// waitQuiet waits for the reply in flight to finish sounding, so the next
+// utterance is not a barge.
+func (h *voiceHarness) waitQuiet() {
+	h.t.Helper()
+	waitUntil(h.t, func() bool { return !h.v.player.busy() && !h.v.turnInFlight() })
+}
+
 func TestVoiceRegistersAsAConnector(t *testing.T) {
 	for _, name := range channel.Registered() {
 		if name == "voice" {
@@ -539,6 +563,103 @@ func TestVoiceOutputVolumeScalesTheReply(t *testing.T) {
 	heard := h.speaker.heard()
 	if v := int16(binary.LittleEndian.Uint16(heard)); v != 500 {
 		t.Errorf("first sample = %d, want half the synthesized 1000", v)
+	}
+}
+
+// With speaker identification on and unknown voices enrolling, the first
+// voice the machine hears becomes its owner and keeps the original session;
+// a second, different voice holds its own conversation under its own key,
+// with its words marked so the agent knows who is talking.
+func TestVoiceSpeakerIdentificationSeparatesConversations(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.start()
+
+	h.setEmbedding([]float64{1, 0, 0})
+	h.say()
+	owner := h.turn(10 * time.Second)
+	if owner.session != sessionKey || owner.content != "hello there" {
+		t.Errorf("the owner's turn ran as %q in %q", owner.content, owner.session)
+	}
+	h.waitQuiet()
+
+	// The owner again: same voice, same session, nothing marked.
+	h.say()
+	again := h.turn(10 * time.Second)
+	if again.session != sessionKey || again.content != "hello there" {
+		t.Errorf("the owner's second turn ran as %q in %q", again.content, again.session)
+	}
+	h.waitQuiet()
+
+	// A different voice: enrolled on the spot, spoken to in its own session.
+	h.setEmbedding([]float64{0, 1, 0})
+	h.say()
+	guest := h.turn(10 * time.Second)
+	if guest.session != sessionKey+":speaker-2" {
+		t.Errorf("the guest's turn ran in %q", guest.session)
+	}
+	if guest.content != "[speaker-2] hello there" {
+		t.Errorf("the guest's words arrived as %q, want them marked", guest.content)
+	}
+}
+
+// Under the anonymous policy an unknown voice is not enrolled and not named:
+// the conversation stays the channel's original one.
+func TestVoiceUnknownSpeakerStaysAnonymousByDefault(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownAnonymous)
+	h.start()
+
+	h.setEmbedding([]float64{1, 0, 0})
+	h.say()
+	call := h.turn(10 * time.Second)
+	if call.session != sessionKey || call.content != "hello there" {
+		t.Errorf("an anonymous turn ran as %q in %q", call.content, call.session)
+	}
+	if profiles := h.v.speakers.list(); len(profiles) != 0 {
+		t.Errorf("the anonymous policy enrolled %+v", profiles)
+	}
+}
+
+// The speakers tool is how profiles get their real names: renaming defaults
+// to whoever spoke last, so "soy Roxana" works without naming a profile.
+func TestVoiceSpeakersTool(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	if len(h.v.Toolset()) != 1 {
+		t.Error("the speakers tool exists without speaker_id")
+	}
+	h.enableSpeakerID(unknownEnroll)
+	if len(h.v.Toolset()) != 2 {
+		t.Error("speaker_id did not bring the speakers tool")
+	}
+	h.v.speakers.enroll(vec(1, 0))
+	h.v.speakers.enroll(vec(0, 1))
+	h.v.rememberSpeaker("speaker-2")
+
+	tool := &speakersTool{voice: h.v}
+	if res := tool.Execute(context.Background(), map[string]any{
+		"action": "rename", "new_name": "Roxana"}); res.IsError {
+		t.Fatalf("rename: %s", res.ForLLM)
+	}
+	if name, _ := h.v.speakers.match(vec(0, 1)); name != "Roxana" {
+		t.Errorf("the last speaker was not the one renamed; match = %q", name)
+	}
+	if h.v.lastSpeakerName() != "Roxana" {
+		t.Errorf("the sticky speaker still answers to %q", h.v.lastSpeakerName())
+	}
+
+	listed := tool.Execute(context.Background(), map[string]any{"action": "list"})
+	if !contains(listed.ForLLM, "speaker-1 (primary)") || !contains(listed.ForLLM, "Roxana") ||
+		!contains(listed.ForLLM, "Last heard: Roxana") {
+		t.Errorf("list = %q", listed.ForLLM)
+	}
+
+	if res := tool.Execute(context.Background(), map[string]any{
+		"action": "forget", "name": "Roxana"}); res.IsError {
+		t.Fatalf("forget: %s", res.ForLLM)
+	}
+	if name, _ := h.v.speakers.match(vec(0, 1)); name == "Roxana" {
+		t.Error("a forgotten voice still matches")
 	}
 }
 

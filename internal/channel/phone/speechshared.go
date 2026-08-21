@@ -17,10 +17,10 @@ type SpeechServer struct {
 }
 
 // NewSpeechServer builds a supervisor for the server described by cfg. The
-// token is the caller's boot secret; needSTT and needTTS decide which weights
-// the server loads.
-func NewSpeechServer(cfg SpeechConfig, home, language, token string, needSTT, needTTS bool) *SpeechServer {
-	return &SpeechServer{inner: newSpeechSupervisor(cfg, home, language, token, needSTT, needTTS)}
+// token is the caller's boot secret; needSTT, needTTS and needSpeaker decide
+// which weights the server loads.
+func NewSpeechServer(cfg SpeechConfig, home, language, token string, needSTT, needTTS, needSpeaker bool) *SpeechServer {
+	return &SpeechServer{inner: newSpeechSupervisor(cfg, home, language, token, needSTT, needTTS, needSpeaker)}
 }
 
 // Start begins supervising; it returns immediately.

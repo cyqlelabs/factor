@@ -137,7 +137,7 @@ func TestLocalVoiceGetsAModelIdTheDialectAccepts(t *testing.T) {
 func TestSpeechServerOnlyLoadsTheHalvesTheTierUses(t *testing.T) {
 	cfg := prepared(t, func(c *Config) { c.STT.Provider = providerLocalOpenAI })
 	rendered := renderSpeechConfig(cfg.SpeechServer, "/home", cfg.Language, "tok",
-		cfg.localSTT(), cfg.localTTS())
+		cfg.localSTT(), cfg.localTTS(), false)
 	if !rendered.NeedSTT || rendered.NeedTTS {
 		t.Errorf("need_stt=%v need_tts=%v, want transcription only", rendered.NeedSTT, rendered.NeedTTS)
 	}
@@ -156,7 +156,7 @@ func TestSpeechConfigCarriesTheLanguage(t *testing.T) {
 		c.Language = "es-MX"
 		c.TTS.Provider = providerLocalOpenAI
 	})
-	rendered := renderSpeechConfig(cfg.SpeechServer, "/home", cfg.Language, "tok", false, true)
+	rendered := renderSpeechConfig(cfg.SpeechServer, "/home", cfg.Language, "tok", false, true, false)
 	if rendered.Language != "es-MX" {
 		t.Errorf("language = %q, want it passed through untouched", rendered.Language)
 	}
@@ -323,7 +323,7 @@ func TestInstallSpeechBuildsTheVenvAndFetchesTheModels(t *testing.T) {
 	}
 
 	var steps []string
-	choices, err := InstallSpeech(context.Background(), home, "sw", SpeechConfig{}, true, true,
+	choices, err := InstallSpeech(context.Background(), home, "sw", SpeechConfig{}, true, true, false,
 		func(format string, args ...any) { steps = append(steps, fmt.Sprintf(format, args...)) })
 	if err != nil {
 		t.Fatalf("InstallSpeech: %v", err)
@@ -364,7 +364,7 @@ func TestInstallSpeechWithoutAPython(t *testing.T) {
 	t.Cleanup(func() { lookPath = restore })
 	lookPath = func(string) (string, error) { return "", errors.New("not found") }
 
-	_, err := InstallSpeech(context.Background(), t.TempDir(), "en", SpeechConfig{}, true, true, nil)
+	_, err := InstallSpeech(context.Background(), t.TempDir(), "en", SpeechConfig{}, true, true, false, nil)
 	if err == nil {
 		t.Fatal("an install with no interpreter should fail")
 	}
@@ -404,7 +404,7 @@ func TestPrepareSpeechPassesConfigThroughTheEnvironment(t *testing.T) {
 			"es_ES-davefx-medium"), nil
 	}
 
-	choices, err := PrepareSpeech(context.Background(), home, "es", SpeechConfig{}, true, true, nil)
+	choices, err := PrepareSpeech(context.Background(), home, "es", SpeechConfig{}, true, true, false, nil)
 	if err != nil {
 		t.Fatalf("PrepareSpeech: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestRenderSpeechConfigCarriesTheEngine(t *testing.T) {
 		SttEngine: "parakeet",
 		SttModel:  "nemo-parakeet-tdt-0.6b-v3",
 	}
-	rendered := renderSpeechConfig(cfg, t.TempDir(), "es", "tok", true, false)
+	rendered := renderSpeechConfig(cfg, t.TempDir(), "es", "tok", true, false, false)
 	if rendered.SttEngine != "parakeet" || rendered.SttModel != "nemo-parakeet-tdt-0.6b-v3" {
 		t.Errorf("rendered = %+v", rendered)
 	}
@@ -718,3 +718,32 @@ class Response:
     def __init__(self, *args, **kwargs):
         pass
 `
+
+// need_speaker has to reach the server process, or the embedding endpoint
+// would answer 503 forever while Go keeps asking it for vectors.
+func TestRenderSpeechConfigCarriesNeedSpeaker(t *testing.T) {
+	rendered := renderSpeechConfig(SpeechConfig{}, t.TempDir(), "es", "tok", true, false, true)
+	if !rendered.NeedSpeaker {
+		t.Error("need_speaker was dropped on the way to the server")
+	}
+}
+
+// The embedded server's speaker-identification pieces, same reasoning as the
+// engine test above: their silent loss the Go side would never notice.
+func TestEmbeddedSpeechServerKnowsTheSpeakerModel(t *testing.T) {
+	script := string(speechServerScript)
+	for _, want := range []string{
+		"/v1/audio/embedding",
+		"import sherpa_onnx",
+		// The Go constant and the script's must name the same file, or
+		// needsPrepare would stat a path prepare never writes.
+		`SPEAKER_MODEL_FILE = "` + speakerModelFile + `"`,
+		// The release tag's misspelling is the project's own; a well-meant
+		// correction would point at a URL that does not exist.
+		"speaker-recongition-models",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("speechserver.py lost %q", want)
+		}
+	}
+}

@@ -38,6 +38,11 @@ const (
 	// weights.
 	onnxAsrSpec = "onnx-asr[cpu,hub]==0.12.0"
 
+	// sherpa-onnx serves the speaker-embedding model behind speaker
+	// identification. Installed only when a channel asks for speakers, so the
+	// common tiers never pay for it.
+	sherpaOnnxSpec = "sherpa-onnx==1.12.40"
+
 	// SpeechInstallTimeout bounds one install. The wheels run to a few hundred
 	// megabytes and the model weights follow them, on whatever connection the
 	// user has.
@@ -133,6 +138,16 @@ func speechDataDir(cfg SpeechConfig, home string) string {
 	return filepath.Join(home, "speech")
 }
 
+// speakerModelFile is the speaker-embedding model speaker identification
+// runs: WeSpeaker's CAM++ trained on VoxCeleb, ~28 MB of ONNX answering
+// 512-dim embeddings. The name matches speechserver.py's constant.
+const speakerModelFile = "wespeaker_en_voxceleb_CAM++.onnx"
+
+// speakerModelPath is where prepare puts it and the server loads it from.
+func speakerModelPath(cfg SpeechConfig, home string) string {
+	return filepath.Join(speechDataDir(cfg, home), "speaker", speakerModelFile)
+}
+
 // FindSpeechPython returns the interpreter that can run the speech server —
 // the private venv, once both engines are actually installed in it. A venv
 // that exists but cannot import them is not usable: reporting it as ready
@@ -153,6 +168,18 @@ func hasSpeechEngines(python string) bool {
 	defer cancel()
 	_, err := runCmd(ctx, []string{python, "-c",
 		"import importlib.metadata as m; m.version('faster-whisper'); m.version('piper-tts'); m.version('onnx-asr')"})
+	return err == nil
+}
+
+// hasSpeakerEngine probes for sherpa-onnx alone. It is deliberately not part
+// of hasSpeechEngines: a venv built before speaker identification existed is
+// still a working speech venv, and must not be reported broken for lacking an
+// engine only the speaker feature needs.
+func hasSpeakerEngine(python string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, err := runCmd(ctx, []string{python, "-c",
+		"import importlib.metadata as m; m.version('sherpa-onnx')"})
 	return err == nil
 }
 
@@ -177,7 +204,7 @@ type SpeechChoices struct {
 // call. needSTT and needTTS follow the tier, so a user who only wanted local
 // transcription does not wait on a voice download.
 func InstallSpeech(ctx context.Context, home, language string, cfg SpeechConfig,
-	needSTT, needTTS bool, progress Progress) (SpeechChoices, error) {
+	needSTT, needTTS, needSpeaker bool, progress Progress) (SpeechChoices, error) {
 
 	ctx, cancel := context.WithTimeout(ctx, SpeechInstallTimeout)
 	defer cancel()
@@ -195,20 +222,24 @@ func InstallSpeech(ctx context.Context, home, language string, cfg SpeechConfig,
 	}
 
 	progress.emit("installing the speech engines (a few hundred megabytes)…")
-	args := append([]string{speechVenvPip(home), "install", "--upgrade"}, speechPackages()...)
+	packages := speechPackages()
+	if needSpeaker {
+		packages = append(packages, sherpaOnnxSpec)
+	}
+	args := append([]string{speechVenvPip(home), "install", "--upgrade"}, packages...)
 	if out, err := runCmd(ctx, args); err != nil {
 		return SpeechChoices{}, fmt.Errorf("could not install the speech engines: %v\n%s",
 			err, lastLines(out, 12))
 	}
 
-	return PrepareSpeech(ctx, home, language, cfg, needSTT, needTTS, progress)
+	return PrepareSpeech(ctx, home, language, cfg, needSTT, needTTS, needSpeaker, progress)
 }
 
 // PrepareSpeech downloads the weights and reports what the installer chose for
 // this machine and language. It is separate from the virtualenv build so a
 // language change re-downloads a voice without reinstalling everything.
 func PrepareSpeech(ctx context.Context, home, language string, cfg SpeechConfig,
-	needSTT, needTTS bool, progress Progress) (SpeechChoices, error) {
+	needSTT, needTTS, needSpeaker bool, progress Progress) (SpeechChoices, error) {
 
 	python, ok := FindSpeechPython(home)
 	if !ok {
@@ -219,7 +250,7 @@ func PrepareSpeech(ctx context.Context, home, language string, cfg SpeechConfig,
 		return SpeechChoices{}, err
 	}
 
-	blob, err := json.Marshal(renderSpeechConfig(cfg, home, language, "", needSTT, needTTS))
+	blob, err := json.Marshal(renderSpeechConfig(cfg, home, language, "", needSTT, needTTS, needSpeaker))
 	if err != nil {
 		return SpeechChoices{}, err
 	}
@@ -303,12 +334,14 @@ type speechServerConfig struct {
 	PiperVoice     string `json:"piper_voice,omitempty"`
 
 	// NeedSTT and NeedTTS follow the tier: a tier that keeps one half in the
-	// cloud must not pay for the other half's weights or memory.
-	NeedSTT bool `json:"need_stt"`
-	NeedTTS bool `json:"need_tts"`
+	// cloud must not pay for the other half's weights or memory. NeedSpeaker
+	// loads the speaker-embedding model behind /v1/audio/embedding.
+	NeedSTT     bool `json:"need_stt"`
+	NeedTTS     bool `json:"need_tts"`
+	NeedSpeaker bool `json:"need_speaker,omitempty"`
 }
 
-func renderSpeechConfig(cfg SpeechConfig, home, language, token string, needSTT, needTTS bool) speechServerConfig {
+func renderSpeechConfig(cfg SpeechConfig, home, language, token string, needSTT, needTTS, needSpeaker bool) speechServerConfig {
 	return speechServerConfig{
 		Host:           "127.0.0.1",
 		Port:           speechPort(cfg),
@@ -323,6 +356,7 @@ func renderSpeechConfig(cfg SpeechConfig, home, language, token string, needSTT,
 		PiperVoice:     cfg.PiperVoice,
 		NeedSTT:        needSTT,
 		NeedTTS:        needTTS,
+		NeedSpeaker:    needSpeaker,
 	}
 }
 

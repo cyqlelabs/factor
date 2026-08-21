@@ -20,12 +20,13 @@ import (
 // will not come up degrades the call to the cloud tier instead of killing it.
 
 type speechSupervisor struct {
-	cfg      SpeechConfig
-	home     string
-	language string
-	token    string
-	needSTT  bool
-	needTTS  bool
+	cfg         SpeechConfig
+	home        string
+	language    string
+	token       string
+	needSTT     bool
+	needTTS     bool
+	needSpeaker bool
 
 	scriptPath string
 	client     *controlClient
@@ -39,18 +40,19 @@ type speechSupervisor struct {
 	probeInterval time.Duration
 }
 
-func newSpeechSupervisor(cfg SpeechConfig, home, language, token string, needSTT, needTTS bool) *speechSupervisor {
+func newSpeechSupervisor(cfg SpeechConfig, home, language, token string, needSTT, needTTS, needSpeaker bool) *speechSupervisor {
 	client := newControlClient(fmt.Sprintf("http://127.0.0.1:%d", speechPort(cfg)))
 	client.token = token
 	return &speechSupervisor{
-		cfg:        cfg,
-		home:       home,
-		language:   language,
-		token:      token,
-		needSTT:    needSTT,
-		needTTS:    needTTS,
-		scriptPath: speechScriptPath(home),
-		client:     client,
+		cfg:         cfg,
+		home:        home,
+		language:    language,
+		token:       token,
+		needSTT:     needSTT,
+		needTTS:     needTTS,
+		needSpeaker: needSpeaker,
+		scriptPath:  speechScriptPath(home),
+		client:      client,
 	}
 }
 
@@ -147,6 +149,9 @@ func (s *speechSupervisor) resolveCommand(ctx context.Context) (string, error) {
 		return resolveInterpreter(s.cfg.Command)
 	}
 	if path, ok := FindSpeechPython(s.home); ok {
+		if err := s.ensureSpeakerEngine(ctx, path); err != nil {
+			return "", err
+		}
 		return path, nil
 	}
 	if !s.cfg.autoInstall() {
@@ -156,7 +161,7 @@ func (s *speechSupervisor) resolveCommand(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("the local speech engines are not installed and the automatic install already failed this run")
 	}
 	slog.Info("local speech engines missing; installing them automatically", "language", s.language)
-	choices, err := InstallSpeech(ctx, s.home, s.language, s.cfg, s.needSTT, s.needTTS,
+	choices, err := InstallSpeech(ctx, s.home, s.language, s.cfg, s.needSTT, s.needTTS, s.needSpeaker,
 		func(format string, args ...any) {
 			slog.Info("speech install: " + fmt.Sprintf(format, args...))
 		})
@@ -195,6 +200,25 @@ func (s *speechSupervisor) adopt(choices SpeechChoices) {
 	}
 }
 
+// ensureSpeakerEngine backfills sherpa-onnx into an already-built virtualenv
+// when speaker identification was turned on after the engines were installed.
+func (s *speechSupervisor) ensureSpeakerEngine(ctx context.Context, python string) error {
+	if !s.needSpeaker || hasSpeakerEngine(python) {
+		return nil
+	}
+	if !s.cfg.autoInstall() {
+		return fmt.Errorf("speaker identification needs %s and auto_install is off", sherpaOnnxSpec)
+	}
+	if s.installTried.Swap(true) {
+		return fmt.Errorf("the speaker engine is not installed and the automatic install already failed this run")
+	}
+	slog.Info("installing the speaker-identification engine", "spec", sherpaOnnxSpec)
+	if out, err := runCmd(ctx, []string{speechVenvPip(s.home), "install", sherpaOnnxSpec}); err != nil {
+		return fmt.Errorf("could not install %s: %v\n%s", sherpaOnnxSpec, err, lastLines(out, 8))
+	}
+	return nil
+}
+
 // needsPrepare reports whether the weights the server would load are settled:
 // unchosen halves need choosing, and a voice named in the config — by the
 // wizard's picker or a hand edit — needs its files actually on disk, or the
@@ -202,6 +226,11 @@ func (s *speechSupervisor) adopt(choices SpeechChoices) {
 func (s *speechSupervisor) needsPrepare() bool {
 	if s.needSTT && s.cfg.WhisperModel == "" && s.cfg.SttModel == "" {
 		return true
+	}
+	if s.needSpeaker {
+		if _, err := os.Stat(speakerModelPath(s.cfg, s.home)); err != nil {
+			return true
+		}
 	}
 	if !s.needTTS {
 		return false
@@ -224,7 +253,7 @@ func (s *speechSupervisor) spawnAndWait(ctx context.Context) error {
 	// been told what to load. It settles the hardware question too, which is
 	// why a transcription-only tier needs it just as much as a voice does.
 	if s.needsPrepare() {
-		choices, prepErr := PrepareSpeech(ctx, s.home, s.language, s.cfg, s.needSTT, s.needTTS,
+		choices, prepErr := PrepareSpeech(ctx, s.home, s.language, s.cfg, s.needSTT, s.needTTS, s.needSpeaker,
 			func(format string, args ...any) {
 				slog.Info("speech models: " + fmt.Sprintf(format, args...))
 			})
@@ -238,7 +267,7 @@ func (s *speechSupervisor) spawnAndWait(ctx context.Context) error {
 		s.setDown("%v", err)
 		return err
 	}
-	blob, err := json.Marshal(renderSpeechConfig(s.cfg, s.home, s.language, s.token, s.needSTT, s.needTTS))
+	blob, err := json.Marshal(renderSpeechConfig(s.cfg, s.home, s.language, s.token, s.needSTT, s.needTTS, s.needSpeaker))
 	if err != nil {
 		return err
 	}

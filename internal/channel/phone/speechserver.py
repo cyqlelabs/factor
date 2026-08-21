@@ -19,6 +19,11 @@ its adapters expect:
     response_format="pcm" and resamples 24 kHz down to the 8 kHz phone band, so
     anything else arrives at the caller's ear transposed.
 
+One more route exists for the PC voice channel alone: POST /v1/audio/embedding
+answers a WAV upload with the utterance's speaker embedding, which is what
+Factor matches voice profiles against. It is served only when need_speaker is
+set, off a sherpa-onnx model the phone tiers never load.
+
 Speech-to-text is one of two engines, chosen by prepare() for the machine and
 the language: Parakeet TDT (a transducer — it encodes the audio it was given
 rather than a fixed window, which is what makes accuracy affordable on a CPU)
@@ -128,12 +133,25 @@ PARAKEET_LANGUAGES = {
 # int8 export at prepare time. Below the bar, whisper base stays the answer.
 PARAKEET_MIN_RAM_GB = 4.0
 
+# The speaker-embedding model behind /v1/audio/embedding: WeSpeaker's CAM++
+# trained on VoxCeleb, served by sherpa-onnx — ~28 MB of ONNX answering
+# 512-dim embeddings. The release tag's spelling ("recongition") is the
+# project's own; do not correct it, the corrected URL does not exist.
+NEED_SPEAKER = bool(CFG.get("need_speaker"))
+SPEAKER_MODEL_FILE = "wespeaker_en_voxceleb_CAM++.onnx"
+SPEAKER_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+    "speaker-recongition-models/wespeaker_en_voxceleb_CAM%2B%2B.onnx"
+)
+
 # ------------------------------------------------------------------- the models
 
 _stt = None
 _tts = None
+_speaker = None
 _stt_lock = threading.Lock()
 _tts_lock = threading.Lock()
+_speaker_lock = threading.Lock()
 
 
 
@@ -143,7 +161,7 @@ def load_models() -> None:
     Factor waits on /health before it starts the voice shell, so paying the
     load here is what keeps the first call of the day from opening with a
     twenty-second silence while a model is read off disk."""
-    global _stt, _tts
+    global _stt, _tts, _speaker
 
     if STT_ENGINE == "parakeet":
         _stt = load_parakeet(STT_MODEL or PARAKEET_MODEL)
@@ -167,7 +185,19 @@ def load_models() -> None:
         log("loading text-to-speech", voice=PIPER_VOICE)
         _tts = PiperVoice.load(str(onnx))
 
-    log("ready", stt=stt_name(), tts=PIPER_VOICE or "disabled", rate=OUTPUT_RATE)
+    if NEED_SPEAKER:
+        import sherpa_onnx
+
+        model = DATA_DIR / "speaker" / SPEAKER_MODEL_FILE
+        if not model.exists():
+            die(f"the speaker model is not downloaded ({model})")
+        log("loading speaker embedding", model=SPEAKER_MODEL_FILE)
+        _speaker = sherpa_onnx.SpeakerEmbeddingExtractor(
+            sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+                model=str(model), num_threads=1, provider="cpu"))
+
+    log("ready", stt=stt_name(), tts=PIPER_VOICE or "disabled",
+        speaker=SPEAKER_MODEL_FILE if NEED_SPEAKER else "disabled", rate=OUTPUT_RATE)
 
 
 def stt_name() -> str:
@@ -231,7 +261,8 @@ def authorize(header: str | None) -> None:
 
 @app.get("/health")
 def health() -> JSONResponse:
-    ready = _stt is not None and (_tts is not None or not PIPER_VOICE)
+    ready = (_stt is not None and (_tts is not None or not PIPER_VOICE)
+             and (_speaker is not None or not NEED_SPEAKER))
     return JSONResponse({"status": "ok" if ready else "loading"}, status_code=200 if ready else 503)
 
 
@@ -368,6 +399,32 @@ def speech(payload: dict = Body(...), authorization: str | None = Header(default
     return Response(content=pcm, media_type="audio/pcm")
 
 
+@app.post("/v1/audio/embedding")
+def embedding(
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
+    """Compute one utterance's speaker embedding, for Factor's voice profiles.
+
+    An upload too short to say anything about its speaker answers an empty
+    vector rather than an error: the caller treats it as "could not tell",
+    which is the truth."""
+    authorize(authorization)
+    if _speaker is None:
+        raise HTTPException(status_code=503, detail="no speaker model is configured")
+
+    raw = file.file.read()
+    if not raw or wav_duration(raw) < MIN_TRANSCRIBE_SECONDS:
+        return {"embedding": []}
+    waveform = wav_to_float32(raw)
+    with _speaker_lock:
+        stream = _speaker.create_stream()
+        stream.accept_waveform(sample_rate=16000, waveform=waveform)
+        stream.input_finished()
+        vector = _speaker.compute(stream)
+    return {"embedding": [float(x) for x in vector]}
+
+
 def wav_duration(raw: bytes) -> float:
     """Length of an uploaded WAV in seconds, 0 if it cannot be read."""
     try:
@@ -389,6 +446,27 @@ def is_hallucination(segment) -> bool:
     return getattr(segment, "avg_logprob", 0.0) < MIN_AVG_LOGPROB
 
 
+def wav_to_float32(raw: bytes):
+    """One uploaded WAV as 16 kHz mono float32, whatever shape it arrived in.
+
+    Patter uploads 16 kHz mono PCM16, but this server is also reachable by
+    the PC voice channel and by hand, so normalize rather than assume."""
+    import numpy as np
+
+    with wave.open(io.BytesIO(raw), "rb") as wav:
+        rate = wav.getframerate()
+        channels = wav.getnchannels()
+        width = wav.getsampwidth()
+        frames = wav.readframes(wav.getnframes())
+    if width != 2:
+        frames = audioop.lin2lin(frames, width, 2)
+    if channels != 1:
+        frames = audioop.tomono(frames, 2, 0.5, 0.5)
+    if rate != 16000:
+        frames, _ = audioop.ratecv(frames, 2, 1, rate, 16000, None)
+    return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+
 def transcribe_parakeet(raw: bytes) -> tuple[str, float]:
     """One buffered chunk through the transducer.
 
@@ -399,22 +477,7 @@ def transcribe_parakeet(raw: bytes) -> tuple[str, float]:
     handed silence emits no tokens at all, and the VAD gates upstream (
     Patter's, and MIN_TRANSCRIBE_SECONDS here) already drop what little gets
     through."""
-    import numpy as np
-
-    with wave.open(io.BytesIO(raw), "rb") as wav:
-        rate = wav.getframerate()
-        channels = wav.getnchannels()
-        width = wav.getsampwidth()
-        frames = wav.readframes(wav.getnframes())
-    # Patter uploads 16 kHz mono PCM16, but this server is also reachable by
-    # the PC voice channel and by hand, so normalize rather than assume.
-    if width != 2:
-        frames = audioop.lin2lin(frames, width, 2)
-    if channels != 1:
-        frames = audioop.tomono(frames, 2, 0.5, 0.5)
-    if rate != 16000:
-        frames, _ = audioop.ratecv(frames, 2, 1, rate, 16000, None)
-    waveform = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    waveform = wav_to_float32(raw)
 
     result = _stt.recognize(waveform, sample_rate=16000)
     logprobs = result.logprobs or []
@@ -656,6 +719,19 @@ def prepare() -> None:
         target.mkdir(parents=True, exist_ok=True)
         download_voice(voice, target)
     result["piper_voice"] = voice
+
+    if CFG.get("need_speaker"):
+        target = DATA_DIR / "speaker" / SPEAKER_MODEL_FILE
+        if not target.exists():
+            log("downloading the speaker model", model=SPEAKER_MODEL_FILE)
+            import urllib.request
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Download beside the target and move into place, so a fetch cut
+            # short never leaves a half-model the server would try to load.
+            partial = target.with_suffix(".part")
+            urllib.request.urlretrieve(SPEAKER_MODEL_URL, partial)
+            partial.replace(target)
 
     if CFG.get("need_stt"):
         log("downloading the transcription model", engine=engine, model=model)

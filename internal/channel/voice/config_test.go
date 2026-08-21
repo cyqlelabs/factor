@@ -37,6 +37,9 @@ func TestApplyDefaultsFillsEveryKnob(t *testing.T) {
 	if cfg.OutputVolume != 100 {
 		t.Errorf("output volume = %d, want full volume by default", cfg.OutputVolume)
 	}
+	if cfg.SpeakerThreshold != defaultSpeakerThreshold || cfg.UnknownSpeaker != unknownAnonymous {
+		t.Errorf("speaker knobs = %v/%q", cfg.SpeakerThreshold, cfg.UnknownSpeaker)
+	}
 	if err := cfg.validate(); err != nil {
 		t.Errorf("a defaulted cloud config does not validate: %v", err)
 	}
@@ -95,6 +98,9 @@ func TestValidateRejectsWhatWouldFailMidConversation(t *testing.T) {
 		{"elevenlabs without a key", func(c *Config) { c.ElevenLabsAPIKey = "" }, "elevenlabs_api_key"},
 		{"unknown tts provider", func(c *Config) { c.TTS.Provider = "azure" }, "unknown tts.provider"},
 		{"volume beyond full", func(c *Config) { c.OutputVolume = 130 }, "output_volume"},
+		{"speaker id without the managed server", func(c *Config) { c.SpeakerID = true }, "speaker_id"},
+		{"unknown unknown_speaker", func(c *Config) { c.UnknownSpeaker = "sometimes" }, "unknown_speaker"},
+		{"speaker threshold beyond cosine", func(c *Config) { c.SpeakerThreshold = 1.5 }, "speaker_threshold"},
 		{"speech port colliding with control", func(c *Config) {
 			c.STT = phone.AudioEndpoint{Provider: providerLocalOpenAI}
 			c.SpeechServer.Port = 8730
@@ -130,5 +136,17 @@ func TestTierLabels(t *testing.T) {
 		if got := tc.cfg.TierLabel(); !strings.HasPrefix(got, tc.want) {
 			t.Errorf("TierLabel() = %q, want prefix %q", got, tc.want)
 		}
+	}
+}
+
+func TestSpeakerIDValidatesOnAManagedTier(t *testing.T) {
+	cfg := Config{
+		STT:              phone.AudioEndpoint{Provider: providerLocalOpenAI},
+		ElevenLabsAPIKey: "el",
+		SpeakerID:        true,
+	}
+	cfg.applyDefaults()
+	if err := cfg.validate(); err != nil {
+		t.Errorf("speaker_id on a managed tier was rejected: %v", err)
 	}
 }
