@@ -3,8 +3,12 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -458,4 +462,36 @@ func mustList(t *testing.T, s *Session) []tabInfo {
 		t.Fatalf("list: %v", err)
 	}
 	return tabs
+}
+
+// TestChromedpChatterStaysOutOfTheStandardLog guards the plumbing that keeps a
+// dependency's diagnostics from surfacing as unattributed "ERROR:" lines in
+// the gateway log. chromedp logs through log.Printf unless told otherwise, and
+// a page with a modal on it produces a DOM event this chromedp does not know
+// about — which used to read as Factor having failed at something.
+func TestChromedpChatterStaysOutOfTheStandardLog(t *testing.T) {
+	requireBrowser(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<html><head><title>Modal</title></head><body><dialog id="d">on the top layer</dialog>
+<script>document.getElementById('d').showModal()</script></body></html>`)
+	}))
+	t.Cleanup(srv.Close)
+
+	// slog's default handler writes through the standard logger too, so it
+	// has to be sent elsewhere for the buffer to mean "someone bypassed slog".
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	var stdlog bytes.Buffer
+	log.SetOutput(&stdlog)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	byName := liveSuite(t)
+	mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+	mustRun(t, byName["browser_read"], nil)
+
+	if stdlog.Len() > 0 {
+		t.Errorf("chromedp wrote to the standard logger:\n%s", stdlog.String())
+	}
 }

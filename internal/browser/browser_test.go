@@ -5,6 +5,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -190,5 +191,17 @@ func TestElementLimitStaysInsideWhatOneReadCanCarry(t *testing.T) {
 		if got := elementLimit(in); got != want {
 			t.Errorf("elementLimit(%d) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+func TestBrowserLogLevelDemotesVersionSkew(t *testing.T) {
+	// A DOM event a newer Chrome added and this chromedp does not know is not
+	// something the user can act on, and it arrives once per dialog or popover
+	// on a page — it must not read as an error in the gateway log.
+	if got := browserLogLevel("unhandled node event *dom.EventTopLayerElementsUpdated"); got != slog.LevelDebug {
+		t.Errorf("unhandled node event logged at %v, want debug", got)
+	}
+	if got := browserLogLevel("could not unmarshal event: unexpected end of JSON input"); got != slog.LevelWarn {
+		t.Errorf("a real fault logged at %v, want warn", got)
 	}
 }

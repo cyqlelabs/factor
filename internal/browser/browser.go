@@ -136,6 +136,31 @@ navigator.permissions.query = (p) =>
     : query(p);
 `
 
+// logThroughSlog routes chromedp's own chatter into the log everything else
+// in Factor writes to. Left alone it goes to log.Printf, which lands in the
+// gateway log as a bare "ERROR:" line naming nothing — indistinguishable from
+// something Factor got wrong, and alarming for what is usually version skew.
+var logThroughSlog = []chromedp.ContextOption{
+	chromedp.WithLogf(func(format string, args ...any) {
+		slog.Debug("browser: " + fmt.Sprintf(format, args...))
+	}),
+	chromedp.WithErrorf(func(format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		slog.Log(context.Background(), browserLogLevel(msg), "browser: "+msg)
+	}),
+}
+
+// browserLogLevel grades one line of chromedp's error output. "unhandled node
+// event" is chromedp meeting a DOM event a newer Chrome has added — every
+// dialog and popover on a page emits one, the page is read correctly anyway,
+// and nothing about it is the user's problem.
+func browserLogLevel(msg string) slog.Level {
+	if strings.HasPrefix(msg, "unhandled node event") {
+		return slog.LevelDebug
+	}
+	return slog.LevelWarn
+}
+
 // displayAvailable reports whether this process could open a window at all.
 // A visible browser is the default — watching the agent work is half the
 // point — but a gateway started from an ssh shell or a service manager has no
@@ -328,7 +353,7 @@ func (s *Session) connectLocked(attach, binary string) error {
 	}
 
 	s.allocCtx = allocCtx
-	s.browserCtx, s.browserStop = chromedp.NewContext(allocCtx)
+	s.browserCtx, s.browserStop = chromedp.NewContext(allocCtx, logThroughSlog...)
 	// Materialize the browser now so failures surface here, not mid-action.
 	// The first call must receive the browser context itself: the browser's
 	// lifetime binds to the context of that first call, so a timeout wrapper

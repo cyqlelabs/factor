@@ -92,7 +92,7 @@ func (f *fastSession) ensure() (context.Context, error) {
 
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), endpoint)
 	f.allocCancel = allocCancel
-	f.tabCtx, f.tabCancel = chromedp.NewContext(allocCtx)
+	f.tabCtx, f.tabCancel = chromedp.NewContext(allocCtx, logThroughSlog...)
 	if err := chromedp.Run(f.tabCtx); err != nil {
 		f.teardownLocked()
 		return nil, fmt.Errorf("connecting to the lightweight engine: %w", err)
