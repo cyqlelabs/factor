@@ -95,6 +95,11 @@ type Voice struct {
 	// same speakers, and they must queue rather than mix.
 	speakMu sync.Mutex
 
+	// echo remembers what was recently sent to the speakers, so a barged
+	// utterance that is the agent's own voice off the walls is recognized
+	// instead of answered.
+	echo echoTracker
+
 	mu          sync.Mutex
 	stopped     bool
 	effective   Config
@@ -416,13 +421,16 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 	// One line per detected utterance: what was heard and what became of it.
 	// This is what turns "I spoke and nothing happened" into a diagnosis —
 	// no line means the voice never reached the VAD, an empty text means the
-	// transcriber filtered it, "ignored" means the gate did.
+	// transcriber filtered it, "ignored" means the gate did, and "echo" means
+	// it was the agent's own voice back off the speakers.
 	action := "ignored"
 	switch {
 	case dec.accept:
 		action = "turn"
 	case dec.acknowledge:
 		action = "acknowledge"
+	case dec.echo:
+		action = "echo"
 	}
 	slog.Info("voice heard", "text", text, "action", action)
 	switch {
@@ -444,6 +452,7 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 type decision struct {
 	accept      bool
 	acknowledge bool // the bare wake word: attention, not a request
+	echo        bool // the agent's own voice off the speakers, nothing else
 	text        string
 }
 
@@ -459,6 +468,17 @@ func (v *Voice) gate(text string, started time.Time, barged bool) decision {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return decision{}
+	}
+	if barged {
+		// An utterance captured over playback opens with the speakers' own
+		// sound. At high volume that sound survives transcription, and an
+		// utterance that is nothing but the agent's recent words is feedback —
+		// answering it is the agent talking to itself.
+		rest, echoOnly := v.echo.strip(text)
+		if echoOnly || rest == "" {
+			return decision{echo: true}
+		}
+		text = rest
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -565,6 +585,7 @@ func (v *Voice) speak(ctx context.Context, text string) {
 		if len(pcm) == 0 {
 			continue
 		}
+		v.echo.record(chunk)
 		done := v.player.play(ctx, pcm)
 		select {
 		case <-ctx.Done():
@@ -741,28 +762,7 @@ func stripWakeWord(text, wake string, anywhere bool) (string, bool) {
 	if len(wakeWords) == 0 {
 		return "", false
 	}
-
-	type token struct {
-		norm string
-		end  int // byte offset just past the word in the original text
-	}
-	var tokens []token
-	start := -1
-	for i, r := range text {
-		if r == ' ' || r == '\t' || r == '\n' {
-			if start >= 0 {
-				tokens = append(tokens, token{normalizeWord(text[start:i]), i})
-				start = -1
-			}
-			continue
-		}
-		if start < 0 {
-			start = i
-		}
-	}
-	if start >= 0 {
-		tokens = append(tokens, token{normalizeWord(text[start:]), len(text)})
-	}
+	tokens := tokenizeWords(text)
 
 	maxPos := 1
 	if anywhere {

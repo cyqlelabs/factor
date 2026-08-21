@@ -484,6 +484,47 @@ func TestVoiceUnintelligibleBargeInResumesTheReply(t *testing.T) {
 	waitUntil(t, func() bool { return len(h.speaker.heard()) >= len(pcm) })
 }
 
+// The reply leaking from the speakers back into the microphone is not the
+// user: a barged utterance that is nothing but the agent's own recent words is
+// discarded as echo and the reply plays on.
+func TestVoiceIgnoresItsOwnEchoFromTheSpeakers(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	pcm := clip(120000)
+	h.setReplyPCM(pcm)
+	h.start()
+	h.say()
+	h.turn(10 * time.Second)
+	waitUntil(t, func() bool { return len(h.speaker.heard()) > 0 })
+
+	// What the mic hears is the reply itself, coming back off the walls.
+	h.setTranscript("as you wish")
+	h.mic.feed(repeat(toneFrame(16000), 12)...)
+	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
+
+	h.noTurn(2 * time.Second)
+	waitUntil(t, func() bool { return len(h.speaker.heard()) >= len(pcm) })
+}
+
+// A real barge-in arrives with the reply's tail in front of it; only the
+// user's words behind the echo become the turn.
+func TestVoiceKeepsTheUserWordsBehindItsOwnEcho(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.setReplyPCM(clip(120000))
+	h.start()
+	h.say()
+	h.turn(10 * time.Second)
+	waitUntil(t, func() bool { return len(h.speaker.heard()) > 0 })
+
+	h.setTranscript("as you wish please stop now")
+	h.mic.feed(repeat(toneFrame(16000), 12)...)
+	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
+
+	call := h.turn(10 * time.Second)
+	if call.content != "please stop now" {
+		t.Errorf("the barge turn carried %q, want the user's words with the echo stripped", call.content)
+	}
+}
+
 func TestVoicePushToTalkOnlyHearsWhenArmed(t *testing.T) {
 	h := newVoiceHarness(t, func(c *Config) { c.Activation = "push-to-talk" })
 	h.start()
