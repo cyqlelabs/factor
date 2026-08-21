@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -276,5 +279,42 @@ func TestBudgetCapsCanComeFromTheEnvironment(t *testing.T) {
 	}
 	if cfg.Cost.Budget.SessionUSD != 1.25 || cfg.Cost.Budget.GlobalUSD != 40 {
 		t.Errorf("budget = %+v", cfg.Cost.Budget)
+	}
+}
+
+// Go's default handler drops everything below info, which made every
+// slog.Debug in Factor unreachable. log_level moves that threshold.
+func TestApplyLogLevelReachesDebugAndKeepsTheFormat(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev); slog.SetLogLoggerLevel(slog.LevelInfo) })
+
+	var out bytes.Buffer
+	log.SetOutput(&out)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	cfg := Default()
+	cfg.ApplyLogLevel() // the default: debug stays out
+	slog.Debug("quiet detail")
+	if strings.Contains(out.String(), "quiet detail") {
+		t.Error("debug printed at the default level")
+	}
+
+	cfg.LogLevel = "debug"
+	cfg.ApplyLogLevel()
+	slog.Debug("speaker scores", "scores", "roxana=0.81")
+	if !strings.Contains(out.String(), "speaker scores") {
+		t.Errorf("debug never reached the log: %q", out.String())
+	}
+	// The handler is not replaced, so every other line keeps its format.
+	if !strings.Contains(out.String(), "DEBUG") {
+		t.Errorf("the log lost its level prefix: %q", out.String())
+	}
+
+	// A typo leaves the log usable rather than silencing it.
+	cfg.LogLevel = "verbose"
+	cfg.ApplyLogLevel()
+	slog.Info("still here")
+	if !strings.Contains(out.String(), "still here") {
+		t.Error("an unknown log_level silenced the log")
 	}
 }

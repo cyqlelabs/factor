@@ -60,6 +60,10 @@ type App struct {
 // New assembles a fully wired Factor instance. The memory sidecar starts in
 // the background; health flips asynchronously.
 func New(ctx context.Context, cfg *config.Config) (*App, error) {
+	// The one place both the daemon and a chat session pass through, so the
+	// log level is settled here before anything below it logs a line.
+	cfg.ApplyLogLevel()
+
 	ws := cfg.Agent.Workspace
 	if err := config.EnsureWorkspace(ws); err != nil {
 		return nil, fmt.Errorf("workspace: %w", err)

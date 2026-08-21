@@ -3,6 +3,7 @@ package voice
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/cyqlelabs/factor/internal/bus"
@@ -86,6 +87,9 @@ func (t *speakersTool) Execute(_ context.Context, args map[string]any) *tools.Re
 			return tools.Errorf("%v", err)
 		}
 		t.voice.renameSticky(name, newName)
+		// A rename moves a person's conversation to a new session key, so it
+		// belongs in the log beside the turns on either side of it.
+		slog.Info("speaker renamed", "from", name, "to", newName)
 		return tools.Textf("%s is now %s.", name, newName)
 	case "forget":
 		if name == "" {
@@ -94,6 +98,7 @@ func (t *speakersTool) Execute(_ context.Context, args map[string]any) *tools.Re
 		if err := store.forget(name); err != nil {
 			return tools.Errorf("%v", err)
 		}
+		slog.Info("speaker forgotten", "speaker", name)
 		return tools.Textf("Forgot the voice of %s.", name)
 	default:
 		return tools.Errorf("unknown action (want list, rename, or forget)")

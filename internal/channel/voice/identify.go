@@ -3,6 +3,7 @@ package voice
 import (
 	"context"
 	"log/slog"
+	"math"
 	"time"
 )
 
@@ -28,12 +29,33 @@ const (
 	speakerMinBytes = captureRate * 2 // one second of 16 kHz s16le
 )
 
+// How one identity was arrived at. It rides the decision purely so the log
+// can say it: "it answered as the wrong person" is only diagnosable if the
+// line names which branch ran and how close the vectors were.
+const (
+	viaMatch       = "match"       // a profile above the threshold
+	viaEnrolled    = "enrolled"    // nobody matched, so a profile was created
+	viaUnknown     = "unknown"     // nobody matched, and the policy is anonymous
+	viaBarge       = "barge"       // captured over the agent's voice: not embedded
+	viaShort       = "short"       // too little speech to identify: not embedded
+	viaUnavailable = "unavailable" // the embedding could not be computed
+)
+
 // speakerIdentity is what the channel decided about who spoke. A blank name
 // is a voice it will not commit to; primary is the machine's owner, who keeps
 // the channel's original session.
 type speakerIdentity struct {
 	name    string
 	primary bool
+
+	// via and similarity are the decision's own account of itself, for the
+	// log: which branch named this voice, and how close the closest profile
+	// was — the number speaker_threshold is tuned against.
+	via        string
+	similarity float64
+	// inherited marks a name taken from the conversation rather than from
+	// this utterance's own audio.
+	inherited bool
 }
 
 // identifySpeaker names the voice behind one accepted utterance. Barged and
@@ -45,8 +67,11 @@ func (v *Voice) identifySpeaker(ctx context.Context, utterance capturedUtterance
 		return speakerIdentity{}
 	}
 	silenceTail := v.cfg.SilenceMs * captureRate * 2 / 1000
-	if utterance.barged || len(utterance.pcm)-silenceTail < speakerMinBytes {
-		return v.stickySpeaker()
+	if utterance.barged {
+		return v.stickySpeaker(viaBarge)
+	}
+	if len(utterance.pcm)-silenceTail < speakerMinBytes {
+		return v.stickySpeaker(viaShort)
 	}
 	embedding, err := v.speechClient().embed(ctx, utterance.pcm)
 	if err != nil || len(embedding) == 0 {
@@ -56,40 +81,54 @@ func (v *Voice) identifySpeaker(ctx context.Context, utterance capturedUtterance
 			slog.Warn("speaker identification failed; not naming speakers until it recovers",
 				"error", v.redact(err))
 		}
-		return v.stickySpeaker()
+		return v.stickySpeaker(viaUnavailable)
 	}
-	v.embedFailing.Store(false)
+	if v.embedFailing.Swap(false) {
+		slog.Info("speaker identification recovered")
+	}
 	name, similarity := v.speakers.match(embedding)
+	// Every profile's score, for tuning speaker_threshold against real voices
+	// — the one question the decision alone cannot answer is how close the
+	// runners-up were. Built only when the log would print it.
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		slog.Debug("speaker scores", "scores", v.speakers.scores(embedding),
+			"threshold", v.cfg.SpeakerThreshold)
+	}
 	if name != "" && similarity >= v.cfg.SpeakerThreshold {
 		v.speakers.learn(name, embedding)
-		return v.rememberSpeaker(name)
+		return v.rememberSpeaker(name, viaMatch, similarity)
 	}
 	if v.cfg.UnknownSpeaker == unknownEnroll {
 		enrolled := v.speakers.enroll(embedding)
-		slog.Info("a new voice enrolled", "speaker", enrolled)
-		return v.rememberSpeaker(enrolled)
+		slog.Info("a new voice enrolled", "speaker", enrolled,
+			"closest", name, "similarity", round2(similarity), "threshold", v.cfg.SpeakerThreshold)
+		return v.rememberSpeaker(enrolled, viaEnrolled, similarity)
 	}
-	return v.rememberSpeaker("")
+	return v.rememberSpeaker("", viaUnknown, similarity)
 }
 
 // stickySpeaker is the conversation's current voice, while it is current.
-func (v *Voice) stickySpeaker() speakerIdentity {
+func (v *Voice) stickySpeaker(via string) speakerIdentity {
 	v.mu.Lock()
 	name, at := v.lastSpeaker, v.lastSpeakerAt
 	v.mu.Unlock()
 	if name == "" || time.Since(at) > speakerStickyWindow {
-		return speakerIdentity{}
+		return speakerIdentity{via: via}
 	}
-	return v.identity(name)
+	who := v.identity(name)
+	who.via, who.inherited = via, true
+	return who
 }
 
 // rememberSpeaker records who is talking now — including nobody, so an
 // unknown voice does not ride the previous speaker's identity.
-func (v *Voice) rememberSpeaker(name string) speakerIdentity {
+func (v *Voice) rememberSpeaker(name, via string, similarity float64) speakerIdentity {
 	v.mu.Lock()
 	v.lastSpeaker, v.lastSpeakerAt = name, time.Now()
 	v.mu.Unlock()
-	return v.identity(name)
+	who := v.identity(name)
+	who.via, who.similarity = via, similarity
+	return who
 }
 
 // lastSpeakerName is who spoke last, for the health endpoint and the
@@ -134,3 +173,27 @@ func (who speakerIdentity) content(text string) string {
 	}
 	return "[" + who.name + "] " + text
 }
+
+// logFields is how a decision explains itself on the "voice heard" line: who
+// it settled on, which branch decided that, how close the closest profile
+// was, and the session the turn will run in — the four answers behind "why
+// did it answer as the wrong person", and behind "why did it answer as
+// nobody" when the threshold is the reason.
+func (who speakerIdentity) logFields() []any {
+	name := who.name
+	if name == "" {
+		name = "unnamed"
+	}
+	fields := []any{"speaker", name, "via", who.via}
+	switch who.via {
+	case viaMatch, viaEnrolled, viaUnknown:
+		fields = append(fields, "similarity", round2(who.similarity))
+	}
+	if who.inherited {
+		fields = append(fields, "inherited", true)
+	}
+	return append(fields, "session", who.session())
+}
+
+// round2 keeps a similarity readable in a log line: 0.83, not 0.8271604938.
+func round2(x float64) float64 { return math.Round(x*100) / 100 }

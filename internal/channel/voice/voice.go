@@ -214,7 +214,15 @@ func (v *Voice) Start(ctx context.Context) error {
 	go v.run(v.runCtx)
 
 	slog.Info("voice channel ready",
-		"activation", v.cfg.Activation, "tier", v.cfg.TierLabel(), "control_port", v.cfg.ControlPort)
+		"activation", v.cfg.Activation, "tier", v.cfg.TierLabel(), "control_port", v.cfg.ControlPort,
+		"speaker_id", v.speakers != nil)
+	if v.speakers != nil {
+		// Who this machine already knows, and the two knobs that decide what
+		// it does with a voice it does not: enough to read the decisions that
+		// follow without opening the profile file.
+		slog.Info("speaker identification on", "known", v.speakers.summary(),
+			"threshold", v.cfg.SpeakerThreshold, "unknown_speaker", v.cfg.UnknownSpeaker)
+	}
 	return nil
 }
 
@@ -453,11 +461,11 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 	case dec.echo:
 		action = "echo"
 	}
-	if who.name != "" {
-		slog.Info("voice heard", "text", text, "action", action, "speaker", who.name)
-	} else {
-		slog.Info("voice heard", "text", text, "action", action)
+	fields := []any{"text", text, "action", action}
+	if v.speakers != nil && dec.accept {
+		fields = append(fields, who.logFields()...)
 	}
+	slog.Info("voice heard", fields...)
 	switch {
 	case dec.accept:
 		// The new utterance owns the floor: whatever was playing is over,

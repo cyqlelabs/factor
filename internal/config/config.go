@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,13 @@ type Config struct {
 	Gateway       GatewayConfig              `json:"gateway"`
 	Upgrade       UpgradeConfig              `json:"upgrade"`
 	Cost          CostConfig                 `json:"cost"`
+
+	// LogLevel is the lowest severity that reaches the log: "debug", "info"
+	// (the default), "warn", or "error". Debug is where the per-decision
+	// detail lives — which profile a voice matched and how closely, how long
+	// an utterance was, a memory write that was dropped — too noisy for a
+	// normal run and the first thing wanted when one goes wrong.
+	LogLevel string `json:"log_level,omitempty" env:"FACTOR_LOG_LEVEL"`
 
 	path string
 }
@@ -441,6 +449,35 @@ func (c *Config) Save() error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// ApplyLogLevel installs log_level process-wide. It moves the default
+// handler's threshold rather than replacing the handler, so the log keeps the
+// format every other line is already written in — and so Factor's slog.Debug
+// calls, which Go's default drops on the floor, become reachable at all.
+// An unrecognized name is reported and left at info rather than silencing the
+// log over a typo.
+func (c *Config) ApplyLogLevel() {
+	level, err := parseLogLevel(c.LogLevel)
+	if err != nil {
+		slog.Warn("keeping the log at info", "error", err)
+	}
+	slog.SetLogLoggerLevel(level)
+}
+
+func parseLogLevel(name string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("unknown log_level %q (want debug, info, warn, or error)", name)
+	}
 }
 
 func (c *Config) normalize() {

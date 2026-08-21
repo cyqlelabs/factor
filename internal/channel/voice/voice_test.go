@@ -1,14 +1,18 @@
 package voice
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -687,7 +691,7 @@ func TestVoiceSpeakersTool(t *testing.T) {
 	}
 	h.v.speakers.enroll(vec(1, 0))
 	h.v.speakers.enroll(vec(0, 1))
-	h.v.rememberSpeaker("speaker-2")
+	h.v.rememberSpeaker("speaker-2", viaMatch, 0.9)
 
 	tool := &speakersTool{voice: h.v}
 	if res := tool.Execute(context.Background(), map[string]any{
@@ -1051,3 +1055,33 @@ func TestSpokenLinesAreLocalized(t *testing.T) {
 }
 
 func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }
+
+// At debug the channel prints every profile's score against the voice it just
+// heard — the runners-up the decision alone does not report, and the numbers
+// speaker_threshold is tuned against.
+func TestVoiceLogsSpeakerScoresAtDebug(t *testing.T) {
+	var out bytes.Buffer
+	log.SetOutput(&out)
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+	t.Cleanup(func() { log.SetOutput(os.Stderr); slog.SetLogLoggerLevel(slog.LevelInfo) })
+
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.start()
+
+	h.setEmbedding([]float64{1, 0, 0})
+	h.say()
+	h.turn(10 * time.Second)
+	h.waitQuiet()
+	h.setEmbedding([]float64{0, 1, 0})
+	h.say()
+	h.turn(10 * time.Second)
+
+	logged := out.String()
+	if !strings.Contains(logged, "speaker scores") || !strings.Contains(logged, "speaker-1=") {
+		t.Errorf("the per-profile scores never reached the log:\n%s", logged)
+	}
+	if !strings.Contains(logged, "threshold=0.5") {
+		t.Errorf("the scores line does not say what they were judged against:\n%s", logged)
+	}
+}

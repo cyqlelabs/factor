@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"unicode"
@@ -78,6 +79,36 @@ func (s *speakerStore) match(embedding []float64) (string, float64) {
 		}
 	}
 	return best, bestSim
+}
+
+// scores is every profile's similarity to one embedding, formatted for a
+// debug line — "roxana=0.81 speaker-1=0.42", ordered best first. It exists
+// for tuning speaker_threshold: the decision reports its winner, and this
+// reports how far behind the runners-up were.
+func (s *speakerStore) scores(embedding []float64) string {
+	embedding = unit(embedding)
+	s.mu.Lock()
+	type score struct {
+		name string
+		sim  float64
+	}
+	scored := make([]score, 0, len(s.profiles))
+	for _, p := range s.profiles {
+		scored = append(scored, score{p.Name, cosine(embedding, p.Embedding)})
+	}
+	s.mu.Unlock()
+	if len(scored) == 0 {
+		return "no profiles enrolled"
+	}
+	sort.Slice(scored, func(i, j int) bool { return scored[i].sim > scored[j].sim })
+	var b strings.Builder
+	for i, sc := range scored {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%s=%.2f", sc.name, sc.sim)
+	}
+	return b.String()
 }
 
 // learn folds one more utterance of a known voice into its profile.
@@ -175,6 +206,26 @@ func (s *speakerStore) list() []speakerInfo {
 		infos = append(infos, speakerInfo{Name: p.Name, Primary: p.Primary, Utterances: p.Utterances})
 	}
 	return infos
+}
+
+// summary names the enrolled voices in one log-line string, the primary one
+// marked: "nicolas*, roxana (12 utterances each)" is unreadable, so it stays
+// to names — "none" when nobody is enrolled yet.
+func (s *speakerStore) summary() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.profiles) == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(s.profiles))
+	for _, p := range s.profiles {
+		name := fmt.Sprintf("%s(%d)", p.Name, p.Utterances)
+		if p.Primary {
+			name += "*"
+		}
+		names = append(names, name)
+	}
+	return strings.Join(names, " ")
 }
 
 func (s *speakerStore) find(name string) *speakerProfile {
