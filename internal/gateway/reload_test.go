@@ -337,3 +337,46 @@ func TestRunReloadsWhenTheConfigFileChanges(t *testing.T) {
 		t.Errorf("the reload notice = %+v", sent)
 	}
 }
+
+// A config edit the reload would not survive — or would silently degrade
+// under — is refused up front: the running configuration stays.
+func TestPreflightRefusesAConfigTheReloadWouldNotSurvive(t *testing.T) {
+	current := config.Default()
+	current.Gateway.Host, current.Gateway.Port = "127.0.0.1", freePort(t)
+
+	// A provider nothing can build.
+	bad := config.Default()
+	bad.Provider.Type = "no-such-provider"
+	if err := preflight(current, bad); err == nil {
+		t.Error("an unbuildable provider chain passed preflight")
+	}
+
+	// A channel section its connector refuses; Build would skip it with a
+	// log line, which under a live reload silently drops the channel.
+	bad = config.Default()
+	bad.Channels = map[string]json.RawMessage{
+		"voice": json.RawMessage(`{"activation":"sometimes"}`),
+	}
+	if err := preflight(current, bad); err == nil || !strings.Contains(err.Error(), "channels.voice") {
+		t.Errorf("a broken channel section passed preflight: %v", err)
+	}
+
+	// A health address something else already holds.
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	bad = config.Default()
+	bad.Gateway.Host = "127.0.0.1"
+	bad.Gateway.Port = taken.Addr().(*net.TCPAddr).Port
+	if err := preflight(current, bad); err == nil {
+		t.Error("an occupied gateway address passed preflight")
+	}
+
+	// The address it already serves on is not re-probed: the old process
+	// still holds it, and it is released before the exec.
+	if err := preflight(current, current); err != nil {
+		t.Errorf("an unchanged config failed preflight: %v", err)
+	}
+}

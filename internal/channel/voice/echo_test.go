@@ -48,6 +48,29 @@ func TestEchoTrackerLeavesUnrelatedSpeechAlone(t *testing.T) {
 	}
 }
 
+// A barge that quotes the reply is the user giving a command, not feedback:
+// discarding whole utterances takes a run longer than anyone dictates.
+func TestEchoTrackerKeepsAQuotedShortCommand(t *testing.T) {
+	e := &echoTracker{}
+	e.record("I can turn the music off if you like.")
+	rest, echo := e.strip("turn the music off")
+	if echo || rest != "turn the music off" {
+		t.Errorf("a quoted command was swallowed: rest = %q, echo = %v", rest, echo)
+	}
+}
+
+// Once a reply has been heard out it is no longer in the air; quoting it
+// afterwards is the user, not the walls.
+func TestEchoTrackerForgetsAReplyHeardOut(t *testing.T) {
+	e := &echoTracker{}
+	e.record("the weather in madrid is sunny today")
+	e.clear()
+	rest, echo := e.strip("the weather in madrid is sunny today")
+	if echo || rest != "the weather in madrid is sunny today" {
+		t.Errorf("a finished reply still counts as echo: rest = %q, echo = %v", rest, echo)
+	}
+}
+
 func TestEchoTrackerNeverEatsAShortCommand(t *testing.T) {
 	e := &echoTracker{}
 	e.record("i will stop the music right now")

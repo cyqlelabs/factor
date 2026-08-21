@@ -9,8 +9,10 @@ import (
 // Speaker identification: which of the household's voices one utterance is.
 // The managed speech server computes an embedding of the utterance's audio;
 // the profile store names it. A known voice that is not the machine's owner
-// holds its own conversation — its own session key — so what Factor discusses
-// with one person does not leak into its thread with another.
+// holds its own conversation — its own session key — so each person's thread
+// of dialogue stays theirs. (Session history separates; ambient memory is
+// still one shared graph, so a fact one person tells Factor can surface in
+// another's recall.)
 
 const (
 	// speakerStickyWindow is how long a short or barged utterance inherits
@@ -18,9 +20,11 @@ const (
 	// was just talking, and half a second of audio cannot say who that is.
 	speakerStickyWindow = 30 * time.Second
 
-	// speakerMinBytes is the least audio worth embedding — below about a
+	// speakerMinBytes is the least speech worth embedding — below about a
 	// second the vectors are noise, and naming the wrong person costs more
-	// than naming nobody.
+	// than naming nobody. Judged over the utterance minus its silence tail:
+	// every segment carries silence_ms of closing quiet, which says nothing
+	// about anyone's voice.
 	speakerMinBytes = captureRate * 2 // one second of 16 kHz s16le
 )
 
@@ -40,16 +44,21 @@ func (v *Voice) identifySpeaker(ctx context.Context, utterance capturedUtterance
 	if v.speakers == nil {
 		return speakerIdentity{}
 	}
-	if utterance.barged || len(utterance.pcm) < speakerMinBytes {
+	silenceTail := v.cfg.SilenceMs * captureRate * 2 / 1000
+	if utterance.barged || len(utterance.pcm)-silenceTail < speakerMinBytes {
 		return v.stickySpeaker()
 	}
 	embedding, err := v.speechClient().embed(ctx, utterance.pcm)
 	if err != nil || len(embedding) == 0 {
-		if err != nil && ctx.Err() == nil {
-			slog.Warn("speaker identification failed", "error", v.redact(err))
+		// One warning per outage: with the managed server down or serving
+		// without a speaker model, every utterance would repeat it.
+		if err != nil && ctx.Err() == nil && !v.embedFailing.Swap(true) {
+			slog.Warn("speaker identification failed; not naming speakers until it recovers",
+				"error", v.redact(err))
 		}
 		return v.stickySpeaker()
 	}
+	v.embedFailing.Store(false)
 	name, similarity := v.speakers.match(embedding)
 	if name != "" && similarity >= v.cfg.SpeakerThreshold {
 		v.speakers.learn(name, embedding)

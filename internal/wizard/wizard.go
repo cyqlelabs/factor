@@ -1580,7 +1580,9 @@ func voiceChannelConfig(cfg *config.Config) voiceSection {
 // setVoiceSection lays the wizard's answers over channels.voice without
 // dropping the keys the wizard does not ask about — vad_ratio, output_volume,
 // silence_ms and friends are hand-tuned, and re-running setup must not silently
-// undo them.
+// undo them. The mirror marshals with omitempty, so the merge overwrites and
+// adds but never removes: a key the wizard cleared survives from the old
+// section, harmless because every consumer treats blank and absent alike.
 func setVoiceSection(cfg *config.Config, section *voiceSection) error {
 	raw, err := json.Marshal(section)
 	if err != nil {

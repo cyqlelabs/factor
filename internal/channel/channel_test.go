@@ -113,3 +113,35 @@ func TestManagerChunksAndRetries(t *testing.T) {
 		}
 	}
 }
+
+// Validate is the reload preflight: Build skips a broken section with a log
+// line, Validate names it so the gateway can refuse the edit instead.
+func TestValidateNamesTheSectionAConnectorRefuses(t *testing.T) {
+	Register("validate-strict", func(raw json.RawMessage, _ *bus.MessageBus) (Channel, error) {
+		var cfg struct {
+			OK bool `json:"ok"`
+		}
+		if err := json.Unmarshal(raw, &cfg); err != nil || !cfg.OK {
+			return nil, fmt.Errorf("not ok")
+		}
+		return &fakeChannel{name: "validate-strict"}, nil
+	})
+
+	good := map[string]json.RawMessage{
+		"validate-strict": json.RawMessage(`{"ok":true}`),
+		"never-heard-of":  json.RawMessage(`{}`), // unknown stays forward-compatible
+	}
+	if err := Validate(good); err != nil {
+		t.Errorf("a buildable config failed validation: %v", err)
+	}
+
+	bad := map[string]json.RawMessage{"validate-strict": json.RawMessage(`{"ok":false}`)}
+	if err := Validate(bad); err == nil || !strings.Contains(err.Error(), "channels.validate-strict") {
+		t.Errorf("Validate = %v, want it to name the section", err)
+	}
+
+	off := map[string]json.RawMessage{"validate-strict": json.RawMessage(`{"ok":false,"enabled":false}`)}
+	if err := Validate(off); err != nil {
+		t.Errorf("a disabled section was validated anyway: %v", err)
+	}
+}

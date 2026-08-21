@@ -119,13 +119,17 @@ func (s *speakerStore) enroll(embedding []float64) string {
 
 func (s *speakerStore) rename(from, to string) error {
 	to = strings.TrimSpace(to)
-	if to == "" {
-		return fmt.Errorf("a speaker needs a name")
+	if to == "" || speakerSlug(to) == "" {
+		return fmt.Errorf("a speaker needs a name with letters or digits in it")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.find(to) != nil {
-		return fmt.Errorf("there is already a speaker named %q", to)
+	// Names key sessions by their slug, so two names must not collapse into
+	// one: "Ana!" beside "Ana" would silently share a conversation.
+	for _, p := range s.profiles {
+		if p.Name != from && speakerSlug(p.Name) == speakerSlug(to) {
+			return fmt.Errorf("%q would share a session with the speaker named %q", to, p.Name)
+		}
 	}
 	p := s.find(from)
 	if p == nil {

@@ -28,6 +28,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/heartbeat"
 	"github.com/cyqlelabs/factor/internal/memory"
+	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/upgrade"
 	"github.com/cyqlelabs/factor/internal/version"
 )
@@ -126,10 +127,21 @@ func serve(configPath string) (bool, error) {
 	// gateway through the same settle-and-exec path an upgrade takes. That is
 	// what makes every parameter apply within seconds of saving, without
 	// dropping the turn in flight or restarting the sidecars, whose live
-	// engines the new process finds on their ports and adopts.
-	go config.Watch(ctx, cfg, configPoll, func(_ *config.Config, sections []string) {
+	// engines the new process finds on their ports and adopts. An edit the
+	// reload would not survive is refused up front, and the refusal reaches
+	// the user rather than only the log: a live reload must not turn a typo
+	// into an outage.
+	go config.Watch(ctx, cfg, configPoll, func(next *config.Config, sections []string) {
+		if err := preflight(cfg, next); err != nil {
+			slog.Warn("config changed on disk but cannot be applied; keeping the running one", "error", err)
+			if ch, chat, ok := a.Loop.LastChannel(); ok {
+				a.Bus.PublishOutbound(bus.OutboundMessage{Channel: ch, ChatID: chat, Content: fmt.Sprintf(
+					"The config change was not applied — %v. The previous configuration is still running.", err)})
+			}
+			return
+		}
 		slog.Info("config changed on disk; reloading to apply it", "sections", sections)
-		request("config: "+strings.Join(sections, ", "), upgrade.Target{})
+		request(configReloadPrefix+strings.Join(sections, ", "), upgrade.Target{})
 	})
 
 	channels := channel.Build(cfg.Channels, a.Bus)
@@ -267,6 +279,29 @@ var (
 	// ceiling on how long a saved edit waits to take effect.
 	configPoll = 3 * time.Second
 )
+
+// preflight rejects a config edit the reload would not survive, or would
+// silently degrade under: a provider chain that cannot be built, a channel
+// section its connector refuses, a health address nothing can listen on.
+// Cheap static checks only — what they cannot see (a wrong credential, a bad
+// memory endpoint) fails exactly as it would after a hand restart.
+func preflight(current, next *config.Config) error {
+	if _, err := provider.BuildChain(next.Provider); err != nil {
+		return fmt.Errorf("provider: %w", err)
+	}
+	if err := channel.Validate(next.Channels); err != nil {
+		return err
+	}
+	nextAddr := net.JoinHostPort(next.Gateway.Host, strconv.Itoa(next.Gateway.Port))
+	if nextAddr != net.JoinHostPort(current.Gateway.Host, strconv.Itoa(current.Gateway.Port)) {
+		ln, err := net.Listen("tcp", nextAddr)
+		if err != nil {
+			return fmt.Errorf("gateway address %s: %w", nextAddr, err)
+		}
+		_ = ln.Close()
+	}
+	return nil
+}
 
 // settle waits for the conversation that asked for the restart to be
 // answered: every turn ends, its reply drains off the outbound queue, and

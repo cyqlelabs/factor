@@ -21,6 +21,11 @@ type restartRequest struct {
 	target upgrade.Target
 }
 
+// configReloadPrefix opens the reason of a reload the config watcher asked
+// for; the changed section names follow it, and restartMessage reads them
+// back out for the "applied" line.
+const configReloadPrefix = "config: "
+
 // A restart leaves a note on disk for the process that comes next. The exec
 // keeps the pid and nothing else, so the new binary has no idea it was asked
 // to come back, let alone who is waiting to hear that it did — and the user
@@ -94,7 +99,7 @@ func announceRestart(publish func(bus.OutboundMessage) bool) {
 }
 
 func restartMessage(note restartNotice) string {
-	if changed, ok := strings.CutPrefix(note.Reason, "config: "); ok {
+	if changed, ok := strings.CutPrefix(note.Reason, configReloadPrefix); ok {
 		return fmt.Sprintf("Config change applied (%s).", changed)
 	}
 	if note.From != "" && note.From != version.Version {

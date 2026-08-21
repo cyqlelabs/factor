@@ -69,6 +69,12 @@ func TestSpeakerStoreRenameAndForget(t *testing.T) {
 	if err := store.rename("nobody", "x"); err == nil {
 		t.Error("renaming an unknown profile did not fail")
 	}
+	if err := store.rename("speaker-1", "!!!"); err == nil {
+		t.Error("a name with no letters or digits was accepted")
+	}
+	if err := store.rename("speaker-1", "Roxana!"); err == nil {
+		t.Error("a name that slugs identically to another speaker's was accepted")
+	}
 	if name, _ := store.match(vec(0, 1)); name != "Roxana" {
 		t.Errorf("after rename, match = %q", name)
 	}

@@ -143,6 +143,9 @@ SPEAKER_MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
     "speaker-recongition-models/wespeaker_en_voxceleb_CAM%2B%2B.onnx"
 )
+# The asset is a fixed release file; pinning its digest is what turns "the
+# download finished" into "the model is the one this code was written for".
+SPEAKER_MODEL_SHA256 = "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef"
 
 # ------------------------------------------------------------------- the models
 
@@ -724,6 +727,7 @@ def prepare() -> None:
         target = DATA_DIR / "speaker" / SPEAKER_MODEL_FILE
         if not target.exists():
             log("downloading the speaker model", model=SPEAKER_MODEL_FILE)
+            import hashlib
             import urllib.request
 
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -731,6 +735,10 @@ def prepare() -> None:
             # short never leaves a half-model the server would try to load.
             partial = target.with_suffix(".part")
             urllib.request.urlretrieve(SPEAKER_MODEL_URL, partial)
+            digest = hashlib.sha256(partial.read_bytes()).hexdigest()
+            if digest != SPEAKER_MODEL_SHA256:
+                partial.unlink()
+                die(f"the speaker model download does not match its pinned checksum (got {digest})")
             partial.replace(target)
 
     if CFG.get("need_stt"):

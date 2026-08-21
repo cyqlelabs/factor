@@ -514,6 +514,9 @@ func TestVoiceUnintelligibleBargeInResumesTheReply(t *testing.T) {
 // discarded as echo and the reply plays on.
 func TestVoiceIgnoresItsOwnEchoFromTheSpeakers(t *testing.T) {
 	h := newVoiceHarness(t, nil)
+	h.mu.Lock()
+	h.reply = "the weather in madrid is sunny today"
+	h.mu.Unlock()
 	pcm := clip(120000)
 	h.setReplyPCM(pcm)
 	h.start()
@@ -522,7 +525,7 @@ func TestVoiceIgnoresItsOwnEchoFromTheSpeakers(t *testing.T) {
 	waitUntil(t, func() bool { return len(h.speaker.heard()) > 0 })
 
 	// What the mic hears is the reply itself, coming back off the walls.
-	h.setTranscript("as you wish")
+	h.setTranscript("the weather in madrid is sunny today")
 	h.mic.feed(repeat(toneFrame(16000), 12)...)
 	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
 
@@ -600,6 +603,56 @@ func TestVoiceSpeakerIdentificationSeparatesConversations(t *testing.T) {
 	}
 	if guest.content != "[speaker-2] hello there" {
 		t.Errorf("the guest's words arrived as %q, want them marked", guest.content)
+	}
+}
+
+// An utterance too short to embed — half a second of "sí" — inherits the
+// conversation's current speaker instead of falling back to the owner's
+// session mid-dialogue.
+func TestVoiceShortUtteranceInheritsTheCurrentSpeaker(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.start()
+
+	// The owner enrolls, then a guest speaks a full sentence.
+	h.setEmbedding([]float64{1, 0, 0})
+	h.say()
+	h.turn(10 * time.Second)
+	h.waitQuiet()
+	h.setEmbedding([]float64{0, 1, 0})
+	h.say()
+	if call := h.turn(10 * time.Second); call.session != sessionKey+":speaker-2" {
+		t.Fatalf("the guest's turn ran in %q", call.session)
+	}
+	h.waitQuiet()
+
+	// A short answer follows: too little voice to embed, but the guest is
+	// still the one talking. The owner's embedding on the wire proves the
+	// short path never asked for one.
+	h.setEmbedding([]float64{1, 0, 0})
+	h.mic.feed(repeat(silenceFrame(), 20)...)
+	h.mic.feed(repeat(toneFrame(8000), 12)...)
+	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
+	if call := h.turn(10 * time.Second); call.session != sessionKey+":speaker-2" {
+		t.Errorf("the short follow-up ran in %q, want the guest's session", call.session)
+	}
+}
+
+// The embedding endpoint answering nothing — a server without the speaker
+// model, an utterance it could not read — leaves the turn running, unnamed.
+func TestVoiceRunsTheTurnWhenTheEmbeddingIsUnavailable(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.start()
+
+	h.setEmbedding(nil)
+	h.say()
+	call := h.turn(10 * time.Second)
+	if call.session != sessionKey || call.content != "hello there" {
+		t.Errorf("the unnamed turn ran as %q in %q", call.content, call.session)
+	}
+	if profiles := h.v.speakers.list(); len(profiles) != 0 {
+		t.Errorf("an utterance nobody could embed was enrolled: %+v", profiles)
 	}
 }
 

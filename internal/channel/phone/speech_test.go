@@ -741,6 +741,8 @@ func TestEmbeddedSpeechServerKnowsTheSpeakerModel(t *testing.T) {
 		// The release tag's misspelling is the project's own; a well-meant
 		// correction would point at a URL that does not exist.
 		"speaker-recongition-models",
+		// The download is only trusted against its pinned digest.
+		"SPEAKER_MODEL_SHA256",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("speechserver.py lost %q", want)

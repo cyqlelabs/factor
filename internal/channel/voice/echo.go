@@ -24,6 +24,13 @@ const (
 	// would swallow a real command.
 	echoMinWords = 3
 
+	// echoDiscardWords is the higher bar for throwing an utterance away
+	// whole. A short barge that quotes the reply — "turn the music off" over
+	// "I can turn the music off if you like" — matches end to end, and there
+	// is no wake word in barge mode to rescue it; only a run long enough that
+	// no one dictates it as a command is written off as pure feedback.
+	echoDiscardWords = 5
+
 	// echoGap is how many spoken words a match may skip past, absorbing the
 	// words the microphone missed on their way back in.
 	echoGap = 4
@@ -48,6 +55,15 @@ func (e *echoTracker) record(text string) {
 	}
 }
 
+// clear forgets everything. Called when a reply has been heard out in full:
+// audio no longer in the air cannot echo, and remembering it would swallow a
+// later barge that quotes it.
+func (e *echoTracker) clear() {
+	e.mu.Lock()
+	e.words = nil
+	e.mu.Unlock()
+}
+
 // strip removes the agent's own recent words from the front of a barged
 // transcript — the speakers were talking first, so the echo is always the
 // prefix. It returns what remains, and whether the utterance was nothing else.
@@ -57,25 +73,32 @@ func (e *echoTracker) strip(text string) (string, bool) {
 		return text, false
 	}
 	e.mu.Lock()
+	// Snapshotting the slice header without copying is safe only because
+	// record never writes into the snapshot's range: appends land past its
+	// length, and the truncation copies to a fresh array.
 	spoken := e.words
 	e.mu.Unlock()
-	matched := echoPrefix(tokens, spoken)
-	if matched == 0 {
+	prefix, matched := echoPrefix(tokens, spoken)
+	if prefix == 0 {
 		return text, false
 	}
-	if matched == len(tokens) {
-		return "", true
+	if prefix == len(tokens) {
+		if matched >= echoDiscardWords {
+			return "", true
+		}
+		return text, false // short enough to be a quoted command — keep it
 	}
-	rest := strings.TrimLeft(text[tokens[matched-1].end:], " \t\n,.;:!?¡¿-—")
+	rest := strings.TrimLeft(text[tokens[prefix-1].end:], " \t\n,.;:!?¡¿-—")
 	return strings.TrimSpace(rest), false
 }
 
 // echoPrefix reports how many leading tokens align, in order, with the spoken
-// words. The alignment may start anywhere in the record, skip up to echoGap
+// words — the count past the last aligned token, and how many actually
+// matched. The alignment may start anywhere in the record, skip up to echoGap
 // spoken words between matches, and absorb lone mis-transcribed tokens; two
 // consecutive unmatched tokens end it — that is where the user starts.
-func echoPrefix(tokens []wordToken, spoken []string) int {
-	best := 0
+func echoPrefix(tokens []wordToken, spoken []string) (int, int) {
+	best, bestMatched := 0, 0
 	for start, w := range spoken {
 		if w != tokens[0].norm {
 			continue
@@ -101,10 +124,10 @@ func echoPrefix(tokens []wordToken, spoken []string) int {
 			prefix = i + 1
 		}
 		if matched >= echoMinWords && prefix > best {
-			best = prefix
+			best, bestMatched = prefix, matched
 		}
 	}
-	return best
+	return best, bestMatched
 }
 
 // wordToken is one word of a transcript, normalized, with the byte offset just

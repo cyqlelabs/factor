@@ -213,6 +213,8 @@ func (s *speechSupervisor) ensureSpeakerEngine(ctx context.Context, python strin
 		return fmt.Errorf("the speaker engine is not installed and the automatic install already failed this run")
 	}
 	slog.Info("installing the speaker-identification engine", "spec", sherpaOnnxSpec)
+	ctx, cancel := context.WithTimeout(ctx, SpeechInstallTimeout)
+	defer cancel()
 	if out, err := runCmd(ctx, []string{speechVenvPip(s.home), "install", sherpaOnnxSpec}); err != nil {
 		return fmt.Errorf("could not install %s: %v\n%s", sherpaOnnxSpec, err, lastLines(out, 8))
 	}

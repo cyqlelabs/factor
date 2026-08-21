@@ -113,6 +113,32 @@ func Build(cfgs map[string]json.RawMessage, b *bus.MessageBus) []Channel {
 	return out
 }
 
+// Validate builds every enabled, known section against a throwaway bus and
+// reports the first one its connector rejects. It is what the gateway checks
+// before reloading itself over a config edit: Build skips a broken section
+// with a log line, which under a live reload would silently drop a channel
+// the user only mistyped. Nothing is started; the constructions are discarded.
+func Validate(cfgs map[string]json.RawMessage) error {
+	b := bus.New()
+	for name, raw := range cfgs {
+		factory, ok := factories[name]
+		if !ok {
+			continue // unknown sections stay forward-compatible, as in Build
+		}
+		var gate struct {
+			Enabled *bool `json:"enabled"`
+		}
+		_ = json.Unmarshal(raw, &gate)
+		if gate.Enabled != nil && !*gate.Enabled {
+			continue
+		}
+		if _, err := factory(raw, b); err != nil {
+			return fmt.Errorf("channels.%s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // SplitMessage chunks content at a channel's length limit, preferring
 // newline then space boundaries.
 func SplitMessage(content string, limit int) []string {

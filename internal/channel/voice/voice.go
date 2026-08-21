@@ -101,8 +101,10 @@ type Voice struct {
 	echo echoTracker
 
 	// speakers is who this machine knows by voice; nil when speaker
-	// identification is off.
-	speakers *speakerStore
+	// identification is off. embedFailing keeps the embedding outage warning
+	// to one line instead of one per utterance.
+	speakers     *speakerStore
+	embedFailing atomic.Bool
 
 	mu            sync.Mutex
 	stopped       bool
@@ -620,6 +622,10 @@ func (v *Voice) speak(ctx context.Context, text string) {
 			}
 		}
 	}
+	// Every chunk was heard out: this reply is no longer in the air, so its
+	// words can no longer come back as feedback. A barge later that quotes
+	// them is the user, and must not be swallowed as echo.
+	v.echo.clear()
 }
 
 func (v *Voice) armWindow() {
