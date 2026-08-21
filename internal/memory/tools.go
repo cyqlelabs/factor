@@ -102,12 +102,20 @@ func (t *rememberTool) Execute(ctx context.Context, args map[string]any) *tools.
 	if retention != "" && retention != "normal" && retention != "permanent" {
 		return tools.Errorf("unknown retention %q: use \"normal\" or \"permanent\"", retention)
 	}
-	// "permanent" translates entirely client-side into the strongest write
-	// every smrti version already accepts: a plain remember with type=belief
-	// and source=user. That path is born at the engine's highest confidence
-	// and user standing exempts it from pruning. /believe would be weaker,
-	// not stronger — its atoms start lower and duplicate on restatement — so
-	// evidence is dropped to keep permanent facts off that route.
+	// "permanent" translates entirely client-side into a shape every smrti
+	// version already accepts: a belief asserted at 0.95 with user standing.
+	// The probability is what carries the meaning — the engine reads a user
+	// belief at or above that line as standing testimony rather than an
+	// estimate that goes stale, so it is born already certain and confidence
+	// decay leaves it alone. Below that line a belief fades like anything
+	// else. An engine older than that treats it as an ordinary belief, which
+	// still holds the surfacing floor: weaker, never broken.
+	//
+	// Evidence is dropped to keep the write on /remember. Both routes reach
+	// the same belief inside the engine, but only /remember runs entity
+	// extraction, and a permanent fact that is never linked to its concepts
+	// cannot be reached by graph expansion — only by matching the query
+	// outright, which is exactly what a fact nobody has restated will not do.
 	if retention == "permanent" {
 		req.Type = "belief"
 		req.Probability = 0.95
