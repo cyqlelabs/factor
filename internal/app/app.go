@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/agent"
@@ -55,6 +56,13 @@ type App struct {
 	SmrtiUpgrade *upgrade.Smrti
 
 	closeBrowser func()
+
+	// Background work this App owns, on a context of its own so Close can
+	// end it without depending on whoever passed the parent in. The price
+	// refresh writes into ~/.factor, so a Close that did not wait would let
+	// a process that believes it has shut down touch the disk afterwards.
+	bgCancel context.CancelFunc
+	bg       sync.WaitGroup
 }
 
 // New assembles a fully wired Factor instance. The memory sidecar starts in
@@ -84,9 +92,6 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// can see, and a cap stops the turn before the next call is paid for.
 	catalog := cost.NewCatalog(cfg.Cost, cfg.Provider.Candidates(), filepath.Join(config.Home(), "pricing.json"))
 	meter := cost.NewMeter(chain, catalog, cost.NewLedger(filepath.Join(config.Home(), "usage.json")), cfg.Cost)
-	if meter.Active() {
-		go catalog.Watch(ctx)
-	}
 
 	extract := memory.DeriveExtract(cfg.Memory, cfg.Provider)
 	engine, err := memory.NewEngine(ctx, cfg.Memory, extract, filepath.Join(config.Home(), "logs"))
@@ -205,7 +210,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 	registry.Register(&cron.Tool{Service: cronService})
 
-	return &App{
+	bgCtx, bgCancel := context.WithCancel(ctx)
+	app := &App{
 		Cfg:      cfg,
 		Bus:      b,
 		Chain:    chain,
@@ -225,7 +231,20 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		SmrtiUpgrade: smrtiUpgrade,
 
 		closeBrowser: closeBrowser,
-	}, nil
+		bgCancel:     bgCancel,
+	}
+	// The price catalog refreshes on a daily tick for as long as the App
+	// lives. Started here rather than where the catalog is built so Close
+	// owns it: it is the one background task that writes to disk on its own
+	// schedule, and nothing else knows when it is done.
+	if meter.Active() {
+		app.bg.Add(1)
+		go func() {
+			defer app.bg.Done()
+			catalog.Watch(bgCtx)
+		}()
+	}
+	return app, nil
 }
 
 // cronTarget resolves where a scheduled job's result should go. A job
@@ -243,6 +262,13 @@ func cronTarget(channelName, chatID string, last func() (string, string, bool)) 
 }
 
 func (a *App) Close() {
+	// First, because it is the only shutdown step with a deadline of its own
+	// making: until the price refresh is off the disk, this process is still
+	// writing files a caller may be about to delete.
+	if a.bgCancel != nil {
+		a.bgCancel()
+		a.bg.Wait()
+	}
 	a.closeBrowser()
 	if a.MCP != nil {
 		a.MCP.CloseAll()

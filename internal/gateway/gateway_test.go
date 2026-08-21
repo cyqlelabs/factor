@@ -131,6 +131,12 @@ func gatewayConfig(t *testing.T) (*config.Config, string) {
 	cfg.Browser.Enabled = false
 	cfg.Heartbeat.Enabled = false
 	cfg.Upgrade.Check = false // no reaching out to GitHub from a unit test
+	// Nor to OpenRouter for prices: the default provider is a paid model, so
+	// every gateway test was really fetching the price catalogue over the
+	// internet and writing it into this temp home — on whatever schedule the
+	// network answered, which is not one the test controls. A dead local port
+	// fails the refresh instantly, as the app package's own config does.
+	cfg.Cost.PricesURL = "http://127.0.0.1:1/models"
 	cfg.Gateway.Host = "127.0.0.1"
 	cfg.Gateway.Port = freePort(t)
 	cfg.Provider.APIKey = "test-key"

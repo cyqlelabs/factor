@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -334,4 +337,53 @@ func TestCloseIsIdempotent(t *testing.T) {
 	}
 	a.Close()
 	a.Close() // must not panic or hang
+}
+
+// The price catalog refreshes in the background and writes ~/.factor/pricing.json
+// when the answer lands. Close has to be the barrier for that: a caller who has
+// closed the App — the gateway on its way to an exec, a test tearing its home
+// down — must not have a file appear underneath it afterwards. (CI caught this
+// as a TempDir cleanup failing with "directory not empty".)
+func TestCloseWaitsForThePriceRefresh(t *testing.T) {
+	cfg := testConfig(t)
+	home := config.Home()
+
+	// A prices endpoint that answers a beat late, so an unwaited refresh would
+	// write its cache well after Close returned.
+	var once sync.Once
+	hit := make(chan struct{})
+	prices := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		once.Do(func() { close(hit) })
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-test","pricing":{"prompt":"0.000001","completion":"0.000002"}}]}`))
+	}))
+	defer prices.Close()
+
+	// Cost tracking on, against a model that is actually priced: a candidate
+	// served from loopback is free by construction and never refreshes.
+	cfg.Cost.Track = true
+	cfg.Cost.PricesURL = prices.URL
+	cfg.Provider = config.ProviderConfig{
+		Type: "openai", Model: "gpt-test", MaxTokens: 512, APIKey: "test-key",
+		APIBase: "https://api.example.invalid/v1", MaxRetries: 0, RetryBackoffSecs: 1,
+	}
+
+	a, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-hit:
+	case <-time.After(10 * time.Second):
+		a.Close()
+		t.Fatal("the price catalog never refreshed; this test would prove nothing")
+	}
+	a.Close()
+
+	// Close returned while the answer was still on its way, so the refresh it
+	// owned is over: nothing may appear in the home from here on.
+	time.Sleep(time.Second)
+	if _, err := os.Stat(filepath.Join(home, "pricing.json")); !os.IsNotExist(err) {
+		t.Errorf("the price cache was written after Close returned (%v)", err)
+	}
 }
