@@ -34,6 +34,9 @@ func TestApplyDefaultsFillsEveryKnob(t *testing.T) {
 	if cfg.VADRatio != defaultVADRatio || cfg.BargeRatio != defaultBargeRatio {
 		t.Errorf("ratios = %v/%v", cfg.VADRatio, cfg.BargeRatio)
 	}
+	if cfg.OutputVolume != 100 {
+		t.Errorf("output volume = %d, want full volume by default", cfg.OutputVolume)
+	}
 	if err := cfg.validate(); err != nil {
 		t.Errorf("a defaulted cloud config does not validate: %v", err)
 	}
@@ -91,6 +94,7 @@ func TestValidateRejectsWhatWouldFailMidConversation(t *testing.T) {
 		{"unknown stt provider", func(c *Config) { c.STT.Provider = "azure" }, "unknown stt.provider"},
 		{"elevenlabs without a key", func(c *Config) { c.ElevenLabsAPIKey = "" }, "elevenlabs_api_key"},
 		{"unknown tts provider", func(c *Config) { c.TTS.Provider = "azure" }, "unknown tts.provider"},
+		{"volume beyond full", func(c *Config) { c.OutputVolume = 130 }, "output_volume"},
 		{"speech port colliding with control", func(c *Config) {
 			c.STT = phone.AudioEndpoint{Provider: providerLocalOpenAI}
 			c.SpeechServer.Port = 8730

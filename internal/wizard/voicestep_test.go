@@ -504,3 +504,23 @@ func TestQuietRunInstallsAudioHelpers(t *testing.T) {
 		t.Errorf("the scriptable path said nothing about the voice helpers:\n%s", out.String())
 	}
 }
+
+// Re-running setup must not undo hand-tuned keys the wizard never asks about.
+func TestSetVoiceSectionKeepsTheKeysTheWizardDoesNotAsk(t *testing.T) {
+	cfg := &config.Config{Channels: map[string]json.RawMessage{
+		"voice": json.RawMessage(`{"language":"es","vad_ratio":4.5,"output_volume":60}`),
+	}}
+	if err := setVoiceSection(cfg, &voiceSection{Language: "en", Activation: "always"}); err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(cfg.Channels["voice"], &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved["language"] != "en" || saved["activation"] != "always" {
+		t.Errorf("the wizard's answers did not land: %v", saved)
+	}
+	if saved["vad_ratio"] != 4.5 || saved["output_volume"] != float64(60) {
+		t.Errorf("hand-tuned keys were dropped: %v", saved)
+	}
+}

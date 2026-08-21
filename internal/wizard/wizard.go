@@ -1577,6 +1577,37 @@ func voiceChannelConfig(cfg *config.Config) voiceSection {
 	return section
 }
 
+// setVoiceSection lays the wizard's answers over channels.voice without
+// dropping the keys the wizard does not ask about — vad_ratio, output_volume,
+// silence_ms and friends are hand-tuned, and re-running setup must not silently
+// undo them.
+func setVoiceSection(cfg *config.Config, section *voiceSection) error {
+	raw, err := json.Marshal(section)
+	if err != nil {
+		return err
+	}
+	merged := map[string]json.RawMessage{}
+	if existing, ok := cfg.Channels["voice"]; ok {
+		_ = json.Unmarshal(existing, &merged)
+	}
+	var answers map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &answers); err != nil {
+		return err
+	}
+	for key, value := range answers {
+		merged[key] = value
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	if cfg.Channels == nil {
+		cfg.Channels = map[string]json.RawMessage{}
+	}
+	cfg.Channels["voice"] = out
+	return nil
+}
+
 func (s voiceSection) configured() bool {
 	return s.Activation != "" || s.STT.Provider != "" || s.STTAPIKey != ""
 }
@@ -1638,14 +1669,9 @@ func (w *wiz) stepVoice(ctx context.Context) error {
 		return err
 	}
 
-	raw, err := json.Marshal(section)
-	if err != nil {
+	if err := setVoiceSection(w.cfg, section); err != nil {
 		return err
 	}
-	if w.cfg.Channels == nil {
-		w.cfg.Channels = map[string]json.RawMessage{}
-	}
-	w.cfg.Channels["voice"] = raw
 	w.ui.Note("the microphone opens whenever `factor` or `factor gateway` runs")
 	return nil
 }

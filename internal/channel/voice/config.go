@@ -88,6 +88,12 @@ type Config struct {
 	InputDevice  string `json:"input_device,omitempty"`
 	OutputDevice string `json:"output_device,omitempty"`
 
+	// OutputVolume scales the synthesized voice before it reaches the
+	// speakers, as a percentage of full volume (1–100). Lowering it is the
+	// blunt lever against the speakers feeding back into the microphone;
+	// 0 means full volume.
+	OutputVolume int `json:"output_volume,omitempty"`
+
 	// VADRatio is how far above the noise floor speech has to rise;
 	// BargeRatio is the same bar while the agent is speaking, set higher so
 	// the speakers' own sound does not interrupt the reply.
@@ -136,6 +142,9 @@ func (c *Config) applyDefaults() {
 	// here so both channels can serve local speech on one machine.
 	if c.SpeechServer.Port <= 0 {
 		c.SpeechServer.Port = defaultSpeechPort
+	}
+	if c.OutputVolume <= 0 {
+		c.OutputVolume = 100
 	}
 	if c.VADRatio <= 0 {
 		c.VADRatio = defaultVADRatio
@@ -194,6 +203,9 @@ func (c Config) validate() error {
 	default:
 		return fmt.Errorf("unknown tts.provider %q (want %s or %s)",
 			c.TTS.Provider, providerElevenLabs, providerLocalOpenAI)
+	}
+	if c.OutputVolume > 100 {
+		return fmt.Errorf("output_volume %d is out of range (want 1–100)", c.OutputVolume)
 	}
 	if c.managedSpeech() && c.SpeechServer.Port == c.ControlPort {
 		return fmt.Errorf("speech_server.port %d collides with control_port", c.SpeechServer.Port)

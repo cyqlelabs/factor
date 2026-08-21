@@ -195,3 +195,19 @@ func TestWavPCMWrapsAPlayableHeader(t *testing.T) {
 		t.Error("payload does not round-trip")
 	}
 }
+
+func TestScalePCMLowersEverySample(t *testing.T) {
+	pcm := toneFrame(1000)
+	scalePCM(pcm, 50)
+	for i := 0; i+1 < len(pcm); i += 2 {
+		if v := int16(binary.LittleEndian.Uint16(pcm[i:])); v != 500 {
+			t.Fatalf("sample %d = %d, want 500", i/2, v)
+		}
+	}
+	// Full volume touches nothing.
+	full := toneFrame(1000)
+	scalePCM(full, 100)
+	if !bytes.Equal(full, toneFrame(1000)) {
+		t.Error("scalePCM at 100 changed the audio")
+	}
+}

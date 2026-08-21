@@ -2,6 +2,7 @@ package voice
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -522,6 +523,22 @@ func TestVoiceKeepsTheUserWordsBehindItsOwnEcho(t *testing.T) {
 	call := h.turn(10 * time.Second)
 	if call.content != "please stop now" {
 		t.Errorf("the barge turn carried %q, want the user's words with the echo stripped", call.content)
+	}
+}
+
+// output_volume scales the synthesized voice on its way to the speakers — the
+// blunt lever against feedback when the room is loud.
+func TestVoiceOutputVolumeScalesTheReply(t *testing.T) {
+	h := newVoiceHarness(t, func(c *Config) { c.OutputVolume = 50 })
+	h.setReplyPCM(toneFrame(1000))
+	h.start()
+	h.say()
+	h.turn(10 * time.Second)
+	waitUntil(t, func() bool { return len(h.speaker.heard()) >= frameBytes })
+
+	heard := h.speaker.heard()
+	if v := int16(binary.LittleEndian.Uint16(heard)); v != 500 {
+		t.Errorf("first sample = %d, want half the synthesized 1000", v)
 	}
 }
 

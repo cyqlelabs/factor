@@ -585,6 +585,7 @@ func (v *Voice) speak(ctx context.Context, text string) {
 		if len(pcm) == 0 {
 			continue
 		}
+		scalePCM(pcm, v.cfg.OutputVolume)
 		v.echo.record(chunk)
 		done := v.player.play(ctx, pcm)
 		select {

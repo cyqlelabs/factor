@@ -152,6 +152,19 @@ func rms(frame []byte) float64 {
 	return math.Sqrt(sum / float64(n))
 }
 
+// scalePCM lowers s16le audio to a percentage of full volume, in place. 100
+// or more leaves the samples untouched.
+func scalePCM(pcm []byte, percent int) {
+	if percent >= 100 {
+		return
+	}
+	gain := float64(percent) / 100
+	for i := 0; i+1 < len(pcm); i += 2 {
+		v := float64(int16(binary.LittleEndian.Uint16(pcm[i:]))) * gain
+		binary.LittleEndian.PutUint16(pcm[i:], uint16(int16(math.Round(v))))
+	}
+}
+
 // wavPCM wraps raw s16le mono PCM in the 44-byte RIFF header the
 // transcription APIs expect.
 func wavPCM(pcm []byte, rate int) []byte {
