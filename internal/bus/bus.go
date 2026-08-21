@@ -14,6 +14,13 @@ type InboundMessage struct {
 	ChatID   string
 	Content  string
 	Time     time.Time
+
+	// Speaker names the person who said this, when the channel can tell one
+	// person from another — the PC microphone identifying a household voice.
+	// It is blank everywhere else, which is every channel whose chat already
+	// is one person. It travels beside the content rather than inside it so
+	// the prompt and the memory graph can each attribute it their own way.
+	Speaker string
 }
 
 type OutboundMessage struct {

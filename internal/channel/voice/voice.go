@@ -575,7 +575,7 @@ func (v *Voice) turn(parent context.Context, text string, who speakerIdentity) {
 	notice := func(line string) {
 		v.spawn(func() { v.speak(ctx, line) })
 	}
-	reply, err := v.runner(ctx, who.content(text), who.session(), notice)
+	reply, err := v.runner(ctx, text, who.session(), who.attributed(), notice)
 	if ctx.Err() != nil {
 		return // barged in on — the next utterance owns the conversation
 	}

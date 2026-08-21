@@ -182,7 +182,7 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 // block a reply. If the memory engine is still cold-booting (first sidecar
 // start downloads models), it waits for health rather than dropping the very
 // first memories.
-func (a *Ambient) StoreExchange(channel, userText, assistantText string) {
+func (a *Ambient) StoreExchange(channel, speaker, userText, assistantText string) {
 	if a == nil || a.Engine == nil || !a.Engine.Enabled() {
 		return
 	}
@@ -213,6 +213,26 @@ func (a *Ambient) StoreExchange(channel, userText, assistantText string) {
 			slog.Debug("memory store dropped", "error", err)
 		}
 	}
-	store(SourceUser, userText)
+	store(SourceUser, attribute(speaker, userText))
 	store(SourceAgent, assistantText)
+}
+
+// attribute names the person a memory came from, where the channel could tell
+// one from another — a house with several voices, where "likes coffee without
+// sugar" recorded against nobody in particular is a fact the agent will hand
+// back to the wrong person.
+//
+// It goes in the content, which is not the compromise it looks like. Source
+// carries standing (a human asserted this, or the agent did) and is a closed
+// set the engine reasons about — smrti's own tool normalizes anything else
+// away — so a name cannot ride there. Nor is a name the untranslated English
+// the prefix rule warns about: it is a proper noun, which reads the same in
+// every language the graph holds. Real per-person retrieval needs memory
+// spaces, which is a decision about whether a household shares what it knows,
+// not something to settle here.
+func attribute(speaker, text string) string {
+	if speaker == "" || strings.TrimSpace(text) == "" {
+		return text
+	}
+	return speaker + ": " + text
 }

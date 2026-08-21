@@ -171,7 +171,7 @@ func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 // ProcessDirect runs a synchronous turn outside the bus (CLI one-shot,
 // cron, delegated jobs) with nobody listening for progress.
 func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (string, error) {
-	return l.ProcessDirectNotice(ctx, content, sessionKey, nil)
+	return l.ProcessDirectNotice(ctx, content, sessionKey, "", nil)
 }
 
 // ProcessDirectNotice runs a synchronous turn outside the bus and reports
@@ -180,9 +180,10 @@ func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (s
 // while it is still news. It honors the one-live-turn-per-session invariant:
 // if the session is busy (e.g. an overlapping cron firing), it waits for
 // the claim instead of interleaving histories.
-func (l *Loop) ProcessDirectNotice(ctx context.Context, content, sessionKey string,
+func (l *Loop) ProcessDirectNotice(ctx context.Context, content, sessionKey, speaker string,
 	notice func(string)) (string, error) {
-	msg := bus.InboundMessage{Channel: "cli", ChatID: strings.TrimPrefix(sessionKey, "cli:"), Content: content}
+	msg := bus.InboundMessage{Channel: "cli", ChatID: strings.TrimPrefix(sessionKey, "cli:"),
+		Content: content, Speaker: speaker}
 	if idx := strings.IndexByte(sessionKey, ':'); idx > 0 {
 		msg.Channel, msg.ChatID = sessionKey[:idx], sessionKey[idx+1:]
 	}
@@ -219,7 +220,10 @@ func (l *Loop) ProcessEphemeral(ctx context.Context, content string) (string, er
 type turnInput struct {
 	sessionKey string
 	content    string
-	ephemeral  bool
+	// speaker names who said content, where the channel can tell. Blank is
+	// the ordinary case: the chat is one person.
+	speaker   string
+	ephemeral bool
 	// notice hands the line the agent says on its way to an answer straight
 	// back to whoever is running this turn, while it is still true. Nil for
 	// turns nobody is waiting on synchronously; those are watched instead.
@@ -231,6 +235,7 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, not
 	reply, err := l.execute(ctx, turnInput{
 		sessionKey: msg.SessionKey(),
 		content:    msg.Content,
+		speaker:    msg.Speaker,
 		notice:     notice,
 		toolCtx:    tools.ToolContext{Channel: msg.Channel, ChatID: msg.ChatID, SessionKey: msg.SessionKey()},
 	}, t)
@@ -244,10 +249,25 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, not
 		l.wg.Add(1)
 		go func() {
 			defer l.wg.Done()
-			l.ambient.StoreExchange(msg.Channel, msg.Content, reply)
+			// The speaker goes to memory as who said it, not as part of what
+			// was said: the graph decides how to record a person, and a tag
+			// meant for the prompt has no business becoming remembered text.
+			l.ambient.StoreExchange(msg.Channel, msg.Speaker, msg.Content, reply)
 		}()
 	}
 	return reply, err
+}
+
+// markSpeaker tags a message with who said it, for the model's benefit. A
+// bracketed name reads as an annotation rather than as something the user
+// typed, which "Roxana: …" would not — that is a line a person could
+// plausibly have spoken. Blank speaker, blank tag: the ordinary case where
+// the conversation is one person and saying so every turn is noise.
+func markSpeaker(speaker, content string) string {
+	if speaker == "" {
+		return content
+	}
+	return "[" + speaker + "] " + content
 }
 
 // Idle reports whether every session has finished its turn. The gateway
@@ -289,7 +309,10 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 	}
 
 	systemPrompt := l.builder.SystemPrompt(ctx, history, in.content)
-	userMsg := provider.Message{Role: "user", Content: in.content}
+	// The speaker is marked on the message rather than in the prompt head:
+	// the head is shared by every session and cached, and a name that
+	// changes per utterance would fork it for the price of one line.
+	userMsg := provider.Message{Role: "user", Content: markSpeaker(in.speaker, in.content)}
 	if err := l.persist(in, userMsg); err != nil {
 		return "", err
 	}

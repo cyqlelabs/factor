@@ -951,3 +951,65 @@ func TestAnInterruptedTurnIsNotRecordedAsAToolFailure(t *testing.T) {
 		t.Errorf("tool ran %d times, want 1", tool.calls)
 	}
 }
+
+// A named speaker is shown to the model as an annotation on the message and
+// remembered as an attribution on the fact — two different jobs, so the tag
+// meant for the prompt must not be what lands in the graph.
+func TestSpeakerIsMarkedForTheModelAndAttributedInMemory(t *testing.T) {
+	h := newHarness(t, final("noted"))
+
+	if _, err := h.loop.ProcessDirectNotice(context.Background(),
+		"me gusta el café sin azúcar", "voice:local:roxana", "Roxana", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// The model is told who is talking, on the message rather than in the
+	// shared prompt head.
+	sent := h.chat.requests[0].Messages
+	user := sent[len(sent)-1]
+	if user.Role != "user" || user.Content != "[Roxana] me gusta el café sin azúcar" {
+		t.Errorf("the model saw %q from role %q", user.Content, user.Role)
+	}
+
+	// Memory records the person, not the prompt's tag.
+	waitFor(t, func() bool { return len(h.engine.snapshot()) == 2 })
+	stored := h.engine.snapshot()
+	if stored[0] != "Roxana: me gusta el café sin azúcar" {
+		t.Errorf("remembered %q", stored[0])
+	}
+}
+
+// The ordinary channel — one chat, one person — is untouched: no tag for the
+// model, no name in memory.
+func TestAnUnattributedTurnIsUnchanged(t *testing.T) {
+	h := newHarness(t, final("noted"))
+	if _, err := h.loop.ProcessDirect(context.Background(), "hello there", "cli:test"); err != nil {
+		t.Fatal(err)
+	}
+	sent := h.chat.requests[0].Messages
+	if user := sent[len(sent)-1]; user.Content != "hello there" {
+		t.Errorf("the model saw %q", user.Content)
+	}
+	waitFor(t, func() bool { return len(h.engine.snapshot()) == 2 })
+	if stored := h.engine.snapshot(); stored[0] != "hello there" {
+		t.Errorf("remembered %q", stored[0])
+	}
+}
+
+// snapshot copies what the engine has been asked to remember, under its lock.
+func (f *fakeEngine) snapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.remembered...)
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition never held")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

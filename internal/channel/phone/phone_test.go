@@ -290,11 +290,11 @@ func TestStartReportsAPortClash(t *testing.T) {
 func TestBindTurnRunnerReachesTheBridge(t *testing.T) {
 	p, _, _ := newTestPhone(t, nil)
 	var got string
-	p.BindTurnRunner(func(_ context.Context, content, sessionKey string, _ func(string)) (string, error) {
+	p.BindTurnRunner(func(_ context.Context, content, sessionKey, _ string, _ func(string)) (string, error) {
 		got = sessionKey
 		return "ok:" + content, nil
 	})
-	reply, err := p.bridge.runner()(context.Background(), "hello", "phone:+15550001111", func(string) {})
+	reply, err := p.bridge.runner()(context.Background(), "hello", "phone:+15550001111", "", func(string) {})
 	if err != nil || reply != "ok:hello" {
 		t.Errorf("runner = %q, %v", reply, err)
 	}

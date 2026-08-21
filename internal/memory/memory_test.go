@@ -154,7 +154,7 @@ func TestAmbientSkipsIgnoredAndUnhealthy(t *testing.T) {
 	_ = c.CheckHealth(context.Background())
 	a := NewAmbient(c, 5, 0.3, 5, 500, 500, []string{"^HEARTBEAT_OK$"}, SpacePolicy{})
 
-	a.StoreExchange("cli", "HEARTBEAT_OK", "real reply")
+	a.StoreExchange("cli", "", "HEARTBEAT_OK", "real reply")
 	if len(*remembered) != 1 || !strings.Contains((*remembered)[0]["content"].(string), "real reply") {
 		t.Errorf("ignore patterns not applied: %v", *remembered)
 	}

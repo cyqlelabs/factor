@@ -35,7 +35,9 @@ type Typer interface {
 // spent in tool calls is audible progress rather than a silence the user
 // cannot tell from a hang. It runs on the turn's own goroutine, so a
 // connector that takes time to deliver a note must not block in it.
-type TurnFunc func(ctx context.Context, content, sessionKey string, notice func(string)) (string, error)
+// speaker names who is talking where the connector can tell (the microphone
+// recognizing a household voice); blank means "whoever this chat is".
+type TurnFunc func(ctx context.Context, content, sessionKey, speaker string, notice func(string)) (string, error)
 
 // TurnRunner is the optional capability of a connector that runs turns itself
 // instead of publishing them onto the bus. A phone call is synchronous — the

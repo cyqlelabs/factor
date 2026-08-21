@@ -280,7 +280,7 @@ func TestSkewedEngineSpaceDisablesRouting(t *testing.T) {
 		t.Errorf("recall scope = %+v, want zero against a skewed engine", eng.recallScope)
 	}
 
-	a.StoreExchange("telegram", "hola", "hola, Nico")
+	a.StoreExchange("telegram", "", "hola", "hola, Nico")
 	for i, req := range eng.remembered {
 		if req.Space != "" {
 			t.Errorf("remembered[%d].Space = %q, want empty against a skewed engine", i, req.Space)
@@ -291,7 +291,7 @@ func TestSkewedEngineSpaceDisablesRouting(t *testing.T) {
 func TestEngineWithoutSpaceSupportDisablesRouting(t *testing.T) {
 	eng := &scopeEngine{}
 	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy())
-	a.StoreExchange("cron", "job output", "noted")
+	a.StoreExchange("cron", "", "job output", "noted")
 	for i, req := range eng.remembered {
 		if req.Space != "" {
 			t.Errorf("remembered[%d].Space = %q, want empty against an old engine", i, req.Space)
@@ -324,8 +324,8 @@ func TestStoreExchangeWritesToTheChannelSpace(t *testing.T) {
 	eng := newScopeEngine()
 	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy())
 
-	a.StoreExchange("cron", "job output", "noted")
-	a.StoreExchange("telegram", "hola", "hola, Nico")
+	a.StoreExchange("cron", "", "job output", "noted")
+	a.StoreExchange("telegram", "", "hola", "hola, Nico")
 
 	if len(eng.remembered) != 4 {
 		t.Fatalf("remembered %d requests, want 4", len(eng.remembered))

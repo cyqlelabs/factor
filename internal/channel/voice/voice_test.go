@@ -95,6 +95,7 @@ type turnCall struct {
 	ctx     context.Context
 	content string
 	session string
+	speaker string
 }
 
 // voiceHarness wires a Voice to a scripted machine: a fake microphone, a
@@ -148,11 +149,11 @@ func newVoiceHarness(t *testing.T, mutate func(*Config)) *voiceHarness {
 		Capture: h.mic.capture,
 		Play:    h.speaker.play,
 	}
-	v.BindTurnRunner(func(ctx context.Context, content, session string, notice func(string)) (string, error) {
+	v.BindTurnRunner(func(ctx context.Context, content, session, speaker string, notice func(string)) (string, error) {
 		h.mu.Lock()
 		reply, err, block, note := h.reply, h.err, h.block, h.notice
 		h.mu.Unlock()
-		h.turns <- turnCall{ctx: ctx, content: content, session: session}
+		h.turns <- turnCall{ctx: ctx, content: content, session: session, speaker: speaker}
 		if note != "" {
 			notice(note)
 			// The whole point of a filler line is that it is heard while the
@@ -605,8 +606,14 @@ func TestVoiceSpeakerIdentificationSeparatesConversations(t *testing.T) {
 	if guest.session != sessionKey+":speaker-2" {
 		t.Errorf("the guest's turn ran in %q", guest.session)
 	}
-	if guest.content != "[speaker-2] hello there" {
-		t.Errorf("the guest's words arrived as %q, want them marked", guest.content)
+	// The name travels beside the words, not inside them: what the guest
+	// actually said is what reaches the loop, and the loop decides how to
+	// show it to the model and how memory records it.
+	if guest.content != "hello there" || guest.speaker != "speaker-2" {
+		t.Errorf("the guest's turn arrived as content %q from speaker %q", guest.content, guest.speaker)
+	}
+	if owner.speaker != "" {
+		t.Errorf("the owner's turn was attributed to %q; a house with one voice narrates nobody", owner.speaker)
 	}
 }
 
@@ -898,7 +905,7 @@ func TestVoiceStartFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deaf.BindTurnRunner(func(context.Context, string, string, func(string)) (string, error) { return "", nil })
+	deaf.BindTurnRunner(func(context.Context, string, string, string, func(string)) (string, error) { return "", nil })
 	deaf.env = scriptedEnv("linux") // no helpers at all
 	if err := deaf.Start(context.Background()); err == nil || !contains(err.Error(), "helper") {
 		t.Errorf("Start without helpers = %v", err)
@@ -913,7 +920,7 @@ func TestVoiceStartFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocked.BindTurnRunner(func(context.Context, string, string, func(string)) (string, error) { return "", nil })
+	blocked.BindTurnRunner(func(context.Context, string, string, string, func(string)) (string, error) { return "", nil })
 	blocked.env = scriptedEnv("linux", "parec", "paplay")
 	if err := blocked.Start(context.Background()); err == nil || !contains(err.Error(), "control") {
 		t.Errorf("Start on a taken port = %v", err)

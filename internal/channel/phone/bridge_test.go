@@ -51,7 +51,7 @@ func newTestBridge(t *testing.T, run TurnFunc) *testBridge {
 			return true
 		})
 	if run == nil {
-		run = func(_ context.Context, content, sessionKey string, _ func(string)) (string, error) {
+		run = func(_ context.Context, content, sessionKey, _ string, _ func(string)) (string, error) {
 			tb.turns <- content
 			tb.sessions <- sessionKey
 			return "the agent replied", nil
@@ -216,7 +216,7 @@ func TestBridgeRejectsTheWrongBearer(t *testing.T) {
 func TestBridgeCancellationReachesTheTurn(t *testing.T) {
 	started := make(chan struct{})
 	cancelled := make(chan error, 1)
-	tb := newTestBridge(t, func(ctx context.Context, _, _ string, _ func(string)) (string, error) {
+	tb := newTestBridge(t, func(ctx context.Context, _, _, _ string, _ func(string)) (string, error) {
 		close(started)
 		<-ctx.Done()
 		cancelled <- ctx.Err()
@@ -353,7 +353,7 @@ func TestBridgeRefusesCallersOutsideTheAllowlist(t *testing.T) {
 	tb.bridge = newBridge("bridge-secret",
 		func(number string) bool { return number == "+15550001111" },
 		func(bus.InboundMessage) bool { return true })
-	tb.bindRunner(func(_ context.Context, _, sessionKey string, _ func(string)) (string, error) {
+	tb.bindRunner(func(_ context.Context, _, sessionKey, _ string, _ func(string)) (string, error) {
 		tb.sessions <- sessionKey
 		return "should never be spoken", nil
 	})
@@ -395,7 +395,7 @@ func TestBridgeWithoutARunnerIsHonestAboutIt(t *testing.T) {
 // A failed turn must still produce speech: dead air on a phone call reads as a
 // dropped call, and the error text itself must not be spoken aloud.
 func TestBridgeSpeaksAnApologyWhenATurnFails(t *testing.T) {
-	tb := newTestBridge(t, func(context.Context, string, string, func(string)) (string, error) {
+	tb := newTestBridge(t, func(context.Context, string, string, string, func(string)) (string, error) {
 		return "", fmt.Errorf("provider chain exhausted: api key sk-secret rejected")
 	})
 	resp := tb.post(t, "/v1/chat/completions", chatBody("hello", false),
@@ -417,7 +417,7 @@ func TestBridgeSpeaksAnApologyWhenATurnFails(t *testing.T) {
 }
 
 func TestBridgeNeverSpeaksAnEmptyReply(t *testing.T) {
-	tb := newTestBridge(t, func(context.Context, string, string, func(string)) (string, error) { return "  ", nil })
+	tb := newTestBridge(t, func(context.Context, string, string, string, func(string)) (string, error) { return "  ", nil })
 	resp := tb.post(t, "/v1/chat/completions", chatBody("hello", false),
 		map[string]string{"X-Factor-Caller": "+15550001111"})
 	var parsed chatResponse
@@ -619,7 +619,7 @@ func TestBridgeListenReportsAPortClash(t *testing.T) {
 // running, as an ordinary content delta ahead of the reply.
 func TestBridgeStreamsAMidTurnNoteBeforeTheAnswer(t *testing.T) {
 	heard := make(chan struct{})
-	tb := newTestBridge(t, func(_ context.Context, _, _ string, notice func(string)) (string, error) {
+	tb := newTestBridge(t, func(_ context.Context, _, _, _ string, notice func(string)) (string, error) {
 		notice("one moment, checking that")
 		// The note is only useful if it lands before the answer does; a
 		// bridge that held it back would deadlock here, so it fails instead.
@@ -666,7 +666,7 @@ func TestBridgeStreamsAMidTurnNoteBeforeTheAnswer(t *testing.T) {
 // spoken: the placeholder that keeps a silent turn from being an empty
 // completion would be read out on top of it.
 func TestBridgeDoesNotPadAnAnswerlessTurnThatAlreadySpoke(t *testing.T) {
-	tb := newTestBridge(t, func(_ context.Context, _, _ string, notice func(string)) (string, error) {
+	tb := newTestBridge(t, func(_ context.Context, _, _, _ string, notice func(string)) (string, error) {
 		notice("on it")
 		return "", nil
 	})

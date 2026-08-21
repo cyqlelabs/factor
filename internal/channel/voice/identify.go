@@ -156,10 +156,12 @@ func (v *Voice) identity(name string) speakerIdentity {
 	return speakerIdentity{name: name, primary: v.speakers.isPrimary(name)}
 }
 
-// session is where this identity's conversation lives, and content is what
-// the agent reads: a named guest speaks under their own key and their words
-// arrive marked, while the owner and the unnamed keep the channel's original
-// session, exactly as before identification existed.
+// session is where this identity's conversation lives, and attributed is the
+// name that travels with the turn: a named guest speaks under their own key
+// and their words are attributed to them, while the owner and the unnamed
+// keep the channel's original session and go unattributed, exactly as before
+// identification existed — a machine with one voice must not start narrating
+// whose turn it is.
 func (who speakerIdentity) session() string {
 	if who.name == "" || who.primary {
 		return sessionKey
@@ -167,11 +169,11 @@ func (who speakerIdentity) session() string {
 	return sessionKey + ":" + speakerSlug(who.name)
 }
 
-func (who speakerIdentity) content(text string) string {
-	if who.name == "" || who.primary {
-		return text
+func (who speakerIdentity) attributed() string {
+	if who.primary {
+		return ""
 	}
-	return "[" + who.name + "] " + text
+	return who.name
 }
 
 // logFields is how a decision explains itself on the "voice heard" line: who

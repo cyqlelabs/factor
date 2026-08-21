@@ -72,12 +72,12 @@ func TestMemoryPromptNilSafety(t *testing.T) {
 
 func TestStoreExchangeNilAndDisabled(t *testing.T) {
 	var nilAmbient *Ambient
-	nilAmbient.StoreExchange("cli", "u", "a") // must not panic
+	nilAmbient.StoreExchange("cli", "", "u", "a") // must not panic
 
-	(&Ambient{}).StoreExchange("cli", "u", "a") // engine-less: must not panic
+	(&Ambient{}).StoreExchange("cli", "", "u", "a") // engine-less: must not panic
 
 	disabled := NewAmbient(&stubEngine{enabled: false}, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
-	disabled.StoreExchange("cli", "u", "a") // off-mode engines never store
+	disabled.StoreExchange("cli", "", "u", "a") // off-mode engines never store
 	if stored := disabled.Engine.(*stubEngine).stored(); len(stored) != 0 {
 		t.Error("disabled engine received a write")
 	}
@@ -91,7 +91,7 @@ func TestStoreExchangeWaitsForHealthThenStores(t *testing.T) {
 		engine.setHealthy(true)
 	}()
 	done := make(chan struct{})
-	go func() { a.StoreExchange("cli", "user text", "assistant text"); close(done) }()
+	go func() { a.StoreExchange("cli", "", "user text", "assistant text"); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
@@ -116,7 +116,7 @@ func TestStoreExchangeWaitsForHealthThenStores(t *testing.T) {
 func TestStoreExchangeMarksTheAssistantSide(t *testing.T) {
 	engine := &stubEngine{enabled: true, healthy: true}
 	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
-	a.StoreExchange("cli", "what should I do this weekend?", "here are some ideas: ...")
+	a.StoreExchange("cli", "", "what should I do this weekend?", "here are some ideas: ...")
 	stored := engine.stored()
 	if len(stored) != 2 {
 		t.Fatalf("stored %d memories, want 2", len(stored))
@@ -168,7 +168,7 @@ func TestRememberSendsSourceWhenSet(t *testing.T) {
 func TestStoreExchangeSkipsBlankSides(t *testing.T) {
 	engine := &stubEngine{enabled: true, healthy: true}
 	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
-	a.StoreExchange("cli", "   ", "only the reply")
+	a.StoreExchange("cli", "", "   ", "only the reply")
 	if stored := engine.stored(); len(stored) != 1 {
 		t.Errorf("blank user text was stored: %+v", stored)
 	}
@@ -276,5 +276,42 @@ func TestClientCloseAndUnreachableRequest(t *testing.T) {
 	}
 	if err := c.CheckHealth(context.Background()); err == nil {
 		t.Error("CheckHealth on an unreachable server returned nil")
+	}
+}
+
+// In a house with more than one voice, a memory recorded against nobody in
+// particular is one the agent hands back to the wrong person: the speaker is
+// named in the content, because Source carries standing (human or agent) and
+// is a closed set, not a place to put a name.
+func TestStoreExchangeAttributesANamedSpeaker(t *testing.T) {
+	engine := &stubEngine{enabled: true, healthy: true}
+	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
+	a.StoreExchange("voice", "Roxana", "me gusta el café sin azúcar", "anotado")
+
+	stored := engine.stored()
+	if len(stored) != 2 {
+		t.Fatalf("stored %d memories, want 2", len(stored))
+	}
+	if stored[0].Content != "Roxana: me gusta el café sin azúcar" {
+		t.Errorf("the speaker's memory reads %q", stored[0].Content)
+	}
+	// Standing is unchanged: a named person is still a human asserting it.
+	if stored[0].Source != SourceUser {
+		t.Errorf("source = %q, want %q — a name is not a standing", stored[0].Source, SourceUser)
+	}
+	// The agent's own reply is never attributed to the person it answered.
+	if stored[1].Content != "anotado" || stored[1].Source != SourceAgent {
+		t.Errorf("assistant side = %+v", stored[1])
+	}
+}
+
+// The single-voice case is every other channel and the machine's owner: no
+// name, and memories that read exactly as they did before speakers existed.
+func TestStoreExchangeLeavesAnUnnamedSpeakerAlone(t *testing.T) {
+	engine := &stubEngine{enabled: true, healthy: true}
+	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
+	a.StoreExchange("voice", "", "me gusta el café sin azúcar", "anotado")
+	if stored := engine.stored(); stored[0].Content != "me gusta el café sin azúcar" {
+		t.Errorf("an unattributed memory reads %q", stored[0].Content)
 	}
 }

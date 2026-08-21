@@ -28,7 +28,7 @@ import (
 
 // TurnFunc runs one synchronous turn (wired to Loop.ProcessDirectNotice).
 // notice carries what the agent says on its way to the reply, as it says it.
-type TurnFunc func(ctx context.Context, content, sessionKey string, notice func(string)) (string, error)
+type TurnFunc func(ctx context.Context, content, sessionKey, speaker string, notice func(string)) (string, error)
 
 // origin is the session a call was started from, so its outcome can be
 // reported back where the user asked for it.
@@ -257,7 +257,7 @@ func (b *bridge) handleChat(w http.ResponseWriter, r *http.Request) {
 		notice = stream.say
 	}
 
-	reply, err := run(r.Context(), content, "phone:"+caller, notice)
+	reply, err := run(r.Context(), content, "phone:"+caller, "", notice)
 	if r.Context().Err() != nil {
 		// Barge-in or hang-up: the shell already abandoned this request.
 		return
