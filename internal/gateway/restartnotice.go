@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/bus"
@@ -93,6 +94,9 @@ func announceRestart(publish func(bus.OutboundMessage) bool) {
 }
 
 func restartMessage(note restartNotice) string {
+	if changed, ok := strings.CutPrefix(note.Reason, "config: "); ok {
+		return fmt.Sprintf("Config change applied (%s).", changed)
+	}
 	if note.From != "" && note.From != version.Version {
 		return fmt.Sprintf("Back up — factor %s → %s.", note.From, version.Version)
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -269,5 +270,70 @@ func TestRestartLeavesNoNoticeForAChannelThisGatewayDoesNotRun(t *testing.T) {
 	announceRestart(collector(&sent))
 	if len(sent) != 0 {
 		t.Errorf("a notice was left for an unreachable chat: %+v", sent)
+	}
+}
+
+// Editing config.json while the daemon runs is enough: the watcher notices,
+// the gateway reloads itself through the same settle-and-exec path an upgrade
+// takes, and the process that comes up tells the last active chat what was
+// applied.
+func TestRunReloadsWhenTheConfigFileChanges(t *testing.T) {
+	fastSettle(t)
+	prevPoll := configPoll
+	configPoll = 20 * time.Millisecond
+	t.Cleanup(func() { configPoll = prevPoll })
+
+	cfg, path := gatewayConfig(t)
+	// The notice goes to the last active chat, which is only an address while
+	// its connector runs — so this daemon serves it.
+	tg := fakeTelegram(t)
+	cfg.Channels = map[string]json.RawMessage{
+		"telegram": json.RawMessage(fmt.Sprintf(
+			`{"token":"test-token","api_base":%q,"allow_from":["1"]}`, tg.URL)),
+	}
+	if err := os.WriteFile(path, mustJSON(t, cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	healthURL := fmt.Sprintf("http://%s/health", net.JoinHostPort(cfg.Gateway.Host, strconv.Itoa(cfg.Gateway.Port)))
+
+	var relaunched atomic.Bool
+	prev := relaunch
+	relaunch = func() error { relaunched.Store(true); return nil }
+	t.Cleanup(func() { relaunch = prev })
+
+	if err := os.WriteFile(filepath.Join(config.Home(), "last-channel.json"),
+		[]byte(`{"channel":"telegram","chat_id":"42"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- Run(path) }()
+	if waitForHealth(t, healthURL, 20*time.Second) == nil {
+		t.Fatal("gateway never served /health")
+	}
+
+	// The user edits the file by hand — or config_set writes it.
+	cfg.Provider.Model = "a-newly-chosen-model"
+	if err := os.WriteFile(path, mustJSON(t, cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Run returned %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the config change never reloaded the gateway")
+	}
+	if !relaunched.Load() {
+		t.Error("the gateway shut down without execing itself")
+	}
+
+	// The note left behind names what changed, so the reload explains itself.
+	var sent []bus.OutboundMessage
+	announceRestart(collector(&sent))
+	if len(sent) != 1 || !strings.Contains(sent[0].Content, "Config change applied (provider)") {
+		t.Errorf("the reload notice = %+v", sent)
 	}
 }

@@ -10,7 +10,9 @@ import (
 // NewConfigTools lets the agent inspect and modify its own configuration.
 // Both tools operate on the config FILE (the live in-memory config is
 // immutable while running): reads are secret-redacted, writes are
-// schema-validated, persisted atomically, and apply on restart.
+// schema-validated and persisted atomically. A running gateway watches the
+// file and reloads itself to apply what changed; a plain chat session picks
+// the change up on its next start.
 func NewConfigTools(cfg *config.Config) []Tool {
 	path := cfg.Path()
 	return []Tool{
@@ -55,7 +57,7 @@ type configSetTool struct {
 
 func (t *configSetTool) Name() string { return "config_set" }
 func (t *configSetTool) Description() string {
-	return "Set one configuration value by dotted key (e.g. key='heartbeat.interval_minutes', value=15) and persist it to the config file. Changes apply on the next start (use workspace instruction files for hot-editable behavior). Confirm with the user before changing provider credentials."
+	return "Set one configuration value by dotted key (e.g. key='heartbeat.interval_minutes', value=15) and persist it to the config file. Under the gateway it applies within seconds — the daemon reloads itself between turns; a plain chat session applies it on the next start. Confirm with the user before changing provider credentials."
 }
 func (t *configSetTool) Parameters() map[string]any {
 	return map[string]any{
@@ -75,5 +77,6 @@ func (t *configSetTool) Execute(_ context.Context, args map[string]any) *Result 
 	if err != nil {
 		return Errorf("%v", err)
 	}
-	return Textf("Set %s and saved the config file. It takes effect on the next factor start (or gateway restart).", key)
+	return Textf("Set %s and saved the config file. A running gateway applies it within seconds by reloading itself; "+
+		"a plain chat session applies it on its next start.", key)
 }

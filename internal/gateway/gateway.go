@@ -121,6 +121,16 @@ func serve(configPath string) (bool, error) {
 	a.Restart.Set(request)
 	// A SIGHUP asks from a terminal, with no conversation behind it.
 	notifyReload(ctx, func(reason string) { request(reason, upgrade.Target{}) })
+	// The config file is watched for as long as the daemon runs: a change —
+	// hand-edited, or written by config_set from any session — reloads the
+	// gateway through the same settle-and-exec path an upgrade takes. That is
+	// what makes every parameter apply within seconds of saving, without
+	// dropping the turn in flight or restarting the sidecars, whose live
+	// engines the new process finds on their ports and adopts.
+	go config.Watch(ctx, cfg, configPoll, func(_ *config.Config, sections []string) {
+		slog.Info("config changed on disk; reloading to apply it", "sections", sections)
+		request("config: "+strings.Join(sections, ", "), upgrade.Target{})
+	})
 
 	channels := channel.Build(cfg.Channels, a.Bus)
 	if len(channels) == 0 {
@@ -252,6 +262,10 @@ var (
 	settleTimeout = 60 * time.Second
 	settlePoll    = 200 * time.Millisecond
 	settleGrace   = 2 * time.Second
+
+	// configPoll is how often the config file is checked for changes — the
+	// ceiling on how long a saved edit waits to take effect.
+	configPoll = 3 * time.Second
 )
 
 // settle waits for the conversation that asked for the restart to be

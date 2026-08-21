@@ -394,7 +394,9 @@ var fileMu sync.Mutex
 
 // Update atomically load-modifies-saves the config FILE. The live in-memory
 // Config is deliberately immutable after startup (concurrent turns read it
-// lock-free); durable changes go through here and apply on restart.
+// lock-free); durable changes go through here, and the gateway's Watch is
+// what turns the saved file back into running state — by reloading the
+// process, not by mutating what concurrent readers hold.
 func Update(path string, fn func(*Config) error) error {
 	fileMu.Lock()
 	defer fileMu.Unlock()
