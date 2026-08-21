@@ -434,6 +434,13 @@ func runChat(configPath, sessionName, message string) error {
 	stopVoice, talk, meter, voiceOn := startVoiceChannel(ctx, a, cfg, baseName)
 	defer stopVoice()
 
+	// A question asked from here belongs on this terminal, not in a dialog
+	// on a screen the user may not even be looking at.
+	asker := newTermAsker(con)
+	if a.Ask != nil {
+		a.Ask.SetAsker(asker)
+	}
+
 	ui := newChatUI(con)
 	ui.bar = func() tui.Bar {
 		return chatBar(sessionName, cfg.Provider.Model, a.Cost.SessionLine(sessionKey), a.Memory, meter)
@@ -495,6 +502,11 @@ func runChat(configPath, sessionName, message string) error {
 			}
 			talk()
 			con.Printf("(listening — speak now)")
+			continue
+		}
+		// A question from the turn in flight takes the next line: it is the
+		// answer, not a new message.
+		if asker.deliver(line) {
 			continue
 		}
 		chatID := strings.TrimPrefix(sessionKey, "cli:")

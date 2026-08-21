@@ -31,6 +31,7 @@ func (c *linuxController) Helpers() []Helper {
 			{Bin: "wtype", Purpose: "typing and key presses"},
 			{Bin: "notify-send", Purpose: "desktop notifications", Packages: map[string]string{"apt": "libnotify-bin", "dnf": "libnotify", "pacman": "libnotify", "apk": "libnotify", "xbps": "libnotify"}},
 			{Bin: "xdg-open", Purpose: "opening files and URLs", Packages: map[string]string{"apt": "xdg-utils", "dnf": "xdg-utils", "pacman": "xdg-utils", "apk": "xdg-utils", "xbps": "xdg-utils"}},
+			{Bin: "zenity", Purpose: "asking the user a question on screen"},
 		}
 	}
 	return []Helper{
@@ -40,6 +41,7 @@ func (c *linuxController) Helpers() []Helper {
 		{Bin: "xclip", Purpose: "clipboard"},
 		{Bin: "notify-send", Purpose: "desktop notifications", Packages: map[string]string{"apt": "libnotify-bin", "dnf": "libnotify", "pacman": "libnotify", "apk": "libnotify", "xbps": "libnotify"}},
 		{Bin: "xdg-open", Purpose: "opening files and URLs", Packages: map[string]string{"apt": "xdg-utils", "dnf": "xdg-utils", "pacman": "xdg-utils", "apk": "xdg-utils", "xbps": "xdg-utils"}},
+		{Bin: "zenity", Purpose: "asking the user a question on screen"},
 	}
 }
 

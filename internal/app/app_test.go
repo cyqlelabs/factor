@@ -83,6 +83,8 @@ func TestDefaultToolArsenal(t *testing.T) {
 		"config_get", "config_set", "pkg_install", "upgrade",
 		"skill_install", "skill_write", "skill_remove", "skill_find",
 		"mcp_add", "mcp_remove", "mcp_list",
+		// asking the user
+		"ask_user",
 		// desktop control
 		"window_list", "window_control", "screenshot", "mouse", "type_text",
 		"press_key", "clipboard", "notify", "open", "desktop_info",

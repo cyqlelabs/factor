@@ -44,10 +44,13 @@ type App struct {
 	Guard    *tools.PathGuard
 	Sessions *session.Store
 	Skills   *skills.Loader
-	Loop     *agent.Loop
-	Jobs     *jobs.Engine
-	Cron     *cron.Service
-	MCP      *mcp.Manager
+	// Ask carries the agent's questions to the user. It defaults to a
+	// desktop dialog; `factor chat` points it at the terminal instead.
+	Ask  *tools.AskTool
+	Loop *agent.Loop
+	Jobs *jobs.Engine
+	Cron *cron.Service
+	MCP  *mcp.Manager
 	// Restart is how the upgrade tool reloads this process into the release
 	// it just installed. Only a daemon fills it in.
 	Restart *upgrade.Restarter
@@ -128,6 +131,11 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(tools.NewConfigTools(cfg)...)
 	registry.Register(cost.NewTool(meter)...)
 	registry.Register(tools.NewPkgInstallTool())
+	// A question needs somewhere to land. The daemon has only the machine's
+	// screen, so that is the default; a chat session swaps in its terminal,
+	// where the user already is (App.Ask).
+	askTool := tools.NewAskTool(tools.NewDialogAsker(tools.DefaultAskEnv()))
+	registry.Register(askTool)
 	restarter := &upgrade.Restarter{}
 	// The engine is upgraded in place, so what gates it is the graph being
 	// idle rather than the process being about to exit.
@@ -222,6 +230,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Guard:    guard,
 		Sessions: sessions,
 		Skills:   skillLoader,
+		Ask:      askTool,
 		Loop:     loop,
 		Jobs:     jobEngine,
 		Cron:     cronService,

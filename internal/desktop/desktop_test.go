@@ -581,7 +581,7 @@ func TestMissingHelpersAndPackages(t *testing.T) {
 	env := m.Env()
 	missing := MissingHelpers(env, NewController(env))
 	pkgs := PackagesFor(missing, "apt")
-	want := []string{"libnotify-bin", "scrot", "wmctrl", "xclip"}
+	want := []string{"libnotify-bin", "scrot", "wmctrl", "xclip", "zenity"}
 	if strings.Join(pkgs, ",") != strings.Join(want, ",") {
 		t.Errorf("apt packages = %v, want %v", pkgs, want)
 	}

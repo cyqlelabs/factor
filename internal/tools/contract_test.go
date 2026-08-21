@@ -25,6 +25,7 @@ func builtinTools(t *testing.T) []Tool {
 	all := append([]Tool{}, NewFSTools(g)...)
 	all = append(all, NewWebTools()...)
 	all = append(all, NewConfigTools(testConfig(t))...)
+	all = append(all, NewAskTool(NewDialogAsker(DefaultAskEnv())))
 	return append(all, NewPkgInstallTool(), et)
 }
 
@@ -35,7 +36,7 @@ func TestBuiltinToolSetIsComplete(t *testing.T) {
 	}
 	sort.Strings(got)
 	want := []string{
-		"config_get", "config_set", "edit_file", "exec", "list_dir",
+		"ask_user", "config_get", "config_set", "edit_file", "exec", "list_dir",
 		"pkg_install", "read_file", "web_fetch", "web_search", "write_file",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -104,8 +105,8 @@ func TestToolDefinitionsExposeEveryBuiltin(t *testing.T) {
 	r := NewRegistry(nil, nil)
 	r.Register(builtinTools(t)...)
 	defs := r.Definitions()
-	if len(defs) != 10 {
-		t.Fatalf("definitions = %d, want 10", len(defs))
+	if len(defs) != 11 {
+		t.Fatalf("definitions = %d, want 11", len(defs))
 	}
 	for _, d := range defs {
 		if d.Name == "" || d.Description == "" || d.Parameters == nil {
