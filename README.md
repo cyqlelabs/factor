@@ -99,14 +99,18 @@ factor -p 127.0.0.1:8080                   # route HTTP through a proxy and watc
 ```
 
 `-p` routes Factor's HTTP through any proxy — mitmproxy, Burp, ZAP, SOCKS5 — so you
-can read the prompts, tool schemas, replies and token counts it actually sends.
-Loopback stays direct and child processes inherit the setting, so smrti's calls show
-up but the local sidecars aren't caught. `--proxy-ca` trusts an intercepting proxy's
-CA, probed once at startup. The browser isn't routed; it has its own trust store.
+can read the prompts, tool schemas, replies and token counts it actually sends. On a
+desktop, the running gateway also puts a status icon in the system tray: version,
+uptime, memory health, connected channels, and a clean quit.
 
-On a desktop, the running gateway puts a status icon in the system tray — version,
-uptime, memory health, connected channels, and a clean quit. Not on a headless box,
-and not on macOS, whose tray would cost the build its CGO-free binaries.
+<details>
+<summary><b>Proxy details, the memory sidecar, and how upgrades land</b></summary>
+
+Loopback stays direct and child processes inherit the proxy setting, so smrti's calls
+show up but the local sidecars aren't caught. `--proxy-ca` trusts an intercepting
+proxy's CA, probed once at startup. The browser isn't routed; it has its own trust
+store. The tray is absent on a headless box and on macOS, whose tray would cost the
+build its CGO-free binaries.
 
 Factor supervises the smrti sidecar, restarts it with backoff, and degrades
 gracefully (empty recalls, dropped writes) when it's down. Point
@@ -117,6 +121,8 @@ published `SHA256SUMS`, and swaps the binary in place (`--check` only reports). 
 running gateway restarts into it once the turn in flight is answered, keeping its
 pid so systemd never sees it stop. Factor checks daily and tells you, never
 installing unasked.
+
+</details>
 
 ## Configuration
 
@@ -293,11 +299,10 @@ factor status      # number, speech tier, voice-shell health
 Carrier setup has a page of its own: **[Twilio](docs/phone-twilio.md)** ·
 **[Telnyx](docs/phone-telnyx.md)**.
 
-The voice shell is [Patter](https://github.com/PatterAI/Patter), supervised in its
-own virtualenv like the smrti sidecar and installed on demand. It terminates the
-carrier's media stream and owns turn-taking, barge-in, voice activity detection,
-answering-machine detection and transcoding; Factor is its brain, over an
-OpenAI-compatible endpoint that never leaves `127.0.0.1`.
+The voice shell is [Patter](https://github.com/PatterAI/Patter), installed on demand
+and supervised like the smrti sidecar. It owns the carrier's media stream,
+turn-taking, barge-in, voice activity detection, answering-machine detection and
+transcoding; Factor is its brain, over an endpoint that never leaves `127.0.0.1`.
 
 **Speech tiers** — the one decision with real trade-offs, asked by the wizard:
 
@@ -328,14 +333,8 @@ flowchart LR
     TTS -.->|tiers 1, 2| EL
 ```
 
-Pick a local tier and Factor installs it — engines in their own virtualenv, your
+Pick a local tier and Factor installs it: engines in their own virtualenv, your
 language's models on disk before setup finishes, nothing to start by hand.
-Transcription covers Whisper's ~99 languages (with Parakeet serving its 25 at higher accuracy where the machine allows); voices come from Piper's catalogue of
-**49**, resolved from your `language` setting with the exact locale winning where it
-exists (`es-MX` gets a Mexican voice, not a Castilian one). You can also pick the
-voice by name: the wizard lists your ElevenLabs voices on the cloud tier and the
-catalogue's on the local one, and a voice named in `speech_server.piper_voice` is
-downloaded on the next start.
 
 Roughly $0.04–0.06 per talk-minute on tier 1 plus your model's tokens, and about
 1.3¢ per SMS segment. Simple questions land in 1.5–3 s. The reply arrives whole, but
@@ -343,7 +342,15 @@ a tool-using turn still speaks: the line Factor says on its way to the answer is
 streamed into the live call while the tools run.
 
 <details>
-<summary><b>Which transcriber a machine gets, and why</b></summary>
+<summary><b>Which languages and voices you get, and which transcriber</b></summary>
+
+Transcription covers Whisper's ~99 languages, with Parakeet serving its 25 at higher
+accuracy where the machine allows. Voices come from Piper's catalogue of **49**,
+resolved from your `language` setting with the exact locale winning where it exists
+(`es-MX` gets a Mexican voice, not a Castilian one). You can also pick the voice by
+name: the wizard lists your ElevenLabs voices on the cloud tier and the catalogue's on
+the local one, and a voice named in `speech_server.piper_voice` is downloaded on the
+next start.
 
 Whisper decodes a fixed 30-second window however little audio it gets, and the phone
 pipeline feeds it about a second at a time — so its cost is per chunk, not per second
@@ -420,6 +427,44 @@ factor talk        # push-to-talk: arm the microphone from any terminal
 factor status      # tier, activation, helpers, and whether anything is listening
 ```
 
+| `activation` | It answers |
+|---|---|
+| `always` | every utterance — best alone in a quiet room |
+| `wake-word` | utterances that open with the wake word, plus a short window after each reply so follow-ups don't need it (the wizard preselects this) |
+| `push-to-talk` | nothing until `factor talk` arms the microphone |
+
+`factor talk` works in every mode: it rescues a misfired wake word and cuts off
+whatever is playing, and `/talk` does the same inside the chat. Talk over a reply and
+it stops mid-word, cancelling the turn behind it. The speech tiers are the phone's,
+chosen the same way, with the local server on its own port so both channels can keep
+speech at home. Windows capture isn't wired up yet; the channel says so instead of
+pretending.
+
+**It hears people, not clips.** Two people talking to each other leave gaps far
+shorter than the silence that closes a recording, so their whole exchange arrives as
+one clip — and a single embedding of that is a blend that hands both of them one
+name. With `speaker_id` on, the speech server separates the voices first and reads
+each one alone. The owner keeps the main conversation, a recognized guest gets a
+session of their own and is named to the agent as the person speaking, and
+`voice_speakers` turns a profile born `speaker-2` into Roxana.
+
+**And it knows who is listening.** That, not who asked, is the question
+confidentiality turns on. A second voice in a recording makes the room shared — at
+most one of them is the owner, so the rest are company — which holds before anyone is
+enrolled and even when nobody could be named.
+
+| Room | Session | Recalls from | Remembers into |
+|---|---|---|---|
+| private | `voice:local`, or the guest's own | `space` + `shared_space` | `space` |
+| shared | `voice:local:room` — everyone in one thread | `shared_space` | `shared_space` |
+
+One utterance declares company; `room_timeout_minutes` of silence or the `room` tool
+takes it back. The asymmetry is deliberate: a room wrongly called shared costs you a
+coy answer, one wrongly called private says something private to a guest.
+
+<details>
+<summary><b>Microphone, meter and barge-in</b></summary>
+
 Audio rides the sound system's own helpers — `parec`/`paplay`, `arecord`/`aplay`,
 sox's `rec`/`play` on macOS — installed by the wizard, which also asks *which*
 microphone and proves it live: you make a noise, it measures, and a silent source is
@@ -429,57 +474,45 @@ source shows `mic ✗`.
 
 Voice activity detection is pure Go: adaptive noise floor, a pre-roll so the first
 syllable survives, and a higher bar while the agent speaks so the speakers can't
-barge in on themselves. You still can — talking over a reply stops it mid-word, and
-a turn that's still thinking is cancelled. Windows capture isn't wired up yet; the
-channel says so instead of pretending.
+barge in on themselves. Speakers loud enough get past that bar anyway, so what got
+through is matched against the words Factor just sent them: its own voice is dropped
+instead of answered, or stripped off the front of what you actually said.
+`output_volume` turns the reply down in rooms where the speakers overpower the
+microphone.
 
-Speakers loud enough get past that raised bar anyway, so what got through is matched
-against the words Factor just sent to them: its own voice is dropped instead of
-answered, or stripped off the front of what you actually said. `output_volume` turns
-the reply down in rooms where the speakers overpower the microphone.
+</details>
 
-**Who is talking.** With `speaker_id` on, every utterance is matched against the
-profiles in `~/.factor/voice-speakers.json` — voice by voice, not clip by clip. Two
-people talking to each other leave gaps far shorter than the silence that closes an
-utterance, so their whole exchange arrives as one recording, and a single embedding
-of that is a blend landing on whichever profile it sits nearest: one name for two
-people, in a room the log then calls empty. The speech server separates the tracks
-first, embeds each person's speech with every overlap removed, and returns them in
-the order they spoke.
+<details>
+<summary><b>How a voice becomes a name</b></summary>
 
-The turn belongs to whoever opened the recording, since the wake word was at its
-front; anyone who joined halfway through is the room, not the asker. The first voice
-enrolled is the owner and holds the main conversation, a recognized guest gets a
-session of their own and is named to the agent as the person speaking, and
-`unknown_speaker` decides what a new voice gets: a profile on the spot, or the main
-conversation, unnamed. The `voice_speakers` tool renames whoever spoke last, which is
-how a profile born `speaker-2` becomes Roxana. Three bars rise with the stakes: one
-second of speech to put a name to a voice, two to fold it into that profile, three to
-create one, because a spurious profile never goes away and competes for every match
-after it. It needs a local speech tier, which is what computes the embeddings, and
-every decision lands in the log with the similarity behind it, so a turn answered as
-the wrong person is readable rather than a guess.
+Each voice is matched against the profiles in `~/.factor/voice-speakers.json`, which
+needs a local speech tier — that is what computes the embeddings. The turn belongs to
+whoever opened the recording, since the wake word was at its front; anyone who joined
+halfway through is the room, not the asker. `unknown_speaker` decides what a new voice
+gets: a profile on the spot, or the main conversation, unnamed.
 
-**Who can hear the answer.** Separating the voices answers the question
-confidentiality actually turns on: who is listening, not who is speaking. A second
-voice in a recording makes the room shared — at most one of them is the owner, so
-the rest are company — and that holds before anyone is enrolled and even when nobody
-could be named. Every utterance the mic resolves is evidence, including the ones the
-wake word turned away: someone talking to *you* is still someone in the room.
+Three bars rise with the stakes: one second of speech to put a name to a voice, two
+to fold it into that profile, three to create one, because a spurious profile never
+goes away and competes for every match after it. Every decision lands in the log with
+the similarity behind it, so a turn answered as the wrong person is readable rather
+than a guess.
 
-| Room | Session | Recalls from | Remembers into |
-|---|---|---|---|
-| private | `voice:local`, or the guest's own | `space` + `shared_space` | `space` |
-| shared | `voice:local:room` — everyone in one thread | `shared_space` | `shared_space` |
+The room is read from every utterance the mic resolves, including the ones the wake
+word turned away — someone talking to *you* is still someone in the room. Sound only
+reports people who make it, so the `room` tool is how you mention someone who came in
+quietly or left. Either flip is spoken before the answer that depends on it, and the
+room outlives the process, aged against the wall clock rather than uptime, so a 9pm
+upgrade doesn't bring Factor back up private while the guest is still on the sofa.
 
-One utterance declares company; `room_timeout_minutes` of silence or the `room` tool
-takes it back. The asymmetry is deliberate: a room wrongly called shared costs you a
-coy answer, one wrongly called private says something private to a guest. Sound only
-reports people who make it, so the `room` tool is also how you mention someone who
-came in quietly or left. Either flip is spoken before the answer that depends on it,
-and the room outlives the process, aged against the wall clock rather than uptime,
-so a 9pm upgrade doesn't bring Factor back up private while the guest is still on the
-sofa.
+</details>
+
+<details>
+<summary><b>Replies you can listen to</b></summary>
+
+A spoken turn is told it's being heard rather than read, so replies come out sayable
+— no markdown, no bullet lists, no spelled-out URLs. `voice_write` sends anything
+long or written to your terminal instead, or to the chat you last used when Factor
+runs as a daemon.
 
 The local tier keeps to itself. Factor sets `ORT_DISABLE_TELEMETRY=1` in the speech
 process's environment before it starts, because onnxruntime otherwise uploads your
@@ -487,25 +520,7 @@ OS build, CPU, memory and a persistent device id as it initializes, and its own
 `disable_telemetry_events()` runs too late to stop it
 ([onnxruntime#25573](https://github.com/microsoft/onnxruntime/issues/25573)).
 
-A spoken turn is told it's being heard rather than read, so replies come out sayable
-— no markdown, no bullet lists, no spelled-out URLs. `voice_write` sends anything
-long or written to your terminal instead, or to the chat you last used when Factor
-runs as a daemon.
-
-Who it answers is the `activation` setting:
-
-| Mode | It responds to |
-|---|---|
-| `always` | every utterance — best alone in a quiet room |
-| `wake-word` | utterances that open with the wake word, plus a short window after each reply so follow-ups don't need it (the wizard preselects this) |
-| `push-to-talk` | nothing until `factor talk` arms the microphone |
-
-`factor talk` works in every mode — it's the rescue for a misfired wake word, and it
-cuts off whatever is playing. Inside the chat, `/talk` does the same.
-
-The speech tiers are the phone's, chosen the same way in the wizard, with the local
-server on its own port so the phone and the PC can both keep speech local on one
-machine.
+</details>
 
 ## Extending Factor
 
