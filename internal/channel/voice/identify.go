@@ -40,12 +40,14 @@ const (
 	// for every future match, and a store full of ghosts is how "it stopped
 	// recognizing me" begins.
 	//
-	// The numbers are not guesses. Against the same reference voice, a 1.8 s
-	// sample scores about 0.58 where a 4 s sample scores 0.95, with an
-	// impostor at 0.26 either way: below about two seconds the margin has
-	// mostly collapsed, and what is left is not enough to build on.
-	speakerMatchMinSeconds  = 1.5
-	speakerLearnMinSeconds  = 2.5
+	// The numbers are measured against real utterances off a real microphone,
+	// not guessed: the same person's shortest usable stretch, three quarters
+	// of a second, still scores 0.49 against their other utterances while
+	// every impostor stays under 0.10. Naming survives short speech; the bars
+	// above it exist because a profile built from a scrap is wrong forever,
+	// not because a scrap cannot be matched.
+	speakerMatchMinSeconds  = 1.0
+	speakerLearnMinSeconds  = 2.0
 	speakerEnrollMinSeconds = 3.0
 
 	// speakerLearnMargin is how far above the threshold a match has to sit
@@ -173,7 +175,11 @@ func (v *Voice) readVoices(ctx context.Context, utterance capturedUtterance, tea
 		// Inheriting is right here where clearing is right for viaUnknown —
 		// that one is a voice long enough to read that matched nobody, which
 		// is evidence of a different person, not of a brief one.
-		return heardVoices{speaker: v.stickySpeaker(viaShort), present: present}
+		inherited := v.stickySpeaker(viaShort)
+		// How much voice there was is why this branch ran, so it travels on
+		// even though the name did not come from it.
+		inherited.seconds = speaker.seconds
+		return heardVoices{speaker: inherited, present: present}
 	}
 	return heardVoices{speaker: v.rememberSpeaker(speaker), present: present}
 }
@@ -229,9 +235,18 @@ func (v *Voice) speakerProfilesExist() bool {
 }
 
 // stickySpeaker is the conversation's current voice, while it is current.
+//
+// Inheriting also renews the window. The alternative measures the window from
+// the last utterance long enough to identify, which means a run of short
+// replies — the ordinary shape of a conversation once it is under way —
+// silently runs out of time and the person who never stopped talking becomes
+// nobody mid-sentence.
 func (v *Voice) stickySpeaker(via string) speakerIdentity {
 	v.mu.Lock()
 	name, at := v.lastSpeaker, v.lastSpeakerAt
+	if name != "" && time.Since(at) <= speakerStickyWindow {
+		v.lastSpeakerAt = time.Now()
+	}
 	v.mu.Unlock()
 	if name == "" || time.Since(at) > speakerStickyWindow {
 		return speakerIdentity{via: via}

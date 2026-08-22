@@ -188,9 +188,12 @@ func (h *voiceHarness) start() {
 
 // say feeds one spoken utterance: settle frames, speech, closing silence.
 // The speech is long enough to clear the identification length bars, as an
-// ordinary spoken sentence is. A test that wants an utterance too short to
-// name anybody from calls sayFor directly.
+// ordinary spoken sentence is; sayBriefly is the one that is not.
 func (h *voiceHarness) say() { h.sayFor(110) }
+
+// sayBriefly feeds an utterance with too little voice in it to name anybody —
+// the "yes" that most of a conversation is made of.
+func (h *voiceHarness) sayBriefly() { h.sayFor(20) }
 
 func (h *voiceHarness) sayFor(speechFrames int) {
 	h.mic.feed(repeat(silenceFrame(), 20)...)
@@ -1119,7 +1122,7 @@ func TestVoiceLogsSpeakerScoresAtDebug(t *testing.T) {
 	if !strings.Contains(logged, "speaker scores") || !strings.Contains(logged, "speaker-1=") {
 		t.Errorf("the per-profile scores never reached the log:\n%s", logged)
 	}
-	if !strings.Contains(logged, "threshold=0.5") {
+	if !strings.Contains(logged, "threshold=0.35") {
 		t.Errorf("the scores line does not say what they were judged against:\n%s", logged)
 	}
 }
@@ -1287,9 +1290,9 @@ func TestVoiceLearnsOnlyFromAConfidentMatch(t *testing.T) {
 		t.Fatalf("the first voice enrolled as %+v", got)
 	}
 
-	// Cosine 0.55 against the profile: over the 0.5 threshold, under the bar
-	// for teaching it.
-	h.setEmbedding([]float64{0.55, 0.835, 0})
+	// Cosine 0.42 against the profile: over the threshold, under the bar for
+	// teaching it.
+	h.setEmbedding([]float64{0.42, 0.9075, 0})
 	h.say()
 	if call := h.turn(10 * time.Second); call.session != sessionKey {
 		t.Errorf("a borderline match ran in %q", call.session)
@@ -1304,4 +1307,47 @@ func TestVoiceLearnsOnlyFromAConfidentMatch(t *testing.T) {
 	h.say()
 	h.turn(10 * time.Second)
 	waitUntil(t, func() bool { return h.v.speakers.list()[0].Utterances == 2 })
+}
+
+// A conversation under way is mostly short replies, and none of them carry
+// enough voice to identify. Measuring the sticky window from the last
+// utterance long enough to read means the window quietly runs out while the
+// person is still talking, and they become nobody mid-conversation — which
+// is what "it knew me, then it didn't" looks like from the outside.
+func TestVoiceKeepsTheSpeakerAcrossARunOfShortReplies(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.start()
+
+	// One utterance long enough to name, establishing who is talking.
+	h.setEmbedding([]float64{1, 0, 0})
+	h.say()
+	if call := h.turn(10 * time.Second); call.session != sessionKey {
+		t.Fatalf("the first turn ran in %q", call.session)
+	}
+	h.waitQuiet()
+	named := h.v.lastSpeakerName()
+	if named == "" {
+		t.Fatal("the first utterance named nobody")
+	}
+
+	// Now a run of short ones, each too brief to be read, spread over more
+	// than one sticky window's worth of conversation.
+	h.v.mu.Lock()
+	h.v.lastSpeakerAt = time.Now().Add(-speakerStickyWindow + time.Second)
+	h.v.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		h.sayBriefly()
+		h.turn(10 * time.Second)
+		h.waitQuiet()
+		if got := h.v.lastSpeakerName(); got != named {
+			t.Fatalf("short reply %d lost the speaker: %q became %q", i+1, named, got)
+		}
+		h.v.mu.Lock()
+		aged := time.Since(h.v.lastSpeakerAt)
+		h.v.mu.Unlock()
+		if aged > time.Second {
+			t.Errorf("short reply %d did not renew the window; it is already %s old", i+1, aged)
+		}
+	}
 }

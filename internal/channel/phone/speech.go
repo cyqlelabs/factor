@@ -148,10 +148,12 @@ func speechDataDir(cfg SpeechConfig, home string) string {
 }
 
 // defaultSpeakerModel is the voice-embedding model speaker identification
-// runs unless the config names another: WeSpeaker's CAM++ trained on
-// VoxCeleb and fine-tuned with a large-margin loss, ~29 MB of ONNX answering
-// 512-dim embeddings. The name matches speechserver.py's own default.
-const defaultSpeakerModel = "wespeaker_en_voxceleb_CAM++_LM"
+// runs unless the config names another: 3D-Speaker's bilingual CAM++, ~28 MB
+// of ONNX answering 192-dim embeddings. The name matches speechserver.py's
+// own default, and the choice is measured rather than read off a model card —
+// see the catalogue there for what the alternatives scored and why the
+// WeSpeaker exports this once shipped are not among them.
+const defaultSpeakerModel = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced"
 
 // segmentationModelDir holds the model that says how many people are in a
 // recording and when each of them was talking — pyannote's segmentation-3.0,

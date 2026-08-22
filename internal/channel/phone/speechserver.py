@@ -147,24 +147,34 @@ PARAKEET_MIN_RAM_GB = 4.0
 # "the model is the one this code was written for" are different claims. The
 # release tag's spelling ("recongition") is the project's own — do not correct
 # it, the corrected URL does not exist.
-#
-# CAM++_LM is the default: same size, architecture and 512 dimensions as plain
-# CAM++, but fine-tuned with a large-margin loss, which pushes different
-# speakers further apart — the exact quantity a household threshold is cut
-# against. resnet293_LM is the strongest of them and four times the size, for
-# a machine that can spare it; the 3D-Speaker model is trained bilingually
-# rather than on English alone.
+# Only models that have been checked against known same-speaker and
+# different-speaker recordings belong here. The two WeSpeaker exports this
+# server used to ship — plain CAM++ and its large-margin variant — do not:
+# through sherpa-onnx's extractor they score the vendor's own verification
+# pairs no better than chance, putting two different people above 0.7 while
+# leaving two recordings of one person at 0.2, and they were measured no
+# better on this machine's own microphone. Whatever the export disagrees with
+# the runtime about, the result is a feature that cannot work, so they are
+# gone rather than merely not the default. Anything added here must clear the
+# same bar: same-speaker scores strictly above different-speaker ones, tested,
+# not assumed from a model card.
 SPEAKER_MODELS = {
-    "wespeaker_en_voxceleb_CAM++_LM":
-        "e197af7e9d473030cf486b3124149a19bf37014d0e4485e4c70c483b0ec10cb2",
-    "wespeaker_en_voxceleb_CAM++":
-        "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef",
-    "wespeaker_en_voxceleb_resnet293_LM":
-        "f65dbc820e534eef64ae12d1e289e20244d60e60f7f00d7b092092b1c458be2e",
+    # 192 dimensions, ~28 MB. Trained bilingually on a large multi-domain set;
+    # the widest margin measured on both the vendor's Mandarin pairs (+0.34)
+    # and on real Argentinean Spanish off a USB microphone (+0.41).
     "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced":
         "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+    # 192 dimensions, ~26 MB. Local-and-global feature fusion, steadier on
+    # very short utterances; margin +0.32 on the same recordings.
+    "3dspeaker_speech_eres2net_sv_en_voxceleb_16k":
+        "c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5",
+    # 192 dimensions, ~40 MB. English-trained and still separates every pair,
+    # which is the reassurance that these models generalise past their
+    # training language; the narrowest margin of the three, +0.19.
+    "nemo_en_titanet_small":
+        "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e",
 }
-DEFAULT_SPEAKER_MODEL = "wespeaker_en_voxceleb_CAM++_LM"
+DEFAULT_SPEAKER_MODEL = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced"
 SPEAKER_RELEASE = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
 )
@@ -199,6 +209,16 @@ SEGMENT_MODEL_SHA256 = "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76
 DIARIZE_MIN_ON = 0.3
 DIARIZE_MIN_OFF = 0.5
 DIARIZE_THRESHOLD = 0.5
+
+# How much speech of their own a track needs before it counts as a person.
+# The segmentation model reports concurrent tracks, and on a short recording
+# it routinely opens a second one wholly inside the first: a hypothesis about
+# overlap rather than somebody else in the room. Such a track never speaks
+# alone, and taking it at face value is worse than ignoring it — subtracting
+# its range from the speaker it sits inside punches a hole through the middle
+# of the one voice that is really there, and the two disconnected fragments
+# left behind embed as nobody.
+DIARIZE_MIN_EXCLUSIVE = 0.3
 
 # ------------------------------------------------------------------- the models
 
@@ -558,9 +578,15 @@ def diarize(waveform):
     """Split a recording into one span of speech per person.
 
     Returns (start, end, samples) per speaker, ordered by who spoke first,
-    where samples is that person's speech with the gaps and every overlap
-    with somebody else removed. Without a diarizer the whole recording is one
-    span, which is what this server answered before it had one."""
+    where samples is that person's speech with the gaps and every overlap with
+    somebody else removed. Without a diarizer the whole recording is one span,
+    which is what this server answered before it had one.
+
+    A track only counts as a person if it says something nobody else was
+    saying at the time. That test is what keeps the segmentation model's
+    concurrent-track hypotheses from being read as extra people, and — more
+    important — what keeps them from damaging the speaker who is really
+    there."""
     import numpy as np
 
     if _diarizer is None:
@@ -580,18 +606,42 @@ def diarize(waveform):
             spans[seg.speaker] = []
         spans[seg.speaker].append((seg.start, seg.end))
 
+    alone = exclusive_speech(order, spans, order)
+    real = [who for who in order if span_seconds(alone[who]) >= DIARIZE_MIN_EXCLUSIVE]
+    if not real:
+        # Every track sits on top of every other: nobody spoke alone. Rather
+        # than answer with nobody, take the longest whole and call it one
+        # voice, which is what this recording most likely is.
+        longest = max(order, key=lambda who: span_seconds(spans[who]))
+        real, alone = [longest], {longest: spans[longest]}
+    elif len(real) < len(order):
+        # Recompute against the survivors alone, so a discarded track stops
+        # taking audio away from the people who did speak.
+        alone = exclusive_speech(real, spans, real)
+
     out = []
-    for speaker in order:
-        mine = spans[speaker]
-        others = [iv for other, ivs in spans.items() if other != speaker for iv in ivs]
-        kept = [iv for own in mine for iv in subtract(own, others)]
+    for who in order:
+        kept = alone.get(who) if who in real else None
         if not kept:
             continue
         samples = np.concatenate([
             waveform[int(a * 16000):int(b * 16000)] for a, b in kept
-        ]) if kept else np.empty(0, dtype=np.float32)
-        out.append((mine[0][0], mine[-1][1], samples))
+        ])
+        out.append((spans[who][0][0], spans[who][-1][1], samples))
     return out
+
+
+def exclusive_speech(subjects, spans, against):
+    """What each subject said while none of `against` was talking."""
+    out = {}
+    for who in subjects:
+        others = [iv for other in against if other != who for iv in spans[other]]
+        out[who] = [iv for own in spans[who] for iv in subtract(own, others)]
+    return out
+
+
+def span_seconds(intervals) -> float:
+    return sum(b - a for a, b in intervals)
 
 
 def subtract(span: tuple[float, float], others: list[tuple[float, float]]):

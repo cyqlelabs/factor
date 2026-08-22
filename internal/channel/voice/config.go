@@ -22,9 +22,14 @@ const (
 	unknownAnonymous = "anonymous"
 	unknownEnroll    = "enroll"
 
-	// defaultSpeakerThreshold is deliberately on the strict side: attributing
-	// a sentence to the wrong person costs more than not naming its speaker.
-	defaultSpeakerThreshold = 0.5
+	// defaultSpeakerThreshold sits in the gap the embedding model actually
+	// leaves. Measured over real utterances from one microphone: the same
+	// person scores 0.49 to 0.68 against themselves, and different people
+	// -0.10 to 0.09. Anything at 0.5 clips the bottom of the same-speaker
+	// range — which is how a person gets recognized on one sentence and
+	// enrolled as a stranger on the next — while a bar this side of the gap
+	// still leaves four times the headroom over an impostor.
+	defaultSpeakerThreshold = 0.35
 )
 
 const (
