@@ -125,7 +125,7 @@ func TestStartVoiceChannelDegradesGracefully(t *testing.T) {
 	// No section at all.
 	stop, _, _, on := startVoiceChannel(context.Background(), a, loaded, "main")
 	stop()
-	if on {
+	if on != nil {
 		t.Error("an unconfigured voice channel reported itself on")
 	}
 
@@ -133,7 +133,7 @@ func TestStartVoiceChannelDegradesGracefully(t *testing.T) {
 	loaded.Channels = map[string]json.RawMessage{"voice": json.RawMessage(`{"enabled":false}`)}
 	stop, _, _, on = startVoiceChannel(context.Background(), a, loaded, "main")
 	stop()
-	if on {
+	if on != nil {
 		t.Error("a disabled voice channel reported itself on")
 	}
 
@@ -149,7 +149,7 @@ func TestStartVoiceChannelDegradesGracefully(t *testing.T) {
 		`{"stt_api_key":"dg","elevenlabs_api_key":"el","control_port":%d}`, port))}
 	stop, _, _, on = startVoiceChannel(context.Background(), a, loaded, "main")
 	stop()
-	if on {
+	if on != nil {
 		t.Error("a channel that could not start reported itself on")
 	}
 }

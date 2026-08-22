@@ -51,6 +51,35 @@ type TurnRunner interface {
 	BindTurnRunner(run TurnFunc)
 }
 
+// Steerable is the optional capability of a TurnRunner whose replies also
+// reach the user through Send. It says a turn this connector starts may be
+// folded into one already live for the same session — a background job
+// reporting back, a cron result — instead of queuing behind it: the words
+// land while they are still what the conversation is about, and the running
+// turn's reply comes back the usual way. Without it a connector's turn waits
+// for the session, which is what a phone call needs, since a reply published
+// to the bus would be dialled as a second call rather than spoken on the
+// line the caller is holding.
+type Steerable interface {
+	AcceptsSteering()
+}
+
+// BindTurns wires a connector's turn runner to the entry point its replies
+// can come back through: steer where Steerable says the bus can deliver
+// them, wait where they have to be returned here. A connector that does not
+// run its own turns is left alone.
+func BindTurns(ch Channel, wait, steer TurnFunc) {
+	runner, ok := ch.(TurnRunner)
+	if !ok {
+		return
+	}
+	if _, steers := ch.(Steerable); steers {
+		runner.BindTurnRunner(steer)
+		return
+	}
+	runner.BindTurnRunner(wait)
+}
+
 // Toolset is the optional capability of contributing tools that only make
 // sense where the connector is configured, so a machine without it never sees
 // a tool that could only fail.

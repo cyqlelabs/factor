@@ -35,6 +35,50 @@ func (f *fakeChannel) Send(_ context.Context, msg bus.OutboundMessage) error {
 	return nil
 }
 
+// turnRunner is a connector that runs its own turns; steerer also declares
+// that its replies come back through Send.
+type turnRunner struct {
+	fakeChannel
+	bound string
+}
+
+func (r *turnRunner) BindTurnRunner(run TurnFunc) {
+	reply, _ := run(context.Background(), "", "", "", "", nil)
+	r.bound = reply
+}
+
+type steerer struct{ turnRunner }
+
+func (s *steerer) AcceptsSteering() {}
+
+// Which entry point a connector is bound to decides what happens when the
+// user speaks into a session that is already busy: steering for one whose
+// reply can come back over the bus, waiting for one holding a live call.
+func TestBindTurnsPicksTheEntryPointRepliesCanComeBackThrough(t *testing.T) {
+	wait := func(context.Context, string, string, string, string, func(string)) (string, error) {
+		return "wait", nil
+	}
+	steer := func(context.Context, string, string, string, string, func(string)) (string, error) {
+		return "steer", nil
+	}
+
+	steering := &steerer{turnRunner{fakeChannel: fakeChannel{name: "voice"}}}
+	BindTurns(steering, wait, steer)
+	if steering.bound != "steer" {
+		t.Errorf("a Steerable connector was bound to %q, want the steering entry point", steering.bound)
+	}
+
+	holding := &turnRunner{fakeChannel: fakeChannel{name: "phone"}}
+	BindTurns(holding, wait, steer)
+	if holding.bound != "wait" {
+		t.Errorf("a connector that must own its turn was bound to %q", holding.bound)
+	}
+
+	// A connector that publishes onto the bus runs no turns of its own; this
+	// must not panic on it.
+	BindTurns(&fakeChannel{name: "telegram"}, wait, steer)
+}
+
 func TestSplitMessage(t *testing.T) {
 	if got := SplitMessage("short", 100); len(got) != 1 || got[0] != "short" {
 		t.Errorf("short = %v", got)

@@ -5,11 +5,13 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/agent"
+	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/tui"
 )
@@ -230,5 +232,71 @@ func TestChatUIKeepsOneClockAcrossSteering(t *testing.T) {
 	}
 	if sum.Steps != 1 || len(sum.Tools) != 1 {
 		t.Errorf("summary = %+v, want the steps from before the steering", sum)
+	}
+}
+
+// spyChannel stands in for the microphone channel a chat session brings up
+// itself.
+type spyChannel struct {
+	name string
+	mu   sync.Mutex
+	sent []bus.OutboundMessage
+	err  error
+}
+
+func (s *spyChannel) Name() string                { return s.name }
+func (s *spyChannel) Start(context.Context) error { return nil }
+func (s *spyChannel) Stop() error                 { return nil }
+func (s *spyChannel) MaxMessageLength() int       { return 0 }
+func (s *spyChannel) Send(_ context.Context, msg bus.OutboundMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	s.sent = append(s.sent, msg)
+	return nil
+}
+
+func (s *spyChannel) delivered() []bus.OutboundMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]bus.OutboundMessage(nil), s.sent...)
+}
+
+// `factor chat` runs the microphone without a gateway, so this terminal is the
+// only thing pumping the bus. A turn it did not start — a finished background
+// job, a note from one still running — reaches the speakers only if the drain
+// hands it over; dropping it is how a spoken conversation goes quiet.
+func TestChatSessionSpeaksWhatItsOwnMicrophoneChannelIsSent(t *testing.T) {
+	mic := &spyChannel{name: "voice"}
+	var printed []string
+	reply := func(line string) { printed = append(printed, line) }
+
+	deliverOutbound(context.Background(), bus.OutboundMessage{Channel: "cli", Content: "on screen"}, reply, mic)
+	deliverOutbound(context.Background(), bus.OutboundMessage{Channel: "voice", ChatID: "local",
+		Interim: true, Content: "writing the file"}, reply, mic)
+	deliverOutbound(context.Background(), bus.OutboundMessage{Channel: "voice", ChatID: "local",
+		Content: "the job finished"}, reply, mic)
+	// Somebody else's connector: this session does not run it.
+	deliverOutbound(context.Background(), bus.OutboundMessage{Channel: "telegram", ChatID: "42",
+		Content: "not ours"}, reply, mic)
+
+	if len(printed) != 1 || printed[0] != "on screen" {
+		t.Errorf("printed = %q, want only this terminal's reply", printed)
+	}
+	got := mic.delivered()
+	if len(got) != 2 || got[0].Content != "writing the file" || got[1].Content != "the job finished" {
+		t.Errorf("spoken = %+v, want the note then the reply", got)
+	}
+}
+
+// With no microphone in this session there is nothing to hand anything to.
+func TestChatSessionWithoutAMicrophoneDropsOtherChannels(t *testing.T) {
+	var printed []string
+	deliverOutbound(context.Background(), bus.OutboundMessage{Channel: "voice", Content: "nobody listening"},
+		func(line string) { printed = append(printed, line) }, nil)
+	if len(printed) != 0 {
+		t.Errorf("printed = %q, want nothing", printed)
 	}
 }

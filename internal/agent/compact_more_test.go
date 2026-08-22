@@ -338,7 +338,7 @@ func TestIdleTracksLiveTurns(t *testing.T) {
 	}
 
 	// A live turn is what stops the gateway from restarting underneath it.
-	turn, claimed := h.loop.claim("telegram:1", nil)
+	turn, claimed, _ := h.loop.claim("telegram:1", &bus.InboundMessage{Channel: "telegram", ChatID: "1"}, false)
 	if !claimed {
 		t.Fatal("the first claim on a free session failed")
 	}
@@ -429,13 +429,13 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 func TestSteeringQueueOverflowDropsInsteadOfBlocking(t *testing.T) {
 	h := newHarness(t)
 	key := "telegram:overflow"
-	t2, ok := h.loop.claim(key, nil)
+	t2, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "overflow"}, false)
 	if !ok {
 		t.Fatal("claim failed on an idle session")
 	}
 	for i := range steeringBuffer + 5 {
 		h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "overflow",
-			Content: fmt.Sprintf("m%d", i)})
+			Content: fmt.Sprintf("m%d", i)}, true)
 	}
 	leftover := h.loop.release(key, t2)
 	if len(leftover) != steeringBuffer {
@@ -452,11 +452,11 @@ func TestReleaseRepublishesLateSteering(t *testing.T) {
 
 	// A message that lands after the final drain must be answered, not lost.
 	key := "telegram:late"
-	turnHandle, ok := h.loop.claim(key, nil)
+	turnHandle, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "late"}, false)
 	if !ok {
 		t.Fatal("claim failed")
 	}
-	h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "late", Content: "too late"})
+	h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "late", Content: "too late"}, true)
 	for _, missed := range h.loop.release(key, turnHandle) {
 		h.bus.PublishInbound(missed)
 	}
@@ -473,7 +473,7 @@ func TestReleaseRepublishesLateSteering(t *testing.T) {
 func TestProcessDirectRespectsCancellationWhileWaiting(t *testing.T) {
 	h := newHarness(t)
 	key := "cli:busy-cancel"
-	held, ok := h.loop.claim(key, nil)
+	held, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "cli", ChatID: "busy-cancel"}, false)
 	if !ok {
 		t.Fatal("claim failed")
 	}

@@ -25,6 +25,10 @@ type ChatProvider interface {
 
 const steeringBuffer = 8
 
+// claimRetry is how often a synchronous turn that must own its session
+// re-checks whether the live one has ended.
+const claimRetry = 200 * time.Millisecond
+
 // interruptedTool stands in for a tool result a cancelled turn never got. It
 // says the turn was interrupted and says nothing about the tool, because the
 // next turn reads this line as fact — and a bare "context canceled" reads as
@@ -37,6 +41,10 @@ const interruptedTool = "This tool call was cut short: the turn was interrupted 
 // iterations instead of queuing a second turn.
 type turn struct {
 	steering chan bus.InboundMessage
+	// audience is who could hear the turn when it was claimed. Steering is
+	// refused across a widening of it: a message somebody else can hear must
+	// not be answered by a turn whose recall was scoped to a private one.
+	audience string
 }
 
 type Loop struct {
@@ -183,23 +191,48 @@ func (l *Loop) noteSession(in turnInput) {
 // claim registers a live turn for key, or steers msg into the existing one.
 // The steering send happens under l.mu — the same lock release drains under —
 // so a message can never slip into a turn that has already been released.
-func (l *Loop) claim(key string, steer *bus.InboundMessage) (*turn, bool) {
+//
+// steer says whether msg may be folded into a turn already running rather
+// than becoming one of its own. It reports whether the caller owns the turn
+// and, when it does not, whether msg was handed to the turn that is running.
+// That second answer is what a synchronous caller needs: a message the live
+// turn took is already on its way to an answer, and one it could not take
+// must still be waited out rather than dropped on the floor.
+func (l *Loop) claim(key string, msg *bus.InboundMessage, steer bool) (t *turn, owned, steered bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if t, running := l.active[key]; running {
-		if steer != nil {
-			select {
-			case t.steering <- *steer:
-				slog.Info("steering message into live turn", "session", key)
-			default:
-				slog.Warn("steering queue full, dropping message", "session", key)
-			}
+	if live, running := l.active[key]; running {
+		if !steer {
+			return nil, false, false
 		}
-		return nil, false
+		if widensAudience(msg.Audience, live.audience) {
+			// The room filled up while this turn was running. Folding the new
+			// message in would answer it out of a context recalled for a
+			// private conversation, in front of whoever just arrived.
+			slog.Info("not steering across a wider audience; waiting for the turn",
+				"session", key, "turn_audience", live.audience, "message_audience", msg.Audience)
+			return nil, false, false
+		}
+		select {
+		case live.steering <- *msg:
+			slog.Info("steering message into live turn", "session", key)
+			return nil, false, true
+		default:
+			slog.Warn("steering queue full", "session", key)
+			return nil, false, false
+		}
 	}
-	t := &turn{steering: make(chan bus.InboundMessage, steeringBuffer)}
+	t = &turn{steering: make(chan bus.InboundMessage, steeringBuffer), audience: msg.Audience}
 	l.active[key] = t
-	return t, true
+	return t, true, false
+}
+
+// widensAudience reports whether a message reaches more people than the turn
+// it would be folded into was claimed for. Only that direction is refused:
+// the reverse — the guest left, and the message is private again — costs the
+// turn nothing but the shared-only recall it already had.
+func widensAudience(message, live string) bool {
+	return message == tools.AudienceShared && live != tools.AudienceShared
 }
 
 // release removes the claim and returns any steering messages that arrived
@@ -222,7 +255,7 @@ func (l *Loop) release(key string, t *turn) []bus.InboundMessage {
 
 func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 	key := msg.SessionKey()
-	t, ok := l.claim(key, &msg)
+	t, ok, _ := l.claim(key, &msg, true)
 	if !ok {
 		return
 	}
@@ -266,7 +299,35 @@ func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (s
 // while it is still news. It honors the one-live-turn-per-session invariant:
 // if the session is busy (e.g. an overlapping cron firing), it waits for
 // the claim instead of interleaving histories.
+//
+// Waiting is right where the reply has to come back on the medium the
+// request arrived on — a phone call is held open by the caller, and an
+// answer published to the bus would be dialled as a second one. Where the
+// connector is also served by the outbound pump, ProcessDirectSteering is
+// the entry point that does not make the user wait in silence.
 func (l *Loop) ProcessDirectNotice(ctx context.Context, content, sessionKey, speaker, audience string,
+	notice func(string)) (string, error) {
+	return l.processDirect(ctx, false, content, sessionKey, speaker, audience, notice)
+}
+
+// ProcessDirectSteering is ProcessDirectNotice for a connector whose replies
+// also reach the user through its own Send. Where the session already has a
+// turn running — a finished background job reporting back, a cron result —
+// the message is folded into that turn as steering instead of queuing behind
+// it, and this call returns nothing to say: the answer arrives with the
+// running turn's reply, on the same channel.
+//
+// Queuing was the alternative, and it is worse than it looks. The user gets
+// no acknowledgement, nothing is logged, and the next thing they say cancels
+// the turn still waiting for its claim — so the question is not answered
+// late, it is answered never. Steering also puts their words in front of the
+// model while they are still what the conversation is about.
+func (l *Loop) ProcessDirectSteering(ctx context.Context, content, sessionKey, speaker, audience string,
+	notice func(string)) (string, error) {
+	return l.processDirect(ctx, true, content, sessionKey, speaker, audience, notice)
+}
+
+func (l *Loop) processDirect(ctx context.Context, steer bool, content, sessionKey, speaker, audience string,
 	notice func(string)) (string, error) {
 	msg := bus.InboundMessage{Channel: "cli", ChatID: strings.TrimPrefix(sessionKey, "cli:"),
 		Content: content, Speaker: speaker, Audience: audience}
@@ -275,14 +336,21 @@ func (l *Loop) ProcessDirectNotice(ctx context.Context, content, sessionKey, spe
 	}
 	var t *turn
 	for {
-		var ok bool
-		if t, ok = l.claim(sessionKey, nil); ok {
+		t2, owned, steered := l.claim(sessionKey, &msg, steer)
+		if owned {
+			t = t2
 			break
 		}
+		if steered {
+			return "", nil // the live turn has it; its reply is the answer
+		}
+		// Not steered: either this caller must own its turn, or the live one
+		// could not take the message. Both mean waiting, and losing it is
+		// not an option.
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(claimRetry):
 		}
 	}
 	defer func() {
@@ -476,9 +544,14 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		// the whole turn — on a chat channel that is the difference between a
 		// silent minute and a conversation.
 		if notice := strings.TrimSpace(resp.Content); notice != "" && !in.ephemeral {
-			l.emit(in.sessionKey, PhaseNotice, notice)
+			// Whoever is running this turn hears the line from the turn
+			// itself, which is the one place it arrives in time to be worth
+			// saying. Only a turn nobody is holding sends it the long way,
+			// off the bus — otherwise the connector says it twice.
 			if in.notice != nil {
 				in.notice(notice)
+			} else {
+				l.emit(in.sessionKey, PhaseNotice, notice)
 			}
 		}
 
@@ -660,7 +733,10 @@ func (l *Loop) drainSteering(in turnInput, t *turn, record func(provider.Message
 	for {
 		select {
 		case msg := <-t.steering:
-			userMsg := provider.Message{Role: "user", Content: msg.Content}
+			// Who said it travels with a steered message too: on voice the
+			// turn's own speaker is whoever opened it, and the person who
+			// spoke over it may not be the same one.
+			userMsg := provider.Message{Role: "user", Content: markSpeaker(msg.Speaker, msg.Content)}
 			if err := record(userMsg); err != nil {
 				slog.Error("persist steering message", "error", err)
 			}

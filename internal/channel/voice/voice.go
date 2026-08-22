@@ -53,6 +53,11 @@ const (
 	// echoSettleMargin is what echoSettle allows for transcription on top of
 	// the silence that closes a segment.
 	echoSettleMargin = 3 * time.Second
+
+	// outboundQueue is how many bus messages may wait to be said. Deep
+	// enough that a turn's notes and its reply never contend, shallow enough
+	// that a channel minutes behind says so instead of hoarding.
+	outboundQueue = 16
 )
 
 // Voice is the PC voice connector. Like the phone it does not publish inbound
@@ -76,6 +81,11 @@ type Voice struct {
 
 	player *player
 	utts   chan capturedUtterance
+	// outbound is what the bus hands this channel, kept in the order it
+	// arrived. A note from a turn still running and the reply that follows
+	// it are two messages, and speaking them out of order is worse than
+	// speaking neither — so Send queues here and one goroutine says them.
+	outbound chan bus.OutboundMessage
 
 	ctl    *http.Server
 	ctlLn  net.Listener
@@ -146,6 +156,7 @@ func New(cfg Config, b *bus.MessageBus) (*Voice, error) {
 		publish:    publish,
 		speechWait: speechReadyWait,
 		utts:       make(chan capturedUtterance, 3),
+		outbound:   make(chan bus.OutboundMessage, outboundQueue),
 		effective:  cfg,
 	}
 	if cfg.managedSpeech() {
@@ -173,6 +184,12 @@ func newToken() string {
 
 func (v *Voice) Name() string          { return "voice" }
 func (v *Voice) MaxMessageLength() int { return 0 }
+
+// AcceptsSteering marks this channel as one whose replies also arrive through
+// Send, so a spoken turn that lands on a busy session is folded into the turn
+// already running rather than queued behind it. See channel.Steerable: on a
+// microphone the alternative is silence the user cannot tell from a hang.
+func (v *Voice) AcceptsSteering() {}
 
 // BindTurnRunner attaches the agent loop; without it Start refuses to open
 // the microphone, since nothing could answer.
@@ -228,6 +245,8 @@ func (v *Voice) Start(ctx context.Context) error {
 	}
 	v.wg.Add(1)
 	go v.run(v.runCtx)
+	v.wg.Add(1)
+	go v.speakOutbound(v.runCtx)
 
 	slog.Info("voice channel ready",
 		"activation", v.cfg.Activation, "tier", v.cfg.TierLabel(), "control_port", v.cfg.ControlPort,
@@ -267,19 +286,40 @@ func (v *Voice) Stop() error {
 // Send delivers a bus message — a cron result, a finished job, a heartbeat —
 // by speaking it once the channel can speak and the floor is free.
 func (v *Voice) Send(_ context.Context, msg bus.OutboundMessage) error {
-	// This channel runs its own turns, so it hears their notes from the turn
-	// itself (see turn) rather than off the bus, in time to be worth saying.
-	// One arriving here belongs to a turn that is already over.
-	if msg.Interim {
-		return nil
-	}
+	// An interim arriving here belongs to a turn nobody in this process is
+	// running — a finished background job reporting back, a cron result — and
+	// speaking it is the only progress that turn can make audible. The notes
+	// of a turn this channel runs itself never come this way; they arrive
+	// from the turn (see turn), in time to be worth saying.
 	if v.runCtx == nil {
 		return fmt.Errorf("the voice channel never started")
 	}
-	if !v.spawn(func() { v.speakWhenIdle(v.runCtx, msg.Content) }) {
+	if v.runCtx.Err() != nil {
 		return fmt.Errorf("the voice channel is stopping")
 	}
-	return nil
+	select {
+	case v.outbound <- msg:
+		return nil
+	default:
+		// The manager retries, which is the right answer: the queue is only
+		// this deep behind because the speakers are, and dropping the message
+		// here would lose it silently.
+		return fmt.Errorf("the voice channel has too much waiting to be said")
+	}
+}
+
+// speakOutbound says what the bus handed this channel, one message at a time
+// and in the order it arrived.
+func (v *Voice) speakOutbound(ctx context.Context) {
+	defer v.wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-v.outbound:
+			v.speakWhenIdle(ctx, msg.Content)
+		}
+	}
 }
 
 // spawn tracks a goroutine against shutdown; it refuses once Stop has begun.

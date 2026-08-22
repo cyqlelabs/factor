@@ -154,9 +154,7 @@ func serve(configPath string) (bool, error) {
 	// that brings its own tools contributes them here — so a CLI session never
 	// sees a tool that has no connector behind it.
 	for _, ch := range channels {
-		if runner, ok := ch.(channel.TurnRunner); ok {
-			runner.BindTurnRunner(a.Loop.ProcessDirectNotice)
-		}
+		channel.BindTurns(ch, a.Loop.ProcessDirectNotice, a.Loop.ProcessDirectSteering)
 		if guarded, ok := ch.(channel.Guarded); ok {
 			guarded.BindPathGuard(a.Guard)
 		}

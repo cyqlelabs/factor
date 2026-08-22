@@ -362,22 +362,21 @@ func runTalk(configPath string) error {
 }
 
 // startVoiceChannel brings the PC voice channel up inside a chat session, so
-// the microphone works without the gateway. It reports whether it started and
-// hands back the push-to-talk trigger for the /talk command; the returned
-// stop is always safe to call.
-func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sessionName string) (stop func(), talk func(), meter func() voice.Meter, started bool) {
+// the microphone works without the gateway. It hands back the channel itself
+// (nil when there is none) so this terminal can deliver its outbound — there
+// is no manager here doing it — along with the push-to-talk trigger for the
+// /talk command; the returned stop is always safe to call.
+func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sessionName string) (stop func(), talk func(), meter func() voice.Meter, started channel.Channel) {
 	raw, configured := cfg.Channels["voice"]
 	if !configured {
-		return func() {}, nil, nil, false
+		return func() {}, nil, nil, nil
 	}
 	channels := channel.Build(map[string]json.RawMessage{"voice": raw}, a.Bus)
 	if len(channels) == 0 {
-		return func() {}, nil, nil, false
+		return func() {}, nil, nil, nil
 	}
 	ch := channels[0]
-	if runner, ok := ch.(channel.TurnRunner); ok {
-		runner.BindTurnRunner(a.Loop.ProcessDirectNotice)
-	}
+	channel.BindTurns(ch, a.Loop.ProcessDirectNotice, a.Loop.ProcessDirectSteering)
 	if addresser, ok := ch.(channel.Addresser); ok {
 		// A written reply lands in this terminal: the drain below prints
 		// every outbound cli message.
@@ -388,7 +387,7 @@ func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sess
 	}
 	if err := ch.Start(ctx); err != nil {
 		log.Printf("voice channel failed to start: %v", err)
-		return func() {}, nil, nil, false
+		return func() {}, nil, nil, nil
 	}
 	if talker, ok := ch.(interface{ ArmPTT() }); ok {
 		talk = talker.ArmPTT
@@ -396,7 +395,7 @@ func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sess
 	if metered, ok := ch.(interface{ Meter() voice.Meter }); ok {
 		meter = metered.Meter
 	}
-	return func() { _ = ch.Stop() }, talk, meter, true
+	return func() { _ = ch.Stop() }, talk, meter, ch
 }
 
 func runChat(configPath, sessionName, message string) error {
@@ -431,7 +430,7 @@ func runChat(configPath, sessionName, message string) error {
 	// The PC voice channel listens here too, not only under the gateway —
 	// registered before the loop runs so its tool exists from the first turn,
 	// and before the bar so its meter shows from the first repaint.
-	stopVoice, talk, meter, voiceOn := startVoiceChannel(ctx, a, cfg, baseName)
+	stopVoice, talk, meter, voiceCh := startVoiceChannel(ctx, a, cfg, baseName)
 	defer stopVoice()
 
 	// A question asked from here belongs on this terminal, not in a dialog
@@ -456,7 +455,7 @@ func runChat(configPath, sessionName, message string) error {
 
 	con.Printf("factor %s — %s | /quit to exit, /new for a fresh session",
 		version.Version, cfg.Provider.Model)
-	if voiceOn {
+	if voiceCh != nil {
 		con.Printf("voice: listening on the microphone (/talk for push-to-talk)")
 	}
 
@@ -469,9 +468,7 @@ func runChat(configPath, sessionName, message string) error {
 			case <-ctx.Done():
 				return
 			case out := <-a.Bus.Outbound():
-				if out.Channel == "cli" {
-					ui.reply(out.Content)
-				}
+				deliverOutbound(ctx, out, ui.reply, voiceCh)
 			}
 		}
 	}()
@@ -514,6 +511,23 @@ func runChat(configPath, sessionName, message string) error {
 		if !a.Bus.PublishInbound(bus.InboundMessage{Channel: "cli", ChatID: chatID, Content: line, Time: time.Now()}) {
 			ui.abort()
 			con.Printf("(too busy to take that message — try again in a moment)")
+		}
+	}
+}
+
+// deliverOutbound routes one outbound message inside a chat session. There is
+// no manager here, so this terminal is the only thing pumping the bus: its own
+// replies go to the screen, and anything addressed to the microphone channel —
+// a finished background job, a cron result, a note from a turn still running —
+// reaches the speakers only through this. Everything else belongs to a
+// connector this session does not run.
+func deliverOutbound(ctx context.Context, out bus.OutboundMessage, reply func(string), voiceCh channel.Channel) {
+	switch {
+	case out.Channel == "cli":
+		reply(out.Content)
+	case voiceCh != nil && out.Channel == voiceCh.Name():
+		if err := voiceCh.Send(ctx, out); err != nil {
+			log.Printf("voice: %v", err)
 		}
 	}
 }

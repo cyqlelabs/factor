@@ -809,28 +809,41 @@ func TestVoiceSendBeforeStartRefuses(t *testing.T) {
 	}
 }
 
-func TestVoiceSendSpeaksProactiveMessagesAndDropsInterims(t *testing.T) {
+// The microphone is the case steering exists for: a spoken question during a
+// job's turn is answered on the same speakers either way, so it belongs in
+// that turn rather than in a queue behind it.
+func TestVoiceAsksToBeSteeredRatherThanQueued(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	if _, ok := any(h.v).(channel.Steerable); !ok {
+		t.Error("the voice channel does not declare channel.Steerable, so a turn it starts " +
+			"while the session is busy waits in silence")
+	}
+}
+
+// A turn this channel is not running — a finished background job reporting
+// back — reaches the speakers only through Send, notes included. Dropping the
+// notes leaves a turn that spends minutes in tools completely mute, which is
+// the silence a user cannot tell from a hang.
+func TestVoiceSpeaksBusNotesAheadOfTheReplyTheyPrecede(t *testing.T) {
 	h := newVoiceHarness(t, nil)
 	h.start()
 
 	if err := h.v.Send(context.Background(), bus.OutboundMessage{Interim: true, Content: "thinking…"}); err != nil {
-		t.Errorf("interim = %v", err)
+		t.Fatalf("interim: %v", err)
 	}
 	if err := h.v.Send(context.Background(), bus.OutboundMessage{Content: "the job finished"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	waitUntil(t, func() bool {
-		for _, text := range h.synthesized() {
-			if text == "the job finished" {
-				return true
-			}
+	waitUntil(t, func() bool { return h.spoke("the job finished") })
+
+	var order []string
+	for _, said := range h.synthesized() {
+		if said == "thinking…" || said == "the job finished" {
+			order = append(order, said)
 		}
-		return false
-	})
-	for _, text := range h.synthesized() {
-		if text == "thinking…" {
-			t.Error("an interim note was spoken")
-		}
+	}
+	if len(order) != 2 || order[0] != "thinking…" || order[1] != "the job finished" {
+		t.Errorf("spoken order = %q, want the note then the reply", order)
 	}
 }
 
