@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/cyqlelabs/factor/internal/tools"
 )
@@ -76,7 +77,7 @@ func (l *Loader) List() []Skill {
 
 // Summary renders the prompt catalog: summaries only, full skill on demand.
 // It always renders, even with no skills installed: the closing note is how the
-// model learns that reusable work must go through skill_write to be indexed.
+// model learns that reusable work belongs in a skill, written with skill_write.
 func (l *Loader) Summary() string {
 	var b strings.Builder
 	b.WriteString("# Skills\n\n")
@@ -88,7 +89,7 @@ func (l *Loader) Summary() string {
 			fmt.Fprintf(&b, "- %s: %s (%s)\n", s.Name, s.Description, s.Path)
 		}
 	}
-	b.WriteString("\nOnly skill_write puts a skill in this catalog; a file written into the skills directory any other way is invisible to you. Nothing here for the job at hand? skill_find searches the public registry before you build one from nothing.\n")
+	b.WriteString("\nA skill is a directory here holding a SKILL.md, and skill_write is how you create one and update it in place — assembling the directory by hand is how one skill ends up as two. Nothing here for the job at hand? skill_find searches the public registry before you build one from nothing.\n")
 	return b.String()
 }
 
@@ -128,7 +129,30 @@ func firstParagraph(body string) string {
 	return "(no description)"
 }
 
-var skillNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+// validSkillName accepts a skill directory name: letters and digits in any
+// script — a skill named in Spanish is spelled the way its author spells it,
+// and an ASCII-only rule is how the same skill ends up in two directories —
+// plus - and _ after the first character. Everything that could name a
+// different file than it looks like (separators, dots, spaces, control
+// characters, invalid UTF-8) is out, combining marks included: with no
+// normalization available here, allowing them would let "n"+U+0303 and "ñ"
+// name two directories that render identically — the duplicate this rule
+// exists to prevent, in a form nobody can see.
+func validSkillName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		if (r == '-' || r == '_') && i > 0 {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 // registrySlugRe matches an owner/repo/skill slug as skill_find returns it.
 // Three segments and no scheme is what separates a registry slug from the
@@ -164,8 +188,8 @@ func (t *InstallTool) Execute(ctx context.Context, args map[string]any) *tools.R
 	if name == "" {
 		name = strings.TrimSuffix(filepath.Base(source), ".git")
 	}
-	if !skillNameRe.MatchString(name) {
-		return tools.Errorf("invalid skill name %q", name)
+	if !validSkillName(name) {
+		return tools.Errorf("invalid skill name %q: letters, digits, - and _, starting with a letter or digit", name)
 	}
 	dest := filepath.Join(t.Root, name)
 	if _, err := os.Stat(dest); err == nil {
@@ -246,7 +270,7 @@ func (t *WriteTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"name":        map[string]any{"type": "string", "description": "Skill directory name (letters, digits, - and _)"},
+			"name":        map[string]any{"type": "string", "description": "Skill directory name (letters, digits, - and _; accented and non-Latin letters are fine)"},
 			"description": map[string]any{"type": "string", "description": "One line describing when to use this skill; this is what you see in the catalog"},
 			"content":     map[string]any{"type": "string", "description": "Markdown body: what the skill does, how to run it, which files it uses"},
 		},
@@ -256,14 +280,19 @@ func (t *WriteTool) Parameters() map[string]any {
 
 func (t *WriteTool) Execute(_ context.Context, args map[string]any) *tools.Result {
 	name := strings.TrimSpace(tools.StringArg(args, "name"))
-	if !skillNameRe.MatchString(name) {
-		return tools.Errorf("invalid skill name %q", name)
+	if !validSkillName(name) {
+		return tools.Errorf("invalid skill name %q: letters, digits, - and _, starting with a letter or digit", name)
 	}
 	desc := strings.Join(strings.Fields(tools.StringArg(args, "description")), " ")
 	if desc == "" {
 		return tools.Errorf("description is required: it is the only thing you see in the catalog")
 	}
 	content := strings.TrimSpace(tools.StringArg(args, "content"))
+	// A model handing over a whole SKILL.md already wrote its own frontmatter;
+	// wrapping it again stacks two blocks and the catalog reads the outer one.
+	if _, body := parseFrontmatter(content); body != content {
+		content = strings.TrimSpace(body)
+	}
 	if content == "" {
 		return tools.Errorf("content is required")
 	}
@@ -308,8 +337,8 @@ func (t *RemoveTool) Parameters() map[string]any {
 
 func (t *RemoveTool) Execute(_ context.Context, args map[string]any) *tools.Result {
 	name := strings.TrimSpace(tools.StringArg(args, "name"))
-	if !skillNameRe.MatchString(name) {
-		return tools.Errorf("invalid skill name %q", name)
+	if !validSkillName(name) {
+		return tools.Errorf("invalid skill name %q: letters, digits, - and _, starting with a letter or digit", name)
 	}
 	dir := filepath.Join(t.Root, name)
 	// Confirm it is a skill before a recursive delete: a directory without

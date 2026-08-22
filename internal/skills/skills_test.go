@@ -97,10 +97,81 @@ func TestWriteToolRoundTrip(t *testing.T) {
 		{"name": "../escape", "description": "d", "content": "c"},
 		{"name": "ok", "description": "", "content": "c"},
 		{"name": "ok", "description": "d", "content": "  "},
+		{"name": "ok", "description": "d", "content": "---\nname: ok\n---\n"},
 	} {
 		if res := write.Execute(context.Background(), bad); !res.IsError {
 			t.Errorf("accepted bad args %v", bad)
 		}
+	}
+}
+
+// A skill named in Spanish keeps its spelling: an ASCII-only rule sent the
+// model back with an asciified name, which wrote a second directory beside the
+// one it had already filled.
+func TestWriteToolKeepsAnAccentedNameInOneDirectory(t *testing.T) {
+	root := t.TempDir()
+	write := &WriteTool{Root: root}
+	const name = "acompañamiento-psicoanalítico"
+
+	res := write.Execute(context.Background(), map[string]any{
+		"name": name, "description": "Escucha con encuadre", "content": "Leer system_prompt.md",
+	})
+	if res.IsError {
+		t.Fatalf("write: %+v", res)
+	}
+	if res = write.Execute(context.Background(), map[string]any{
+		"name": name, "description": "Escucha con encuadre", "content": "Leer ethics.md",
+	}); res.IsError || !strings.Contains(res.ForLLM, "Updated") {
+		t.Fatalf("second write did not land in the same directory: %+v", res)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != name {
+		t.Fatalf("skills root = %+v, want one %q", entries, name)
+	}
+}
+
+func TestValidSkillName(t *testing.T) {
+	for _, ok := range []string{"deploy", "cast_media", "a1-b_2", "acompañamiento-psicoanalítico", "日本語", "Ünicode"} {
+		if !validSkillName(ok) {
+			t.Errorf("rejected %q", ok)
+		}
+	}
+	for _, bad := range []string{"", "../escape", "a/b", `a\b`, ".hidden", "-leading", "_leading", "has space", "trailing\n", "nul\x00byte", "dot.name", "\xff\xfe"} {
+		if validSkillName(bad) {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}
+
+// Content that already carries frontmatter must not be wrapped in a second
+// block: the catalog reads the outer one, so the author's own name and
+// description silently lose to it.
+func TestWriteToolDoesNotStackFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	write := &WriteTool{Root: root}
+	res := write.Execute(context.Background(), map[string]any{
+		"name":        "psy",
+		"description": "Catalog line",
+		"content":     "---\nname: psy\ndescription: authored line\n---\n\n# Body\n\nRead system_prompt.md.",
+	})
+	if res.IsError {
+		t.Fatalf("write: %+v", res)
+	}
+	doc, err := os.ReadFile(filepath.Join(root, "psy", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(doc), "\n---\n"); n != 1 {
+		t.Errorf("%d frontmatter fences in:\n%s", n, doc)
+	}
+	if strings.Contains(string(doc), "authored line") {
+		t.Errorf("stale frontmatter survived:\n%s", doc)
+	}
+	if list := NewLoader(root).List(); len(list) != 1 || list[0].Description != "Catalog line" {
+		t.Fatalf("catalog = %+v", list)
 	}
 }
 
