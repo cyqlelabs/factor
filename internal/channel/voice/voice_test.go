@@ -188,12 +188,9 @@ func (h *voiceHarness) start() {
 
 // say feeds one spoken utterance: settle frames, speech, closing silence.
 // The speech is long enough to clear the identification length bars, as an
-// ordinary spoken sentence is; sayBriefly is the one that is not.
+// ordinary spoken sentence is. A test that wants an utterance too short to
+// name anybody from calls sayFor directly.
 func (h *voiceHarness) say() { h.sayFor(110) }
-
-// sayBriefly feeds an utterance with too little voice in it to name anybody —
-// a "yes" mid-conversation.
-func (h *voiceHarness) sayBriefly() { h.sayFor(12) }
 
 func (h *voiceHarness) sayFor(speechFrames int) {
 	h.mic.feed(repeat(silenceFrame(), 20)...)
