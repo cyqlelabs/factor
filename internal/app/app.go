@@ -257,12 +257,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// Scoping recall by audience splits the graph in two, and the bridge is
 	// what keeps that from costing recall quality: a subject discussed both
 	// alone and in company would otherwise sit in two islands neither side's
-	// graph expansion can cross. It returns at once when there is nothing to
-	// bridge, so starting it is unconditional.
+	// graph expansion can cross. It waits for a gathering to end rather than
+	// polling, and returns at once when there is nothing to bridge, so
+	// starting it is unconditional.
 	app.bg.Add(1)
 	go func() {
 		defer app.bg.Done()
-		ambient.WatchBridges(bgCtx, 0)
+		ambient.WatchBridges(bgCtx)
 	}()
 	return app, nil
 }

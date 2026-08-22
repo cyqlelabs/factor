@@ -110,6 +110,15 @@ type Ambient struct {
 	// sharedOnce keeps the "cannot isolate this audience" warning to one
 	// line: it would otherwise repeat on every turn a guest is present for.
 	sharedOnce sync.Once
+
+	// audienceMu guards lastAudience, which is the audience of the most
+	// recent stored turn per channel — the only state needed to recognize a
+	// gathering ending. bridgeNow carries that moment to WatchBridges;
+	// buffered by one, because two gatherings ending before either merge
+	// runs still only need one merge.
+	audienceMu   sync.Mutex
+	lastAudience map[string]string
+	bridgeNow    chan struct{}
 }
 
 func NewAmbient(engine Engine, topK int, minConfidence float64, queryMsgs, queryMaxChars, injectMaxChars int, ignorePatterns []string, spaces SpacePolicy) *Ambient {
@@ -121,6 +130,8 @@ func NewAmbient(engine Engine, topK int, minConfidence float64, queryMsgs, query
 		QueryMaxChars:  queryMaxChars,
 		InjectMaxChars: injectMaxChars,
 		Spaces:         spaces,
+		lastAudience:   map[string]string{},
+		bridgeNow:      make(chan struct{}, 1),
 	}
 	for _, p := range ignorePatterns {
 		if re, err := regexp.Compile(p); err == nil {
@@ -304,6 +315,11 @@ func (a *Ambient) StoreExchange(channel, audience, speaker, userText, assistantT
 	}
 	store(SourceUser, attribute(speaker, userText))
 	store(SourceAgent, assistantText)
+	// The turn that ends a gathering is the moment the two spaces have
+	// finished diverging, and the moment nobody is waiting on a reply.
+	if a.gatheringEnded(channel, audience) {
+		a.signalBridge()
+	}
 }
 
 // attribute names the person a memory came from, where the channel could tell

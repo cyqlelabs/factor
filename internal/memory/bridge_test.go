@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 // mergeEngine is a scopeEngine that can also bridge, and records the merge it
@@ -66,13 +68,6 @@ func TestBridgeMergesTheTwoConversationalSpaces(t *testing.T) {
 // A bridge is never worth making a turn wait, and every skip below is an
 // ordinary state rather than a failure.
 func TestBridgeSkipsWhenItShould(t *testing.T) {
-	busy := newMergeEngine()
-	busy.busy = true
-	bridgeAmbient(busy).bridgeOnce(context.Background())
-	if busy.mergeCount() != 0 {
-		t.Error("merged while the engine was mid-conversation")
-	}
-
 	old := newMergeEngine()
 	old.spacesOK = false
 	bridgeAmbient(old).bridgeOnce(context.Background())
@@ -122,12 +117,86 @@ func TestCanBridgeNeedsBothSpacesAndAnEngineThatMerges(t *testing.T) {
 	}
 }
 
-func TestWatchBridgesTicksUntilTheContextEnds(t *testing.T) {
+// The trigger is the moment a gathering ends, not a clock.
+func TestGatheringEndedIsTheSharedToPrivateEdge(t *testing.T) {
+	a := bridgeAmbient(newMergeEngine())
+
+	// A first private turn is not the end of anything.
+	if a.gatheringEnded("voice", "") {
+		t.Error("a private turn with no history ended a gathering")
+	}
+	// Company arriving has produced nothing to join yet.
+	if a.gatheringEnded("voice", tools.AudienceShared) {
+		t.Error("a gathering starting counted as one ending")
+	}
+	// Company continuing has not finished.
+	if a.gatheringEnded("voice", tools.AudienceShared) {
+		t.Error("a gathering continuing counted as one ending")
+	}
+	// And the turn after the room goes private is the one that counts.
+	if !a.gatheringEnded("voice", "") {
+		t.Error("the end of a gathering went unnoticed")
+	}
+	// Once only: the next private turn is not another ending.
+	if a.gatheringEnded("voice", "") {
+		t.Error("one gathering ended twice")
+	}
+}
+
+// Channels do not end each other's gatherings.
+func TestGatheringEndedIsPerChannel(t *testing.T) {
+	a := bridgeAmbient(newMergeEngine())
+	a.gatheringEnded("voice", tools.AudienceShared)
+	if a.gatheringEnded("telegram", "") {
+		t.Error("a private turn on one channel ended another channel's gathering")
+	}
+	if !a.gatheringEnded("voice", "") {
+		t.Error("the voice gathering's end was lost")
+	}
+}
+
+// Storing the turn that ends a gathering is what asks for the merge.
+func TestStoringTheLastSharedTurnSignalsABridge(t *testing.T) {
 	eng := newMergeEngine()
+	a := bridgeAmbient(eng)
+
+	a.StoreExchange("voice", tools.AudienceShared, "Roxana", "see you friday", "noted")
+	select {
+	case <-a.bridgeNow:
+		t.Fatal("a gathering starting asked for a merge")
+	default:
+	}
+
+	a.StoreExchange("voice", "", "", "just us again", "indeed")
+	select {
+	case <-a.bridgeNow:
+	default:
+		t.Fatal("the end of the gathering never asked for a merge")
+	}
+}
+
+// Two gatherings ending before either merge runs still need only one merge.
+func TestSignalDoesNotQueueUp(t *testing.T) {
+	a := bridgeAmbient(newMergeEngine())
+	a.signalBridge()
+	a.signalBridge()
+	a.signalBridge()
+	<-a.bridgeNow
+	select {
+	case <-a.bridgeNow:
+		t.Error("signals queued up behind one another")
+	default:
+	}
+}
+
+func TestWatchBridgesMergesOnTheSignal(t *testing.T) {
+	eng := newMergeEngine()
+	a := bridgeAmbient(eng)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { defer close(done); bridgeAmbient(eng).WatchBridges(ctx, time.Millisecond) }()
+	go func() { defer close(done); a.WatchBridges(ctx) }()
 
+	a.signalBridge()
 	deadline := time.After(5 * time.Second)
 	for eng.mergeCount() == 0 {
 		select {
@@ -144,13 +213,40 @@ func TestWatchBridgesTicksUntilTheContextEnds(t *testing.T) {
 	}
 }
 
-// Nothing to bridge must return rather than spin a ticker forever.
+// The signal lands while the turn that ended the gathering is still being
+// extracted, so the merge waits its turn rather than skipping and losing it.
+func TestBridgeWaitsForTheEngineToGoQuiet(t *testing.T) {
+	eng := newMergeEngine()
+	eng.busy = true
+	a := bridgeAmbient(eng)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); a.bridgeWhenQuiet(ctx) }()
+
+	// Still busy: nothing has been merged.
+	select {
+	case <-done:
+		t.Fatal("the merge ran while the engine was busy")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if eng.mergeCount() != 0 {
+		t.Fatal("merged mid-conversation")
+	}
+	cancel()
+	<-done
+	if eng.mergeCount() != 0 {
+		t.Error("a cancelled wait still merged")
+	}
+}
+
+// Nothing to bridge must return rather than hold a goroutine for the session.
 func TestWatchBridgesReturnsWhenThereIsNothingToDo(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		NewAmbient(newScopeEngine(), 5, 0.1, 5, 500, 500, nil, testPolicy()).
-			WatchBridges(context.Background(), time.Millisecond)
+			WatchBridges(context.Background())
 	}()
 	select {
 	case <-done:
