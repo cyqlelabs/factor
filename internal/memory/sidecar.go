@@ -362,6 +362,11 @@ func (s *Sidecar) Healthy() bool                                       { return 
 // path waits for before restarting the engine underneath a live Factor.
 func (s *Sidecar) Idle(quiet time.Duration) bool { return s.client.Idle(quiet) }
 
+// MergeSpaces forwards the bridge merge to the supervised engine.
+func (s *Sidecar) MergeSpaces(ctx context.Context, space, other string, minJaccard float64) (int, error) {
+	return s.client.MergeSpaces(ctx, space, other, minJaccard)
+}
+
 func (s *Sidecar) Close() error {
 	if s.cancel != nil {
 		s.cancel()

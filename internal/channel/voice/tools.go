@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/tools"
@@ -153,4 +154,87 @@ func (t *writeTool) Execute(_ context.Context, args map[string]any) *tools.Resul
 		return tools.Errorf("the outbound queue is full — try again in a moment")
 	}
 	return tools.Textf("Delivered in writing via %s. Keep the spoken reply to one short sentence.", chatChannel)
+}
+
+// roomTool is how the conversation itself corrects the room. Sound can only
+// report people who make it: somebody who walks in and listens is invisible
+// to every acoustic signal, and somebody who leaves is announced by nothing
+// at all. Both of those are routinely said out loud — "Roxana just got here",
+// "she's gone, it's just me" — so the model is the sensor for them, and this
+// is where what it heard becomes state.
+type roomTool struct {
+	voice *Voice
+}
+
+func (t *roomTool) Name() string { return "room" }
+
+func (t *roomTool) Description() string {
+	return "Report who else is within earshot, so replies and memory stay scoped to the room. " +
+		"Use action=company when someone joins or you learn a person is present who has not spoken " +
+		"(names optional); action=alone when the user says everyone has left; action=left with a name " +
+		"for one person leaving; action=status to check. While company is present the conversation " +
+		"runs in a shared session and only shared memory is recalled, so nothing said in private is " +
+		"repeated out loud. Call it as soon as you learn the room changed, not at the end of the turn."
+}
+
+func (t *roomTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"action": map[string]any{
+				"type":        "string",
+				"enum":        []string{"company", "alone", "left", "status"},
+				"description": "What changed about who is in the room",
+			},
+			"names": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "Who joined, for company; who left, for left",
+			},
+		},
+		"required": []string{"action"},
+	}
+}
+
+func (t *roomTool) Execute(_ context.Context, args map[string]any) *tools.Result {
+	r := t.voice.room
+	if r == nil {
+		return tools.Errorf("room isolation is off (channels.voice.room_isolation)")
+	}
+	now := time.Now()
+	switch tools.StringArg(args, "action") {
+	case "company":
+		r.declare(true, stringsArg(args, "names"), now)
+	case "alone":
+		r.declare(false, nil, now)
+	case "left":
+		names := stringsArg(args, "names")
+		if len(names) == 0 {
+			return tools.Errorf("names is required for action=left; use action=alone if everyone has gone")
+		}
+		for _, n := range names {
+			r.forget(n)
+		}
+	case "status":
+	default:
+		return tools.Errorf("unknown action; use company, alone, left, or status")
+	}
+	st := r.snapshot(now)
+	if !st.Shared {
+		return tools.Textf("The room is private: nobody but the user is within earshot.")
+	}
+	return tools.Textf("The room is shared with %s. Replies are audible to them, and only shared "+
+		"memory is being recalled.", strings.Join(st.Present, ", "))
+}
+
+// stringsArg reads a JSON array of strings, which arrives as []any.
+func stringsArg(args map[string]any, key string) []string {
+	raw, _ := args[key].([]any)
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			out = append(out, strings.TrimSpace(s))
+		}
+	}
+	return out
 }

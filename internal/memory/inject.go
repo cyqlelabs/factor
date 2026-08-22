@@ -107,6 +107,9 @@ type Ambient struct {
 	Spaces         SpacePolicy
 	ignore         []*regexp.Regexp
 	skewOnce       sync.Once
+	// sharedOnce keeps the "cannot isolate this audience" warning to one
+	// line: it would otherwise repeat on every turn a guest is present for.
+	sharedOnce sync.Once
 }
 
 func NewAmbient(engine Engine, topK int, minConfidence float64, queryMsgs, queryMaxChars, injectMaxChars int, ignorePatterns []string, spaces SpacePolicy) *Ambient {
@@ -132,8 +135,15 @@ func NewAmbient(engine Engine, topK int, minConfidence float64, queryMsgs, query
 // scope resolves the turn's space scope, saying once why routing is off when
 // the engine writes somewhere other than the configured space — otherwise the
 // split silently does nothing and the config looks like it took effect.
-func (a *Ambient) scope(channel string) Scope {
-	scope := scopeFor(a.Engine, a.Spaces, channel)
+//
+// The second return is whether this turn may recall at all. It is false only
+// for a turn somebody else can hear that the policy cannot isolate, and that
+// refusal is the point: recall exists to be spoken out loud, so a shared turn
+// served from the one space holding everything would read the user's private
+// graph into a room with a guest in it. Losing recall for that turn is the
+// cheap failure; the other one cannot be taken back.
+func (a *Ambient) scope(channel, audience string) (Scope, bool) {
+	scope, recall := scopeFor(a.Engine, a.Spaces, channel, audience)
 	if scope.Space == "" && a.Spaces.Strategy != "single" && a.Spaces.Main != "" {
 		if ok, engineSpace := a.Engine.SpaceSupport(); ok && engineSpace != a.Spaces.Main {
 			a.skewOnce.Do(func() {
@@ -143,7 +153,13 @@ func (a *Ambient) scope(channel string) Scope {
 			})
 		}
 	}
-	return scope
+	if !recall {
+		a.sharedOnce.Do(func() {
+			slog.Warn("recall skipped while somebody else is present: this memory cannot be isolated by audience",
+				"fix", "set memory.shared_space and run a smrti that routes spaces")
+		})
+	}
+	return scope, recall
 }
 
 func (a *Ambient) ignored(content string) bool {
@@ -169,8 +185,13 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 	defer cancel()
 	// The loop stamps the turn's ToolContext on ctx before building the
 	// system prompt, so the channel is already here — no signature change.
+	tc := tools.ToolContextFrom(ctx)
+	scope, recall := a.scope(tc.Channel, tc.Audience)
+	if !recall {
+		return ""
+	}
 	return FormatMemories(
-		a.recall(ctx, query, strings.TrimSpace(current), a.scope(tools.ToolContextFrom(ctx).Channel)),
+		a.recall(ctx, query, strings.TrimSpace(current), scope),
 		a.InjectMaxChars,
 	)
 }
@@ -245,7 +266,7 @@ func interleave(first, second []Memory, limit int) []Memory {
 // block a reply. If the memory engine is still cold-booting (first sidecar
 // start downloads models), it waits for health rather than dropping the very
 // first memories.
-func (a *Ambient) StoreExchange(channel, speaker, userText, assistantText string) {
+func (a *Ambient) StoreExchange(channel, audience, speaker, userText, assistantText string) {
 	if a == nil || a.Engine == nil || !a.Engine.Enabled() {
 		return
 	}
@@ -266,13 +287,18 @@ func (a *Ambient) StoreExchange(channel, speaker, userText, assistantText string
 	// content. A prefix is invisible to smrti's scoring and decay — it reads as
 	// ordinary text — so both sides of the turn used to be stored with equal
 	// standing. It is also untranslated text injected into a multilingual graph.
-	space := a.scope(channel).Space
+	// A turn the room could hear is stored where the room can read it back.
+	// The write happens whether or not recall was possible: what was said in
+	// company is not a secret from anyone who was there, and dropping it
+	// would lose the conversation for both of them.
+	space, _ := a.scope(channel, audience)
+	writeSpace := space.Space
 	store := func(source, text string) {
 		text = strings.TrimSpace(text)
 		if text == "" || a.ignored(text) {
 			return
 		}
-		if _, err := a.Engine.Remember(ctx, RememberRequest{Content: text, Source: source, Space: space}); err != nil {
+		if _, err := a.Engine.Remember(ctx, RememberRequest{Content: text, Source: source, Space: writeSpace}); err != nil {
 			slog.Debug("memory store dropped", "error", err)
 		}
 	}

@@ -21,6 +21,15 @@ type InboundMessage struct {
 	// is one person. It travels beside the content rather than inside it so
 	// the prompt and the memory graph can each attribute it their own way.
 	Speaker string
+
+	// Audience says who can hear the reply, where the channel knows that
+	// somebody besides the user is present — the microphone hearing a second
+	// voice in the room. Blank is the ordinary case: the conversation is
+	// private to whoever this chat is. Unlike Speaker it is not about
+	// attribution but about discretion, which is why the two are separate
+	// fields: the owner asking something private with a guest listening is
+	// their own turn on every axis except the one that matters.
+	Audience string
 }
 
 type OutboundMessage struct {

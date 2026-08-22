@@ -206,6 +206,24 @@ func (c *Client) Forget(ctx context.Context, query, reason, space string) error 
 	return c.do(ctx, http.MethodPost, "/forget", body, nil)
 }
 
+// MergeSpaces grows the bridge between two spaces and reports how many atoms
+// it materialized. The engine names the bridge itself, commutatively, so the
+// same pair always lands in the same space however the call is ordered.
+func (c *Client) MergeSpaces(ctx context.Context, space, other string, minJaccard float64) (int, error) {
+	defer c.activity()()
+	if ok, _ := c.SpaceSupport(); !ok {
+		return 0, fmt.Errorf("this memory engine does not route spaces")
+	}
+	body := map[string]any{"space": space, "other_space": other, "min_jaccard": minJaccard}
+	var out struct {
+		Created int `json:"bridges_created"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/space_merge", body, &out); err != nil {
+		return 0, err
+	}
+	return out.Created, nil
+}
+
 func (c *Client) Reflect(ctx context.Context) (map[string]any, error) {
 	defer c.activity()()
 	out := map[string]any{}

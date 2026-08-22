@@ -41,7 +41,17 @@ type ToolContext struct {
 	Channel    string
 	ChatID     string
 	SessionKey string
+	// Audience is who can hear this turn's reply. Blank means the ordinary
+	// private conversation; AudienceShared means somebody else is present.
+	Audience string
 }
+
+// AudienceShared marks a turn that more than the user can hear — a second
+// voice in the room. What it buys is memory scope: a shared turn must not
+// recall what was said in private, and what it stores must stay reachable to
+// everyone who was there. Blank is private and is the default everywhere, so
+// a channel that cannot tell who is listening behaves exactly as before.
+const AudienceShared = "shared"
 
 type ctxKey struct{}
 

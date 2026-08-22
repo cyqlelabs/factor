@@ -106,6 +106,12 @@ type Voice struct {
 	speakers     *speakerStore
 	embedFailing atomic.Bool
 
+	// room is who is within earshot; nil when room isolation is off. It is
+	// fed by every utterance the microphone resolves, including the ones the
+	// activation gate turns away — somebody talking to you rather than to
+	// Factor is still somebody in the room.
+	room *room
+
 	mu            sync.Mutex
 	stopped       bool
 	effective     Config
@@ -145,6 +151,9 @@ func New(cfg Config, b *bus.MessageBus) (*Voice, error) {
 	if cfg.SpeakerID {
 		v.speakers = newSpeakerStore(v.home)
 	}
+	if cfg.roomIsolation() {
+		v.room = newRoom(time.Duration(cfg.RoomTimeoutMinutes) * time.Minute)
+	}
 	return v, nil
 }
 
@@ -174,6 +183,9 @@ func (v *Voice) Toolset() []tools.Tool {
 	set := []tools.Tool{&writeTool{voice: v}}
 	if v.speakers != nil {
 		set = append(set, &speakersTool{voice: v})
+	}
+	if v.room != nil {
+		set = append(set, &roomTool{voice: v})
 	}
 	return set
 }
@@ -444,8 +456,23 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 	}
 	dec := v.gate(text, utterance.started, utterance.barged)
 	var who speakerIdentity
-	if dec.accept {
+	switch {
+	case dec.accept:
 		who = v.identifySpeaker(ctx, utterance)
+	case v.room != nil && !dec.echo:
+		// Speech the gate turned away still says who is in the room. Reading
+		// it costs one embedding and buys the case that matters most: a guest
+		// who has been talking to the user for ten minutes is known to be
+		// there before they ever address Factor, so the first private thing
+		// asked after they walked in is already answered to the room.
+		who = v.presenceOf(ctx, utterance)
+	}
+	v.room.heard(who, v.speakerProfilesExist(), utterance.started)
+	st := v.room.snapshot(utterance.started)
+	if dec.accept {
+		// Only a turn consumes the flip: the announcement is owed to somebody
+		// who is listening, and the next reply is when it becomes true.
+		st = v.room.assess(utterance.started)
 	}
 	// One line per detected utterance: what was heard and what became of it.
 	// This is what turns "I spoke and nothing happened" into a diagnosis —
@@ -462,8 +489,11 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		action = "echo"
 	}
 	fields := []any{"text", text, "action", action}
-	if v.speakers != nil && dec.accept {
-		fields = append(fields, who.logFields()...)
+	if v.speakers != nil && (dec.accept || who.via != "") {
+		fields = append(fields, who.logFields(sessionFor(who, st.Shared), dec.accept)...)
+	}
+	if v.room != nil {
+		fields = append(fields, "room", st.label(), "present", strings.Join(st.Present, ", "))
 	}
 	slog.Info("voice heard", fields...)
 	switch {
@@ -472,7 +502,7 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		// and a turn still thinking answers a question nobody is waiting on.
 		v.player.stop()
 		v.cancelTurn()
-		v.spawn(func() { v.turn(ctx, dec.text, who) })
+		v.spawn(func() { v.turn(ctx, dec.text, who, st) })
 	case dec.acknowledge:
 		v.player.stop()
 		v.spawn(func() { v.speak(ctx, ackLine(v.cfg.Language)) })
@@ -552,7 +582,7 @@ func (v *Voice) followUp() time.Duration {
 }
 
 // turn runs one utterance through the agent loop and speaks the reply.
-func (v *Voice) turn(parent context.Context, text string, who speakerIdentity) {
+func (v *Voice) turn(parent context.Context, text string, who speakerIdentity, st roomState) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	v.mu.Lock()
@@ -575,7 +605,14 @@ func (v *Voice) turn(parent context.Context, text string, who speakerIdentity) {
 	notice := func(line string) {
 		v.spawn(func() { v.speak(ctx, line) })
 	}
-	reply, err := v.runner(ctx, text, who.session(), who.attributed(), notice)
+	// The room's flip is said out loud before the answer that depends on it,
+	// so a user who has just been made discreet knows why — a silent switch
+	// is untrustworthy in both directions, and the one that goes quiet about
+	// the user's own calendar reads as a fault rather than a courtesy.
+	if st.Changed {
+		v.speak(ctx, roomChangeLine(st, v.cfg.Language))
+	}
+	reply, err := v.runner(ctx, text, sessionFor(who, st.Shared), who.attributed(), st.audience(), notice)
 	if ctx.Err() != nil {
 		return // barged in on — the next utterance owns the conversation
 	}
@@ -735,6 +772,12 @@ func (v *Voice) controlHandler() http.Handler {
 			"mic_silent": v.micSilent.Load(),
 			// Who speaker identification last heard; "" when off or unknown.
 			"last_speaker": v.lastSpeakerName(),
+			// Who is believed within earshot, and so whether replies and
+			// recall are being scoped to a shared room. "off" when the
+			// feature is not configured, so the endpoint distinguishes an
+			// empty room from one nothing is watching.
+			"room":         v.roomLabel(),
+			"room_present": v.roomPresent(),
 		})
 	})
 	mux.HandleFunc("POST /ptt", func(w http.ResponseWriter, _ *http.Request) {
@@ -742,6 +785,19 @@ func (v *Voice) controlHandler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	return mux
+}
+
+// roomLabel and roomPresent report the room for status readouts, without
+// consuming the transition announcement the next turn owes the user.
+func (v *Voice) roomLabel() string {
+	if v.room == nil {
+		return "off"
+	}
+	return v.room.snapshot(time.Now()).label()
+}
+
+func (v *Voice) roomPresent() []string {
+	return v.room.snapshot(time.Now()).Present
 }
 
 func (v *Voice) tierLabel() string {

@@ -28,6 +28,10 @@ type Status struct {
 	// endpoint; Reason is what it says is wrong when it cannot listen.
 	Listening bool
 	Reason    string
+	// Room is what the channel believes about who is within earshot:
+	// "private", "shared", or "" when the feature is off. A status readout
+	// is where somebody asks why the agent has gone discreet.
+	Room string
 }
 
 // Describe reads a channels.voice section and probes the control endpoint. It
@@ -63,12 +67,16 @@ func Describe(ctx context.Context, raw json.RawMessage, env Env) Status {
 	}
 	status.Listening = health.Status == "ok"
 	status.Reason = health.Reason
+	if health.Room != "off" {
+		status.Room = health.Room
+	}
 	return status
 }
 
 type controlHealth struct {
 	Status string `json:"status"`
 	Reason string `json:"reason"`
+	Room   string `json:"room"`
 }
 
 func probeControl(ctx context.Context, port int) (controlHealth, error) {
@@ -100,6 +108,8 @@ func (s Status) Line() string {
 		return fmt.Sprintf("%s — %s", s.Tier, s.Problem)
 	case len(s.MissingHelpers) > 0:
 		return fmt.Sprintf("%s · %s — missing %s", s.Tier, s.Activation, strings.Join(s.MissingHelpers, ", "))
+	case s.Listening && s.Room == "shared":
+		return fmt.Sprintf("%s · %s — listening, room shared", s.Tier, s.Activation)
 	case s.Listening:
 		return fmt.Sprintf("%s · %s — listening", s.Tier, s.Activation)
 	case s.Reason != "":

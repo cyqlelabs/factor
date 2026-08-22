@@ -185,36 +185,37 @@ func TestSpacePolicyScopes(t *testing.T) {
 		"phone":    mainScope,
 		"":         mainScope,
 	} {
-		if got := p.Scope(channel); !reflect.DeepEqual(got, want) {
-			t.Errorf("Scope(%q) = %+v, want %+v", channel, got, want)
+		got, ok := p.Scope(channel, "")
+		if !reflect.DeepEqual(got, want) || !ok {
+			t.Errorf("Scope(%q) = %+v, %v, want %+v, true", channel, got, ok, want)
 		}
 	}
 
 	single := SpacePolicy{Strategy: "single", Main: "main", System: "system"}
-	if got := single.Scope("cron"); !reflect.DeepEqual(got, Scope{}) {
-		t.Errorf("single-strategy Scope = %+v, want zero", got)
+	if got, ok := single.Scope("cron", ""); !reflect.DeepEqual(got, Scope{}) || !ok {
+		t.Errorf("single-strategy Scope = %+v, %v, want zero, true", got, ok)
 	}
-	if got := (SpacePolicy{}).Scope("cron"); !reflect.DeepEqual(got, Scope{}) {
-		t.Errorf("zero-policy Scope = %+v, want zero", got)
+	if got, ok := (SpacePolicy{}).Scope("cron", ""); !reflect.DeepEqual(got, Scope{}) || !ok {
+		t.Errorf("zero-policy Scope = %+v, %v, want zero, true", got, ok)
 	}
 }
 
 // A typo in space_strategy must not quietly enable the split — the same
 // treatment memory.mode gets for an unknown value.
 func TestNewSpacePolicyRejectsUnknownStrategy(t *testing.T) {
-	if _, err := NewSpacePolicy("singel", "main", "system"); err == nil {
+	if _, err := NewSpacePolicy("singel", "main", "system", "shared"); err == nil {
 		t.Error("unknown strategy accepted")
 	}
 	for _, strategy := range []string{"", "origin", "single"} {
-		if _, err := NewSpacePolicy(strategy, "main", "system"); err != nil {
+		if _, err := NewSpacePolicy(strategy, "main", "system", "shared"); err != nil {
 			t.Errorf("NewSpacePolicy(%q) = %v", strategy, err)
 		}
 	}
-	p, err := NewSpacePolicy("", "main", "system")
+	p, err := NewSpacePolicy("", "main", "system", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Scope("cli").Space != "main" {
+	if scope, _ := p.Scope("cli", ""); scope.Space != "main" {
 		t.Errorf("empty strategy should default to origin routing: %+v", p)
 	}
 }
@@ -280,7 +281,7 @@ func TestSkewedEngineSpaceDisablesRouting(t *testing.T) {
 		t.Errorf("recall scope = %+v, want zero against a skewed engine", eng.recallScope)
 	}
 
-	a.StoreExchange("telegram", "", "hola", "hola, Nico")
+	a.StoreExchange("telegram", "", "", "hola", "hola, Nico")
 	for i, req := range eng.remembered {
 		if req.Space != "" {
 			t.Errorf("remembered[%d].Space = %q, want empty against a skewed engine", i, req.Space)
@@ -291,7 +292,7 @@ func TestSkewedEngineSpaceDisablesRouting(t *testing.T) {
 func TestEngineWithoutSpaceSupportDisablesRouting(t *testing.T) {
 	eng := &scopeEngine{}
 	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy())
-	a.StoreExchange("cron", "", "job output", "noted")
+	a.StoreExchange("cron", "", "", "job output", "noted")
 	for i, req := range eng.remembered {
 		if req.Space != "" {
 			t.Errorf("remembered[%d].Space = %q, want empty against an old engine", i, req.Space)
@@ -324,8 +325,8 @@ func TestStoreExchangeWritesToTheChannelSpace(t *testing.T) {
 	eng := newScopeEngine()
 	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy())
 
-	a.StoreExchange("cron", "", "job output", "noted")
-	a.StoreExchange("telegram", "", "hola", "hola, Nico")
+	a.StoreExchange("cron", "", "", "job output", "noted")
+	a.StoreExchange("telegram", "", "", "hola", "hola, Nico")
 
 	if len(eng.remembered) != 4 {
 		t.Fatalf("remembered %d requests, want 4", len(eng.remembered))

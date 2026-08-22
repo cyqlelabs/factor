@@ -58,7 +58,8 @@ func (cb *ContextBuilder) SystemPrompt(ctx context.Context, history []provider.M
 		}
 	}
 	parts = append(parts, "Current time: "+time.Now().Format("Monday 2006-01-02 15:04 MST"))
-	if brief := channelBriefing(tools.ToolContextFrom(ctx).Channel); brief != "" {
+	tc := tools.ToolContextFrom(ctx)
+	if brief := channelBriefing(tc.Channel, tc.Audience); brief != "" {
 		parts = append(parts, brief)
 	}
 	return strings.Join(append(parts, operatingRules), "\n\n")
@@ -79,16 +80,25 @@ func (cb *ContextBuilder) SystemPrompt(ctx context.Context, history []provider.M
 // bridge cuts a reply that runs long. That is a seatbelt, not a substitute:
 // a reply composed to be read and then stripped is still a list of bullet
 // points with the punctuation missing.
-func channelBriefing(channel string) string {
+func channelBriefing(channel, audience string) string {
+	var brief string
 	switch channel {
 	case "voice":
-		return "This reply is spoken aloud on the user's speakers, not read. Compose it to be said: no markdown, no lists, no code, no bare URLs, and a couple of sentences rather than a page. Anything long or written goes through voice_write instead."
+		brief = "This reply is spoken aloud on the user's speakers, not read. Compose it to be said: no markdown, no lists, no code, no bare URLs, and a couple of sentences rather than a page. Anything long or written goes through voice_write instead."
 	case "phone":
-		return "This reply is spoken aloud on a live phone call, not read. Compose it to be said — no markdown, no lists, no code — lead with the answer, and keep it short: the user is holding a phone and can hang up mid-sentence."
+		brief = "This reply is spoken aloud on a live phone call, not read. Compose it to be said — no markdown, no lists, no code — lead with the answer, and keep it short: the user is holding a phone and can hang up mid-sentence."
 	case "cron":
-		return "This is a scheduled job running with nobody watching. Its reply is delivered to whichever chat the user last used, so it has to stand on its own: say what ran and what came of it, without leaning on a conversation the reader was not part of."
+		brief = "This is a scheduled job running with nobody watching. Its reply is delivered to whichever chat the user last used, so it has to stand on its own: say what ran and what came of it, without leaning on a conversation the reader was not part of."
 	}
-	return ""
+	// The memory scope already keeps what was said in private out of this
+	// turn's recall, but it cannot govern discretion in general: the model
+	// still holds the conversation's own history, and still knows things
+	// worth not saying in front of a guest. Saying so is cheap, and it rides
+	// the tail where a per-turn instruction is actually read.
+	if audience == tools.AudienceShared && brief != "" {
+		brief += " Somebody besides the user is in the room and hears everything you say. Treat what you know about the user as theirs to share, not yours: answer what is asked without volunteering private details, and if a question can only be answered with something private, say you would rather go into it later."
+	}
+	return brief
 }
 
 // sourcePaths returns every file whose mtime invalidates the static cache.
