@@ -3,6 +3,7 @@ package voice
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -41,12 +42,17 @@ type speakerStore struct {
 	// enrolled counts every profile ever created, surviving forgets, so a
 	// forgotten speaker's number is never reissued to somebody else.
 	enrolled int
+	// model is the embedding model that produced these centroids. Vectors
+	// from two different models are not comparable, so the name has to travel
+	// with them.
+	model    string
 	profiles []*speakerProfile
 }
 
 // speakersOnDisk is the file's shape.
 type speakersOnDisk struct {
 	Enrolled int               `json:"enrolled"`
+	Model    string            `json:"model,omitempty"`
 	Profiles []*speakerProfile `json:"profiles"`
 }
 
@@ -63,8 +69,40 @@ func newSpeakerStore(home string) *speakerStore {
 		return s
 	}
 	s.enrolled = disk.Enrolled
+	s.model = disk.Model
 	s.profiles = disk.Profiles
 	return s
+}
+
+// useModel records which embedding model produced these centroids, and drops
+// them when it changes.
+//
+// Two models' vectors are not comparable. Where the dimensions differ the
+// cosine is a flat zero, and where they happen to agree it is noise — so a
+// profile carried across a model change would never match its owner again,
+// and every person in the house would quietly be enrolled a second time while
+// their old profile sat there answering nothing. Losing the enrollments is
+// the honest outcome of changing the model; saying so plainly is what turns
+// it from a mystery into one line and a re-introduction.
+func (s *speakerStore) useModel(name string) {
+	if name == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.model == name {
+		return
+	}
+	was, count := s.model, len(s.profiles)
+	s.model, s.profiles = name, nil
+	s.saveLocked()
+	if count == 0 {
+		slog.Info("voice profiles will be built with this embedding model", "model", name)
+		return
+	}
+	slog.Warn("the speaker embedding model changed, so the voice profiles were cleared — "+
+		"they cannot be compared against vectors from another model; introduce everyone again",
+		"was", was, "now", name, "forgotten", count)
 }
 
 // match returns the closest profile and how close it is; "" when none exist.
@@ -255,7 +293,8 @@ func (s *speakerStore) find(name string) *speakerProfile {
 // saveLocked writes the store out; a write that fails costs recognition
 // history, not the conversation.
 func (s *speakerStore) saveLocked() {
-	raw, err := json.MarshalIndent(speakersOnDisk{Enrolled: s.enrolled, Profiles: s.profiles}, "", "  ")
+	raw, err := json.MarshalIndent(
+		speakersOnDisk{Enrolled: s.enrolled, Model: s.model, Profiles: s.profiles}, "", "  ")
 	if err != nil {
 		return
 	}

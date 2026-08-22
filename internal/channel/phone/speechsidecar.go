@@ -230,8 +230,16 @@ func (s *speechSupervisor) needsPrepare() bool {
 		return true
 	}
 	if s.needSpeaker {
-		if _, err := os.Stat(speakerModelPath(s.cfg, s.home)); err != nil {
-			return true
+		// Both halves: the embedding model names a voice, the segmentation
+		// model says how many voices there were. Without the second one two
+		// people in one recording answer as one person, which is a wrong
+		// answer rather than a missing feature.
+		for _, path := range []string{
+			speakerModelPath(s.cfg, s.home), segmentationModelPath(s.cfg, s.home),
+		} {
+			if _, err := os.Stat(path); err != nil {
+				return true
+			}
 		}
 	}
 	if !s.needTTS {

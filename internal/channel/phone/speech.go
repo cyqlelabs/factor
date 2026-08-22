@@ -100,6 +100,15 @@ type SpeechConfig struct {
 	// from the language against Piper's catalogue.
 	PiperVoice string `json:"piper_voice,omitempty"`
 
+	// SpeakerModel names the voice-embedding model behind /v1/audio/voices,
+	// by its file name in sherpa-onnx's speaker-recognition release — one of
+	// wespeaker_en_voxceleb_CAM++_LM (the default), wespeaker_en_voxceleb_CAM++,
+	// wespeaker_en_voxceleb_resnet293_LM (four times the size and the most
+	// discriminating), or 3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced
+	// (trained bilingually rather than on English alone). Changing it clears
+	// the enrolled voice profiles, which cannot be compared across models.
+	SpeakerModel string `json:"speaker_model,omitempty"`
+
 	// DataDir holds the downloaded weights. Blank means ~/.factor/speech.
 	DataDir string `json:"data_dir,omitempty"`
 
@@ -138,14 +147,33 @@ func speechDataDir(cfg SpeechConfig, home string) string {
 	return filepath.Join(home, "speech")
 }
 
-// speakerModelFile is the speaker-embedding model speaker identification
-// runs: WeSpeaker's CAM++ trained on VoxCeleb, ~28 MB of ONNX answering
-// 512-dim embeddings. The name matches speechserver.py's constant.
-const speakerModelFile = "wespeaker_en_voxceleb_CAM++.onnx"
+// defaultSpeakerModel is the voice-embedding model speaker identification
+// runs unless the config names another: WeSpeaker's CAM++ trained on
+// VoxCeleb and fine-tuned with a large-margin loss, ~29 MB of ONNX answering
+// 512-dim embeddings. The name matches speechserver.py's own default.
+const defaultSpeakerModel = "wespeaker_en_voxceleb_CAM++_LM"
 
-// speakerModelPath is where prepare puts it and the server loads it from.
+// segmentationModelDir holds the model that says how many people are in a
+// recording and when each of them was talking — pyannote's segmentation-3.0,
+// exported to ONNX. The name matches speechserver.py's constant.
+const segmentationModelDir = "sherpa-onnx-pyannote-segmentation-3-0"
+
+func speakerModel(cfg SpeechConfig) string {
+	if cfg.SpeakerModel != "" {
+		return cfg.SpeakerModel
+	}
+	return defaultSpeakerModel
+}
+
+// speakerModelPath is where prepare puts the embedding model and the server
+// loads it from. Both halves of speaker identification live under the same
+// directory, and both have to be there before the server can start.
 func speakerModelPath(cfg SpeechConfig, home string) string {
-	return filepath.Join(speechDataDir(cfg, home), "speaker", speakerModelFile)
+	return filepath.Join(speechDataDir(cfg, home), "speaker", speakerModel(cfg)+".onnx")
+}
+
+func segmentationModelPath(cfg SpeechConfig, home string) string {
+	return filepath.Join(speechDataDir(cfg, home), "speaker", segmentationModelDir, "model.onnx")
 }
 
 // FindSpeechPython returns the interpreter that can run the speech server —
@@ -332,10 +360,11 @@ type speechServerConfig struct {
 	WhisperDevice  string `json:"whisper_device,omitempty"`
 	WhisperCompute string `json:"whisper_compute,omitempty"`
 	PiperVoice     string `json:"piper_voice,omitempty"`
+	SpeakerModel   string `json:"speaker_model,omitempty"`
 
 	// NeedSTT and NeedTTS follow the tier: a tier that keeps one half in the
 	// cloud must not pay for the other half's weights or memory. NeedSpeaker
-	// loads the speaker-embedding model behind /v1/audio/embedding.
+	// loads the embedding and segmentation models behind /v1/audio/voices.
 	NeedSTT     bool `json:"need_stt"`
 	NeedTTS     bool `json:"need_tts"`
 	NeedSpeaker bool `json:"need_speaker,omitempty"`
@@ -354,6 +383,7 @@ func renderSpeechConfig(cfg SpeechConfig, home, language, token string, needSTT,
 		WhisperDevice:  cfg.WhisperDevice,
 		WhisperCompute: cfg.WhisperCompute,
 		PiperVoice:     cfg.PiperVoice,
+		SpeakerModel:   cfg.SpeakerModel,
 		NeedSTT:        needSTT,
 		NeedTTS:        needTTS,
 		NeedSpeaker:    needSpeaker,

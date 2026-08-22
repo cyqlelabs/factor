@@ -19,10 +19,14 @@ its adapters expect:
     response_format="pcm" and resamples 24 kHz down to the 8 kHz phone band, so
     anything else arrives at the caller's ear transposed.
 
-One more route exists for the PC voice channel alone: POST /v1/audio/embedding
-answers a WAV upload with the utterance's speaker embedding, which is what
-Factor matches voice profiles against. It is served only when need_speaker is
-set, off a sherpa-onnx model the phone tiers never load.
+One more route exists for the PC voice channel alone: POST /v1/audio/voices
+answers a WAV upload with one embedding per person in it, which is what Factor
+matches voice profiles against. It is deliberately not "the embedding of this
+clip": a clip is whatever the caller's voice-activity detector kept open, and
+a patient detector holds one segment across a whole exchange between two
+people, so one vector over it belongs to neither of them. Diarization splits
+the clip first. The route is served only when need_speaker is set, off two
+sherpa-onnx models the phone tiers never load.
 
 Speech-to-text is one of two engines, chosen by prepare() for the machine and
 the language: Parakeet TDT (a transducer — it encodes the audio it was given
@@ -43,6 +47,7 @@ import os
 import shutil
 import sys
 import threading
+import urllib.parse
 import wave
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -133,25 +138,74 @@ PARAKEET_LANGUAGES = {
 # int8 export at prepare time. Below the bar, whisper base stays the answer.
 PARAKEET_MIN_RAM_GB = 4.0
 
-# The speaker-embedding model behind /v1/audio/embedding: WeSpeaker's CAM++
-# trained on VoxCeleb, served by sherpa-onnx — ~28 MB of ONNX answering
-# 512-dim embeddings. The release tag's spelling ("recongition") is the
-# project's own; do not correct it, the corrected URL does not exist.
-NEED_SPEAKER = bool(CFG.get("need_speaker"))
-SPEAKER_MODEL_FILE = "wespeaker_en_voxceleb_CAM++.onnx"
-SPEAKER_MODEL_URL = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-    "speaker-recongition-models/wespeaker_en_voxceleb_CAM%2B%2B.onnx"
+# The models behind /v1/audio/voices, both served by sherpa-onnx.
+#
+# The embedding model turns a stretch of one person's speech into a vector
+# Factor matches voice profiles against. The catalogue is the sherpa-onnx
+# release's, keyed by its own file name so the config value names exactly what
+# gets downloaded; the digests are pinned because "the download finished" and
+# "the model is the one this code was written for" are different claims. The
+# release tag's spelling ("recongition") is the project's own — do not correct
+# it, the corrected URL does not exist.
+#
+# CAM++_LM is the default: same size, architecture and 512 dimensions as plain
+# CAM++, but fine-tuned with a large-margin loss, which pushes different
+# speakers further apart — the exact quantity a household threshold is cut
+# against. resnet293_LM is the strongest of them and four times the size, for
+# a machine that can spare it; the 3D-Speaker model is trained bilingually
+# rather than on English alone.
+SPEAKER_MODELS = {
+    "wespeaker_en_voxceleb_CAM++_LM":
+        "e197af7e9d473030cf486b3124149a19bf37014d0e4485e4c70c483b0ec10cb2",
+    "wespeaker_en_voxceleb_CAM++":
+        "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef",
+    "wespeaker_en_voxceleb_resnet293_LM":
+        "f65dbc820e534eef64ae12d1e289e20244d60e60f7f00d7b092092b1c458be2e",
+    "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced":
+        "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+}
+DEFAULT_SPEAKER_MODEL = "wespeaker_en_voxceleb_CAM++_LM"
+SPEAKER_RELEASE = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
 )
-# The asset is a fixed release file; pinning its digest is what turns "the
-# download finished" into "the model is the one this code was written for".
-SPEAKER_MODEL_SHA256 = "c46fad10b5f81e1aa4a60c162714208577093655076c5450f8c469e522ec54ef"
+
+NEED_SPEAKER = bool(CFG.get("need_speaker"))
+SPEAKER_MODEL = CFG.get("speaker_model") or DEFAULT_SPEAKER_MODEL
+if NEED_SPEAKER and SPEAKER_MODEL not in SPEAKER_MODELS:
+    die(f"unknown speaker_model {SPEAKER_MODEL!r} (want one of {', '.join(SPEAKER_MODELS)})")
+SPEAKER_MODEL_FILE = f"{SPEAKER_MODEL}.onnx"
+SPEAKER_MODEL_URL = SPEAKER_RELEASE + urllib.parse.quote(SPEAKER_MODEL_FILE)
+SPEAKER_MODEL_SHA256 = SPEAKER_MODELS.get(SPEAKER_MODEL, "")
+
+# The segmentation half: pyannote's segmentation-3.0, exported to ONNX by the
+# sherpa-onnx project. It is what answers "how many people are in this
+# recording, and when was each of them talking" — the question an embedding
+# alone cannot answer, because one vector over two voices is neither of them.
+# Without it two people holding a conversation collapse into whichever profile
+# their mixture lands nearest.
+SEGMENT_MODEL_DIR = "sherpa-onnx-pyannote-segmentation-3-0"
+SEGMENT_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+    f"speaker-segmentation-models/{SEGMENT_MODEL_DIR}.tar.bz2"
+)
+SEGMENT_MODEL_SHA256 = "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"
+
+# Diarization knobs. min_duration_on drops a blip too short to be anybody;
+# min_duration_off keeps one person's two sentences from becoming two turns
+# across a breath. The clustering threshold decides how far apart two
+# stretches of speech have to sit to be different people — with num_clusters
+# at -1 the count is discovered rather than assumed, which is the only honest
+# setting for a room whose occupancy nobody declared.
+DIARIZE_MIN_ON = 0.3
+DIARIZE_MIN_OFF = 0.5
+DIARIZE_THRESHOLD = 0.5
 
 # ------------------------------------------------------------------- the models
 
 _stt = None
 _tts = None
 _speaker = None
+_diarizer = None
 _stt_lock = threading.Lock()
 _tts_lock = threading.Lock()
 _speaker_lock = threading.Lock()
@@ -164,7 +218,7 @@ def load_models() -> None:
     Factor waits on /health before it starts the voice shell, so paying the
     load here is what keeps the first call of the day from opening with a
     twenty-second silence while a model is read off disk."""
-    global _stt, _tts, _speaker
+    global _stt, _tts, _speaker, _diarizer
 
     if STT_ENGINE == "parakeet":
         _stt = load_parakeet(STT_MODEL or PARAKEET_MODEL)
@@ -198,9 +252,48 @@ def load_models() -> None:
         _speaker = sherpa_onnx.SpeakerEmbeddingExtractor(
             sherpa_onnx.SpeakerEmbeddingExtractorConfig(
                 model=str(model), num_threads=1, provider="cpu"))
+        _diarizer = load_diarizer(model)
 
     log("ready", stt=stt_name(), tts=PIPER_VOICE or "disabled",
-        speaker=SPEAKER_MODEL_FILE if NEED_SPEAKER else "disabled", rate=OUTPUT_RATE)
+        speaker=SPEAKER_MODEL_FILE if NEED_SPEAKER else "disabled",
+        diarization="on" if _diarizer is not None else "off", rate=OUTPUT_RATE)
+
+
+def load_diarizer(embedding_model: Path):
+    """The diarizer, or None where its model is missing or refuses to load.
+
+    Absence is survivable and must not take the server down: without it a
+    recording is read as one voice, which is what this server did before
+    diarization existed. It is worth a loud line, though — the failure it
+    leaves behind is two people answering as one, which reads as a speaker
+    identification bug rather than a missing model."""
+    import sherpa_onnx
+
+    segmentation = DATA_DIR / "speaker" / SEGMENT_MODEL_DIR / "model.onnx"
+    if not segmentation.exists():
+        log("no segmentation model; every recording will be read as one voice",
+            expected=str(segmentation))
+        return None
+    try:
+        config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
+            segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+                pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
+                    model=str(segmentation)),
+                num_threads=2, provider="cpu"),
+            embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+                model=str(embedding_model), num_threads=2, provider="cpu"),
+            clustering=sherpa_onnx.FastClusteringConfig(
+                num_clusters=-1, threshold=DIARIZE_THRESHOLD),
+            min_duration_on=DIARIZE_MIN_ON, min_duration_off=DIARIZE_MIN_OFF)
+        if not config.validate():
+            log("the diarization config was rejected; reading every recording as one voice")
+            return None
+        log("loading speaker diarization", model=SEGMENT_MODEL_DIR)
+        return sherpa_onnx.OfflineSpeakerDiarization(config)
+    except Exception as err:  # noqa: BLE001 - any failure here is survivable
+        log("speaker diarization failed to load; reading every recording as one voice",
+            error=str(err))
+        return None
 
 
 def stt_name() -> str:
@@ -402,30 +495,120 @@ def speech(payload: dict = Body(...), authorization: str | None = Header(default
     return Response(content=pcm, media_type="audio/pcm")
 
 
-@app.post("/v1/audio/embedding")
-def embedding(
+@app.post("/v1/audio/voices")
+def voices(
     file: UploadFile = File(...),
     authorization: str | None = Header(default=None),
 ):
-    """Compute one utterance's speaker embedding, for Factor's voice profiles.
+    """Every distinct voice in one recording, each with its own embedding.
 
-    An upload too short to say anything about its speaker answers an empty
-    vector rather than an error: the caller treats it as "could not tell",
-    which is the truth."""
+    This is deliberately not "the embedding of this clip". A clip is whatever
+    the caller's voice-activity detector kept open, and a patient detector
+    holds one segment across a whole exchange between two people — so one
+    vector over it is a blend belonging to neither, and answering with it
+    hands both speakers the same identity. Diarization is what turns the clip
+    into stretches of one person each; the embedding is computed per stretch,
+    over that person's speech alone.
+
+    Two properties matter to the caller and are guaranteed here: the voices
+    come back in the order they first spoke, so the one who opened the
+    recording is first, and any stretch where two people talked at once is
+    left out of both their embeddings. Overlapped audio is the classic way a
+    voice profile gets quietly poisoned.
+
+    A recording with no speech in it answers an empty list rather than an
+    error: the caller treats that as "could not tell", which is the truth."""
     authorize(authorization)
     if _speaker is None:
         raise HTTPException(status_code=503, detail="no speaker model is configured")
 
     raw = file.file.read()
     if not raw or wav_duration(raw) < MIN_TRANSCRIBE_SECONDS:
-        return {"embedding": []}
+        return {"voices": [], "model": SPEAKER_MODEL, "dim": _speaker.dim}
     waveform = wav_to_float32(raw)
+    spans = diarize(waveform)
+    found = []
+    for start, end, speech in spans:
+        if len(speech) < int(MIN_TRANSCRIBE_SECONDS * 16000):
+            continue
+        found.append({
+            "start": round(start, 3),
+            "end": round(end, 3),
+            # What the vector was actually computed over, which is not
+            # end-start: the silences between this person's sentences, and
+            # anything another voice was in, have been taken out. It is the
+            # number a caller's "enough voice to name somebody" bar belongs
+            # against.
+            "seconds": round(len(speech) / 16000, 3),
+            "embedding": embed_speech(speech),
+        })
+    return {"voices": found, "model": SPEAKER_MODEL, "dim": _speaker.dim}
+
+
+def embed_speech(speech) -> list[float]:
+    """One stretch of a single person's speech as a vector."""
     with _speaker_lock:
         stream = _speaker.create_stream()
-        stream.accept_waveform(sample_rate=16000, waveform=waveform)
+        stream.accept_waveform(sample_rate=16000, waveform=speech)
         stream.input_finished()
-        vector = _speaker.compute(stream)
-    return {"embedding": [float(x) for x in vector]}
+        return [float(x) for x in _speaker.compute(stream)]
+
+
+def diarize(waveform):
+    """Split a recording into one span of speech per person.
+
+    Returns (start, end, samples) per speaker, ordered by who spoke first,
+    where samples is that person's speech with the gaps and every overlap
+    with somebody else removed. Without a diarizer the whole recording is one
+    span, which is what this server answered before it had one."""
+    import numpy as np
+
+    if _diarizer is None:
+        return [(0.0, len(waveform) / 16000, waveform)]
+    with _speaker_lock:
+        result = _diarizer.process(waveform)
+    segments = result.sort_by_start_time()
+    if not segments:
+        return []
+
+    # Speaker labels are sparse — a two-person recording can come back as 0
+    # and 3 — so group by the label rather than by counting.
+    order, spans = [], {}
+    for seg in segments:
+        if seg.speaker not in spans:
+            order.append(seg.speaker)
+            spans[seg.speaker] = []
+        spans[seg.speaker].append((seg.start, seg.end))
+
+    out = []
+    for speaker in order:
+        mine = spans[speaker]
+        others = [iv for other, ivs in spans.items() if other != speaker for iv in ivs]
+        kept = [iv for own in mine for iv in subtract(own, others)]
+        if not kept:
+            continue
+        samples = np.concatenate([
+            waveform[int(a * 16000):int(b * 16000)] for a, b in kept
+        ]) if kept else np.empty(0, dtype=np.float32)
+        out.append((mine[0][0], mine[-1][1], samples))
+    return out
+
+
+def subtract(span: tuple[float, float], others: list[tuple[float, float]]):
+    """span minus every interval in others — what only this person said."""
+    pieces = [span]
+    for lo, hi in others:
+        rest = []
+        for a, b in pieces:
+            if hi <= a or lo >= b:
+                rest.append((a, b))
+                continue
+            if a < lo:
+                rest.append((a, min(lo, b)))
+            if b > hi:
+                rest.append((max(hi, a), b))
+        pieces = rest
+    return [(a, b) for a, b in pieces if b > a]
 
 
 def wav_duration(raw: bytes) -> float:
@@ -727,19 +910,12 @@ def prepare() -> None:
         target = DATA_DIR / "speaker" / SPEAKER_MODEL_FILE
         if not target.exists():
             log("downloading the speaker model", model=SPEAKER_MODEL_FILE)
-            import hashlib
-            import urllib.request
-
-            target.parent.mkdir(parents=True, exist_ok=True)
-            # Download beside the target and move into place, so a fetch cut
-            # short never leaves a half-model the server would try to load.
-            partial = target.with_suffix(".part")
-            urllib.request.urlretrieve(SPEAKER_MODEL_URL, partial)
-            digest = hashlib.sha256(partial.read_bytes()).hexdigest()
-            if digest != SPEAKER_MODEL_SHA256:
-                partial.unlink()
-                die(f"the speaker model download does not match its pinned checksum (got {digest})")
-            partial.replace(target)
+            fetch_pinned(SPEAKER_MODEL_URL, target, SPEAKER_MODEL_SHA256, "speaker model")
+        segmentation = DATA_DIR / "speaker" / SEGMENT_MODEL_DIR / "model.onnx"
+        if not segmentation.exists():
+            log("downloading the segmentation model", model=SEGMENT_MODEL_DIR)
+            fetch_segmentation(segmentation.parent.parent)
+    result["speaker_model"] = SPEAKER_MODEL if CFG.get("need_speaker") else ""
 
     if CFG.get("need_stt"):
         log("downloading the transcription model", engine=engine, model=model)
@@ -755,6 +931,45 @@ def prepare() -> None:
                          download_root=str(DATA_DIR / "whisper"))
 
     print(json.dumps(result), flush=True)
+
+
+def fetch_pinned(url: str, target: Path, digest: str, what: str) -> None:
+    """Download url to target, refusing anything but the pinned bytes."""
+    import hashlib
+    import urllib.request
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Download beside the target and move into place, so a fetch cut short
+    # never leaves a half-model the server would try to load.
+    partial = target.with_suffix(target.suffix + ".part")
+    urllib.request.urlretrieve(url, partial)
+    got = hashlib.sha256(partial.read_bytes()).hexdigest()
+    if got != digest:
+        partial.unlink()
+        die(f"the {what} download does not match its pinned checksum (got {got})")
+    partial.replace(target)
+
+
+def fetch_segmentation(into: Path) -> None:
+    """Download and unpack the segmentation model beside the embedding one.
+
+    It ships as a tarball rather than a bare .onnx, so the digest is checked
+    on the archive and the unpacking is filtered — an archive is a list of
+    paths somebody else wrote, and one of them escaping this directory is not
+    a failure mode worth leaving open for the sake of two lines."""
+    import tarfile
+    import tempfile
+
+    into.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=str(into)) as work:
+        archive = Path(work) / "segmentation.tar.bz2"
+        fetch_pinned(SEGMENT_MODEL_URL, archive, SEGMENT_MODEL_SHA256, "segmentation model")
+        with tarfile.open(archive, "r:bz2") as tar:
+            tar.extractall(work, filter="data")
+        unpacked = Path(work) / SEGMENT_MODEL_DIR
+        if not (unpacked / "model.onnx").exists():
+            die(f"the segmentation archive has no {SEGMENT_MODEL_DIR}/model.onnx in it")
+        shutil.move(str(unpacked), str(into / SEGMENT_MODEL_DIR))
 
 
 def main() -> None:

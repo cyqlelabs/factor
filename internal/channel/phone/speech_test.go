@@ -733,11 +733,14 @@ func TestRenderSpeechConfigCarriesNeedSpeaker(t *testing.T) {
 func TestEmbeddedSpeechServerKnowsTheSpeakerModel(t *testing.T) {
 	script := string(speechServerScript)
 	for _, want := range []string{
-		"/v1/audio/embedding",
+		"/v1/audio/voices",
 		"import sherpa_onnx",
-		// The Go constant and the script's must name the same file, or
-		// needsPrepare would stat a path prepare never writes.
-		`SPEAKER_MODEL_FILE = "` + speakerModelFile + `"`,
+		"OfflineSpeakerDiarization",
+		// The Go constants and the script's must name the same files, or
+		// needsPrepare would stat paths prepare never writes.
+		`DEFAULT_SPEAKER_MODEL = "` + defaultSpeakerModel + `"`,
+		`SEGMENT_MODEL_DIR = "` + segmentationModelDir + `"`,
+		"SEGMENT_MODEL_SHA256",
 		// The release tag's misspelling is the project's own; a well-meant
 		// correction would point at a URL that does not exist.
 		"speaker-recongition-models",

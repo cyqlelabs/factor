@@ -134,3 +134,46 @@ func TestSpeakerSlug(t *testing.T) {
 		}
 	}
 }
+
+// Vectors from two different embedding models are not comparable — where the
+// dimensions differ the cosine is a flat zero, and where they agree it is
+// noise. A profile carried across a model change would never match its owner
+// again while quietly competing with the new one they get enrolled into.
+func TestSpeakerStoreClearsProfilesWhenTheModelChanges(t *testing.T) {
+	home := t.TempDir()
+	s := newSpeakerStore(home)
+	s.useModel("model-a")
+	s.enroll([]float64{1, 0, 0})
+	s.enroll([]float64{0, 1, 0})
+	if !s.hasProfiles() {
+		t.Fatal("nothing enrolled")
+	}
+
+	s.useModel("model-a") // the same model must change nothing
+	if len(s.list()) != 2 {
+		t.Errorf("re-reporting the same model disturbed the store: %+v", s.list())
+	}
+
+	s.useModel("model-b")
+	if s.hasProfiles() {
+		t.Errorf("profiles from another model survived: %+v", s.list())
+	}
+	// The change is durable, and the enrolment counter is not reused: a name
+	// the user still remembers must not come back attached to somebody else.
+	if reloaded := newSpeakerStore(home); reloaded.hasProfiles() {
+		t.Error("the cleared profiles came back from disk")
+	} else if name := reloaded.enroll([]float64{0, 0, 1}); name != "speaker-3" {
+		t.Errorf("the next voice enrolled as %q, reusing a name that was in use", name)
+	}
+}
+
+// A store written before the model was recorded cannot be trusted against the
+// current one: it is exactly the case where nobody knows what made it.
+func TestSpeakerStoreClearsProfilesWithNoRecordedModel(t *testing.T) {
+	s := newSpeakerStore(t.TempDir())
+	s.enroll([]float64{1, 0, 0})
+	s.useModel("model-a")
+	if s.hasProfiles() {
+		t.Error("profiles of unknown provenance were kept")
+	}
+}

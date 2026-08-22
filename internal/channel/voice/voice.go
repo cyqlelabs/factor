@@ -478,19 +478,20 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		return
 	}
 	dec := v.gate(text, utterance.started, utterance.barged, utterance.overlapped)
-	var who speakerIdentity
+	var heard heardVoices
 	switch {
 	case dec.accept:
-		who = v.identifySpeaker(ctx, utterance)
+		heard = v.identifySpeaker(ctx, utterance)
 	case v.room != nil && !dec.echo:
 		// Speech the gate turned away still says who is in the room. Reading
 		// it costs one embedding and buys the case that matters most: a guest
 		// who has been talking to the user for ten minutes is known to be
 		// there before they ever address Factor, so the first private thing
 		// asked after they walked in is already answered to the room.
-		who = v.presenceOf(ctx, utterance)
+		heard = v.presenceOf(ctx, utterance)
 	}
-	v.room.heard(who, v.speakerProfilesExist(), utterance.started)
+	who := heard.speaker
+	v.room.heard(heard.present, v.speakerProfilesExist(), utterance.started)
 	st := v.room.snapshot(utterance.started)
 	if dec.accept {
 		// Only a turn consumes the flip: the announcement is owed to somebody
@@ -514,6 +515,12 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 	fields := []any{"text", text, "action", action}
 	if v.speakers != nil && (dec.accept || who.via != "") {
 		fields = append(fields, who.logFields(sessionFor(who, st.Shared), dec.accept)...)
+	}
+	// How many distinct people were in this one recording. Worth a field only
+	// when it is more than one, which is the case the split exists for and
+	// the case a reader is trying to confirm.
+	if len(heard.present) > 1 {
+		fields = append(fields, "voices", len(heard.present))
 	}
 	if v.room != nil {
 		fields = append(fields, "room", st.label(), "present", strings.Join(st.Present, ", "))

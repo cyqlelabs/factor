@@ -8,24 +8,45 @@ import (
 )
 
 // Speaker identification: which of the household's voices one utterance is.
-// The managed speech server computes an embedding of the utterance's audio;
-// the profile store names it. A known voice that is not the machine's owner
-// holds its own conversation — its own session key — so each person's thread
-// of dialogue stays theirs. (Session history separates; ambient memory is
-// still one shared graph, so a fact one person tells Factor can surface in
-// another's recall.)
+// The managed speech server splits the recording into one stretch per person
+// and computes an embedding of each; the profile store names them. A known
+// voice that is not the machine's owner holds its own conversation — its own
+// session key — so each person's thread of dialogue stays theirs. (Session
+// history separates; ambient memory is still one shared graph, so a fact one
+// person tells Factor can surface in another's recall.)
+//
+// The split is not a refinement, it is the difference between working and
+// not. The segmenter closes an utterance on silence_ms of quiet, and two
+// people talking to each other leave far shorter gaps than that, so their
+// whole exchange arrives as one recording. Read as one voice it is a blend of
+// both, which lands nearest whichever profile it happens to be closest to and
+// hands both people that one name — while reporting a room with one person in
+// it, which is the reading confidentiality can least afford to get wrong.
 
 const (
-	// speakerStickyWindow is how long a short or overlapped utterance inherits
-	// the last identified voice: a "yes" mid-conversation belongs to whoever
-	// was just talking, and half a second of audio cannot say who that is.
+	// speakerStickyWindow is how long an utterance that could not be read
+	// inherits the last identified voice: a "yes" mid-conversation belongs to
+	// whoever was just talking, and half a second of audio cannot say who
+	// that is.
 	speakerStickyWindow = 30 * time.Second
 
-	// speakerMinBytes is the least speech worth embedding — below about a
-	// second the vectors are noise, and naming the wrong person costs more
-	// than naming nobody. Judged over the utterance minus its silence tail,
-	// which is what gets embedded.
-	speakerMinBytes = captureRate * 2 // one second of 16 kHz s16le
+	// The three length bars, in seconds of actual speech — gaps and overlaps
+	// already removed by the server, so these mean what they say.
+	//
+	// They rise with what is at stake. Naming a voice risks one misattributed
+	// sentence. Teaching a profile moves the centroid every later match is
+	// judged against, so a bad one is paid for repeatedly. Creating a profile
+	// is worst of all: a spurious one never goes away on its own, it competes
+	// for every future match, and a store full of ghosts is how "it stopped
+	// recognizing me" begins.
+	//
+	// The numbers are not guesses. Against the same reference voice, a 1.8 s
+	// sample scores about 0.58 where a 4 s sample scores 0.95, with an
+	// impostor at 0.26 either way: below about two seconds the margin has
+	// mostly collapsed, and what is left is not enough to build on.
+	speakerMatchMinSeconds  = 1.5
+	speakerLearnMinSeconds  = 2.5
+	speakerEnrollMinSeconds = 3.0
 
 	// speakerLearnMargin is how far above the threshold a match has to sit
 	// before it is folded into the profile. Matching and learning are
@@ -43,13 +64,13 @@ const (
 const (
 	viaMatch       = "match"       // a profile above the threshold
 	viaEnrolled    = "enrolled"    // nobody matched, so a profile was created
-	viaUnknown     = "unknown"     // nobody matched, and the policy is anonymous
-	viaOverlap     = "overlap"     // recorded with the agent's voice in it: not embedded
-	viaShort       = "short"       // too little speech to identify: not embedded
-	viaUnavailable = "unavailable" // the embedding could not be computed
+	viaUnknown     = "unknown"     // nobody matched, and no profile was created
+	viaOverlap     = "overlap"     // recorded with the agent's voice in it: not read
+	viaShort       = "short"       // too little speech to identify
+	viaUnavailable = "unavailable" // the recording could not be read at all
 )
 
-// speakerIdentity is what the channel decided about who spoke. A blank name
+// speakerIdentity is what the channel decided about one voice. A blank name
 // is a voice it will not commit to; primary is the machine's owner, who keeps
 // the channel's original session.
 type speakerIdentity struct {
@@ -58,111 +79,147 @@ type speakerIdentity struct {
 
 	// via and similarity are the decision's own account of itself, for the
 	// log: which branch named this voice, and how close the closest profile
-	// was — the number speaker_threshold is tuned against.
+	// was — the number speaker_threshold is tuned against. seconds is how
+	// much speech it was judged on, which is the other half of why a
+	// similarity came out where it did.
 	via        string
 	similarity float64
+	seconds    float64
 	// inherited marks a name taken from the conversation rather than from
 	// this utterance's own audio.
 	inherited bool
 }
 
-// identifySpeaker names the voice behind one accepted utterance. Overlapped
-// and too-short utterances are never embedded — the first carries the
-// speakers' own sound mixed in, the second not enough voice to be anyone
-// reliably — they inherit the conversation's current speaker instead.
-func (v *Voice) identifySpeaker(ctx context.Context, utterance capturedUtterance) speakerIdentity {
-	if v.speakers == nil {
-		return speakerIdentity{}
-	}
-	if utterance.overlapped {
-		return v.stickySpeaker(viaOverlap)
-	}
-	voiced := v.voiced(utterance.pcm)
-	if len(voiced) < speakerMinBytes {
-		return v.stickySpeaker(viaShort)
-	}
-	embedding, err := v.speechClient().embed(ctx, voiced)
-	if err != nil || len(embedding) == 0 {
-		// One warning per outage: with the managed server down or serving
-		// without a speaker model, every utterance would repeat it.
-		if err != nil && ctx.Err() == nil && !v.embedFailing.Swap(true) {
-			slog.Warn("speaker identification failed; not naming speakers until it recovers",
-				"error", v.redact(err))
-		}
-		return v.stickySpeaker(viaUnavailable)
-	}
-	if v.embedFailing.Swap(false) {
-		slog.Info("speaker identification recovered")
-	}
-	name, similarity := v.speakers.match(embedding)
-	// Every profile's score, for tuning speaker_threshold against real voices
-	// — the one question the decision alone cannot answer is how close the
-	// runners-up were. Built only when the log would print it.
-	if slog.Default().Enabled(ctx, slog.LevelDebug) {
-		slog.Debug("speaker scores", "scores", v.speakers.scores(embedding),
-			"threshold", v.cfg.SpeakerThreshold)
-	}
-	if name != "" && similarity >= v.cfg.SpeakerThreshold {
-		if similarity >= v.cfg.SpeakerThreshold+speakerLearnMargin {
-			v.speakers.learn(name, embedding)
-		}
-		return v.rememberSpeaker(name, viaMatch, similarity)
-	}
-	if v.cfg.UnknownSpeaker == unknownEnroll {
-		enrolled := v.speakers.enroll(embedding)
-		slog.Info("a new voice enrolled", "speaker", enrolled,
-			"closest", name, "similarity", round2(similarity), "threshold", v.cfg.SpeakerThreshold)
-		return v.rememberSpeaker(enrolled, viaEnrolled, similarity)
-	}
-	return v.rememberSpeaker("", viaUnknown, similarity)
+// heardVoices is what one utterance's audio said about the people in it:
+// which of them the turn belongs to, and every voice the recording held.
+// They are different questions — the first decides whose conversation this
+// is, the second decides who can hear the answer — and reading one recording
+// as one voice is what used to conflate them.
+type heardVoices struct {
+	speaker speakerIdentity
+	present []speakerIdentity
 }
 
-// presenceOf reads the voice behind an utterance the activation gate turned
+// identifySpeaker names the voices behind one accepted utterance, and lets
+// what it hears teach the profiles.
+func (v *Voice) identifySpeaker(ctx context.Context, utterance capturedUtterance) heardVoices {
+	return v.readVoices(ctx, utterance, true)
+}
+
+// presenceOf reads the voices behind an utterance the activation gate turned
 // away — speech in the room that was not addressed to Factor. It answers only
 // the room's question, and it answers it read-only: it must not enroll a
 // profile, must not fold the audio into one, and must not move the sticky
 // speaker. Ambient conversation is the wrong teacher for all three — a
 // television would mint profiles, and a sentence spoken across the room would
 // steal the name a following "yes" inherits.
-func (v *Voice) presenceOf(ctx context.Context, utterance capturedUtterance) speakerIdentity {
-	if v.speakers == nil {
-		return speakerIdentity{}
-	}
-	if utterance.overlapped {
-		return speakerIdentity{via: viaOverlap}
-	}
-	voiced := v.voiced(utterance.pcm)
-	if len(voiced) < speakerMinBytes {
-		return speakerIdentity{via: viaShort}
-	}
-	embedding, err := v.speechClient().embed(ctx, voiced)
-	if err != nil || len(embedding) == 0 {
-		return speakerIdentity{via: viaUnavailable}
-	}
-	name, similarity := v.speakers.match(embedding)
-	if name != "" && similarity >= v.cfg.SpeakerThreshold {
-		return speakerIdentity{name: name, primary: v.speakers.isPrimary(name),
-			via: viaMatch, similarity: similarity}
-	}
-	// Nobody matched. Unlike the addressed path this never enrolls, so the
-	// answer is the same under either unknown_speaker setting: somebody is
-	// here who is not the owner.
-	return speakerIdentity{via: viaUnknown, similarity: similarity}
+func (v *Voice) presenceOf(ctx context.Context, utterance capturedUtterance) heardVoices {
+	return v.readVoices(ctx, utterance, false)
 }
 
-// voiced is the utterance without the closing silence every segment carries:
-// silence_ms of quiet is what ends one, so it is always there, and against a
-// three-second sentence it is most of the recording. It says nothing about
-// whose voice this is, and an embedding computed over it is partly the room's
-// — which is what pulls two people's profiles toward each other until neither
-// is recognizable.
-func (v *Voice) voiced(pcm []byte) []byte {
-	tail := v.cfg.SilenceMs * captureRate * 2 / 1000
-	end := len(pcm) - tail
-	if end &^= 1; end <= 0 { // sample-aligned, or the vector is byte-swapped noise
-		return nil
+// readVoices is the shared body of both. teach is what separates them: with
+// it off nothing about the store or the conversation moves, which is the
+// whole licence ambient speech gets.
+func (v *Voice) readVoices(ctx context.Context, utterance capturedUtterance, teach bool) heardVoices {
+	if v.speakers == nil {
+		return heardVoices{}
 	}
-	return pcm[:end]
+	// Audio the agent's own voice is in holds two speakers by construction,
+	// and one of them is a synthesizer. Reading it would name the wrong
+	// person and teaching from it would move a profile toward a machine.
+	if utterance.overlapped {
+		return v.unread(viaOverlap, teach)
+	}
+	readings, model, err := v.speechClient().voices(ctx, utterance.pcm)
+	if err != nil {
+		// One warning per outage: with the managed server down or serving
+		// without a speaker model, every utterance would repeat it.
+		if ctx.Err() == nil && !v.embedFailing.Swap(true) {
+			slog.Warn("speaker identification failed; not naming speakers until it recovers",
+				"error", v.redact(err))
+		}
+		return v.unread(viaUnavailable, teach)
+	}
+	if v.embedFailing.Swap(false) {
+		slog.Info("speaker identification recovered")
+	}
+	v.speakers.useModel(model)
+	if len(readings) == 0 {
+		return v.unread(viaShort, teach)
+	}
+	// Nobody else may have been in the recording for it to teach a profile.
+	// A diarized stretch is clean by construction, but "clean" rests on the
+	// split having been right, and a profile is the one thing here that
+	// outlives the mistake.
+	alone := len(readings) == 1
+	present := make([]speakerIdentity, 0, len(readings))
+	for _, reading := range readings {
+		present = append(present, v.nameVoice(ctx, reading, teach && alone, teach))
+	}
+	if !teach {
+		// The ambient path names the voices for the room and for the log, but
+		// commits to nothing: no sticky speaker, no session, no profile moved.
+		return heardVoices{speaker: present[0], present: present}
+	}
+	// The turn belongs to whoever opened the recording. The activation gate
+	// only let this through because the wake word was at its front, or
+	// because it answered inside the follow-up window — in both cases the
+	// person who started talking is the one talking to Factor, and anyone who
+	// joined partway through is the room.
+	speaker := present[0]
+	if speaker.name == "" && speaker.via == viaShort {
+		// Too little voice to name anybody, but somebody is plainly
+		// mid-conversation: a "yes" belongs to whoever was just talking.
+		// Inheriting is right here where clearing is right for viaUnknown —
+		// that one is a voice long enough to read that matched nobody, which
+		// is evidence of a different person, not of a brief one.
+		return heardVoices{speaker: v.stickySpeaker(viaShort), present: present}
+	}
+	return heardVoices{speaker: v.rememberSpeaker(speaker), present: present}
+}
+
+// nameVoice matches one voice against the profiles. learn allows it to move
+// the matched profile; enroll allows it to create one.
+func (v *Voice) nameVoice(ctx context.Context, reading voiceReading, learn, enroll bool) speakerIdentity {
+	if reading.Seconds < speakerMatchMinSeconds || len(reading.Embedding) == 0 {
+		return speakerIdentity{via: viaShort, seconds: reading.Seconds}
+	}
+	name, similarity := v.speakers.match(reading.Embedding)
+	// Every profile's score, for tuning speaker_threshold against real voices
+	// — the one question the decision alone cannot answer is how close the
+	// runners-up were. Built only when the log would print it.
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		slog.Debug("speaker scores", "scores", v.speakers.scores(reading.Embedding),
+			"seconds", round2(reading.Seconds), "threshold", v.cfg.SpeakerThreshold)
+	}
+	if name != "" && similarity >= v.cfg.SpeakerThreshold {
+		if learn && similarity >= v.cfg.SpeakerThreshold+speakerLearnMargin &&
+			reading.Seconds >= speakerLearnMinSeconds {
+			v.speakers.learn(name, reading.Embedding)
+		}
+		return v.identity(name, viaMatch, similarity, reading.Seconds)
+	}
+	if enroll && v.cfg.UnknownSpeaker == unknownEnroll && reading.Seconds >= speakerEnrollMinSeconds {
+		enrolled := v.speakers.enroll(reading.Embedding)
+		slog.Info("a new voice enrolled", "speaker", enrolled, "closest", name,
+			"similarity", round2(similarity), "threshold", v.cfg.SpeakerThreshold,
+			"seconds", round2(reading.Seconds))
+		return v.identity(enrolled, viaEnrolled, similarity, reading.Seconds)
+	}
+	return speakerIdentity{via: viaUnknown, similarity: similarity, seconds: reading.Seconds}
+}
+
+// unread is the answer for an utterance whose voices could not be read at
+// all. On the addressed path the conversation's current speaker stands in, so
+// a "yes" over the agent's own voice still belongs to whoever just spoke; on
+// the ambient path nothing does, because a name invented there would be
+// evidence of a person nobody heard.
+func (v *Voice) unread(via string, teach bool) heardVoices {
+	if !teach {
+		return heardVoices{speaker: speakerIdentity{via: via}}
+	}
+	who := v.stickySpeaker(via)
+	return heardVoices{speaker: who, present: []speakerIdentity{who}}
 }
 
 // speakerProfilesExist reports whether any voice is enrolled, which is what
@@ -179,19 +236,17 @@ func (v *Voice) stickySpeaker(via string) speakerIdentity {
 	if name == "" || time.Since(at) > speakerStickyWindow {
 		return speakerIdentity{via: via}
 	}
-	who := v.identity(name)
-	who.via, who.inherited = via, true
+	who := v.identity(name, via, 0, 0)
+	who.inherited = true
 	return who
 }
 
 // rememberSpeaker records who is talking now — including nobody, so an
 // unknown voice does not ride the previous speaker's identity.
-func (v *Voice) rememberSpeaker(name, via string, similarity float64) speakerIdentity {
+func (v *Voice) rememberSpeaker(who speakerIdentity) speakerIdentity {
 	v.mu.Lock()
-	v.lastSpeaker, v.lastSpeakerAt = name, time.Now()
+	v.lastSpeaker, v.lastSpeakerAt = who.name, time.Now()
 	v.mu.Unlock()
-	who := v.identity(name)
-	who.via, who.similarity = via, similarity
 	return who
 }
 
@@ -213,11 +268,12 @@ func (v *Voice) renameSticky(from, to string) {
 	v.mu.Unlock()
 }
 
-func (v *Voice) identity(name string) speakerIdentity {
+func (v *Voice) identity(name, via string, similarity, seconds float64) speakerIdentity {
 	if name == "" {
-		return speakerIdentity{}
+		return speakerIdentity{via: via, similarity: similarity, seconds: seconds}
 	}
-	return speakerIdentity{name: name, primary: v.speakers.isPrimary(name)}
+	return speakerIdentity{name: name, primary: v.speakers.isPrimary(name),
+		via: via, similarity: similarity, seconds: seconds}
 }
 
 // session is where this identity's conversation lives, and attributed is the
@@ -241,10 +297,10 @@ func (who speakerIdentity) attributed() string {
 }
 
 // logFields is how a decision explains itself on the "voice heard" line: who
-// it settled on, which branch decided that, how close the closest profile
-// was, and the session the turn will run in — the four answers behind "why
-// did it answer as the wrong person", and behind "why did it answer as
-// nobody" when the threshold is the reason.
+// it settled on, which branch decided that, how close the closest profile was
+// and on how much speech, and the session the turn will run in — the answers
+// behind "why did it answer as the wrong person", and behind "why did it
+// answer as nobody" when a threshold or a length bar is the reason.
 func (who speakerIdentity) logFields(session string, addressed bool) []any {
 	name := who.name
 	if name == "" {
@@ -253,7 +309,9 @@ func (who speakerIdentity) logFields(session string, addressed bool) []any {
 	fields := []any{"speaker", name, "via", who.via}
 	switch who.via {
 	case viaMatch, viaEnrolled, viaUnknown:
-		fields = append(fields, "similarity", round2(who.similarity))
+		fields = append(fields, "similarity", round2(who.similarity), "seconds", round2(who.seconds))
+	case viaShort:
+		fields = append(fields, "seconds", round2(who.seconds))
 	}
 	if who.inherited {
 		fields = append(fields, "inherited", true)

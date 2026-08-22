@@ -2,6 +2,7 @@ package voice
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,17 +19,24 @@ import (
 // was asked, so tests can assert on the exact request that crossed the wire.
 type fakeSpeechAPI struct {
 	*httptest.Server
-	mu        sync.Mutex
-	requests  []*http.Request
-	forms     []map[string]string
-	bodies    []map[string]any
-	text      string    // transcription reply
-	pcm       []byte    // synthesis reply
-	embedding []float64 // speaker embedding reply
-	// embedded is how many bytes of audio each embedding request carried,
-	// so a test can assert what was actually judged rather than what was
-	// captured.
+	mu       sync.Mutex
+	requests []*http.Request
+	forms    []map[string]string
+	bodies   []map[string]any
+	text     string // transcription reply
+	pcm      []byte // synthesis reply
+	// voices is what /v1/audio/voices answers: one entry per person in the
+	// recording. The real server diarizes to build this; a test scripts it.
+	// Each entry's Seconds is filled in from the audio actually uploaded
+	// unless the test set one, so the length bars are exercised by the frames
+	// a test feeds rather than by a number it asserts against itself.
+	voices []voiceReading
+	model  string
+	// embedded is how many bytes of audio each request carried, so a test can
+	// assert what was actually judged rather than what was captured, and
+	// spoken is how much of the last one was not silence.
 	embedded []int
+	spoken   float64
 	status   int
 	hold     chan struct{} // when non-nil, every handler waits here first
 }
@@ -52,7 +60,8 @@ func (f *fakeSpeechAPI) release() {
 
 func newFakeSpeechAPI(t *testing.T) *fakeSpeechAPI {
 	t.Helper()
-	f := &fakeSpeechAPI{text: "hello there", pcm: []byte("pcm-audio"), status: http.StatusOK}
+	f := &fakeSpeechAPI{text: "hello there", pcm: []byte("pcm-audio"),
+		model: "fake-embedding-model", status: http.StatusOK}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		hold := f.hold
@@ -80,11 +89,12 @@ func newFakeSpeechAPI(t *testing.T) *fakeSpeechAPI {
 				form["file"] = header.Filename
 			}
 			f.forms = append(f.forms, form)
-		case strings.HasSuffix(r.URL.Path, "/audio/embedding"):
+		case strings.HasSuffix(r.URL.Path, "/audio/voices"):
 			_ = r.ParseMultipartForm(32 << 20)
 			if file, _, err := r.FormFile("file"); err == nil {
 				wav, _ := io.ReadAll(file)
 				f.embedded = append(f.embedded, len(wav)-44) // past the RIFF header
+				f.spoken = voicedSeconds(wav)
 			}
 		default:
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -99,11 +109,18 @@ func newFakeSpeechAPI(t *testing.T) *fakeSpeechAPI {
 			return
 		}
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/audio/embedding"):
+		case strings.HasSuffix(r.URL.Path, "/audio/voices"):
 			f.mu.Lock()
-			embedding := f.embedding
+			voices, model, spoken := append([]voiceReading(nil), f.voices...), f.model, f.spoken
 			f.mu.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]any{"embedding": embedding})
+			for i := range voices {
+				if voices[i].Seconds == 0 {
+					// However much of this recording was speech, shared out
+					// between the people in it — what a diarizer would report.
+					voices[i].Seconds = spoken / float64(len(voices))
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"voices": voices, "model": model})
 		case strings.HasSuffix(r.URL.Path, "/audio/transcriptions"):
 			_ = json.NewEncoder(w).Encode(map[string]string{"text": text})
 		case strings.HasSuffix(r.URL.Path, "/listen"):
@@ -367,4 +384,20 @@ func portOf(t *testing.T, url string) int {
 		t.Fatal(err)
 	}
 	return port
+}
+
+// voicedSeconds is how much of an uploaded WAV is not digital silence — the
+// scripted stand-in for what diarization measures on the real server, so the
+// length bars are exercised by the frames a test feeds.
+func voicedSeconds(wav []byte) float64 {
+	if len(wav) <= 44 {
+		return 0
+	}
+	pcm, voiced := wav[44:], 0
+	for i := 0; i+1 < len(pcm); i += 2 {
+		if int16(binary.LittleEndian.Uint16(pcm[i:])) != 0 {
+			voiced++
+		}
+	}
+	return float64(voiced) / float64(captureRate)
 }

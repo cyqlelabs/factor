@@ -475,7 +475,19 @@ func TestSpeechSupervisorSpeakerModelNeedsPrepare(t *testing.T) {
 	if err := os.WriteFile(speakerModelPath(cfg, home), []byte("onnx"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The embedding model alone is not enough: without the segmentation model
+	// beside it, two people in one recording answer as one person — a wrong
+	// answer rather than a missing feature, so it must not start that way.
+	if !s.needsPrepare() {
+		t.Error("a missing segmentation model was treated as prepared")
+	}
+	if err := os.MkdirAll(filepath.Dir(segmentationModelPath(cfg, home)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(segmentationModelPath(cfg, home), []byte("onnx"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if s.needsPrepare() {
-		t.Error("a speaker model on disk still asks to prepare")
+		t.Error("both speaker models on disk still asks to prepare")
 	}
 }

@@ -114,21 +114,35 @@ func occupantFor(who speakerIdentity, hasProfiles bool) (name string, refreshOnl
 	return "", false
 }
 
-// heard folds one identification into the room.
-func (r *room) heard(who speakerIdentity, hasProfiles bool, now time.Time) {
-	if r == nil {
-		return
-	}
-	name, refreshOnly := occupantFor(who, hasProfiles)
-	if name == "" {
+// heard folds one utterance's voices into the room.
+func (r *room) heard(voices []speakerIdentity, hasProfiles bool, now time.Time) {
+	if r == nil || len(voices) == 0 {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, known := r.occupants[name]; refreshOnly && !known {
-		return
+	recorded := 0
+	for _, who := range voices {
+		name, refreshOnly := occupantFor(who, hasProfiles)
+		if name == "" {
+			continue
+		}
+		if _, known := r.occupants[name]; refreshOnly && !known {
+			continue
+		}
+		r.occupants[name] = now
+		recorded++
 	}
-	r.occupants[name] = now
+	// Arithmetic, not acoustics. One recording holding several distinct
+	// voices has at most one owner in it, so everybody past the first is
+	// somebody else — which holds even when none of them could be named, and
+	// even before anyone is enrolled at all. Without this the case that
+	// matters most reads as an empty room: the owner and a guest talking, the
+	// guest too brief to identify, and a private answer spoken over them
+	// both.
+	if len(voices) > 1 && recorded < len(voices)-1 {
+		r.occupants[roomUnknownOccupant] = now
+	}
 }
 
 // declare is the user's own word on the room, which outranks the microphone.

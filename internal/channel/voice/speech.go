@@ -169,43 +169,65 @@ func (s *speechClient) transcribeDeepgram(ctx context.Context, pcm []byte) (stri
 	return strings.TrimSpace(reply.Results.Channels[0].Alternatives[0].Transcript), nil
 }
 
-// embed asks the managed speech server for the utterance's voice embedding —
-// the vector speaker identification matches profiles against. It always
-// speaks to Factor's own server: the cloud tiers have no such endpoint, which
-// is why speaker_id requires the managed server in the first place.
-func (s *speechClient) embed(ctx context.Context, pcm []byte) ([]float64, error) {
+// voiceReading is one person's speech inside an utterance, as the speech
+// server heard it. Seconds is what the embedding was actually computed over —
+// this person's speech with the gaps between their sentences and anything
+// somebody else was talking over taken out — which is not End-Start, and is
+// the number the length bars belong against.
+type voiceReading struct {
+	Start     float64   `json:"start"`
+	End       float64   `json:"end"`
+	Seconds   float64   `json:"seconds"`
+	Embedding []float64 `json:"embedding"`
+}
+
+// voices asks the managed speech server who is in an utterance: one reading
+// per distinct voice, in the order they first spoke, each with its own
+// embedding. It always speaks to Factor's own server — the cloud tiers have
+// no such endpoint, which is why speaker_id requires the managed server in
+// the first place.
+//
+// Asking for the people rather than for "the embedding of this clip" is the
+// whole point. A clip is whatever the voice-activity detector kept open, and
+// a detector patient enough not to cut a thinking pause holds one segment
+// across an entire exchange between two people; one vector over that is a
+// blend belonging to neither, and answering with it gives both speakers the
+// same name. The second return is the model that produced the vectors, which
+// the profile store checks its own against.
+func (s *speechClient) voices(ctx context.Context, pcm []byte) ([]voiceReading, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, sttTimeout)
 	defer cancel()
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
 	part, err := form.CreateFormFile("file", "utterance.wav")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if _, err := part.Write(wavPCM(pcm, captureRate)); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := form.Close(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	base := phone.SpeechBaseURL(s.cfg.SpeechServer)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/audio/embedding", &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/audio/voices", &body)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	req.Header.Set("Content-Type", form.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+s.token)
 	raw, err := s.do(req)
 	if err != nil {
-		return nil, fmt.Errorf("speaker embedding: %w", err)
+		return nil, "", fmt.Errorf("speaker voices: %w", err)
 	}
 	var reply struct {
-		Embedding []float64 `json:"embedding"`
+		Voices []voiceReading `json:"voices"`
+		Model  string         `json:"model"`
 	}
 	if err := json.Unmarshal(raw, &reply); err != nil {
-		return nil, fmt.Errorf("speaker embedding reply: %w", err)
+		return nil, "", fmt.Errorf("speaker voices reply: %w", err)
 	}
-	return reply.Embedding, nil
+	return reply.Voices, reply.Model, nil
 }
 
 // synthesize turns text into 24 kHz s16le mono PCM.

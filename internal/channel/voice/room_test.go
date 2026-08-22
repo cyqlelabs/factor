@@ -16,6 +16,12 @@ func heard(name string, primary bool, via string) speakerIdentity {
 	return speakerIdentity{name: name, primary: primary, via: via, similarity: 0.9}
 }
 
+// heardOne folds a single voice in — the shape most of these assertions are
+// about, now that a recording can hold several.
+func (r *room) heardOne(who speakerIdentity, hasProfiles bool, now time.Time) {
+	r.heard([]speakerIdentity{who}, hasProfiles, now)
+}
+
 func TestRoomStartsPrivate(t *testing.T) {
 	r := newRoom(time.Hour)
 	if st := r.snapshot(t0); st.Shared || len(st.Present) != 0 {
@@ -27,7 +33,7 @@ func TestRoomStartsPrivate(t *testing.T) {
 // baseline the room is measured against.
 func TestOwnerIsNeverAnOccupant(t *testing.T) {
 	r := newRoom(time.Hour)
-	r.heard(heard("nicolas", true, viaMatch), true, t0)
+	r.heardOne(heard("nicolas", true, viaMatch), true, t0)
 	if st := r.snapshot(t0); st.Shared {
 		t.Errorf("the owner filled the room: %+v", st)
 	}
@@ -35,7 +41,7 @@ func TestOwnerIsNeverAnOccupant(t *testing.T) {
 
 func TestRecognizedGuestSharesTheRoom(t *testing.T) {
 	r := newRoom(time.Hour)
-	r.heard(heard("roxana", false, viaMatch), true, t0)
+	r.heardOne(heard("roxana", false, viaMatch), true, t0)
 	st := r.snapshot(t0)
 	if !st.Shared || !reflect.DeepEqual(st.Present, []string{"roxana"}) {
 		t.Errorf("room = %+v, want shared with roxana", st)
@@ -48,14 +54,14 @@ func TestRecognizedGuestSharesTheRoom(t *testing.T) {
 // permanently discreet with itself.
 func TestUnknownVoiceNeedsAProfileToCount(t *testing.T) {
 	withProfiles := newRoom(time.Hour)
-	withProfiles.heard(speakerIdentity{via: viaUnknown}, true, t0)
+	withProfiles.heardOne(speakerIdentity{via: viaUnknown}, true, t0)
 	if st := withProfiles.snapshot(t0); !st.Shared ||
 		!reflect.DeepEqual(st.Present, []string{roomUnknownOccupant}) {
 		t.Errorf("unmatched voice with profiles enrolled = %+v, want shared", st)
 	}
 
 	bare := newRoom(time.Hour)
-	bare.heard(speakerIdentity{via: viaUnknown}, false, t0)
+	bare.heardOne(speakerIdentity{via: viaUnknown}, false, t0)
 	if st := bare.snapshot(t0); st.Shared {
 		t.Errorf("unmatched voice with nobody enrolled = %+v, want private", st)
 	}
@@ -66,7 +72,7 @@ func TestUnknownVoiceNeedsAProfileToCount(t *testing.T) {
 func TestUnreadableAudioAddsNobody(t *testing.T) {
 	for _, via := range []string{viaUnavailable, viaOverlap, viaShort} {
 		r := newRoom(time.Hour)
-		r.heard(speakerIdentity{via: via}, true, t0)
+		r.heardOne(speakerIdentity{via: via}, true, t0)
 		if st := r.snapshot(t0); st.Shared {
 			t.Errorf("via %s filled the room: %+v", via, st)
 		}
@@ -77,15 +83,15 @@ func TestUnreadableAudioAddsNobody(t *testing.T) {
 // name must keep them present — but it is not evidence anybody new arrived.
 func TestInheritedNameRefreshesButNeverCreates(t *testing.T) {
 	r := newRoom(10 * time.Minute)
-	r.heard(heard("roxana", false, viaMatch), true, t0)
+	r.heardOne(heard("roxana", false, viaMatch), true, t0)
 	inherited := speakerIdentity{name: "roxana", via: viaShort, inherited: true}
-	r.heard(inherited, true, t0.Add(9*time.Minute))
+	r.heardOne(inherited, true, t0.Add(9*time.Minute))
 	if st := r.snapshot(t0.Add(15 * time.Minute)); !st.Shared {
 		t.Errorf("a refreshed guest aged out anyway: %+v", st)
 	}
 
 	fresh := newRoom(10 * time.Minute)
-	fresh.heard(inherited, true, t0)
+	fresh.heardOne(inherited, true, t0)
 	if st := fresh.snapshot(t0); st.Shared {
 		t.Errorf("an inherited name created an occupant: %+v", st)
 	}
@@ -93,7 +99,7 @@ func TestInheritedNameRefreshesButNeverCreates(t *testing.T) {
 
 func TestOccupantsAgeOut(t *testing.T) {
 	r := newRoom(30 * time.Minute)
-	r.heard(heard("roxana", false, viaEnrolled), true, t0)
+	r.heardOne(heard("roxana", false, viaEnrolled), true, t0)
 	if st := r.snapshot(t0.Add(29 * time.Minute)); !st.Shared {
 		t.Error("the guest left early")
 	}
@@ -137,7 +143,7 @@ func TestForgetDropsOnePersonAndLeavesTheRest(t *testing.T) {
 // The flip is announced once, to somebody listening. snapshot must not eat it.
 func TestOnlyAssessConsumesTheFlip(t *testing.T) {
 	r := newRoom(time.Hour)
-	r.heard(heard("roxana", false, viaMatch), true, t0)
+	r.heardOne(heard("roxana", false, viaMatch), true, t0)
 	if st := r.snapshot(t0); st.Changed {
 		t.Error("snapshot consumed the transition")
 	}
@@ -168,7 +174,7 @@ func TestPresentIsSortedForStableLogs(t *testing.T) {
 // answering rather than panicking.
 func TestNilRoomIsAPrivateRoom(t *testing.T) {
 	var r *room
-	r.heard(heard("roxana", false, viaMatch), true, t0)
+	r.heardOne(heard("roxana", false, viaMatch), true, t0)
 	r.declare(true, []string{"roxana"}, t0)
 	r.forget("roxana")
 	if st := r.snapshot(t0); st.Shared {
@@ -252,4 +258,46 @@ func containsAny(s string, subs ...string) bool {
 		}
 	}
 	return false
+}
+
+// One recording holding several distinct voices has at most one owner in it,
+// so everybody past the first is somebody else. That holds even when none of
+// them could be named — the case that matters most is the owner and a guest
+// whose only contribution is too brief to identify.
+func TestSeveralVoicesInOneRecordingAreCompany(t *testing.T) {
+	cases := []struct {
+		name   string
+		voices []speakerIdentity
+	}{
+		{"the owner and a voice nobody could name", []speakerIdentity{
+			heard("nicolas", true, viaMatch), {via: viaShort},
+		}},
+		{"two voices, neither of them readable", []speakerIdentity{
+			{via: viaShort}, {via: viaShort},
+		}},
+		{"the owner and a named guest", []speakerIdentity{
+			heard("nicolas", true, viaMatch), heard("roxana", false, viaMatch),
+		}},
+	}
+	for _, tc := range cases {
+		r := newRoom(time.Hour)
+		r.heard(tc.voices, true, t0)
+		if st := r.snapshot(t0); !st.Shared {
+			t.Errorf("%s: room = %+v, want shared", tc.name, st)
+		}
+	}
+}
+
+// The same arithmetic must not fire on one voice, however it was read: a
+// single speaker is the baseline, not a crowd.
+func TestOneVoiceIsNeverCompanyByArithmetic(t *testing.T) {
+	for _, who := range []speakerIdentity{
+		heard("nicolas", true, viaMatch), {via: viaShort}, {via: viaUnavailable},
+	} {
+		r := newRoom(time.Hour)
+		r.heard([]speakerIdentity{who}, true, t0)
+		if st := r.snapshot(t0); st.Shared {
+			t.Errorf("via %s alone filled the room: %+v", who.via, st)
+		}
+	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/channel"
 	"github.com/cyqlelabs/factor/internal/channel/phone"
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 func freePort(t *testing.T) int {
@@ -186,9 +187,17 @@ func (h *voiceHarness) start() {
 }
 
 // say feeds one spoken utterance: settle frames, speech, closing silence.
-func (h *voiceHarness) say() {
+// The speech is long enough to clear the identification length bars, as an
+// ordinary spoken sentence is; sayBriefly is the one that is not.
+func (h *voiceHarness) say() { h.sayFor(110) }
+
+// sayBriefly feeds an utterance with too little voice in it to name anybody —
+// a "yes" mid-conversation.
+func (h *voiceHarness) sayBriefly() { h.sayFor(12) }
+
+func (h *voiceHarness) sayFor(speechFrames int) {
 	h.mic.feed(repeat(silenceFrame(), 20)...)
-	h.mic.feed(repeat(toneFrame(8000), 30)...)
+	h.mic.feed(repeat(toneFrame(8000), speechFrames)...)
 	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
 }
 
@@ -253,9 +262,15 @@ func (h *voiceHarness) setReplyPCM(pcm []byte) {
 	h.api.mu.Unlock()
 }
 
+// setEmbedding scripts one voice in the recording — the ordinary case.
 func (h *voiceHarness) setEmbedding(embedding []float64) {
+	h.setVoices(voiceReading{Embedding: embedding})
+}
+
+// setVoices scripts what the speech server heard, in speaking order.
+func (h *voiceHarness) setVoices(voices ...voiceReading) {
 	h.api.mu.Lock()
-	h.api.embedding = embedding
+	h.api.voices = voices
 	h.api.mu.Unlock()
 }
 
@@ -268,6 +283,11 @@ func (h *voiceHarness) enableSpeakerID(policy string) {
 	h.v.cfg.SpeakerThreshold = defaultSpeakerThreshold
 	h.v.cfg.UnknownSpeaker = policy
 	h.v.speakers = newSpeakerStore(h.v.home)
+	// Profiles a test plants by hand belong to the model the fake server
+	// answers with; without this the first reading would see the model change
+	// and clear them, which is the right production behaviour and the wrong
+	// test fixture.
+	h.v.speakers.useModel(h.api.model)
 }
 
 // enableRoom turns audience scoping on. Like enableSpeakerID it reaches past
@@ -711,7 +731,7 @@ func TestVoiceSpeakersTool(t *testing.T) {
 	}
 	h.v.speakers.enroll(vec(1, 0))
 	h.v.speakers.enroll(vec(0, 1))
-	h.v.rememberSpeaker("speaker-2", viaMatch, 0.9)
+	h.v.rememberSpeaker(speakerIdentity{name: "speaker-2", via: viaMatch, similarity: 0.9})
 
 	tool := &speakersTool{voice: h.v}
 	if res := tool.Execute(context.Background(), map[string]any{
@@ -1172,30 +1192,84 @@ func TestVoiceNeverEmbedsAudioItsOwnVoiceIsIn(t *testing.T) {
 	}
 }
 
-// Every segment ends with silence_ms of quiet — that is what closes it. Against
-// a three-second sentence that is most of the recording, and an embedding
-// computed over it is partly the room's rather than the speaker's.
-func TestVoiceEmbedsTheVoicedPartOnly(t *testing.T) {
+// Creating a profile is the most expensive mistake this store can make. A
+// spurious one never goes away on its own, it competes for every later match,
+// and it is how a household of three ends up with fifteen voices — so minting
+// one takes more speech than matching one does.
+func TestVoiceDoesNotEnrollFromAGlimpseOfAVoice(t *testing.T) {
 	h := newVoiceHarness(t, nil)
 	h.enableSpeakerID(unknownEnroll)
 	h.start()
 
 	h.setEmbedding([]float64{1, 0, 0})
+	h.sayFor(70) // around two seconds: enough to match on, not to enroll from
+	h.turn(10 * time.Second)
+	if got := h.v.speakers.list(); len(got) != 0 {
+		t.Errorf("a profile was minted from a glimpse of a voice: %+v", got)
+	}
+}
+
+// The failure this whole split exists for. Two people talking to each other
+// leave gaps far shorter than silence_ms, so their exchange arrives as one
+// recording; read as one voice it is a blend that lands on whichever profile
+// it is nearest, and both of them answer to that one name.
+func TestVoiceTellsTwoPeopleApartInOneRecording(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.enableRoom(time.Hour)
+	h.start()
+
+	// The owner alone first, so the machine knows one voice.
+	h.setEmbedding([]float64{1, 0, 0})
 	h.say()
 	h.turn(10 * time.Second)
+	h.waitQuiet()
 
-	embedded := h.embedded()
-	if len(embedded) != 1 {
-		t.Fatalf("embedding requests = %d, want exactly one", len(embedded))
+	// Now the owner and somebody else, in one recording the segmenter never
+	// closed between them.
+	h.setVoices(
+		voiceReading{Embedding: []float64{1, 0, 0}},
+		voiceReading{Embedding: []float64{0, 1, 0}})
+	h.sayFor(220)
+	call := h.turn(10 * time.Second)
+
+	if got := h.v.speakers.list(); len(got) != 2 {
+		t.Errorf("two voices in one recording became %d profile(s): %+v", len(got), got)
 	}
-	// say() speaks 30 frames, over a little pre-roll, and then closes with
-	// silenceEndFrames of quiet. All of the voice must survive the trim and
-	// none of that closing silence may.
-	if embedded[0] < 30*frameBytes {
-		t.Errorf("embedded only %d bytes; the voice itself was trimmed", embedded[0])
+	if call.audience != tools.AudienceShared {
+		t.Errorf("audience = %q, want shared: two people were in the recording", call.audience)
 	}
-	if embedded[0] > (30+preRollFrames)*frameBytes {
-		t.Errorf("embedded %d bytes; the closing silence went in with the voice", embedded[0])
+	if call.session != sessionKey+":"+roomSessionSlug {
+		t.Errorf("session = %q, want the room's", call.session)
+	}
+}
+
+// The reading confidentiality can least afford to get wrong: the owner and a
+// guest in one recording, the guest too brief to put a name to. One recording
+// holds at most one owner, so somebody else is here — arithmetic says so even
+// where acoustics cannot, and without it a private answer is spoken over both
+// of them.
+func TestVoiceSharesTheRoomForASecondVoiceItCannotName(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.enableRoom(time.Hour)
+	h.start()
+
+	h.setEmbedding([]float64{1, 0, 0})
+	h.say()
+	h.turn(10 * time.Second)
+	h.waitQuiet()
+	if h.v.room.snapshot(time.Now()).Shared {
+		t.Fatal("the owner alone made the room shared")
+	}
+
+	h.setVoices(
+		voiceReading{Embedding: []float64{1, 0, 0}, Seconds: 3},
+		voiceReading{Embedding: nil, Seconds: 0.4}) // a "mhm" nobody can name
+	h.say()
+	if call := h.turn(10 * time.Second); call.audience != tools.AudienceShared {
+		t.Errorf("audience = %q, want shared: a voice that is not the owner's was in the room",
+			call.audience)
 	}
 }
 
