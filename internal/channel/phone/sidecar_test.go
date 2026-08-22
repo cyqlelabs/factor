@@ -90,14 +90,93 @@ func freePort(t *testing.T) int {
 	return port
 }
 
+// portsApart reserves n ports that a phone config will accept: distinct from
+// each other and from avoid, and never merely adjacent, since the voice
+// shell's webhook listens at its control port + 1 and validate() rejects that
+// collision as firmly as an identical port.
+//
+// freePort closes its listener before returning the number, so nothing holds
+// the port between the two calls that fill SidecarPort and BridgePort — under
+// enough parallel binding the kernel hands the same one out twice, which is
+// exactly how CI saw "bridge_port 43115 collides with the voice shell's
+// control port 43115". Holding every listener open until all the numbers are
+// read removes that; the retry removes the adjacent case.
+func portsApart(t *testing.T, n int, avoid ...int) []int {
+	t.Helper()
+	for attempt := 0; attempt < 100; attempt++ {
+		listeners := make([]net.Listener, 0, n)
+		ports := append([]int(nil), avoid...)
+		for i := 0; i < n; i++ {
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			listeners = append(listeners, l)
+			ports = append(ports, l.Addr().(*net.TCPAddr).Port)
+		}
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+		if apart(ports) {
+			return ports[len(avoid):]
+		}
+	}
+	t.Fatalf("could not reserve %d ports far enough apart", n)
+	return nil
+}
+
+// apart reports whether every pair of ports differs by more than one.
+func apart(ports []int) bool {
+	for i, a := range ports {
+		for _, b := range ports[i+1:] {
+			if d := a - b; d >= -1 && d <= 1 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// The helper's whole job is to hand back ports validate() will accept, so the
+// contract is pinned here rather than discovered on a CI run months from now.
+func TestPortsApartNeverCollide(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		ports := portsApart(t, 3)
+		if len(ports) != 3 || !apart(ports) {
+			t.Fatalf("portsApart returned %v", ports)
+		}
+	}
+	// And it keeps clear of ports the caller has already committed to.
+	fixed := portsApart(t, 2)
+	for i := 0; i < 200; i++ {
+		got := portsApart(t, 1, fixed...)[0]
+		if !apart(append([]int{got}, fixed...)) {
+			t.Fatalf("portsApart(1, %v) returned %d", fixed, got)
+		}
+	}
+}
+
+func TestApartSpotsEveryCollision(t *testing.T) {
+	for _, ports := range [][]int{{100, 100}, {100, 101}, {101, 100}, {100, 200, 201}} {
+		if apart(ports) {
+			t.Errorf("apart(%v) = true, want false", ports)
+		}
+	}
+	for _, ports := range [][]int{{}, {100}, {100, 102}, {100, 200, 300}} {
+		if !apart(ports) {
+			t.Errorf("apart(%v) = false, want true", ports)
+		}
+	}
+}
+
 // supervisorFor builds a supervisor around the fake shell in a throwaway home.
 func supervisorFor(t *testing.T, mode string, mutate func(*Config)) (*supervisor, Config) {
 	t.Helper()
 	home := t.TempDir()
 	cfg := prepared(t, func(c *Config) {
 		c.Command = selfCommand(t, mode)
-		c.SidecarPort = freePort(t)
-		c.BridgePort = freePort(t)
+		ports := portsApart(t, 2)
+		c.SidecarPort, c.BridgePort = ports[0], ports[1]
 		if mutate != nil {
 			mutate(c)
 		}

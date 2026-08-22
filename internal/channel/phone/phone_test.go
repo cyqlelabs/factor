@@ -111,8 +111,8 @@ func newTestPhone(t *testing.T, mutate func(*Config)) (*Phone, *fakeTwilio, *fak
 	cfg := validConfig()
 	cfg.APIBase = twilio.URL
 	cfg.ControlAPIBase = shell.URL
-	cfg.SidecarPort = freePort(t)
-	cfg.BridgePort = freePort(t)
+	ports := portsApart(t, 2)
+	cfg.SidecarPort, cfg.BridgePort = ports[0], ports[1]
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -243,7 +243,9 @@ func TestShellConfigOnTheCloudTier(t *testing.T) {
 func TestShellConfigFallsBackWhenTheSpeechServerNeverStarts(t *testing.T) {
 	p, _, _ := newTestPhone(t, func(c *Config) {
 		c.STT.Provider = providerLocalOpenAI
-		c.SpeechServer.Port = freePort(t)
+		// The speech server is a third listener in the same config, and
+		// validate() rejects it landing on any of the other two.
+		c.SpeechServer.Port = portsApart(t, 1, c.SidecarPort, c.BridgePort)[0]
 	})
 	if p.speech == nil {
 		t.Fatal("a managed local tier should supervise a speech server")
@@ -489,8 +491,8 @@ func newTelnyxPhone(t *testing.T) (*Phone, *fakeTelnyx) {
 	telnyxConfig(&cfg)
 	cfg.APIBase = carrier.URL
 	cfg.ControlAPIBase = newFakeShellAPI(t).URL
-	cfg.SidecarPort = freePort(t)
-	cfg.BridgePort = freePort(t)
+	ports := portsApart(t, 2)
+	cfg.SidecarPort, cfg.BridgePort = ports[0], ports[1]
 	p, err := New(cfg, bus.New())
 	if err != nil {
 		t.Fatalf("New: %v", err)
