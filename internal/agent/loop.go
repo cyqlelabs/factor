@@ -171,7 +171,7 @@ func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 // ProcessDirect runs a synchronous turn outside the bus (CLI one-shot,
 // cron, delegated jobs) with nobody listening for progress.
 func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (string, error) {
-	return l.ProcessDirectNotice(ctx, content, sessionKey, "", nil)
+	return l.ProcessDirectNotice(ctx, content, sessionKey, "", "", nil)
 }
 
 // ProcessDirectNotice runs a synchronous turn outside the bus and reports
@@ -180,10 +180,10 @@ func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (s
 // while it is still news. It honors the one-live-turn-per-session invariant:
 // if the session is busy (e.g. an overlapping cron firing), it waits for
 // the claim instead of interleaving histories.
-func (l *Loop) ProcessDirectNotice(ctx context.Context, content, sessionKey, speaker string,
+func (l *Loop) ProcessDirectNotice(ctx context.Context, content, sessionKey, speaker, audience string,
 	notice func(string)) (string, error) {
 	msg := bus.InboundMessage{Channel: "cli", ChatID: strings.TrimPrefix(sessionKey, "cli:"),
-		Content: content, Speaker: speaker}
+		Content: content, Speaker: speaker, Audience: audience}
 	if idx := strings.IndexByte(sessionKey, ':'); idx > 0 {
 		msg.Channel, msg.ChatID = sessionKey[:idx], sessionKey[idx+1:]
 	}
@@ -237,7 +237,8 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, not
 		content:    msg.Content,
 		speaker:    msg.Speaker,
 		notice:     notice,
-		toolCtx:    tools.ToolContext{Channel: msg.Channel, ChatID: msg.ChatID, SessionKey: msg.SessionKey()},
+		toolCtx: tools.ToolContext{Channel: msg.Channel, ChatID: msg.ChatID,
+			SessionKey: msg.SessionKey(), Audience: msg.Audience},
 	}, t)
 	// A budget cap is a decision the user made, so it is answered rather
 	// than reported as a breakage — and left out of memory, since "you ran
@@ -252,7 +253,7 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, not
 			// The speaker goes to memory as who said it, not as part of what
 			// was said: the graph decides how to record a person, and a tag
 			// meant for the prompt has no business becoming remembered text.
-			l.ambient.StoreExchange(msg.Channel, msg.Speaker, msg.Content, reply)
+			l.ambient.StoreExchange(msg.Channel, msg.Audience, msg.Speaker, msg.Content, reply)
 		}()
 	}
 	return reply, err

@@ -107,6 +107,45 @@ func (v *Voice) identifySpeaker(ctx context.Context, utterance capturedUtterance
 	return v.rememberSpeaker("", viaUnknown, similarity)
 }
 
+// presenceOf reads the voice behind an utterance the activation gate turned
+// away — speech in the room that was not addressed to Factor. It answers only
+// the room's question, and it answers it read-only: it must not enroll a
+// profile, must not fold the audio into one, and must not move the sticky
+// speaker. Ambient conversation is the wrong teacher for all three — a
+// television would mint profiles, and a sentence spoken across the room would
+// steal the name a following "yes" inherits.
+func (v *Voice) presenceOf(ctx context.Context, utterance capturedUtterance) speakerIdentity {
+	if v.speakers == nil {
+		return speakerIdentity{}
+	}
+	silenceTail := v.cfg.SilenceMs * captureRate * 2 / 1000
+	if utterance.barged {
+		return speakerIdentity{via: viaBarge}
+	}
+	if len(utterance.pcm)-silenceTail < speakerMinBytes {
+		return speakerIdentity{via: viaShort}
+	}
+	embedding, err := v.speechClient().embed(ctx, utterance.pcm)
+	if err != nil || len(embedding) == 0 {
+		return speakerIdentity{via: viaUnavailable}
+	}
+	name, similarity := v.speakers.match(embedding)
+	if name != "" && similarity >= v.cfg.SpeakerThreshold {
+		return speakerIdentity{name: name, primary: v.speakers.isPrimary(name),
+			via: viaMatch, similarity: similarity}
+	}
+	// Nobody matched. Unlike the addressed path this never enrolls, so the
+	// answer is the same under either unknown_speaker setting: somebody is
+	// here who is not the owner.
+	return speakerIdentity{via: viaUnknown, similarity: similarity}
+}
+
+// speakerProfilesExist reports whether any voice is enrolled, which is what
+// makes an unmatched voice mean "not the owner" rather than "the first voice".
+func (v *Voice) speakerProfilesExist() bool {
+	return v.speakers != nil && v.speakers.hasProfiles()
+}
+
 // stickySpeaker is the conversation's current voice, while it is current.
 func (v *Voice) stickySpeaker(via string) speakerIdentity {
 	v.mu.Lock()
@@ -181,7 +220,7 @@ func (who speakerIdentity) attributed() string {
 // was, and the session the turn will run in — the four answers behind "why
 // did it answer as the wrong person", and behind "why did it answer as
 // nobody" when the threshold is the reason.
-func (who speakerIdentity) logFields() []any {
+func (who speakerIdentity) logFields(session string, addressed bool) []any {
 	name := who.name
 	if name == "" {
 		name = "unnamed"
@@ -194,7 +233,12 @@ func (who speakerIdentity) logFields() []any {
 	if who.inherited {
 		fields = append(fields, "inherited", true)
 	}
-	return append(fields, "session", who.session())
+	// An utterance the gate turned away has no session — it was read for the
+	// room and for nothing else. Naming one would suggest a turn ran.
+	if addressed {
+		fields = append(fields, "session", session)
+	}
+	return fields
 }
 
 // round2 keeps a similarity readable in a log line: 0.83, not 0.8271604938.

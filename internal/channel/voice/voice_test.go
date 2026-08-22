@@ -92,10 +92,11 @@ func (r *micReader) Close() error {
 }
 
 type turnCall struct {
-	ctx     context.Context
-	content string
-	session string
-	speaker string
+	ctx      context.Context
+	content  string
+	session  string
+	speaker  string
+	audience string
 }
 
 // voiceHarness wires a Voice to a scripted machine: a fake microphone, a
@@ -149,11 +150,12 @@ func newVoiceHarness(t *testing.T, mutate func(*Config)) *voiceHarness {
 		Capture: h.mic.capture,
 		Play:    h.speaker.play,
 	}
-	v.BindTurnRunner(func(ctx context.Context, content, session, speaker string, notice func(string)) (string, error) {
+	v.BindTurnRunner(func(ctx context.Context, content, session, speaker, audience string, notice func(string)) (string, error) {
 		h.mu.Lock()
 		reply, err, block, note := h.reply, h.err, h.block, h.notice
 		h.mu.Unlock()
-		h.turns <- turnCall{ctx: ctx, content: content, session: session, speaker: speaker}
+		h.turns <- turnCall{ctx: ctx, content: content, session: session, speaker: speaker,
+			audience: audience}
 		if note != "" {
 			notice(note)
 			// The whole point of a filler line is that it is heard while the
@@ -266,6 +268,13 @@ func (h *voiceHarness) enableSpeakerID(policy string) {
 	h.v.cfg.SpeakerThreshold = defaultSpeakerThreshold
 	h.v.cfg.UnknownSpeaker = policy
 	h.v.speakers = newSpeakerStore(h.v.home)
+}
+
+// enableRoom turns audience scoping on. Like enableSpeakerID it reaches past
+// New, whose validation wants the managed speech server the harness fakes.
+func (h *voiceHarness) enableRoom(timeout time.Duration) {
+	h.t.Helper()
+	h.v.room = newRoom(timeout)
 }
 
 // waitQuiet waits for the reply in flight to finish sounding, so the next
@@ -905,7 +914,7 @@ func TestVoiceStartFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deaf.BindTurnRunner(func(context.Context, string, string, string, func(string)) (string, error) { return "", nil })
+	deaf.BindTurnRunner(func(context.Context, string, string, string, string, func(string)) (string, error) { return "", nil })
 	deaf.env = scriptedEnv("linux") // no helpers at all
 	if err := deaf.Start(context.Background()); err == nil || !contains(err.Error(), "helper") {
 		t.Errorf("Start without helpers = %v", err)
@@ -920,7 +929,7 @@ func TestVoiceStartFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocked.BindTurnRunner(func(context.Context, string, string, string, func(string)) (string, error) { return "", nil })
+	blocked.BindTurnRunner(func(context.Context, string, string, string, string, func(string)) (string, error) { return "", nil })
 	blocked.env = scriptedEnv("linux", "parec", "paplay")
 	if err := blocked.Start(context.Background()); err == nil || !contains(err.Error(), "control") {
 		t.Errorf("Start on a taken port = %v", err)

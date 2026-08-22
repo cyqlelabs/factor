@@ -130,6 +130,7 @@ type MemoryConfig struct {
 	Space               string   `json:"space"`
 	SpaceStrategy       string   `json:"space_strategy"` // origin: conversations write to `space`, cron/job turns to `system_space`, each reading the other as an overlay (needs a smrti with space routing; older engines fall back to single). single: everything in `space`.
 	SystemSpace         string   `json:"system_space"`
+	SharedSpace         string   `json:"shared_space"` // where a turn somebody else can hear is written and read; a private turn reads it too, a shared turn reads nothing else. Empty disables audience scoping, which makes a channel that reports one refuse to recall rather than recall everything.
 	Personality         string   `json:"personality" env:"FACTOR_MEMORY_PERSONALITY"`
 	APIKey              string   `json:"api_key,omitempty" env:"FACTOR_MEMORY_API_KEY"`
 	RecallTopK          int      `json:"recall_top_k"`
@@ -326,6 +327,7 @@ func Default() *Config {
 			Space:         "main",
 			SpaceStrategy: "origin",
 			SystemSpace:   "system",
+			SharedSpace:   "shared",
 			Personality:   "balanced",
 			RecallTopK:    5,
 			// smrti never prunes a user-stated episode or belief — it pins

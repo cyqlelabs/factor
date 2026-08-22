@@ -959,7 +959,7 @@ func TestSpeakerIsMarkedForTheModelAndAttributedInMemory(t *testing.T) {
 	h := newHarness(t, final("noted"))
 
 	if _, err := h.loop.ProcessDirectNotice(context.Background(),
-		"me gusta el café sin azúcar", "voice:local:roxana", "Roxana", nil); err != nil {
+		"me gusta el café sin azúcar", "voice:local:roxana", "Roxana", "", nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -35,13 +35,30 @@ func spaceParam() map[string]any {
 // swapped for the default space — the model asked for a partition, and acting
 // as if it got one is how a memory ends up somewhere nobody looks for it.
 func requestedSpace(ctx context.Context, engine Engine, spaces SpacePolicy, args map[string]any) (string, *tools.Result) {
+	tc := tools.ToolContextFrom(ctx)
 	if s := tools.StringArg(args, "space"); s != "" {
 		if ok, _ := engine.SpaceSupport(); !ok {
 			return "", tools.Errorf("this memory engine does not support spaces; retry without the space parameter")
 		}
+		if refusal := refuseCrossAudience(spaces, tc, s); refusal != nil {
+			return "", refusal
+		}
 		return s, nil
 	}
-	return scopeFor(engine, spaces, tools.ToolContextFrom(ctx).Channel).Space, nil
+	scope, _ := scopeFor(engine, spaces, tc.Channel, tc.Audience)
+	return scope.Space, nil
+}
+
+// refuseCrossAudience blocks an explicit space that reaches across the
+// audience boundary. Scoping a turn by who can hear it is worth nothing if
+// naming a space steps around it, and the model has every innocent reason to
+// try: the space parameter reads as an ordinary advanced option, and nothing
+// in the graph says which side of the room a space belongs to.
+func refuseCrossAudience(spaces SpacePolicy, tc tools.ToolContext, space string) *tools.Result {
+	if tc.Audience != tools.AudienceShared || spaces.Shared == "" || space == spaces.Shared {
+		return nil
+	}
+	return tools.Errorf("only the %q memory space is reachable while somebody else is present", spaces.Shared)
 }
 
 type rememberTool struct {
@@ -157,10 +174,21 @@ func (t *recallTool) Parameters() map[string]any {
 func (t *recallTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
 	// An explicit space narrows the search to exactly that space; otherwise
 	// the turn reads its usual overlay.
-	scope := scopeFor(t.engine, t.spaces, tools.ToolContextFrom(ctx).Channel)
+	tc := tools.ToolContextFrom(ctx)
+	scope, allowed := scopeFor(t.engine, t.spaces, tc.Channel, tc.Audience)
+	if !allowed {
+		// A deliberate search is answered out loud like any other, so with a
+		// guest present and no way to scope the graph to the room, there is
+		// nothing safe to return.
+		return tools.Errorf("memory cannot be scoped to who is in the room, so recall is off while " +
+			"somebody else is present")
+	}
 	if s := tools.StringArg(args, "space"); s != "" {
 		if ok, _ := t.engine.SpaceSupport(); !ok {
 			return tools.Errorf("this memory engine does not support spaces; retry without the space parameter")
+		}
+		if refusal := refuseCrossAudience(t.spaces, tc, s); refusal != nil {
+			return refusal
 		}
 		scope = Scope{Space: s, ReadSpaces: []string{s}}
 	}

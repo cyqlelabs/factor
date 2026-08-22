@@ -10,6 +10,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 type Severity string
@@ -69,40 +71,74 @@ type Scope struct {
 }
 
 // SpacePolicy decides which memory space a turn writes to and which overlay
-// it reads, keyed by the channel the turn arrived on. Real conversations
-// (cli, telegram, phone) write to Main; machine-originated turns (cron, jobs,
-// heartbeat) write to System so operational chatter stops crowding
-// conversational recall — and each side still reads the other as an overlay.
-// Strategy "single" (or a zero policy) turns the split off.
+// it reads, keyed by the channel the turn arrived on and by who can hear the
+// reply. Real conversations (cli, telegram, phone) write to Main;
+// machine-originated turns (cron, jobs, heartbeat) write to System so
+// operational chatter stops crowding conversational recall — and each side
+// still reads the other as an overlay. Strategy "single" (or a zero policy)
+// turns the split off.
+//
+// Shared is the one overlay that is deliberately one-directional. A turn
+// somebody else can hear writes there and reads only there, so nothing said
+// in private is spoken back into a room with a guest in it; a private turn
+// reads Shared too, because the user was there for all of it and should not
+// have to be alone to remember their own conversation. That asymmetry is the
+// whole feature, and the engine enforces the half that matters: a space reads
+// its entire overlay but only ever mutates its own write space, so a private
+// turn physically cannot write back into Shared.
 type SpacePolicy struct {
 	Strategy string // "origin" (default) or "single"
 	Main     string
 	System   string
+	// Shared holds what was said with company present. Empty means the split
+	// is unavailable, which callers must read as "cannot isolate" rather than
+	// as "isolate into Main".
+	Shared string
 }
 
 // NewSpacePolicy validates the configured strategy. An unrecognised value is
 // an error rather than a silent fallback: defaulting it to origin would turn
 // the split on for someone who wrote "single" with a typo, which is the
 // opposite of what they asked for.
-func NewSpacePolicy(strategy, main, system string) (SpacePolicy, error) {
+func NewSpacePolicy(strategy, main, system, shared string) (SpacePolicy, error) {
 	switch strategy {
 	case "", "origin", "single":
-		return SpacePolicy{Strategy: strategy, Main: main, System: system}, nil
 	default:
 		return SpacePolicy{}, fmt.Errorf("unknown space_strategy %q (want origin or single)", strategy)
 	}
+	// Two spaces sharing one name is not a partition, and the case that
+	// silently costs privacy is shared == main: every guest turn would read
+	// and write the private graph while the config says it is isolated.
+	if shared != "" && (shared == main || shared == system) {
+		return SpacePolicy{}, fmt.Errorf("shared_space %q must differ from space and system_space", shared)
+	}
+	return SpacePolicy{Strategy: strategy, Main: main, System: system, Shared: shared}, nil
 }
 
-func (p SpacePolicy) Scope(channel string) Scope {
+// Scope resolves the space a turn writes to and the overlay it reads. It
+// reports ok=false when the turn must not recall at all — an audience this
+// policy cannot isolate. Serving such a turn from the one space that holds
+// everything is precisely the leak the split exists to prevent, so recall is
+// skipped instead of quietly widened.
+func (p SpacePolicy) Scope(channel, audience string) (Scope, bool) {
 	if p.Strategy == "single" || p.Main == "" || p.System == "" {
-		return Scope{}
+		return Scope{}, audience != tools.AudienceShared
 	}
 	switch channel {
 	case "cron", "job", "system":
-		return Scope{Space: p.System, ReadSpaces: []string{p.System, p.Main}}
-	default:
-		return Scope{Space: p.Main, ReadSpaces: []string{p.Main, p.System}}
+		return Scope{Space: p.System, ReadSpaces: []string{p.System, p.Main}}, true
 	}
+	if audience == tools.AudienceShared {
+		if p.Shared == "" {
+			return Scope{}, false
+		}
+		return Scope{Space: p.Shared, ReadSpaces: []string{p.Shared}}, true
+	}
+	read := []string{p.Main, p.System}
+	if p.Shared != "" {
+		read = []string{p.Main, p.Shared, p.System}
+	}
+	return Scope{Space: p.Main, ReadSpaces: read}, true
 }
 
 // scopeFor resolves a turn's scope against what the engine can actually do.
@@ -111,12 +147,15 @@ func (p SpacePolicy) Scope(channel string) Scope {
 // (an external smrti configured with its own SMRTI_SPACE) would see every
 // routed write land beside the graph it has been building, so the split is
 // abandoned in favour of the engine's own space.
-func scopeFor(engine Engine, p SpacePolicy, channel string) Scope {
+func scopeFor(engine Engine, p SpacePolicy, channel, audience string) (Scope, bool) {
 	ok, engineSpace := engine.SpaceSupport()
 	if !ok || engineSpace != p.Main {
-		return Scope{}
+		// No routing means one space holding everything. A private turn is
+		// served from it exactly as before spaces existed; a shared one
+		// cannot be, since reading it would hand a guest the private graph.
+		return Scope{}, audience != tools.AudienceShared
 	}
-	return p.Scope(channel)
+	return p.Scope(channel, audience)
 }
 
 // Engine is the memory seam. The production implementation talks to smrti;

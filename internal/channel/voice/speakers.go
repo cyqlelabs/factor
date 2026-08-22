@@ -153,6 +153,11 @@ func (s *speakerStore) rename(from, to string) error {
 	if to == "" || speakerSlug(to) == "" {
 		return fmt.Errorf("a speaker needs a name with letters or digits in it")
 	}
+	// The shared room holds a session under this slug, so a speaker renamed
+	// into it would inherit the whole room's conversation.
+	if speakerSlug(to) == roomSessionSlug {
+		return fmt.Errorf("%q is reserved for the shared-room conversation", to)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Names key sessions by their slug, so two names must not collapse into
@@ -182,6 +187,16 @@ func (s *speakerStore) forget(name string) error {
 		}
 	}
 	return fmt.Errorf("no speaker named %q", name)
+}
+
+// hasProfiles reports whether any voice is enrolled. The room reads it to
+// decide what an unmatched voice means: with a profile on file the owner
+// would have matched, so an unmatched voice is somebody else; with none, it
+// is simply the first voice this machine ever heard.
+func (s *speakerStore) hasProfiles() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.profiles) > 0
 }
 
 func (s *speakerStore) isPrimary(name string) bool {

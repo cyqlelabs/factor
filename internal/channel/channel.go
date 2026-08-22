@@ -37,7 +37,11 @@ type Typer interface {
 // connector that takes time to deliver a note must not block in it.
 // speaker names who is talking where the connector can tell (the microphone
 // recognizing a household voice); blank means "whoever this chat is".
-type TurnFunc func(ctx context.Context, content, sessionKey, speaker string, notice func(string)) (string, error)
+// audience says who can hear the reply — tools.AudienceShared where the
+// connector knows somebody besides the user is present, blank everywhere
+// else. It is separate from speaker because the two answer different
+// questions: speaker decides attribution, audience decides discretion.
+type TurnFunc func(ctx context.Context, content, sessionKey, speaker, audience string, notice func(string)) (string, error)
 
 // TurnRunner is the optional capability of a connector that runs turns itself
 // instead of publishing them onto the bus. A phone call is synchronous — the

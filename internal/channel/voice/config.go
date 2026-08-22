@@ -112,6 +112,17 @@ type Config struct {
 	// default) treats the utterance as the primary conversation, unnamed.
 	UnknownSpeaker string `json:"unknown_speaker,omitempty"`
 
+	// RoomIsolation scopes each turn to who can hear the reply rather than
+	// to who is speaking: with company in the room the conversation runs in
+	// its own session and reads its own memory space, so nothing said alone
+	// is recalled out loud to a guest. It needs speaker_id, which is what
+	// tells one voice from another. nil means enabled wherever speaker_id is.
+	RoomIsolation *bool `json:"room_isolation,omitempty"`
+	// RoomTimeoutMinutes is how long a voice counts as still in the room
+	// after its last word. 0 means the default. Long on purpose: it measures
+	// a visit, not a pause between sentences.
+	RoomTimeoutMinutes int `json:"room_timeout_minutes,omitempty"`
+
 	// OutputVolume scales the synthesized voice before it reaches the
 	// speakers, as a percentage of full volume (1–100). Lowering it is the
 	// blunt lever against the speakers feeding back into the microphone;
@@ -176,6 +187,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.SpeakerThreshold <= 0 {
 		c.SpeakerThreshold = defaultSpeakerThreshold
+	}
+	if c.RoomTimeoutMinutes <= 0 {
+		c.RoomTimeoutMinutes = defaultRoomTimeoutMinutes
 	}
 	if c.VADRatio <= 0 {
 		c.VADRatio = defaultVADRatio
@@ -251,10 +265,30 @@ func (c Config) validate() error {
 	if c.SpeakerThreshold > 1 {
 		return fmt.Errorf("speaker_threshold %v is out of range (cosine similarity, want 0–1)", c.SpeakerThreshold)
 	}
+	// Asking for room isolation without speaker_id is asking for a boundary
+	// nothing can draw: with no voice profiles every utterance is the same
+	// person, so the room could never fill. Refusing is the honest answer —
+	// quietly running without isolation would leave the user believing a
+	// privacy setting is in force when it is not.
+	if c.RoomIsolation != nil && *c.RoomIsolation && !c.SpeakerID {
+		return fmt.Errorf("room_isolation needs speaker_id: without voice profiles there is no way to tell " +
+			"a guest's voice from the owner's")
+	}
 	if c.managedSpeech() && c.SpeechServer.Port == c.ControlPort {
 		return fmt.Errorf("speech_server.port %d collides with control_port", c.SpeechServer.Port)
 	}
 	return nil
+}
+
+// roomIsolation reports whether turns should be scoped to the room's audience.
+// It cannot run without speaker_id, so an explicit yes there is refused by
+// validate rather than silently ignored here; unset means on wherever
+// speaker_id is, which is the whole reason someone turns speaker_id on.
+func (c *Config) roomIsolation() bool {
+	if !c.SpeakerID {
+		return false
+	}
+	return c.RoomIsolation == nil || *c.RoomIsolation
 }
 
 // localSTT and localTTS report which halves of the pipeline run on this

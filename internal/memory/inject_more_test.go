@@ -76,12 +76,12 @@ func TestMemoryPromptNilSafety(t *testing.T) {
 
 func TestStoreExchangeNilAndDisabled(t *testing.T) {
 	var nilAmbient *Ambient
-	nilAmbient.StoreExchange("cli", "", "u", "a") // must not panic
+	nilAmbient.StoreExchange("cli", "", "", "u", "a") // must not panic
 
-	(&Ambient{}).StoreExchange("cli", "", "u", "a") // engine-less: must not panic
+	(&Ambient{}).StoreExchange("cli", "", "", "u", "a") // engine-less: must not panic
 
 	disabled := NewAmbient(&stubEngine{enabled: false}, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
-	disabled.StoreExchange("cli", "", "u", "a") // off-mode engines never store
+	disabled.StoreExchange("cli", "", "", "u", "a") // off-mode engines never store
 	if stored := disabled.Engine.(*stubEngine).stored(); len(stored) != 0 {
 		t.Error("disabled engine received a write")
 	}
@@ -95,7 +95,7 @@ func TestStoreExchangeWaitsForHealthThenStores(t *testing.T) {
 		engine.setHealthy(true)
 	}()
 	done := make(chan struct{})
-	go func() { a.StoreExchange("cli", "", "user text", "assistant text"); close(done) }()
+	go func() { a.StoreExchange("cli", "", "", "user text", "assistant text"); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
@@ -120,7 +120,7 @@ func TestStoreExchangeWaitsForHealthThenStores(t *testing.T) {
 func TestStoreExchangeMarksTheAssistantSide(t *testing.T) {
 	engine := &stubEngine{enabled: true, healthy: true}
 	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
-	a.StoreExchange("cli", "", "what should I do this weekend?", "here are some ideas: ...")
+	a.StoreExchange("cli", "", "", "what should I do this weekend?", "here are some ideas: ...")
 	stored := engine.stored()
 	if len(stored) != 2 {
 		t.Fatalf("stored %d memories, want 2", len(stored))
@@ -172,7 +172,7 @@ func TestRememberSendsSourceWhenSet(t *testing.T) {
 func TestStoreExchangeSkipsBlankSides(t *testing.T) {
 	engine := &stubEngine{enabled: true, healthy: true}
 	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
-	a.StoreExchange("cli", "", "   ", "only the reply")
+	a.StoreExchange("cli", "", "", "   ", "only the reply")
 	if stored := engine.stored(); len(stored) != 1 {
 		t.Errorf("blank user text was stored: %+v", stored)
 	}
@@ -290,7 +290,7 @@ func TestClientCloseAndUnreachableRequest(t *testing.T) {
 func TestStoreExchangeAttributesANamedSpeaker(t *testing.T) {
 	engine := &stubEngine{enabled: true, healthy: true}
 	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
-	a.StoreExchange("voice", "Roxana", "me gusta el café sin azúcar", "anotado")
+	a.StoreExchange("voice", "", "Roxana", "me gusta el café sin azúcar", "anotado")
 
 	stored := engine.stored()
 	if len(stored) != 2 {
@@ -314,7 +314,7 @@ func TestStoreExchangeAttributesANamedSpeaker(t *testing.T) {
 func TestStoreExchangeLeavesAnUnnamedSpeakerAlone(t *testing.T) {
 	engine := &stubEngine{enabled: true, healthy: true}
 	a := NewAmbient(engine, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
-	a.StoreExchange("voice", "", "me gusta el café sin azúcar", "anotado")
+	a.StoreExchange("voice", "", "", "me gusta el café sin azúcar", "anotado")
 	if stored := engine.stored(); stored[0].Content != "me gusta el café sin azúcar" {
 		t.Errorf("an unattributed memory reads %q", stored[0].Content)
 	}
