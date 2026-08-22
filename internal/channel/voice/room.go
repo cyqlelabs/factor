@@ -1,6 +1,10 @@
 package voice
 
 import (
+	"encoding/json"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +50,14 @@ const (
 	// length of a pause: people sit quietly, and a short timeout would hand
 	// the room back to private while the guest is still on the sofa.
 	defaultRoomTimeoutMinutes = 30
+
+	// roomFile is where the room outlives the process, beside the voice
+	// profiles. A restart is not a departure: a config change and an upgrade
+	// both re-exec the gateway, and coming back up private while the guest is
+	// still on the sofa is the one error this tracker is built not to make.
+	// Holding it in memory alone meant the timeout that exists because people
+	// sit quietly was thrown away by the most ordinary event on the machine.
+	roomFile = "voice-room.json"
 )
 
 // roomState is what the room is, for the log line, the health endpoint, and
@@ -66,16 +78,77 @@ type roomState struct {
 type room struct {
 	mu        sync.Mutex
 	timeout   time.Duration
+	path      string
 	occupants map[string]time.Time
 	// wasShared is what the last assessment reported.
 	wasShared bool
 }
 
-func newRoom(timeout time.Duration) *room {
+// roomOnDisk is the file's shape. Shared is what was last said out loud, not
+// what the occupants add up to now: restoring it is what keeps a restart from
+// re-announcing company the user was already told about, while still leaving
+// the "we're on our own again" line owed when the guest aged out meanwhile.
+type roomOnDisk struct {
+	Occupants map[string]time.Time `json:"occupants"`
+	Shared    bool                 `json:"shared"`
+}
+
+// newRoom loads the room under home. A blank home is a room that lives only
+// as long as the process — the shape the tests and a nil-config path want.
+func newRoom(home string, timeout time.Duration) *room {
 	if timeout <= 0 {
 		timeout = defaultRoomTimeoutMinutes * time.Minute
 	}
-	return &room{timeout: timeout, occupants: map[string]time.Time{}}
+	r := &room{timeout: timeout, occupants: map[string]time.Time{}}
+	if home == "" {
+		return r
+	}
+	r.path = filepath.Join(home, roomFile)
+	r.load(time.Now())
+	return r
+}
+
+// load restores the room from disk, aged against now: an occupant whose last
+// word was longer ago than the timeout has left, whether the process was
+// running to notice or not. A file beyond reading leaves an empty room, which
+// is the state the process would have come up in anyway.
+func (r *room) load(now time.Time) {
+	raw, err := os.ReadFile(r.path)
+	if err != nil {
+		return
+	}
+	var disk roomOnDisk
+	if err := json.Unmarshal(raw, &disk); err != nil {
+		slog.Warn("the saved room could not be read; starting with an empty one", "error", err)
+		return
+	}
+	for name, at := range disk.Occupants {
+		if name != "" && now.Sub(at) <= r.timeout {
+			r.occupants[name] = at
+		}
+	}
+	r.wasShared = disk.Shared
+	if len(r.occupants) > 0 {
+		slog.Info("the room came back as it was left", "present", len(r.occupants))
+	}
+}
+
+// saveLocked writes the room out. A write that fails costs the next restart
+// its memory of who was here, not this conversation.
+func (r *room) saveLocked() {
+	if r.path == "" {
+		return
+	}
+	raw, err := json.MarshalIndent(
+		roomOnDisk{Occupants: r.occupants, Shared: r.wasShared}, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := r.path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, r.path)
 }
 
 // occupantFor names the occupant one identification is evidence of, and
@@ -121,7 +194,7 @@ func (r *room) heard(voices []speakerIdentity, hasProfiles bool, now time.Time) 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	recorded := 0
+	recorded, changed := 0, false
 	for _, who := range voices {
 		name, refreshOnly := occupantFor(who, hasProfiles)
 		if name == "" {
@@ -132,6 +205,7 @@ func (r *room) heard(voices []speakerIdentity, hasProfiles bool, now time.Time) 
 		}
 		r.occupants[name] = now
 		recorded++
+		changed = true
 	}
 	// Arithmetic, not acoustics. One recording holding several distinct
 	// voices has at most one owner in it, so everybody past the first is
@@ -142,6 +216,13 @@ func (r *room) heard(voices []speakerIdentity, hasProfiles bool, now time.Time) 
 	// both.
 	if len(voices) > 1 && recorded < len(voices)-1 {
 		r.occupants[roomUnknownOccupant] = now
+		changed = true
+	}
+	// Only when somebody was actually recorded: an empty room hearing its
+	// owner is most of the utterances on this machine, and none of them are
+	// news worth a write.
+	if changed {
+		r.saveLocked()
 	}
 }
 
@@ -155,6 +236,7 @@ func (r *room) declare(shared bool, names []string, now time.Time) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.saveLocked()
 	if !shared {
 		clear(r.occupants)
 		return
@@ -180,6 +262,7 @@ func (r *room) forget(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.occupants, strings.TrimSpace(name))
+	r.saveLocked()
 }
 
 // snapshot reports the room without latching a change, for readers that must
@@ -204,6 +287,9 @@ func (r *room) assess(now time.Time) roomState {
 	st := r.stateLocked(now)
 	st.Changed = st.Shared != r.wasShared
 	r.wasShared = st.Shared
+	// Once per turn, and it carries both halves: who is here, and what they
+	// have already been told about it.
+	r.saveLocked()
 	return st
 }
 

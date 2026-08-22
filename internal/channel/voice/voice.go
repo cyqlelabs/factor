@@ -156,7 +156,7 @@ func New(cfg Config, b *bus.MessageBus) (*Voice, error) {
 		v.speakers = newSpeakerStore(v.home)
 	}
 	if cfg.roomIsolation() {
-		v.room = newRoom(time.Duration(cfg.RoomTimeoutMinutes) * time.Minute)
+		v.room = newRoom(v.home, time.Duration(cfg.RoomTimeoutMinutes)*time.Minute)
 	}
 	return v, nil
 }

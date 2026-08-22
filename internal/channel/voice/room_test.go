@@ -1,6 +1,8 @@
 package voice
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -23,7 +25,7 @@ func (r *room) heardOne(who speakerIdentity, hasProfiles bool, now time.Time) {
 }
 
 func TestRoomStartsPrivate(t *testing.T) {
-	r := newRoom(time.Hour)
+	r := newRoom("", time.Hour)
 	if st := r.snapshot(t0); st.Shared || len(st.Present) != 0 {
 		t.Errorf("a fresh room = %+v, want private and empty", st)
 	}
@@ -32,7 +34,7 @@ func TestRoomStartsPrivate(t *testing.T) {
 // The owner talking to themselves must never look like company: theirs is the
 // baseline the room is measured against.
 func TestOwnerIsNeverAnOccupant(t *testing.T) {
-	r := newRoom(time.Hour)
+	r := newRoom("", time.Hour)
 	r.heardOne(heard("nicolas", true, viaMatch), true, t0)
 	if st := r.snapshot(t0); st.Shared {
 		t.Errorf("the owner filled the room: %+v", st)
@@ -40,7 +42,7 @@ func TestOwnerIsNeverAnOccupant(t *testing.T) {
 }
 
 func TestRecognizedGuestSharesTheRoom(t *testing.T) {
-	r := newRoom(time.Hour)
+	r := newRoom("", time.Hour)
 	r.heardOne(heard("roxana", false, viaMatch), true, t0)
 	st := r.snapshot(t0)
 	if !st.Shared || !reflect.DeepEqual(st.Present, []string{"roxana"}) {
@@ -53,14 +55,14 @@ func TestRecognizedGuestSharesTheRoom(t *testing.T) {
 // second, and calling that company would leave a one-person household
 // permanently discreet with itself.
 func TestUnknownVoiceNeedsAProfileToCount(t *testing.T) {
-	withProfiles := newRoom(time.Hour)
+	withProfiles := newRoom("", time.Hour)
 	withProfiles.heardOne(speakerIdentity{via: viaUnknown}, true, t0)
 	if st := withProfiles.snapshot(t0); !st.Shared ||
 		!reflect.DeepEqual(st.Present, []string{roomUnknownOccupant}) {
 		t.Errorf("unmatched voice with profiles enrolled = %+v, want shared", st)
 	}
 
-	bare := newRoom(time.Hour)
+	bare := newRoom("", time.Hour)
 	bare.heardOne(speakerIdentity{via: viaUnknown}, false, t0)
 	if st := bare.snapshot(t0); st.Shared {
 		t.Errorf("unmatched voice with nobody enrolled = %+v, want private", st)
@@ -71,7 +73,7 @@ func TestUnknownVoiceNeedsAProfileToCount(t *testing.T) {
 // filled up: it must not invent an occupant nobody heard.
 func TestUnreadableAudioAddsNobody(t *testing.T) {
 	for _, via := range []string{viaUnavailable, viaOverlap, viaShort} {
-		r := newRoom(time.Hour)
+		r := newRoom("", time.Hour)
 		r.heardOne(speakerIdentity{via: via}, true, t0)
 		if st := r.snapshot(t0); st.Shared {
 			t.Errorf("via %s filled the room: %+v", via, st)
@@ -82,7 +84,7 @@ func TestUnreadableAudioAddsNobody(t *testing.T) {
 // A guest whose every follow-up is "mhm" is never embedded, so an inherited
 // name must keep them present — but it is not evidence anybody new arrived.
 func TestInheritedNameRefreshesButNeverCreates(t *testing.T) {
-	r := newRoom(10 * time.Minute)
+	r := newRoom("", 10*time.Minute)
 	r.heardOne(heard("roxana", false, viaMatch), true, t0)
 	inherited := speakerIdentity{name: "roxana", via: viaShort, inherited: true}
 	r.heardOne(inherited, true, t0.Add(9*time.Minute))
@@ -90,7 +92,7 @@ func TestInheritedNameRefreshesButNeverCreates(t *testing.T) {
 		t.Errorf("a refreshed guest aged out anyway: %+v", st)
 	}
 
-	fresh := newRoom(10 * time.Minute)
+	fresh := newRoom("", 10*time.Minute)
 	fresh.heardOne(inherited, true, t0)
 	if st := fresh.snapshot(t0); st.Shared {
 		t.Errorf("an inherited name created an occupant: %+v", st)
@@ -98,7 +100,7 @@ func TestInheritedNameRefreshesButNeverCreates(t *testing.T) {
 }
 
 func TestOccupantsAgeOut(t *testing.T) {
-	r := newRoom(30 * time.Minute)
+	r := newRoom("", 30*time.Minute)
 	r.heardOne(heard("roxana", false, viaEnrolled), true, t0)
 	if st := r.snapshot(t0.Add(29 * time.Minute)); !st.Shared {
 		t.Error("the guest left early")
@@ -109,7 +111,7 @@ func TestOccupantsAgeOut(t *testing.T) {
 }
 
 func TestDeclareOutranksTheMicrophone(t *testing.T) {
-	r := newRoom(time.Hour)
+	r := newRoom("", time.Hour)
 
 	// Somebody who walked in without speaking is invisible to sound.
 	r.declare(true, []string{"roxana", "  "}, t0)
@@ -132,7 +134,7 @@ func TestDeclareOutranksTheMicrophone(t *testing.T) {
 }
 
 func TestForgetDropsOnePersonAndLeavesTheRest(t *testing.T) {
-	r := newRoom(time.Hour)
+	r := newRoom("", time.Hour)
 	r.declare(true, []string{"roxana", "ana"}, t0)
 	r.forget("roxana")
 	if st := r.snapshot(t0); !reflect.DeepEqual(st.Present, []string{"ana"}) {
@@ -142,7 +144,7 @@ func TestForgetDropsOnePersonAndLeavesTheRest(t *testing.T) {
 
 // The flip is announced once, to somebody listening. snapshot must not eat it.
 func TestOnlyAssessConsumesTheFlip(t *testing.T) {
-	r := newRoom(time.Hour)
+	r := newRoom("", time.Hour)
 	r.heardOne(heard("roxana", false, viaMatch), true, t0)
 	if st := r.snapshot(t0); st.Changed {
 		t.Error("snapshot consumed the transition")
@@ -160,7 +162,7 @@ func TestOnlyAssessConsumesTheFlip(t *testing.T) {
 }
 
 func TestPresentIsSortedForStableLogs(t *testing.T) {
-	r := newRoom(time.Hour)
+	r := newRoom("", time.Hour)
 	r.declare(true, []string{"roxana", "ana", "beto"}, t0)
 	want := []string{"ana", "beto", "roxana"}
 	for i := 0; i < 5; i++ {
@@ -186,7 +188,7 @@ func TestNilRoomIsAPrivateRoom(t *testing.T) {
 }
 
 func TestNewRoomFallsBackToTheDefaultTimeout(t *testing.T) {
-	if got := newRoom(0).timeout; got != defaultRoomTimeoutMinutes*time.Minute {
+	if got := newRoom("", 0).timeout; got != defaultRoomTimeoutMinutes*time.Minute {
 		t.Errorf("timeout = %v, want the default", got)
 	}
 }
@@ -280,7 +282,7 @@ func TestSeveralVoicesInOneRecordingAreCompany(t *testing.T) {
 		}},
 	}
 	for _, tc := range cases {
-		r := newRoom(time.Hour)
+		r := newRoom("", time.Hour)
 		r.heard(tc.voices, true, t0)
 		if st := r.snapshot(t0); !st.Shared {
 			t.Errorf("%s: room = %+v, want shared", tc.name, st)
@@ -294,10 +296,83 @@ func TestOneVoiceIsNeverCompanyByArithmetic(t *testing.T) {
 	for _, who := range []speakerIdentity{
 		heard("nicolas", true, viaMatch), {via: viaShort}, {via: viaUnavailable},
 	} {
-		r := newRoom(time.Hour)
+		r := newRoom("", time.Hour)
 		r.heard([]speakerIdentity{who}, true, t0)
 		if st := r.snapshot(t0); st.Shared {
 			t.Errorf("via %s alone filled the room: %+v", who.via, st)
 		}
+	}
+}
+
+// A restart is not a departure. A config change and an upgrade both re-exec
+// the gateway, and the guest is still on the sofa: coming back up private is
+// the one error this tracker exists not to make, and it is the expensive
+// direction — a private answer spoken into a room with somebody else in it.
+func TestRoomSurvivesARestart(t *testing.T) {
+	home := t.TempDir()
+	before := newRoom(home, time.Hour)
+	before.heard([]speakerIdentity{heard("roxana", false, viaMatch)}, true, time.Now())
+	if st := before.assess(time.Now()); !st.Shared || !st.Changed {
+		t.Fatalf("the room did not go shared in the first place: %+v", st)
+	}
+
+	after := newRoom(home, time.Hour)
+	st := after.assess(time.Now())
+	if !st.Shared {
+		t.Errorf("the room came back private with a guest still in it: %+v", st)
+	}
+	if !reflect.DeepEqual(st.Present, []string{"roxana"}) {
+		t.Errorf("present = %v, want the guest who was here", st.Present)
+	}
+	// The user was already told. Saying it again on every config reload is
+	// how a useful announcement becomes noise.
+	if st.Changed {
+		t.Error("the restart re-announced company the user had already been told about")
+	}
+}
+
+// The timeout is measured against the wall clock, not against uptime: an
+// occupant whose last word was longer ago than the timeout has left, whether
+// or not the process was running to notice.
+func TestRoomForgetsOccupantsWhoAgedOutWhileItWasDown(t *testing.T) {
+	home := t.TempDir()
+	// The guest last spoke an hour ago, and the timeout is ten minutes: they
+	// left, and the process was not running to see it.
+	longAgo := time.Now().Add(-time.Hour)
+	before := newRoom(home, 10*time.Minute)
+	before.heard([]speakerIdentity{heard("roxana", false, viaMatch)}, true, longAgo)
+	before.assess(longAgo)
+
+	after := newRoom(home, 10*time.Minute)
+	st := after.assess(time.Now())
+	if st.Shared {
+		t.Errorf("a guest who left during the downtime came back: %+v", st)
+	}
+	// They were announced as company before, so the return to private is
+	// owed out loud.
+	if !st.Changed {
+		t.Error("the return to an empty room went unannounced")
+	}
+}
+
+// A room whose file is unreadable must not take the channel down with it, or
+// a corrupt scratch file would cost the user their microphone.
+func TestRoomSurvivesAnUnreadableFile(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, roomFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if st := newRoom(home, time.Hour).snapshot(t0); st.Shared {
+		t.Errorf("an unreadable room file produced company: %+v", st)
+	}
+}
+
+// A room with nowhere to write is the shape the tests and a homeless config
+// take: it must work, and simply not outlive the process.
+func TestRoomWithoutAHomeStillTracks(t *testing.T) {
+	r := newRoom("", time.Hour)
+	r.heard([]speakerIdentity{heard("roxana", false, viaMatch)}, true, t0)
+	if st := r.snapshot(t0); !st.Shared {
+		t.Errorf("a room with no file on disk stopped tracking: %+v", st)
 	}
 }

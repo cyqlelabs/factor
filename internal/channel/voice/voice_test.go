@@ -294,7 +294,7 @@ func (h *voiceHarness) enableSpeakerID(policy string) {
 // New, whose validation wants the managed speech server the harness fakes.
 func (h *voiceHarness) enableRoom(timeout time.Duration) {
 	h.t.Helper()
-	h.v.room = newRoom(timeout)
+	h.v.room = newRoom(h.v.home, timeout)
 }
 
 // waitQuiet waits for the floor to be genuinely free: no turn, no clip, and
