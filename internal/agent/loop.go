@@ -61,6 +61,14 @@ type Loop struct {
 	lastChannel bus.InboundMessage
 	reachable   func(channel string) bool
 
+	// seen is every session this process has run a turn for, with the tool
+	// context it ran under. Idle compaction works from it rather than from
+	// the session directory because the store names files by a sanitized key
+	// it cannot invert — and compacting under a key that is nearly right
+	// bills the cost to a session that does not exist.
+	seenMu sync.Mutex
+	seen   map[string]tools.ToolContext
+
 	windowFor func() int // context length of the models in play; 0 = unknown
 }
 
@@ -75,23 +83,101 @@ func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry 
 		builder:     builder,
 		ambient:     ambient,
 		active:      map[string]*turn{},
+		seen:        map[string]tools.ToolContext{},
 		sem:         make(chan struct{}, cfg.Agent.MaxConcurrentTurns),
 		lastChannel: loadLastChannel(),
 	}
 }
 
 // Run drains the inbound bus until ctx is cancelled. One live turn per
-// session key; overflow becomes steering.
+// session key; overflow becomes steering. It also sweeps for sessions that
+// have gone quiet, which is when tidying them is free.
 func (l *Loop) Run(ctx context.Context) {
+	sweep := time.NewTicker(idleSweepEvery)
+	defer sweep.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			l.wg.Wait()
 			return
+		case <-sweep.C:
+			l.compactIdleSessions(ctx)
 		case msg := <-l.bus.Inbound():
 			l.dispatch(ctx, msg)
 		}
 	}
+}
+
+const (
+	// idleSweepEvery is how often quiet sessions are looked for. Compaction
+	// is not urgent — nobody is waiting on it — so the sweep is lazy.
+	idleSweepEvery = 5 * time.Minute
+	// idleCompactAfter is how long a session must sit untouched before it is
+	// compacted unasked. Long enough that a pause for coffee does not spend
+	// an LLM call, short enough that a conversation left in the morning is
+	// tidy by the afternoon.
+	idleCompactAfter = 20 * time.Minute
+)
+
+// compactIdleSessions compacts every session that has gone quiet and grown
+// past the budget, so the summarizing call is paid while nobody is waiting
+// rather than in front of the user's first message after they come back.
+//
+// It is the same compaction the end of a turn triggers, on a different clock.
+// A session with a live turn is left alone: not because concurrent appends
+// are unsafe — the cut offset is absolute against an append-only log for
+// exactly that reason — but because a session being spoken to is not idle,
+// and the turn that ends will consider it anyway.
+func (l *Loop) compactIdleSessions(ctx context.Context) {
+	for key, toolCtx := range l.idleSessions() {
+		l.wg.Add(1)
+		go func(key string, toolCtx tools.ToolContext) {
+			defer l.wg.Done()
+			slog.Info("compacting an idle session", "session", key)
+			cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			if err := l.compact(tools.WithToolContext(cctx, toolCtx), key); err != nil {
+				slog.Warn("idle compaction failed", "session", key, "error", err)
+			}
+		}(key, toolCtx)
+	}
+}
+
+// idleSessions returns the sessions worth compacting right now, resolved
+// under the locks before any of the work starts.
+func (l *Loop) idleSessions() map[string]tools.ToolContext {
+	l.seenMu.Lock()
+	candidates := make(map[string]tools.ToolContext, len(l.seen))
+	for key, toolCtx := range l.seen {
+		candidates[key] = toolCtx
+	}
+	l.seenMu.Unlock()
+
+	l.mu.Lock()
+	for key := range l.active {
+		delete(candidates, key)
+	}
+	l.mu.Unlock()
+
+	for key := range candidates {
+		last, ok := l.sessions.LastActivity(key)
+		if !ok || time.Since(last) < idleCompactAfter {
+			delete(candidates, key)
+			continue
+		}
+		history, err := l.sessions.History(key)
+		if err != nil || !l.needsCompaction(history) {
+			delete(candidates, key)
+		}
+	}
+	return candidates
+}
+
+// noteSession records a session as one this process can tidy later.
+func (l *Loop) noteSession(in turnInput) {
+	l.seenMu.Lock()
+	defer l.seenMu.Unlock()
+	l.seen[in.sessionKey] = in.toolCtx
 }
 
 // claim registers a live turn for key, or steers msg into the existing one.
@@ -307,18 +393,36 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		if history, err = l.sessions.History(in.sessionKey); err != nil {
 			return "", fmt.Errorf("load history: %w", err)
 		}
+		l.noteSession(in)
 	}
 
-	systemPrompt := l.builder.SystemPrompt(ctx, history, in.content)
+	systemPrompt := l.builder.SystemPrompt()
+	// The gap is read before the turn's own message is written, since writing
+	// it is what makes the session recent again.
+	turnContext := l.builder.TurnContext(ctx, history, in.content, l.gapSince(in))
 	// The speaker is marked on the message rather than in the prompt head:
 	// the head is shared by every session and cached, and a name that
 	// changes per utterance would fork it for the price of one line.
 	userMsg := provider.Message{Role: "user", Content: markSpeaker(in.speaker, in.content)}
-	if err := l.persist(in, userMsg); err != nil {
+
+	// The per-turn block sits between the conversation so far and this turn,
+	// and a mid-turn rebuild has to put it back in the same seam. Counting
+	// what the turn has written is what finds it again: the log is append-only,
+	// so this turn is always its last thisTurn messages.
+	thisTurn := 0
+	record := func(msg provider.Message) error {
+		if err := l.persist(in, msg); err != nil {
+			return err
+		}
+		thisTurn++
+		return nil
+	}
+	if err := record(userMsg); err != nil {
 		return "", err
 	}
 
-	messages := l.assemble(systemPrompt, in.sessionKey, in.ephemeral, append(history, userMsg))
+	messages := l.assemble(systemPrompt, turnContext, in.sessionKey, in.ephemeral,
+		history, []provider.Message{userMsg})
 	overflowRecoveries := 0
 
 	for iteration := 0; iteration < l.cfg.Agent.MaxToolIterations; iteration++ {
@@ -341,7 +445,9 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 				if herr != nil {
 					return "", herr
 				}
-				messages = l.assemble(systemPrompt, in.sessionKey, in.ephemeral, fresh)
+				seam := max(len(fresh)-thisTurn, 0)
+				messages = l.assemble(systemPrompt, turnContext, in.sessionKey, in.ephemeral,
+					fresh[:seam], fresh[seam:])
 				iteration--
 				continue
 			}
@@ -349,14 +455,14 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		}
 
 		assistantMsg := provider.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls}
-		if err := l.persist(in, assistantMsg); err != nil {
+		if err := record(assistantMsg); err != nil {
 			return "", err
 		}
 		messages = append(messages, assistantMsg)
 
 		if len(resp.ToolCalls) == 0 {
 			// Final answer — unless steering arrived mid-turn; then keep going.
-			steered := l.drainSteering(in, t)
+			steered := l.drainSteering(in, t, record)
 			if len(steered) == 0 {
 				l.maybeCompactAsync(in)
 				return resp.Content, nil
@@ -384,7 +490,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 				// the tool having failed: the next turn treats what it finds
 				// here as evidence, and a "context canceled" left by an
 				// interruption has been read back as a broken browser.
-				if err := l.persist(in, provider.Message{Role: "tool", ToolCallID: call.ID, Content: interruptedTool}); err != nil {
+				if err := record(provider.Message{Role: "tool", ToolCallID: call.ID, Content: interruptedTool}); err != nil {
 					return "", err
 				}
 				continue
@@ -402,7 +508,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 				result.Images = nil
 			}
 			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: content}
-			if err := l.persist(in, toolMsg); err != nil {
+			if err := record(toolMsg); err != nil {
 				return "", err
 			}
 			messages = append(messages, toolMsg)
@@ -413,7 +519,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 			// session files stay small, replay stays valid on any model, and
 			// a stale frame is worthless next turn anyway.
 			if len(result.Images) > 0 {
-				if err := l.persist(in, provider.Message{Role: "user", Content: imagePruned(call.Name)}); err != nil {
+				if err := record(provider.Message{Role: "user", Content: imagePruned(call.Name)}); err != nil {
 					return "", err
 				}
 				messages = append(messages, provider.Message{
@@ -427,7 +533,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		messages = append(messages, l.drainSteering(in, t)...)
+		messages = append(messages, l.drainSteering(in, t, record)...)
 	}
 
 	reply := l.wrapUp(ctx, in, messages)
@@ -497,15 +603,49 @@ func pruneImages(messages []provider.Message) {
 	}
 }
 
-// assemble builds the request message list: system, optional summary, history.
-func (l *Loop) assemble(systemPrompt, sessionKey string, ephemeral bool, history []provider.Message) []provider.Message {
-	messages := []provider.Message{{Role: "system", Content: systemPrompt}}
+// assemble builds the request message list: the stable prefix first — system
+// prompt, rolling summary, the conversation so far with its older tool
+// results masked — then the per-turn block, then what this turn has said.
+//
+// The order is the point. Everything a prompt cache can reuse comes first and
+// byte-identical, so the divergence between one turn's request and the next
+// falls at the per-turn block instead of a few hundred tokens into the system
+// prompt, where it used to leave the whole history uncacheable. The turn's own
+// messages sit past it so the last thing the model reads is still what the
+// user actually said.
+func (l *Loop) assemble(systemPrompt, turnContext, sessionKey string, ephemeral bool,
+	prior, current []provider.Message) []provider.Message {
+	// Masked over both halves at once: how recent a tool result is depends on
+	// the whole request, not on which side of the block it fell.
+	masked := maskOldToolResults(append(append(make([]provider.Message, 0, len(prior)+len(current)), prior...), current...))
+
+	messages := make([]provider.Message, 0, len(masked)+3)
+	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
 	if !ephemeral {
 		if summary := l.sessions.Summary(sessionKey); summary != "" {
 			messages = append(messages, provider.Message{Role: "system", Content: "Summary of earlier conversation:\n" + summary})
 		}
 	}
-	return append(messages, history...)
+	messages = append(messages, masked[:len(prior)]...)
+	if turnContext != "" {
+		messages = append(messages, provider.Message{Role: "user", Content: turnContext})
+	}
+	return append(messages, masked[len(prior):]...)
+}
+
+// gapSince reports how long the session has been untouched, for the notice
+// that tells a returning user's turn it is not a continuation. Zero for a
+// session with no history to be away from, and for an ephemeral turn, which
+// has no session to return to.
+func (l *Loop) gapSince(in turnInput) time.Duration {
+	if in.ephemeral {
+		return 0
+	}
+	last, ok := l.sessions.LastActivity(in.sessionKey)
+	if !ok {
+		return 0
+	}
+	return time.Since(last)
 }
 
 func (l *Loop) persist(in turnInput, msg provider.Message) error {
@@ -515,13 +655,13 @@ func (l *Loop) persist(in turnInput, msg provider.Message) error {
 	return l.sessions.Append(in.sessionKey, msg)
 }
 
-func (l *Loop) drainSteering(in turnInput, t *turn) []provider.Message {
+func (l *Loop) drainSteering(in turnInput, t *turn, record func(provider.Message) error) []provider.Message {
 	var out []provider.Message
 	for {
 		select {
 		case msg := <-t.steering:
 			userMsg := provider.Message{Role: "user", Content: msg.Content}
-			if err := l.persist(in, userMsg); err != nil {
+			if err := record(userMsg); err != nil {
 				slog.Error("persist steering message", "error", err)
 			}
 			out = append(out, userMsg)

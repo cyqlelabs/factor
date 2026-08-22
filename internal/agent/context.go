@@ -40,29 +40,83 @@ func NewContextBuilder(cfg *config.Config, loader *skills.Loader, ambient *memor
 	return &ContextBuilder{cfg: cfg, skills: loader, ambient: ambient, stamps: map[string]int64{}}
 }
 
-// SystemPrompt builds the full prompt for one turn: identity opens it, the
-// operating rules close it.
+// SystemPrompt is the stable head of every request: identity, the built-in
+// persona, the user's workspace files, drop-in instructions, the skills
+// catalog, and the operating rules that close it. It takes no arguments
+// because it must not vary — not by turn, not by channel, not by session.
 //
-// Everything in between — the user's workspace files, drop-in instructions,
-// the skills catalog, recalled memories — grows without bound as the agent is
-// used, and recall is weakest in the middle of a long prompt. Rules that must
-// hold on every turn are therefore re-anchored at the tail, the other position
-// that stays reliable. This costs nothing in cache terms: the memory block
-// above already changes every turn, so the cacheable prefix ends before it
-// either way.
-func (cb *ContextBuilder) SystemPrompt(ctx context.Context, history []provider.Message, current string) string {
-	parts := []string{cb.staticPart()}
+// Everything that changes from one turn to the next lives in TurnContext
+// instead. It used to live in the middle of this string, which put a block
+// that differs on every turn ahead of the entire conversation history; a
+// prompt cache keeps only the longest byte-identical prefix, so the whole
+// history behind it was re-prefilled uncached on every turn, and the cost of
+// that grew with the session. Moving it to the tail is what lets the history
+// be cached at all, and it lands recall in the position long-context recall
+// is strongest at rather than the middle, where it is weakest.
+func (cb *ContextBuilder) SystemPrompt() string {
+	return cb.staticPart() + "\n\n" + operatingRules
+}
+
+// turnContextHeader frames the block as machinery rather than as something
+// the user said. It rides a user message — the only role that stays where it
+// is put, since the Anthropic dialect hoists every system message to the head
+// of the request and would silently undo the placement — so without this line
+// the model would read the recalled memories as the user's own words.
+const turnContextHeader = "[Context for this turn, assembled by the system. This is not a message from the user.]"
+
+// TurnContext is what only this turn knows: what memory recalled for it, what
+// time it is, how long the user has been away, and where the reply comes out.
+// It is appended after the conversation history, immediately before the model
+// answers, and is never persisted to the session log.
+//
+// Empty is a valid answer — a heartbeat with no memory and no briefing has
+// nothing to say here — and the caller sends no message at all for it.
+func (cb *ContextBuilder) TurnContext(ctx context.Context, history []provider.Message, current string, gap time.Duration) string {
+	parts := []string{turnContextHeader}
 	if cb.ambient != nil {
 		if mem := cb.ambient.MemoryPrompt(ctx, history, current); mem != "" {
 			parts = append(parts, mem)
 		}
 	}
 	parts = append(parts, "Current time: "+time.Now().Format("Monday 2006-01-02 15:04 MST"))
+	if line := gapNotice(gap); line != "" {
+		parts = append(parts, line)
+	}
 	tc := tools.ToolContextFrom(ctx)
 	if brief := channelBriefing(tc.Channel, tc.Audience); brief != "" {
 		parts = append(parts, brief)
 	}
-	return strings.Join(append(parts, operatingRules), "\n\n")
+	return strings.Join(parts, "\n\n")
+}
+
+// sessionGap is how long a session has to sit untouched before the next
+// message is treated as a return rather than a continuation. Two hours is
+// past any pause inside one sitting and short enough to catch the ordinary
+// case: a conversation in the morning, an unrelated question after lunch.
+const sessionGap = 2 * time.Hour
+
+// gapNotice says how long the user has been away, for a session picked up
+// after a real absence. Without it the model reads a six-hour-old half-
+// finished task as the sentence before this one, and answers a new question
+// as if it were the next step of that work.
+//
+// It is deliberately coarse. The model does not need the minute, it needs to
+// know that the thread it is holding is cold and that the message it just
+// received may have nothing to do with it.
+func gapNotice(gap time.Duration) string {
+	if gap < sessionGap {
+		return ""
+	}
+	amount := fmt.Sprintf("%d hours", int(gap.Hours()))
+	if days := int(gap.Hours() / 24); days >= 1 {
+		amount = fmt.Sprintf("%d days", days)
+		if days == 1 {
+			amount = "a day"
+		}
+	}
+	return "About " + amount + " have passed since the previous message in this conversation. " +
+		"Whatever was in progress then is over unless the user says otherwise: read what they just said on its own terms, " +
+		"and do not resume the earlier task or assume this message continues it."
 }
 
 // channelBriefing says where this reply is about to come out, for the three
@@ -70,9 +124,9 @@ func (cb *ContextBuilder) SystemPrompt(ctx context.Context, history []provider.M
 // composed differently from a written one, and a scheduled turn is read by
 // someone who was not there when it ran.
 //
-// It rides the volatile tail rather than the cached head deliberately: the
-// head is one string shared by every session, and forking it per channel
-// would cost the prompt cache far more than these few lines are worth. The
+// It rides TurnContext rather than the cached head deliberately: the head is
+// one string shared by every session, and forking it per channel would cost
+// the prompt cache far more than these few lines are worth. The
 // channels not listed here — a terminal, a chat window — want an ordinary
 // written reply, and saying so would be a sentence that changes nothing.
 //

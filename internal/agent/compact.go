@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -119,12 +120,52 @@ func (l *Loop) contextWindow() int {
 	}
 }
 
-func (l *Loop) needsCompaction(history []provider.Message) bool {
-	if len(history) > l.cfg.Agent.SummarizeAtMessages {
-		return true
-	}
+// defaultMaxContextTokens is the working ceiling when config does not set
+// one. It is far below every current model's window on purpose: recall and
+// instruction-following measurably decay with input length well before a
+// window fills, so the window is the wrong number to budget against.
+const defaultMaxContextTokens = 48000
+
+// budget is the token ceiling one assembled request may reach before the
+// session is compacted: a share of what the model accepts, floored by the
+// working ceiling, whichever is smaller.
+func (l *Loop) budget() int {
 	budget := l.contextWindow() * l.cfg.Agent.SummarizeAtPercent / 100
-	return budget > 0 && estimateTokens(history) > budget
+	ceiling := l.cfg.Agent.MaxContextTokens
+	if ceiling <= 0 {
+		ceiling = defaultMaxContextTokens
+	}
+	if budget <= 0 || budget > ceiling {
+		return ceiling
+	}
+	return budget
+}
+
+// overhead is what a request carries before a single message of history: the
+// system prompt and the schema of every registered tool.
+//
+// Counting it is not a detail. Factor ships dozens of tools, and their
+// schemas plus the persona, workspace files and skills catalog are a fixed
+// five-figure cost on every call — budgeting the history alone declares a
+// session small while the request that carries it is already large.
+func (l *Loop) overhead() int {
+	total := 0
+	if l.builder != nil {
+		total += len(l.builder.SystemPrompt()) / 4
+	}
+	if l.registry != nil {
+		for _, def := range l.registry.Definitions() {
+			total += len(def.Name)/4 + len(def.Description)/4 + 16
+			if schema, err := json.Marshal(def.Parameters); err == nil {
+				total += len(schema) / 4
+			}
+		}
+	}
+	return total
+}
+
+func (l *Loop) needsCompaction(history []provider.Message) bool {
+	return l.overhead()+estimateTokens(history) > l.budget()
 }
 
 func (l *Loop) maybeCompactAsync(in turnInput) {

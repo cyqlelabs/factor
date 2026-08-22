@@ -49,11 +49,16 @@ type AgentConfig struct {
 	// ContextWindowTokens caps the window compaction budgets against. 0 means
 	// auto: the model catalog answers per model. A set value can only shrink
 	// what the catalog says, and stands alone for models it does not carry.
-	ContextWindowTokens int    `json:"context_window_tokens"`
-	SummarizeAtPercent  int    `json:"summarize_at_percent"`
-	SummarizeAtMessages int    `json:"summarize_at_messages"`
-	KeepRecentMessages  int    `json:"keep_recent_messages"`
-	ExtraInstructions   string `json:"extra_instructions,omitempty"`
+	ContextWindowTokens int `json:"context_window_tokens"`
+	SummarizeAtPercent  int `json:"summarize_at_percent"`
+	// MaxContextTokens is the working ceiling for one assembled request,
+	// independent of what the model would accept. Quality falls off long
+	// before a window is full, so a model with a huge window still answers
+	// better from a small context than a large one — and a percentage of a
+	// million-token window is not a budget at all. 0 means the default.
+	MaxContextTokens   int    `json:"max_context_tokens"`
+	KeepRecentMessages int    `json:"keep_recent_messages"`
+	ExtraInstructions  string `json:"extra_instructions,omitempty"`
 }
 
 // Candidate identifies one provider+model combination in the failover chain.
@@ -300,12 +305,12 @@ func Default() *Config {
 	return &Config{
 		ConfigVersion: Version,
 		Agent: AgentConfig{
-			Workspace:           filepath.Join(home, "workspace"),
-			MaxToolIterations:   20,
-			MaxConcurrentTurns:  4,
-			SummarizeAtPercent:  75,
-			SummarizeAtMessages: 40,
-			KeepRecentMessages:  8,
+			Workspace:          filepath.Join(home, "workspace"),
+			MaxToolIterations:  20,
+			MaxConcurrentTurns: 4,
+			SummarizeAtPercent: 75,
+			MaxContextTokens:   48000,
+			KeepRecentMessages: 8,
 		},
 		Provider: ProviderConfig{
 			Type:             "openrouter",

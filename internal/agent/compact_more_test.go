@@ -46,31 +46,55 @@ func TestEstimateTokens(t *testing.T) {
 
 func TestNeedsCompaction(t *testing.T) {
 	h := newHarness(t)
-	h.loop.cfg.Agent.SummarizeAtMessages = 5
-	h.loop.cfg.Agent.ContextWindowTokens = 1000
+	h.loop.cfg.Agent.ContextWindowTokens = 100000
 	h.loop.cfg.Agent.SummarizeAtPercent = 50
+	h.loop.cfg.Agent.MaxContextTokens = 2000
 
-	short := make([]provider.Message, 3)
+	short := []provider.Message{{Role: "user", Content: "hi"}}
 	if h.loop.needsCompaction(short) {
 		t.Error("short history flagged for compaction")
 	}
 
-	many := make([]provider.Message, 6)
-	if !h.loop.needsCompaction(many) {
-		t.Error("message-count threshold not applied")
-	}
-
-	// token budget alone triggers it
-	heavy := []provider.Message{{Role: "user", Content: strings.Repeat("x", 4000)}}
+	heavy := []provider.Message{{Role: "user", Content: strings.Repeat("x", 8000)}}
 	if !h.loop.needsCompaction(heavy) {
 		t.Error("token threshold not applied")
 	}
 
-	// 0 is not "off" but "auto": with no catalog wired it budgets against
-	// the default window, which this small history does not approach.
+	// The working ceiling is a ceiling, not a suggestion: a window big enough
+	// to swallow the session does not raise it.
+	h.loop.cfg.Agent.ContextWindowTokens = 1 << 20
+	if !h.loop.needsCompaction(heavy) {
+		t.Error("a huge window overrode the working ceiling")
+	}
+
+	// And the share of the window wins whenever it is the smaller of the two,
+	// because a request the model will reject is worse than a short one.
+	h.loop.cfg.Agent.ContextWindowTokens = 1000
+	h.loop.cfg.Agent.MaxContextTokens = 1 << 20
+	if !h.loop.needsCompaction(heavy) {
+		t.Error("a tiny window was ignored in favour of the ceiling")
+	}
+}
+
+// What every request carries before a single message of history — the system
+// prompt and every tool schema — is part of the budget. Leaving it out
+// declares a session small while the request carrying it is already large.
+func TestTheBudgetCountsThePromptAndTheToolSchemas(t *testing.T) {
+	h := newHarness(t)
+	overhead := h.loop.overhead()
+	if overhead <= 0 {
+		t.Fatalf("overhead = %d, want the system prompt and tool schemas counted", overhead)
+	}
+
 	h.loop.cfg.Agent.ContextWindowTokens = 0
-	if h.loop.needsCompaction(heavy) {
-		t.Error("a small history beat the default window")
+	h.loop.cfg.Agent.MaxContextTokens = overhead + 50
+	small := []provider.Message{{Role: "user", Content: strings.Repeat("x", 800)}}
+	if !h.loop.needsCompaction(small) {
+		t.Error("a history that only overflows once the prompt is counted did not trigger compaction")
+	}
+	h.loop.cfg.Agent.MaxContextTokens = overhead + 10000
+	if h.loop.needsCompaction(small) {
+		t.Error("compaction fired with room to spare")
 	}
 }
 
@@ -288,7 +312,7 @@ func TestMaybeCompactAsyncSkipsEphemeralAndShortSessions(t *testing.T) {
 func TestMaybeCompactAsyncRunsWhenOverThreshold(t *testing.T) {
 	h := newHarness(t)
 	key := "cli:big"
-	h.loop.cfg.Agent.SummarizeAtMessages = 4
+	h.loop.cfg.Agent.MaxContextTokens = 1
 	h.loop.cfg.Agent.KeepRecentMessages = 2
 	for i := range 10 {
 		role := "user"

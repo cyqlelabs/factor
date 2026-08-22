@@ -109,7 +109,7 @@ func newHarness(t *testing.T, script ...func(req *provider.Request) (*provider.R
 	cfg := config.Default()
 	cfg.Agent.Workspace = t.TempDir()
 	cfg.Agent.MaxToolIterations = 5
-	cfg.Agent.SummarizeAtMessages = 1000
+	cfg.Agent.MaxContextTokens = 1 << 20 // compaction off unless a test asks
 	cfg.Agent.KeepRecentMessages = 2
 	if err := config.EnsureWorkspace(cfg.Agent.Workspace); err != nil {
 		t.Fatal(err)
@@ -208,9 +208,9 @@ func TestMemoryInjectionAndStorage(t *testing.T) {
 	if _, err := h.loop.ProcessDirect(context.Background(), "deploy please", "cli:test"); err != nil {
 		t.Fatal(err)
 	}
-	sys := h.chat.requests[0].Messages[0].Content
-	if !strings.Contains(sys, "YOU MUST NOT repeat this past mistake") || !strings.Contains(sys, "never force-push") {
-		t.Errorf("memory not injected:\n%s", sys)
+	block := turnBlock(t, h.chat.requests[0].Messages)
+	if !strings.Contains(block, "YOU MUST NOT repeat this past mistake") || !strings.Contains(block, "never force-push") {
+		t.Errorf("memory not injected:\n%s", block)
 	}
 	// ambient storage is async
 	deadline := time.Now().Add(2 * time.Second)
@@ -474,7 +474,7 @@ func TestContextBuilderCachingAndInstructions(t *testing.T) {
 	}
 	cb := NewContextBuilder(cfg, skills.NewLoader(filepath.Join(cfg.Agent.Workspace, "skills")), nil)
 
-	p1 := cb.SystemPrompt(context.Background(), nil, "q")
+	p1 := cb.SystemPrompt()
 	if !strings.Contains(p1, "Always answer in haiku.") {
 		t.Error("instructions.d not included")
 	}
@@ -489,7 +489,7 @@ func TestContextBuilderCachingAndInstructions(t *testing.T) {
 	}
 	now := time.Now()
 	_ = os.Chtimes(instr, now, now)
-	p2 := cb.SystemPrompt(context.Background(), nil, "q")
+	p2 := cb.SystemPrompt()
 	if !strings.Contains(p2, "Always answer in prose.") {
 		t.Error("stale cache after instruction edit")
 	}
@@ -508,7 +508,7 @@ func TestCorePersonaSurvivesSoulEdits(t *testing.T) {
 		t.Fatal(err)
 	}
 	cb := NewContextBuilder(cfg, nil, nil)
-	p := cb.SystemPrompt(context.Background(), nil, "q")
+	p := cb.SystemPrompt()
 
 	core := strings.Index(p, "## Rigor")
 	if core < 0 {
@@ -533,7 +533,7 @@ func TestSkillCatalogInPrompt(t *testing.T) {
 		[]byte("---\nname: weather\ndescription: Fetch weather forecasts\n---\n\nUse wttr.in."), 0o644)
 
 	cb := NewContextBuilder(cfg, skills.NewLoader(filepath.Join(cfg.Agent.Workspace, "skills")), nil)
-	p := cb.SystemPrompt(context.Background(), nil, "q")
+	p := cb.SystemPrompt()
 	if !strings.Contains(p, "weather: Fetch weather forecasts") {
 		t.Errorf("skill catalog missing:\n%s", p)
 	}
@@ -560,7 +560,7 @@ func TestPromptAnchorsRulesAtTheTail(t *testing.T) {
 		[]byte("Always answer in haiku."), 0o644)
 
 	cb := NewContextBuilder(cfg, skills.NewLoader(filepath.Join(cfg.Agent.Workspace, "skills")), nil)
-	p := cb.SystemPrompt(context.Background(), nil, "q")
+	p := cb.SystemPrompt()
 
 	identity := strings.Index(p, "You are Factor")
 	catalog := strings.Index(p, "weather: Fetch weather forecasts")
@@ -747,7 +747,7 @@ func TestBudgetCapIsAnsweredRatherThanReportedAsABreakage(t *testing.T) {
 
 func TestEveryCallOfATurnCarriesTheSessionItIsSpentFor(t *testing.T) {
 	h := newHarness(t, final("one"), final("two"), final("summary"))
-	h.loop.cfg.Agent.SummarizeAtMessages = 1 // compact after every turn
+	h.loop.cfg.Agent.MaxContextTokens = 1 // compact after every turn
 	watched := &ctxChat{inner: h.loop.chat}
 	h.loop.chat = watched
 
@@ -770,11 +770,29 @@ func TestEveryCallOfATurnCarriesTheSessionItIsSpentFor(t *testing.T) {
 	}
 }
 
-// promptFor builds one turn's system prompt as the given channel would see it.
-func promptFor(t *testing.T, cb *ContextBuilder, channel string) string {
+// turnBlock returns the per-turn block out of a request: everything a turn
+// knows on its own rides one user message between the history and what the
+// user just said.
+func turnBlock(t *testing.T, msgs []provider.Message) string {
+	t.Helper()
+	for _, m := range msgs {
+		if strings.HasPrefix(m.Content, turnContextHeader) {
+			if m.Role != "user" {
+				t.Fatalf("the per-turn block rode role %q, which the Anthropic dialect would hoist to the head", m.Role)
+			}
+			return m.Content
+		}
+	}
+	t.Fatal("no per-turn block in the request")
+	return ""
+}
+
+// turnContextFor builds one turn's per-turn block as the given channel would
+// see it.
+func turnContextFor(t *testing.T, cb *ContextBuilder, channel string) string {
 	t.Helper()
 	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: channel, ChatID: "x", SessionKey: channel + ":x"})
-	return cb.SystemPrompt(ctx, nil, "q")
+	return cb.TurnContext(ctx, nil, "q", 0)
 }
 
 func TestSpokenChannelsAreToldTheyAreHeard(t *testing.T) {
@@ -790,14 +808,14 @@ func TestSpokenChannelsAreToldTheyAreHeard(t *testing.T) {
 		{"phone", "live phone call"},
 		{"cron", "nobody watching"},
 	} {
-		if got := promptFor(t, cb, tc.channel); !strings.Contains(got, tc.want) {
+		if got := turnContextFor(t, cb, tc.channel); !strings.Contains(got, tc.want) {
 			t.Errorf("a %s turn was not told where it lands", tc.channel)
 		}
 	}
 	// A written channel gets no sentence about being written: it would change
 	// nothing and cost tokens on every turn.
 	for _, quiet := range []string{"cli", "telegram", "system", ""} {
-		got := promptFor(t, cb, quiet)
+		got := turnContextFor(t, cb, quiet)
 		for _, phrase := range []string{"spoken aloud", "nobody watching"} {
 			if strings.Contains(got, phrase) {
 				t.Errorf("a %q turn was briefed as %q", quiet, phrase)
@@ -806,10 +824,10 @@ func TestSpokenChannelsAreToldTheyAreHeard(t *testing.T) {
 	}
 }
 
-// The head of the prompt is one string shared by every session, and prompt
-// caching pays off only while it stays identical. The channel briefing must
-// therefore land after it, never inside it.
-func TestChannelBriefingDoesNotForkTheCachedHead(t *testing.T) {
+// The system prompt is one string shared by every session and every turn, and
+// prompt caching pays off only while it stays byte-identical. Nothing that
+// varies by channel, by clock or by turn may appear in it.
+func TestTheSystemPromptIsTheSameForEveryTurn(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.Workspace = t.TempDir()
 	if err := config.EnsureWorkspace(cfg.Agent.Workspace); err != nil {
@@ -817,37 +835,20 @@ func TestChannelBriefingDoesNotForkTheCachedHead(t *testing.T) {
 	}
 	cb := NewContextBuilder(cfg, skills.NewLoader(filepath.Join(cfg.Agent.Workspace, "skills")), nil)
 
-	head := cb.staticPart()
+	head := cb.SystemPrompt()
 	for _, channel := range []string{"voice", "phone", "cron", "cli", "telegram"} {
-		prompt := promptFor(t, cb, channel)
-		if !strings.HasPrefix(prompt, head) {
-			t.Fatalf("a %s turn changed the shared head of the prompt", channel)
+		turnContextFor(t, cb, channel) // whatever a channel needs, it gets it here
+		if again := cb.SystemPrompt(); again != head {
+			t.Fatalf("a %s turn rewrote the shared system prompt", channel)
 		}
 	}
-	if again := cb.staticPart(); again != head {
-		t.Error("building prompts for several channels rewrote the cached head")
+	for _, volatile := range []string{"Current time:", "spoken aloud", "nobody watching", "# Memory"} {
+		if strings.Contains(head, volatile) {
+			t.Errorf("the cached head carries %q, which changes every turn", volatile)
+		}
 	}
-}
-
-// The briefing has to sit where it is still read: after the memory block,
-// with only the rules below it.
-func TestChannelBriefingSitsAtTheTail(t *testing.T) {
-	cfg := config.Default()
-	cfg.Agent.Workspace = t.TempDir()
-	if err := config.EnsureWorkspace(cfg.Agent.Workspace); err != nil {
-		t.Fatal(err)
-	}
-	cb := NewContextBuilder(cfg, skills.NewLoader(filepath.Join(cfg.Agent.Workspace, "skills")), nil)
-	prompt := promptFor(t, cb, "voice")
-
-	brief := strings.Index(prompt, "spoken aloud on the user's speakers")
-	rules := strings.Index(prompt, "Rules:")
-	clock := strings.Index(prompt, "Current time:")
-	if brief < 0 || rules < 0 || clock < 0 {
-		t.Fatalf("prompt is missing a landmark: brief=%d rules=%d clock=%d", brief, rules, clock)
-	}
-	if clock >= brief || brief >= rules {
-		t.Errorf("briefing is out of place: clock=%d brief=%d rules=%d", clock, brief, rules)
+	if !strings.Contains(head, "Rules:") {
+		t.Error("the operating rules left the system prompt")
 	}
 }
 
@@ -859,11 +860,11 @@ func TestATurnCarriesItsChannelIntoThePrompt(t *testing.T) {
 	if _, err := h.loop.ProcessDirect(context.Background(), "hola", "voice:local"); err != nil {
 		t.Fatal(err)
 	}
-	system := h.chat.requests[0].Messages[0]
-	if system.Role != "system" {
-		t.Fatalf("first message is %q", system.Role)
+	msgs := h.chat.requests[0].Messages
+	if msgs[0].Role != "system" {
+		t.Fatalf("first message is %q", msgs[0].Role)
 	}
-	if !strings.Contains(system.Content, "spoken aloud on the user's speakers") {
+	if !strings.Contains(turnBlock(t, msgs), "spoken aloud on the user's speakers") {
 		t.Error("a voice turn reached the provider without being told it is heard")
 	}
 
@@ -871,8 +872,10 @@ func TestATurnCarriesItsChannelIntoThePrompt(t *testing.T) {
 	if _, err := written.loop.ProcessDirect(context.Background(), "hola", "cli:main"); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(written.chat.requests[0].Messages[0].Content, "spoken aloud") {
-		t.Error("a terminal turn was briefed as a spoken one")
+	for _, msg := range written.chat.requests[0].Messages {
+		if strings.Contains(msg.Content, "spoken aloud") {
+			t.Error("a terminal turn was briefed as a spoken one")
+		}
 	}
 }
 
