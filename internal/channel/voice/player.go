@@ -20,6 +20,14 @@ import (
 // hearing it twice.
 const resumeRewind = playbackRate * 2 * 300 / 1000 // 300 ms
 
+// playbackTail is how long the speakers still count as speaking after the
+// last sample was handed over. The helper exits when the sound server has the
+// audio, not when the room has finished hearing it: there is a sink buffer
+// behind it and a room in front of it. A microphone segment opening in that
+// window is the reply coming back, and calling the floor free there is what
+// let the tail of a sentence be heard as somebody talking.
+const playbackTail = 400 * time.Millisecond
+
 // playResult reports how one clip ended. completed is true only when the
 // whole clip was heard — a stopped or replaced clip reports false, which is
 // what tells a multi-part reply to stop mid-list.
@@ -44,6 +52,9 @@ type player struct {
 	paused bool
 	cancel context.CancelFunc
 	done   chan playResult
+	// quietAt is when the last sample was handed over, which playbackTail is
+	// measured from.
+	quietAt time.Time
 }
 
 func newPlayer(env Env, argv []string) *player {
@@ -71,7 +82,7 @@ func (p *player) pause() {
 	if !p.active {
 		return
 	}
-	p.active, p.paused = false, true
+	p.active, p.paused, p.quietAt = false, true, time.Now()
 	p.cancel()
 	p.cancel = nil
 	if p.offset > resumeRewind {
@@ -98,12 +109,14 @@ func (p *player) stop() {
 	p.endLocked(false)
 }
 
-// playing reports whether sound is coming out right now — the signal the
-// segmenter uses to raise its bar.
+// playing reports whether sound is in the air right now — the signal the
+// segmenter uses to raise its bar, and the one that marks an utterance as
+// carrying the agent's own voice. It stays true through playbackTail past the
+// end of a clip, because the audio outlives the helper that fed it.
 func (p *player) playing() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.active
+	return p.active || time.Since(p.quietAt) < playbackTail
 }
 
 // busy reports whether a clip is underway at all, paused included.
@@ -199,6 +212,9 @@ func (p *player) startFileLocked(ctx context.Context) {
 
 // endLocked settles the current clip and reports how it went.
 func (p *player) endLocked(completed bool) {
+	if p.active {
+		p.quietAt = time.Now()
+	}
 	if p.cancel != nil {
 		p.cancel()
 		p.cancel = nil

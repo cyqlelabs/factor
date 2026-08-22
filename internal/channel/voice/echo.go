@@ -3,16 +3,17 @@ package voice
 import (
 	"strings"
 	"sync"
+	"time"
 )
 
 // The echo tracker is the transcript-level half of feedback control. The
 // segmenter's raised barge bar keeps most of the speakers' sound out of the
 // microphone; when the volume is high enough that it gets in anyway, what got
 // in is the agent's own voice — and its words are known, because this channel
-// synthesized them moments ago. A barged utterance is matched against what was
-// recently sent to the speakers: one that is nothing else is discarded as
-// feedback instead of becoming a turn the agent holds with itself, and one
-// that carries the user's words behind the echo keeps only those.
+// synthesized them moments ago. An utterance the agent was speaking during is
+// matched against what was recently sent to the speakers: one that is nothing
+// else is discarded as feedback instead of becoming a turn the agent holds
+// with itself, and one that carries the user's words as well keeps only those.
 
 const (
 	// echoMemoryWords bounds what the tracker remembers — enough to cover the
@@ -39,12 +40,16 @@ const (
 type echoTracker struct {
 	mu    sync.Mutex
 	words []string // normalized words recently sent to the speakers, oldest first
+	// until is when those words stop counting as echo; zero while a reply is
+	// still being spoken.
+	until time.Time
 }
 
 // record remembers text on its way to the speakers.
 func (e *echoTracker) record(text string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.until = time.Time{}
 	for _, f := range strings.Fields(text) {
 		if n := normalizeWord(f); n != "" {
 			e.words = append(e.words, n)
@@ -55,55 +60,89 @@ func (e *echoTracker) record(text string) {
 	}
 }
 
-// clear forgets everything. Called when a reply has been heard out in full:
-// audio no longer in the air cannot echo, and remembering it would swallow a
-// later barge that quotes it.
-func (e *echoTracker) clear() {
+// expire sets how long a reply that has been heard out stays matchable.
+// It is deliberately not an immediate forget: an utterance that captured the
+// tail of a reply does not close until silence_ms of quiet has passed, and is
+// only transcribed after that, so clearing the moment the speakers fall
+// silent throws the words away a beat before the echo carrying them arrives.
+// Past the delay they are forgotten, because audio no longer in the air
+// cannot echo and remembering it would swallow a later barge that quotes it.
+func (e *echoTracker) expire(after time.Duration) {
 	e.mu.Lock()
-	e.words = nil
+	e.until = time.Now().Add(after)
 	e.mu.Unlock()
 }
 
-// strip removes the agent's own recent words from the front of a barged
-// transcript — the speakers were talking first, so the echo is always the
-// prefix. It returns what remains, and whether the utterance was nothing else.
+// recall is what the speakers said that can still be in the air.
+func (e *echoTracker) recall() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.until.IsZero() && !time.Now().Before(e.until) {
+		e.words, e.until = nil, time.Time{}
+	}
+	// Handing the slice header back without copying is safe only because
+	// record never writes into its range: appends land past its length, and
+	// the truncation copies to a fresh array.
+	return e.words
+}
+
+// strip removes the agent's own recent words from a transcript captured while
+// the speakers were talking, wherever in that transcript they fell. It returns
+// what is left, and whether the utterance was nothing else.
+//
+// The echo is not always the prefix. A user who begins a sentence in the pause
+// before the reply lands still has the microphone segment open when the
+// speakers start, so what comes back is the user, then the agent, then the
+// user again — the agent's words in the middle of the user's.
 func (e *echoTracker) strip(text string) (string, bool) {
 	tokens := tokenizeWords(text)
-	if len(tokens) == 0 {
+	spoken := e.recall()
+	if len(tokens) == 0 || len(spoken) == 0 {
 		return text, false
 	}
-	e.mu.Lock()
-	// Snapshotting the slice header without copying is safe only because
-	// record never writes into the snapshot's range: appends land past its
-	// length, and the truncation copies to a fresh array.
-	spoken := e.words
-	e.mu.Unlock()
-	prefix, matched := echoPrefix(tokens, spoken)
-	if prefix == 0 {
+	echoed := make([]bool, len(tokens))
+	matched, removed := 0, 0
+	for i := 0; i < len(tokens); {
+		run, hits := echoRun(tokens[i:], spoken)
+		if hits < echoMinWords {
+			i++
+			continue
+		}
+		for j := i; j < i+run; j++ {
+			echoed[j] = true
+		}
+		matched, removed = matched+hits, removed+run
+		i += run
+	}
+	if removed == 0 {
 		return text, false
 	}
-	if prefix == len(tokens) {
+	if removed == len(tokens) {
 		if matched >= echoDiscardWords {
 			return "", true
 		}
 		return text, false // short enough to be a quoted command — keep it
 	}
-	rest := strings.TrimLeft(text[tokens[prefix-1].end:], " \t\n,.;:!?¡¿-—")
-	return strings.TrimSpace(rest), false
+	rest := keptWords(text, tokens, echoed)
+	if rest == "" {
+		return "", true
+	}
+	return rest, false
 }
 
-// echoPrefix reports how many leading tokens align, in order, with the spoken
-// words — the count past the last aligned token, and how many actually
-// matched. The alignment may start anywhere in the record, skip up to echoGap
-// spoken words between matches, and absorb lone mis-transcribed tokens; two
-// consecutive unmatched tokens end it — that is where the user starts.
-func echoPrefix(tokens []wordToken, spoken []string) (int, int) {
+// echoRun reports how far one aligned run of spoken words reaches from the
+// front of tokens — the count past its last aligned token, and how many
+// actually matched. The alignment may start anywhere in the record, skip up
+// to echoGap spoken words between matches, and absorb lone mis-transcribed
+// tokens; two consecutive unmatched tokens end it — that is where the run
+// stops and somebody else's words begin.
+func echoRun(tokens []wordToken, spoken []string) (int, int) {
 	best, bestMatched := 0, 0
 	for start, w := range spoken {
 		if w != tokens[0].norm {
 			continue
 		}
-		matched, prefix := 1, 1
+		matched, run := 1, 1
 		j, misses := start+1, 0
 		for i := 1; i < len(tokens); i++ {
 			found := -1
@@ -121,20 +160,52 @@ func echoPrefix(tokens []wordToken, spoken []string) (int, int) {
 			}
 			j, misses = found+1, 0
 			matched++
-			prefix = i + 1
+			run = i + 1
 		}
-		if matched >= echoMinWords && prefix > best {
-			best, bestMatched = prefix, matched
+		if matched >= echoMinWords && run > best {
+			best, bestMatched = run, matched
 		}
 	}
 	return best, bestMatched
 }
 
-// wordToken is one word of a transcript, normalized, with the byte offset just
-// past it in the original text — so a match can hand back exactly what follows.
+// keptWords rebuilds the transcript from the words that were not echo, one
+// contiguous run at a time, so the user's own spelling and punctuation
+// survive the removal.
+func keptWords(text string, tokens []wordToken, echoed []bool) string {
+	var b strings.Builder
+	for i := 0; i < len(tokens); {
+		if echoed[i] {
+			i++
+			continue
+		}
+		j := i
+		for j < len(tokens) && !echoed[j] {
+			j++
+		}
+		// Leading punctuation is what the removal left behind — the comma
+		// that followed the agent's last word. Trailing punctuation is the
+		// user's own sentence ending, and stays.
+		span := strings.TrimSpace(text[tokens[i].start:tokens[j-1].end])
+		span = strings.TrimSpace(strings.TrimLeft(span, " \t\n,.;:!?¡¿-—"))
+		if span != "" {
+			if b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			b.WriteString(span)
+		}
+		i = j
+	}
+	return b.String()
+}
+
+// wordToken is one word of a transcript, normalized, with the byte offsets
+// bounding it in the original text — so a match can hand back exactly the
+// words around it.
 type wordToken struct {
-	norm string
-	end  int
+	norm  string
+	start int
+	end   int
 }
 
 func tokenizeWords(text string) []wordToken {
@@ -143,7 +214,7 @@ func tokenizeWords(text string) []wordToken {
 	for i, r := range text {
 		if r == ' ' || r == '\t' || r == '\n' {
 			if start >= 0 {
-				tokens = append(tokens, wordToken{normalizeWord(text[start:i]), i})
+				tokens = append(tokens, wordToken{normalizeWord(text[start:i]), start, i})
 				start = -1
 			}
 			continue
@@ -153,7 +224,7 @@ func tokenizeWords(text string) []wordToken {
 		}
 	}
 	if start >= 0 {
-		tokens = append(tokens, wordToken{normalizeWord(text[start:]), len(text)})
+		tokens = append(tokens, wordToken{normalizeWord(text[start:]), start, len(text)})
 	}
 	return tokens
 }

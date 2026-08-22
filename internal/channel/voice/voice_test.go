@@ -277,11 +277,15 @@ func (h *voiceHarness) enableRoom(timeout time.Duration) {
 	h.v.room = newRoom(timeout)
 }
 
-// waitQuiet waits for the reply in flight to finish sounding, so the next
-// utterance is not a barge.
+// waitQuiet waits for the floor to be genuinely free: no turn, no clip, and
+// the playback tail elapsed. The scripted microphone has no real-time pacing,
+// so without the last of those a test feeding the next utterance would have it
+// captured as a barge on a reply the room has not finished hearing.
 func (h *voiceHarness) waitQuiet() {
 	h.t.Helper()
-	waitUntil(h.t, func() bool { return !h.v.player.busy() && !h.v.turnInFlight() })
+	waitUntil(h.t, func() bool {
+		return !h.v.player.busy() && !h.v.player.playing() && !h.v.turnInFlight()
+	})
 }
 
 func TestVoiceRegistersAsAConnector(t *testing.T) {
@@ -950,9 +954,10 @@ func TestVoiceChannelShape(t *testing.T) {
 }
 
 // gateNow judges an utterance that began this instant — the common case in
-// these tests, where capture latency is not what is being exercised.
+// these tests, where capture latency is not what is being exercised. A barge
+// is by definition overlapped: it opened while the speakers were going.
 func (v *Voice) gateNow(text string, barged bool) decision {
-	return v.gate(text, time.Now(), barged)
+	return v.gate(text, time.Now(), barged, barged)
 }
 
 func TestGateDecisions(t *testing.T) {
@@ -1014,7 +1019,7 @@ func TestGateDecisions(t *testing.T) {
 	wake.mu.Lock()
 	wake.windowUntil = time.Now().Add(-time.Second)
 	wake.mu.Unlock()
-	if dec := wake.gate("do the thing", time.Now().Add(-2*time.Second), false); !dec.accept {
+	if dec := wake.gate("do the thing", time.Now().Add(-2*time.Second), false, false); !dec.accept {
 		t.Error("an utterance was judged by when transcription finished, not when it began")
 	}
 	// Push-to-talk arms in wake-word mode too: the misfire rescue.
@@ -1100,4 +1105,132 @@ func TestVoiceLogsSpeakerScoresAtDebug(t *testing.T) {
 	if !strings.Contains(logged, "threshold=0.5") {
 		t.Errorf("the scores line does not say what they were judged against:\n%s", logged)
 	}
+}
+
+// embedded is how much audio each speaker-embedding request carried.
+func (h *voiceHarness) embedded() []int {
+	h.api.mu.Lock()
+	defer h.api.mu.Unlock()
+	return append([]int(nil), h.api.embedded...)
+}
+
+// The failure this guards is the one that fills a log with the agent
+// interviewing itself. A user who starts talking in the pause before the reply
+// lands has the microphone segment open when the speakers begin, so the whole
+// reply is recorded behind their words — and the segment never started over
+// playback, so nothing about it looks like a barge. What comes back has to be
+// recognized as the agent's own voice all the same.
+func TestVoiceDoesNotAnswerAReplyThatLandedMidUtterance(t *testing.T) {
+	const line = "the weather in madrid is sunny and warm today"
+	h := newVoiceHarness(t, nil)
+	h.setReplyPCM(clip(96000)) // two seconds, so it is still sounding
+	h.start()
+
+	// The microphone opens while the room is quiet: not a barge.
+	h.mic.feed(repeat(silenceFrame(), 20)...)
+	h.mic.feed(repeat(toneFrame(8000), 15)...)
+	waitUntil(t, func() bool { return h.v.player != nil })
+
+	// The agent starts speaking into that open segment.
+	go func() { _ = h.v.Send(context.Background(), bus.OutboundMessage{Content: line}) }()
+	waitUntil(t, func() bool { return h.v.player.playing() })
+
+	// What the microphone hands back is the sentence off the speakers.
+	h.setTranscript(line)
+	h.mic.feed(repeat(toneFrame(8000), 15)...)
+	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
+
+	h.noTurn(3 * time.Second)
+}
+
+// Audio recorded with the agent's own voice in it belongs to two speakers at
+// once. Matching it against a profile would name the wrong person and folding
+// it in would move the profile toward the synthesizer, so it is never
+// embedded at all.
+func TestVoiceNeverEmbedsAudioItsOwnVoiceIsIn(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.setReplyPCM(clip(96000))
+	h.start()
+
+	h.setEmbedding([]float64{1, 0, 0})
+	h.mic.feed(repeat(silenceFrame(), 20)...)
+	h.mic.feed(repeat(toneFrame(8000), 15)...)
+	go func() {
+		_ = h.v.Send(context.Background(), bus.OutboundMessage{Content: "a spoken note"})
+	}()
+	waitUntil(t, func() bool { return h.v.player.playing() })
+	h.mic.feed(repeat(toneFrame(8000), 40)...)
+	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
+
+	h.turn(10 * time.Second)
+	if got := h.embedded(); len(got) != 0 {
+		t.Errorf("audio the agent was speaking during was embedded anyway: %v bytes", got)
+	}
+	if h.v.speakers.hasProfiles() {
+		t.Error("a profile was enrolled from a recording holding two voices")
+	}
+}
+
+// Every segment ends with silence_ms of quiet — that is what closes it. Against
+// a three-second sentence that is most of the recording, and an embedding
+// computed over it is partly the room's rather than the speaker's.
+func TestVoiceEmbedsTheVoicedPartOnly(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.start()
+
+	h.setEmbedding([]float64{1, 0, 0})
+	h.say()
+	h.turn(10 * time.Second)
+
+	embedded := h.embedded()
+	if len(embedded) != 1 {
+		t.Fatalf("embedding requests = %d, want exactly one", len(embedded))
+	}
+	// say() speaks 30 frames, over a little pre-roll, and then closes with
+	// silenceEndFrames of quiet. All of the voice must survive the trim and
+	// none of that closing silence may.
+	if embedded[0] < 30*frameBytes {
+		t.Errorf("embedded only %d bytes; the voice itself was trimmed", embedded[0])
+	}
+	if embedded[0] > (30+preRollFrames)*frameBytes {
+		t.Errorf("embedded %d bytes; the closing silence went in with the voice", embedded[0])
+	}
+}
+
+// Matching and learning are different bets. A borderline match costs one
+// misattributed sentence; borderline audio folded into a centroid moves it,
+// and every later match is judged against the moved one — which is how a
+// profile drifts until its owner stops being recognized.
+func TestVoiceLearnsOnlyFromAConfidentMatch(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.start()
+
+	h.setEmbedding([]float64{1, 0, 0})
+	h.say()
+	h.turn(10 * time.Second)
+	h.waitQuiet()
+	if got := h.v.speakers.list(); len(got) != 1 || got[0].Utterances != 1 {
+		t.Fatalf("the first voice enrolled as %+v", got)
+	}
+
+	// Cosine 0.55 against the profile: over the 0.5 threshold, under the bar
+	// for teaching it.
+	h.setEmbedding([]float64{0.55, 0.835, 0})
+	h.say()
+	if call := h.turn(10 * time.Second); call.session != sessionKey {
+		t.Errorf("a borderline match ran in %q", call.session)
+	}
+	h.waitQuiet()
+	if got := h.v.speakers.list(); got[0].Utterances != 1 {
+		t.Errorf("a borderline match was folded into the profile: %+v", got)
+	}
+
+	// The same voice again, unmistakably: that one teaches.
+	h.setEmbedding([]float64{1, 0, 0})
+	h.say()
+	h.turn(10 * time.Second)
+	waitUntil(t, func() bool { return h.v.speakers.list()[0].Utterances == 2 })
 }

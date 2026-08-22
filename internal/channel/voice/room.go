@@ -107,7 +107,7 @@ func occupantFor(who speakerIdentity, hasProfiles bool) (name string, refreshOnl
 			return roomUnknownOccupant, false
 		}
 	}
-	// viaBarge and viaShort arrive here only when the sticky window was
+	// viaOverlap and viaShort arrive here only when the sticky window was
 	// empty, and viaUnavailable means the room could not be read at all.
 	// None of them may invent an occupant: an embedding outage means the
 	// microphone went blind, not that the room filled up.

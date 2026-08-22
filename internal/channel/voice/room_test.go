@@ -64,7 +64,7 @@ func TestUnknownVoiceNeedsAProfileToCount(t *testing.T) {
 // An embedding outage means the microphone went blind, not that the room
 // filled up: it must not invent an occupant nobody heard.
 func TestUnreadableAudioAddsNobody(t *testing.T) {
-	for _, via := range []string{viaUnavailable, viaBarge, viaShort} {
+	for _, via := range []string{viaUnavailable, viaOverlap, viaShort} {
 		r := newRoom(time.Hour)
 		r.heard(speakerIdentity{via: via}, true, t0)
 		if st := r.snapshot(t0); st.Shared {

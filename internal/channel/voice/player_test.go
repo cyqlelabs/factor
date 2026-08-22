@@ -99,8 +99,29 @@ func TestPlayerPlaysAClipToCompletion(t *testing.T) {
 	if !bytes.Equal(speaker.heard(), pcm) {
 		t.Errorf("heard %d bytes, want the whole %d-byte clip", len(speaker.heard()), len(pcm))
 	}
-	if p.playing() || p.busy() {
-		t.Error("a finished player still reports itself busy")
+	if p.busy() {
+		t.Error("a finished player still holds the floor")
+	}
+	// The helper exits when the sound server has the audio, not when the room
+	// has heard it out: the last of the clip is still in the air.
+	if !p.playing() {
+		t.Error("a clip that just ended already reports the room silent")
+	}
+	waitUntil(t, func() bool { return !p.playing() })
+}
+
+// playing means "sound is in the air", which outlasts the helper that fed it:
+// a microphone segment opening in that window is the reply coming back, not
+// somebody talking.
+func TestPlayerCountsTheTailAsSound(t *testing.T) {
+	_, p := speakerAndPlayer()
+	<-p.play(context.Background(), clip(4800))
+	if !p.playing() {
+		t.Fatal("the tail of a finished clip is not counted as sound")
+	}
+	time.Sleep(playbackTail)
+	if p.playing() {
+		t.Error("the tail never expires; the microphone would stay held down")
 	}
 }
 
@@ -111,11 +132,13 @@ func TestPlayerPauseKeepsThePlaceAndResumePicksItUp(t *testing.T) {
 
 	waitUntil(t, func() bool { return len(speaker.heard()) > 0 })
 	p.pause()
-	if p.playing() {
-		t.Error("a paused player reports sound")
-	}
 	if !p.busy() {
 		t.Error("a paused player must still hold the floor")
+	}
+	// The helper was killed, but what it had already handed over is still
+	// coming out of the speakers.
+	if !p.playing() {
+		t.Error("a pause already reports the room silent")
 	}
 	p.mu.Lock()
 	odd := p.offset%2 != 0
@@ -291,8 +314,11 @@ func TestFilePlayerPauseResumeReplaysTheRemainder(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond) // hear roughly a quarter of it
 	p.pause()
-	if !p.busy() || p.playing() {
-		t.Error("a paused file player should hold the floor silently")
+	if !p.busy() {
+		t.Error("a paused file player should hold the floor")
+	}
+	if !p.playing() {
+		t.Error("a paused file player already reports the room silent")
 	}
 	p.mu.Lock()
 	offset := p.offset

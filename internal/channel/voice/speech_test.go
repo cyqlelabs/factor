@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,8 +25,12 @@ type fakeSpeechAPI struct {
 	text      string    // transcription reply
 	pcm       []byte    // synthesis reply
 	embedding []float64 // speaker embedding reply
-	status    int
-	hold      chan struct{} // when non-nil, every handler waits here first
+	// embedded is how many bytes of audio each embedding request carried,
+	// so a test can assert what was actually judged rather than what was
+	// captured.
+	embedded []int
+	status   int
+	hold     chan struct{} // when non-nil, every handler waits here first
 }
 
 // stall makes every request wait until release, like a speech server still
@@ -75,6 +80,12 @@ func newFakeSpeechAPI(t *testing.T) *fakeSpeechAPI {
 				form["file"] = header.Filename
 			}
 			f.forms = append(f.forms, form)
+		case strings.HasSuffix(r.URL.Path, "/audio/embedding"):
+			_ = r.ParseMultipartForm(32 << 20)
+			if file, _, err := r.FormFile("file"); err == nil {
+				wav, _ := io.ReadAll(file)
+				f.embedded = append(f.embedded, len(wav)-44) // past the RIFF header
+			}
 		default:
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.bodies = append(f.bodies, body)

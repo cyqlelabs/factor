@@ -49,6 +49,10 @@ const (
 	// ttsChunkChars keeps one synthesis call to a paragraph, so long replies
 	// start sounding before they finish rendering.
 	ttsChunkChars = 1200
+
+	// echoSettleMargin is what echoSettle allows for transcription on top of
+	// the silence that closes a segment.
+	echoSettleMargin = 3 * time.Second
 )
 
 // Voice is the PC voice connector. Like the phone it does not publish inbound
@@ -365,7 +369,7 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 
 	seg := newSegmenter(v.cfg.VADRatio, v.cfg.BargeRatio, v.cfg.SilenceMs)
 	frame := make([]byte, frameBytes)
-	barged := false
+	barged, overlapped := false, false
 	var utterStart time.Time
 	for {
 		if _, err := io.ReadFull(stream, frame); err != nil {
@@ -387,7 +391,17 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 		}
 
 		playing := v.player.playing()
+		wasOpen := seg.inSpeech
 		started, ended, utterance := seg.push(frame, playing)
+		if playing && (wasOpen || started) {
+			// The agent's voice was in the air while this segment was
+			// recording. That is the wider fact than a barge and the one
+			// feedback turns on: a user who starts a sentence in the pause
+			// before the reply lands still has the microphone open when the
+			// speakers begin, and the whole reply goes into the recording
+			// behind their words.
+			overlapped = true
+		}
 		if started {
 			// The activation windows are judged against this moment, not
 			// against when transcription finishes: a long sentence must not
@@ -404,17 +418,19 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 		if !ended {
 			continue
 		}
-		wasBarge := barged
-		barged = false
+		wasBarge, wasOverlap := barged, overlapped
+		barged, overlapped = false, false
 		if utterance == nil {
 			// Too short to hold a word — a cough. Let the reply go on.
 			slog.Debug("a sound opened the microphone but was too short to keep")
 			v.player.resume(ctx)
 			continue
 		}
-		slog.Debug("utterance captured", "ms", len(utterance)/2*1000/captureRate, "barge", wasBarge)
+		slog.Debug("utterance captured", "ms", len(utterance)/2*1000/captureRate,
+			"barge", wasBarge, "overlap", wasOverlap)
 		select {
-		case v.utts <- capturedUtterance{pcm: utterance, started: utterStart, barged: wasBarge}:
+		case v.utts <- capturedUtterance{pcm: utterance, started: utterStart,
+			barged: wasBarge, overlapped: wasOverlap}:
 		default:
 			slog.Warn("dropping an utterance: transcription is falling behind")
 			v.player.resume(ctx)
@@ -423,12 +439,19 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 }
 
 // capturedUtterance is one segment on its way to transcription; started is
-// when its first frame opened the VAD, and barged marks one captured while
-// the agent was speaking.
+// when its first frame opened the VAD.
 type capturedUtterance struct {
 	pcm     []byte
 	started time.Time
-	barged  bool
+	// barged marks one that opened while the agent was speaking: an
+	// interruption, and so a turn in its own right even without the wake word.
+	barged bool
+	// overlapped marks one the agent's voice was in the air for at any point
+	// of, a barge included. It is what says the recording holds two voices:
+	// its transcript is matched against what was spoken, and its audio is
+	// never learned as anybody's — a vector mixing the user with the agent
+	// belongs to neither.
+	overlapped bool
 }
 
 // utteranceWorker transcribes and dispatches off the capture goroutine, so a
@@ -454,7 +477,7 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		v.player.resume(ctx)
 		return
 	}
-	dec := v.gate(text, utterance.started, utterance.barged)
+	dec := v.gate(text, utterance.started, utterance.barged, utterance.overlapped)
 	var who speakerIdentity
 	switch {
 	case dec.accept:
@@ -522,21 +545,22 @@ type decision struct {
 // gate decides an utterance's fate. started is when the user began the
 // utterance — the windows are held against that moment, because the seconds
 // the sentence itself and its transcription take are not the user hesitating.
-// barged marks one captured over the agent's own voice: speech deliberate
+// barged marks one that opened over the agent's own voice: speech deliberate
 // enough to clear the raised barge thresholds is an interruption in its own
-// right, so it is accepted without the wake word — which, when it does
-// survive transcription, still anchors where the speakers' words end and the
-// user's begin.
-func (v *Voice) gate(text string, started time.Time, barged bool) decision {
+// right, so it is accepted without the wake word. overlapped is the wider
+// fact — the agent was speaking at some point while this was recording,
+// whether or not it had started yet — and it is what decides whether the
+// transcript has to be cleaned of the agent's own words.
+func (v *Voice) gate(text string, started time.Time, barged, overlapped bool) decision {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return decision{}
 	}
-	if barged {
-		// An utterance captured over playback opens with the speakers' own
-		// sound. At high volume that sound survives transcription, and an
-		// utterance that is nothing but the agent's recent words is feedback —
-		// answering it is the agent talking to itself.
+	if overlapped {
+		// The speakers' own sound is in this recording. At high volume it
+		// survives transcription, and an utterance that is nothing but the
+		// agent's recent words is feedback — answering it is the agent
+		// talking to itself.
 		rest, echoOnly := v.echo.strip(text)
 		if echoOnly || rest == "" {
 			return decision{echo: true}
@@ -555,7 +579,7 @@ func (v *Voice) gate(text string, started time.Time, barged bool) decision {
 	case activationPTT:
 		return decision{}
 	case activationWakeWord:
-		if stripped, ok := stripWakeWord(text, v.cfg.WakeWord, barged); ok {
+		if stripped, ok := stripWakeWord(text, v.cfg.WakeWord, overlapped); ok {
 			if stripped == "" {
 				v.windowUntil = time.Now().Add(v.followUp())
 				return decision{acknowledge: true}
@@ -640,6 +664,9 @@ func (v *Voice) speak(ctx context.Context, text string) {
 		return // the floor was taken while this waited its turn
 	}
 	defer v.armWindow()
+	// However this reply ends — heard out, or cut off by a barge partway —
+	// what reached the speakers settles on the same delay. See echoSettle.
+	defer v.echo.expire(v.echoSettle())
 	text = spokenText(text, v.cfg.Language)
 	if text == "" {
 		return
@@ -667,10 +694,16 @@ func (v *Voice) speak(ctx context.Context, text string) {
 			}
 		}
 	}
-	// Every chunk was heard out: this reply is no longer in the air, so its
-	// words can no longer come back as feedback. A barge later that quotes
-	// them is the user, and must not be swallowed as echo.
-	v.echo.clear()
+}
+
+// echoSettle is how long a reply that has stopped sounding stays matchable as
+// echo. The segment that captured the tail of it does not close until
+// silence_ms of quiet has passed, and is transcribed only after that:
+// forgetting the words the moment the speakers fall silent throws them away a
+// beat before the echo carrying them arrives. Past the delay they are
+// forgotten, so a user who quotes the reply later is not swallowed.
+func (v *Voice) echoSettle() time.Duration {
+	return time.Duration(v.cfg.SilenceMs)*time.Millisecond + echoSettleMargin
 }
 
 func (v *Voice) armWindow() {

@@ -16,17 +16,25 @@ import (
 // another's recall.)
 
 const (
-	// speakerStickyWindow is how long a short or barged utterance inherits
+	// speakerStickyWindow is how long a short or overlapped utterance inherits
 	// the last identified voice: a "yes" mid-conversation belongs to whoever
 	// was just talking, and half a second of audio cannot say who that is.
 	speakerStickyWindow = 30 * time.Second
 
 	// speakerMinBytes is the least speech worth embedding — below about a
 	// second the vectors are noise, and naming the wrong person costs more
-	// than naming nobody. Judged over the utterance minus its silence tail:
-	// every segment carries silence_ms of closing quiet, which says nothing
-	// about anyone's voice.
+	// than naming nobody. Judged over the utterance minus its silence tail,
+	// which is what gets embedded.
 	speakerMinBytes = captureRate * 2 // one second of 16 kHz s16le
+
+	// speakerLearnMargin is how far above the threshold a match has to sit
+	// before it is folded into the profile. Matching and learning are
+	// different bets: a borderline match costs one misattributed sentence,
+	// while borderline audio folded into a centroid moves it — toward the
+	// room, toward whoever else was talking — and every later match is judged
+	// against the moved one. That is how profiles drift into each other, and
+	// it is what "it stopped recognizing me" looks like from the inside.
+	speakerLearnMargin = 0.15
 )
 
 // How one identity was arrived at. It rides the decision purely so the log
@@ -36,7 +44,7 @@ const (
 	viaMatch       = "match"       // a profile above the threshold
 	viaEnrolled    = "enrolled"    // nobody matched, so a profile was created
 	viaUnknown     = "unknown"     // nobody matched, and the policy is anonymous
-	viaBarge       = "barge"       // captured over the agent's voice: not embedded
+	viaOverlap     = "overlap"     // recorded with the agent's voice in it: not embedded
 	viaShort       = "short"       // too little speech to identify: not embedded
 	viaUnavailable = "unavailable" // the embedding could not be computed
 )
@@ -58,22 +66,22 @@ type speakerIdentity struct {
 	inherited bool
 }
 
-// identifySpeaker names the voice behind one accepted utterance. Barged and
-// too-short utterances are never embedded — the first carries the speakers'
-// own sound mixed in, the second not enough voice to be anyone reliably —
-// they inherit the conversation's current speaker instead.
+// identifySpeaker names the voice behind one accepted utterance. Overlapped
+// and too-short utterances are never embedded — the first carries the
+// speakers' own sound mixed in, the second not enough voice to be anyone
+// reliably — they inherit the conversation's current speaker instead.
 func (v *Voice) identifySpeaker(ctx context.Context, utterance capturedUtterance) speakerIdentity {
 	if v.speakers == nil {
 		return speakerIdentity{}
 	}
-	silenceTail := v.cfg.SilenceMs * captureRate * 2 / 1000
-	if utterance.barged {
-		return v.stickySpeaker(viaBarge)
+	if utterance.overlapped {
+		return v.stickySpeaker(viaOverlap)
 	}
-	if len(utterance.pcm)-silenceTail < speakerMinBytes {
+	voiced := v.voiced(utterance.pcm)
+	if len(voiced) < speakerMinBytes {
 		return v.stickySpeaker(viaShort)
 	}
-	embedding, err := v.speechClient().embed(ctx, utterance.pcm)
+	embedding, err := v.speechClient().embed(ctx, voiced)
 	if err != nil || len(embedding) == 0 {
 		// One warning per outage: with the managed server down or serving
 		// without a speaker model, every utterance would repeat it.
@@ -95,7 +103,9 @@ func (v *Voice) identifySpeaker(ctx context.Context, utterance capturedUtterance
 			"threshold", v.cfg.SpeakerThreshold)
 	}
 	if name != "" && similarity >= v.cfg.SpeakerThreshold {
-		v.speakers.learn(name, embedding)
+		if similarity >= v.cfg.SpeakerThreshold+speakerLearnMargin {
+			v.speakers.learn(name, embedding)
+		}
 		return v.rememberSpeaker(name, viaMatch, similarity)
 	}
 	if v.cfg.UnknownSpeaker == unknownEnroll {
@@ -118,14 +128,14 @@ func (v *Voice) presenceOf(ctx context.Context, utterance capturedUtterance) spe
 	if v.speakers == nil {
 		return speakerIdentity{}
 	}
-	silenceTail := v.cfg.SilenceMs * captureRate * 2 / 1000
-	if utterance.barged {
-		return speakerIdentity{via: viaBarge}
+	if utterance.overlapped {
+		return speakerIdentity{via: viaOverlap}
 	}
-	if len(utterance.pcm)-silenceTail < speakerMinBytes {
+	voiced := v.voiced(utterance.pcm)
+	if len(voiced) < speakerMinBytes {
 		return speakerIdentity{via: viaShort}
 	}
-	embedding, err := v.speechClient().embed(ctx, utterance.pcm)
+	embedding, err := v.speechClient().embed(ctx, voiced)
 	if err != nil || len(embedding) == 0 {
 		return speakerIdentity{via: viaUnavailable}
 	}
@@ -138,6 +148,21 @@ func (v *Voice) presenceOf(ctx context.Context, utterance capturedUtterance) spe
 	// answer is the same under either unknown_speaker setting: somebody is
 	// here who is not the owner.
 	return speakerIdentity{via: viaUnknown, similarity: similarity}
+}
+
+// voiced is the utterance without the closing silence every segment carries:
+// silence_ms of quiet is what ends one, so it is always there, and against a
+// three-second sentence it is most of the recording. It says nothing about
+// whose voice this is, and an embedding computed over it is partly the room's
+// — which is what pulls two people's profiles toward each other until neither
+// is recognizable.
+func (v *Voice) voiced(pcm []byte) []byte {
+	tail := v.cfg.SilenceMs * captureRate * 2 / 1000
+	end := len(pcm) - tail
+	if end &^= 1; end <= 0 { // sample-aligned, or the vector is byte-swapped noise
+		return nil
+	}
+	return pcm[:end]
 }
 
 // speakerProfilesExist reports whether any voice is enrolled, which is what
