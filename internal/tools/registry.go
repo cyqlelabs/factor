@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/cyqlelabs/factor/internal/provider"
 )
@@ -145,6 +146,16 @@ func capResult(name, text string) string {
 	// Ending mid-line invites the model to complete the sentence itself.
 	if i := strings.LastIndexByte(kept, '\n'); i > maxResultChars/2 {
 		kept = kept[:i]
+	}
+	// A byte cut can land inside a multi-byte character, and a page in any
+	// language but English is full of them. Back off to the last whole rune
+	// rather than hand the model a broken one — bounded, because output that
+	// is not text at all must not turn this into a byte-at-a-time scan.
+	for range utf8.UTFMax {
+		if r, size := utf8.DecodeLastRuneInString(kept); r != utf8.RuneError || size > 1 {
+			break
+		}
+		kept = kept[:len(kept)-1]
 	}
 	slog.Info("tool result truncated", "tool", name, "chars", len(text), "kept", len(kept))
 	return fmt.Sprintf("%s\n\n[Truncated: %d of %d characters shown, and the rest is not in your context. "+

@@ -106,3 +106,33 @@ func TestMaskingDoesNotTouchTheHistoryItWasGiven(t *testing.T) {
 		t.Errorf("the caller's history was rewritten: %q", history[1].Content)
 	}
 }
+
+// Masking and compaction have to agree on what a session costs. Measuring the
+// raw log would spend a summarizing call — and the fidelity it costs — on
+// tokens the request was never going to carry.
+func TestTheBudgetMeasuresTheMaskedHistoryNotTheRawLog(t *testing.T) {
+	h := newHarness(t)
+	page := strings.Repeat("lorem ipsum ", 400) // ~1.2k tokens each
+	var history []provider.Message
+	for _, id := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"} {
+		history = append(history, toolExchange(id, "browser_navigate", "https://example.com/"+id, page)...)
+	}
+
+	h.loop.cfg.Agent.ContextWindowTokens = 0
+	raw := estimateTokens(history)
+	masked := estimateTokens(maskOldToolResults(history))
+	if masked >= raw/2 {
+		t.Fatalf("masking saved too little to tell the two apart: %d -> %d", raw, masked)
+	}
+
+	// A budget that clears the masked request but not the raw log: compaction
+	// must not fire.
+	h.loop.cfg.Agent.MaxContextTokens = h.loop.overhead() + masked + 200
+	if h.loop.needsCompaction(history) {
+		t.Error("compaction fired on tokens the request would never have carried")
+	}
+	h.loop.cfg.Agent.MaxContextTokens = h.loop.overhead() + masked - 200
+	if !h.loop.needsCompaction(history) {
+		t.Error("compaction did not fire when even the masked request overflows")
+	}
+}

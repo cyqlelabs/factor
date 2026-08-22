@@ -164,8 +164,13 @@ func (l *Loop) overhead() int {
 	return total
 }
 
+// needsCompaction reports whether the session has outgrown the budget. It
+// measures the history as the request will actually carry it — masked — not
+// as it sits on disk. Measuring the raw log would spend a summarizing call on
+// tokens that were never going to be sent, which is most of them in a session
+// that has been reading web pages.
 func (l *Loop) needsCompaction(history []provider.Message) bool {
-	return l.overhead()+estimateTokens(history) > l.budget()
+	return l.overhead()+estimateTokens(maskOldToolResults(history)) > l.budget()
 }
 
 func (l *Loop) maybeCompactAsync(in turnInput) {

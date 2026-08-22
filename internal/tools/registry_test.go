@@ -4,15 +4,22 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // floodTool returns more than any turn should have to carry.
-type floodTool struct{ size int }
+type floodTool struct {
+	size int
+	body string
+}
 
 func (f *floodTool) Name() string               { return "flood" }
 func (f *floodTool) Description() string        { return "returns too much" }
 func (f *floodTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
 func (f *floodTool) Execute(context.Context, map[string]any) *Result {
+	if f.body != "" {
+		return Text(f.body)
+	}
 	return Text(strings.Repeat("A", f.size))
 }
 
@@ -44,5 +51,22 @@ func TestAResultUnderTheCapIsUntouched(t *testing.T) {
 	r.Register(&floodTool{size: 100})
 	if got := r.Execute(context.Background(), "flood", nil).ForLLM; got != strings.Repeat("A", 100) {
 		t.Errorf("an ordinary result was rewritten: %q", got)
+	}
+}
+
+// A byte cut lands inside a multi-byte character often enough that the first
+// page in Spanish would prove it. What comes back must still be text.
+func TestTheCapDoesNotSplitACharacter(t *testing.T) {
+	r := NewRegistry(nil, nil)
+	// Three bytes per character and no newlines: the cut cannot land on a
+	// character boundary, and the line-boundary trim cannot rescue it.
+	r.Register(&floodTool{body: strings.Repeat("€", 20000)})
+
+	got := r.Execute(context.Background(), "flood", nil).ForLLM
+	if !utf8.ValidString(got) {
+		t.Error("the capped result is not valid UTF-8")
+	}
+	if !strings.HasPrefix(got, strings.Repeat("€", 100)) {
+		t.Error("the cap mangled the head of the result")
 	}
 }
