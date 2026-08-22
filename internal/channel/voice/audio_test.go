@@ -145,11 +145,70 @@ func TestAudioCommandsReportWhatIsMissing(t *testing.T) {
 	if _, err := playbackCommand(scriptedEnv("linux"), ""); err == nil || !strings.Contains(err.Error(), "paplay") {
 		t.Errorf("playback error = %v, want it to name the helpers", err)
 	}
-	if _, err := captureCommand(scriptedEnv("windows", "parec"), ""); err == nil {
-		t.Error("windows capture should be refused for now")
+	// The unix helpers are not programs a Windows machine can have, so naming
+	// them there would send the user after something that does not exist.
+	if _, err := captureCommand(scriptedEnv("windows", "parec"), ""); err == nil || !strings.Contains(err.Error(), "SoX") {
+		t.Errorf("windows capture error = %v, want it to name SoX", err)
 	}
-	if _, err := playbackCommand(scriptedEnv("windows", "paplay"), ""); err == nil {
-		t.Error("windows playback should be refused for now")
+	if _, err := playbackCommand(scriptedEnv("windows", "paplay"), ""); err == nil || !strings.Contains(err.Error(), "SoX") {
+		t.Errorf("windows playback error = %v, want it to name SoX", err)
+	}
+}
+
+// Windows has no PulseAudio, PipeWire or ALSA helper; SoX carries both
+// directions there and is the only thing the chain may reach for.
+func TestWindowsAudioRunsThroughSox(t *testing.T) {
+	argv, err := captureCommand(scriptedEnv("windows", "rec"), "")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if argv[0] != "rec" {
+		t.Errorf("capture helper = %q, want rec", argv[0])
+	}
+	if line := strings.Join(argv, " "); !strings.Contains(line, "16000") || !strings.Contains(line, "-t raw") {
+		t.Errorf("capture %q does not ask for 16 kHz raw", line)
+	}
+
+	argv, err = playbackCommand(scriptedEnv("windows", "play"), "")
+	if err != nil {
+		t.Fatalf("playback: %v", err)
+	}
+	if argv[0] != "play" {
+		t.Errorf("playback helper = %q, want play", argv[0])
+	}
+	if line := strings.Join(argv, " "); !strings.Contains(line, "24000") {
+		t.Errorf("playback %q does not ask for 24 kHz", line)
+	}
+}
+
+// A named device needs the full sox spelling: rec and play only ever open the
+// system default, and the Env seam has no environment to carry AUDIODEV in.
+func TestWindowsAudioNamesADeviceThroughSox(t *testing.T) {
+	argv, err := captureCommand(scriptedEnv("windows", "rec", "sox"), "Microphone (USB)")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	line := strings.Join(argv, " ")
+	if argv[0] != "sox" || !strings.Contains(line, "-t waveaudio Microphone (USB)") {
+		t.Errorf("capture invocation lost the device: %v", argv)
+	}
+
+	argv, err = playbackCommand(scriptedEnv("windows", "play", "sox"), "Speakers (USB)")
+	if err != nil {
+		t.Fatalf("playback: %v", err)
+	}
+	line = strings.Join(argv, " ")
+	if argv[0] != "sox" || !strings.HasSuffix(line, "-t waveaudio Speakers (USB)") {
+		t.Errorf("playback invocation lost the device: %v", argv)
+	}
+
+	// rec and play alone cannot do it, and saying so beats opening the wrong
+	// microphone without a word.
+	if _, err := captureCommand(scriptedEnv("windows", "rec"), "Microphone (USB)"); err == nil {
+		t.Error("a named capture device was accepted without sox")
+	}
+	if _, err := playbackCommand(scriptedEnv("windows", "play"), "Speakers (USB)"); err == nil {
+		t.Error("a named playback device was accepted without sox")
 	}
 }
 
@@ -208,6 +267,15 @@ func TestMissingHelpersListsEachDirectionOnce(t *testing.T) {
 	}
 	if got := MissingHelpers(scriptedEnv("linux", "arecord", "aplay")); len(got) != 0 {
 		t.Errorf("ALSA-only machine reported %v missing", got)
+	}
+
+	// A Windows report has to name programs a Windows user can install.
+	win := MissingHelpers(scriptedEnv("windows"))
+	if len(win) != 2 || win[0].Bin != "rec" || win[1].Bin != "play" {
+		t.Errorf("windows missing = %v, want rec and play", win)
+	}
+	if got := MissingHelpers(scriptedEnv("windows", "rec", "play")); len(got) != 0 {
+		t.Errorf("a machine with SoX reported %v missing", got)
 	}
 }
 

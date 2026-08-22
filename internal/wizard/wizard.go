@@ -308,7 +308,11 @@ func (w *wiz) quietAudioHelpers(ctx context.Context) {
 	}
 	manager := tools.DetectSystemManager()
 	if manager == "" {
-		w.ui.printf("voice:     missing %s and no package manager to install them\n", helperNames(missing))
+		if env.GOOS == "windows" {
+			w.ui.printf("voice:     missing %s — install SoX (https://sourceforge.net/projects/sox/)\n", helperNames(missing))
+		} else {
+			w.ui.printf("voice:     missing %s and no package manager to install them\n", helperNames(missing))
+		}
 		return
 	}
 	packages := desktop.PackagesFor(missing, manager)
@@ -1635,11 +1639,7 @@ func activationIndex(existing voiceSection) int {
 func (w *wiz) stepVoice(ctx context.Context) error {
 	env := w.opts.Audio
 	if !voice.MachineHasAudio(env) {
-		if env.GOOS == "windows" {
-			w.ui.Note("PC voice (mic + speakers) is not supported on Windows yet — skipping")
-		} else {
-			w.ui.Note("no sound system detected — skipping PC voice (mic + speakers)")
-		}
+		w.ui.Note("no sound system detected — skipping PC voice (mic + speakers)")
 		return nil
 	}
 	existing := voiceChannelConfig(w.cfg)
@@ -1701,7 +1701,11 @@ func (w *wiz) installAudioHelpers(ctx context.Context, env voice.Env) error {
 	}
 	manager := tools.DetectSystemManager()
 	if manager == "" {
-		w.ui.Note("no supported package manager found — install them with your system's tools")
+		if env.GOOS == "windows" {
+			w.ui.Note("install SoX (https://sourceforge.net/projects/sox/) and put rec.exe and play.exe on PATH")
+		} else {
+			w.ui.Note("no supported package manager found — install them with your system's tools")
+		}
 		return nil
 	}
 	packages := desktop.PackagesFor(missing, manager)

@@ -177,7 +177,7 @@ func playFileExec(ctx context.Context, argv []string, wav []byte) error {
 // the device.
 func captureCommand(e Env, device string) ([]string, error) {
 	if e.GOOS == "windows" {
-		return nil, fmt.Errorf("microphone capture is not supported on Windows yet")
+		return windowsCapture(e, device)
 	}
 	switch {
 	case e.has("parec"):
@@ -209,7 +209,7 @@ func captureCommand(e Env, device string) ([]string, error) {
 // from stdin.
 func playbackCommand(e Env, device string) ([]string, error) {
 	if e.GOOS == "windows" {
-		return nil, fmt.Errorf("speaker playback is not supported on Windows yet")
+		return windowsPlayback(e, device)
 	}
 	switch {
 	case e.has("paplay"):
@@ -242,21 +242,49 @@ func playbackCommand(e Env, device string) ([]string, error) {
 	return nil, fmt.Errorf("no speaker helper is installed (want one of paplay, pw-play, aplay, play, afplay)")
 }
 
+// Windows has no PulseAudio, PipeWire or ALSA helper to reach for. SoX is
+// the one recorder-and-player with a Windows build, and it covers both
+// directions: `rec` and `play` are SoX with the default device, and naming a
+// device needs the full `sox` spelling with its waveaudio driver, because the
+// Env seam runs a bare argv — AUDIODEV, how SoX is usually pointed at a
+// device, would need an environment it has no way to pass.
+const soxHint = "install SoX (https://sourceforge.net/projects/sox/) and put rec.exe and play.exe on PATH"
+
+func windowsCapture(e Env, device string) ([]string, error) {
+	raw := []string{"-t", "raw", "-b", "16", "-e", "signed-integer", "-r", "16000", "-c", "1", "-"}
+	if device != "" {
+		if !e.has("sox") {
+			return nil, fmt.Errorf("naming a capture device needs sox itself, not just rec — %s", soxHint)
+		}
+		return append([]string{"sox", "-q", "-t", "waveaudio", device}, raw...), nil
+	}
+	if e.has("rec") {
+		return append([]string{"rec", "-q"}, raw...), nil
+	}
+	return nil, fmt.Errorf("no microphone helper is installed — %s", soxHint)
+}
+
+func windowsPlayback(e Env, device string) ([]string, error) {
+	raw := []string{"-t", "raw", "-b", "16", "-e", "signed-integer", "-r", "24000", "-c", "1", "-"}
+	if device != "" {
+		if !e.has("sox") {
+			return nil, fmt.Errorf("naming a playback device needs sox itself, not just play — %s", soxHint)
+		}
+		return append(append([]string{"sox", "-q"}, raw...), "-t", "waveaudio", device), nil
+	}
+	if e.has("play") {
+		return append([]string{"play", "-q"}, raw...), nil
+	}
+	return nil, fmt.Errorf("no speaker helper is installed — %s", soxHint)
+}
+
 // MachineHasAudio reports whether this machine has a sound system at all —
 // the same question MachineHasDisplay answers for screens, asked of the audio
 // stack: a setup run over ssh sees no PULSE_SERVER while the sound card in
 // the box works the whole time, so the devices are probed, not the
 // environment.
 func MachineHasAudio(e Env) bool {
-	// Windows is the one platform with no helper on either side —
-	// captureCommand and playbackCommand both refuse — so however good the
-	// sound card is, there is none Factor can reach. Answering yes here is
-	// what used to make the wizard offer PC voice and configure a channel
-	// that could only fail on its first utterance.
-	if e.GOOS == "windows" {
-		return false
-	}
-	if e.GOOS == "darwin" {
+	if e.GOOS == "darwin" || e.GOOS == "windows" {
 		return true
 	}
 	if e.Glob == nil {
@@ -284,17 +312,26 @@ var (
 	playbackHelper = desktop.Helper{Bin: "paplay", Purpose: "speaker playback",
 		Packages: map[string]string{"apt": "pulseaudio-utils", "dnf": "pulseaudio-utils",
 			"pacman": "libpulse", "apk": "pulseaudio-utils", "xbps": "pulseaudio-utils"}}
+
+	// On Windows both directions are SoX, so the names a report shows have to
+	// be its own: parec and paplay are not programs a Windows user can install.
+	windowsCaptureHelper  = desktop.Helper{Bin: "rec", Purpose: "microphone capture (SoX)"}
+	windowsPlaybackHelper = desktop.Helper{Bin: "play", Purpose: "speaker playback (SoX)"}
 )
 
 // MissingHelpers lists what the channel needs and cannot find; empty means
 // both directions of audio have a helper.
 func MissingHelpers(e Env) []desktop.Helper {
+	capture, playback := captureHelper, playbackHelper
+	if e.GOOS == "windows" {
+		capture, playback = windowsCaptureHelper, windowsPlaybackHelper
+	}
 	var missing []desktop.Helper
 	if _, err := captureCommand(e, ""); err != nil {
-		missing = append(missing, captureHelper)
+		missing = append(missing, capture)
 	}
 	if _, err := playbackCommand(e, ""); err != nil {
-		missing = append(missing, playbackHelper)
+		missing = append(missing, playback)
 	}
 	return missing
 }
