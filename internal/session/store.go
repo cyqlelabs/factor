@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cyqlelabs/factor/internal/provider"
 )
@@ -65,6 +66,15 @@ func sanitizeKey(key string) string {
 
 func (s *Store) historyPath(key string) string {
 	return filepath.Join(s.dir, sanitizeKey(key)+".jsonl")
+}
+
+// archiveSuffix marks the log of messages compaction has dropped from the
+// live history. It ends in .jsonl so the file reads with the same tools as
+// the session itself, which is why List has to know to skip it.
+const archiveSuffix = ".archive.jsonl"
+
+func (s *Store) archivePath(key string) string {
+	return filepath.Join(s.dir, sanitizeKey(key)+archiveSuffix)
 }
 
 func (s *Store) metaPath(key string) string {
@@ -157,6 +167,26 @@ func (s *Store) History(key string) ([]provider.Message, error) {
 	return msgs[m.Skip:], nil
 }
 
+// LastActivity reports when the session was last written to, which is what
+// tells a resumed turn how long the user has been away. It is the log file's
+// modification time rather than a stamp on the messages: the log is
+// append-only, so the file already carries the answer, and asking the
+// filesystem costs nothing on a path that runs every turn.
+//
+// Compaction rewrites the log in place, so it restores this time deliberately
+// (see Compact) — otherwise housekeeping done while nobody was there would
+// report the conversation as recent.
+func (s *Store) LastActivity(key string) (time.Time, bool) {
+	l := s.lock(key)
+	l.Lock()
+	defer l.Unlock()
+	info, err := os.Stat(s.historyPath(key))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
 // Summary returns the rolling summary of truncated history.
 func (s *Store) Summary(key string) string {
 	l := s.lock(key)
@@ -232,7 +262,7 @@ func (s *Store) Clear(key string) error {
 	l := s.lock(key)
 	l.Lock()
 	defer l.Unlock()
-	for _, p := range []string{s.historyPath(key), s.metaPath(key)} {
+	for _, p := range []string{s.historyPath(key), s.metaPath(key), s.archivePath(key)} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -249,6 +279,9 @@ func (s *Store) List() ([]string, error) {
 	var out []string
 	for _, e := range entries {
 		name := e.Name()
+		if strings.HasSuffix(name, archiveSuffix) {
+			continue // the archive is a session's past, not a session
+		}
 		if strings.HasSuffix(name, ".jsonl") {
 			out = append(out, strings.TrimSuffix(name, ".jsonl"))
 		}
@@ -256,7 +289,38 @@ func (s *Store) List() ([]string, error) {
 	return out, nil
 }
 
-// Compact physically rewrites the log dropping truncated messages.
+// archive appends messages leaving the live history to the session's archive
+// log, so compaction moves them rather than destroying them.
+//
+// What replaces them in context is a summary written by a model, and a model
+// writing a summary is the one part of this system that cannot be trusted to
+// be complete. Keeping the raw turns costs a few kilobytes of disk and is the
+// difference between "the summary dropped it" and "it is gone": the exact
+// wording, the tool result, the identifier nobody thought to preserve are all
+// still readable afterwards, by the user or by the agent's own file tools.
+func (s *Store) archive(key string, msgs []provider.Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(s.archivePath(key), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	for _, msg := range msgs {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(append(data, '\n')); err != nil {
+			return err
+		}
+	}
+	return f.Sync()
+}
+
+// Compact physically rewrites the log, moving truncated messages to the
+// archive.
 func (s *Store) Compact(key string) error {
 	l := s.lock(key)
 	l.Lock()
@@ -271,6 +335,17 @@ func (s *Store) Compact(key string) error {
 	}
 	if m.Skip > len(msgs) {
 		m.Skip = len(msgs)
+	}
+	// Compaction is housekeeping, not conversation. It can run long after the
+	// last thing anyone said — on an idle session, that is the whole point —
+	// so the log keeps the time it was last spoken into, which is what
+	// LastActivity answers with.
+	var spokenAt time.Time
+	if info, err := os.Stat(s.historyPath(key)); err == nil {
+		spokenAt = info.ModTime()
+	}
+	if err := s.archive(key, msgs[:m.Skip]); err != nil {
+		return err
 	}
 	live := msgs[m.Skip:]
 	var buf strings.Builder
@@ -288,6 +363,11 @@ func (s *Store) Compact(key string) error {
 	}
 	if err := os.Rename(tmp, s.historyPath(key)); err != nil {
 		return err
+	}
+	if !spokenAt.IsZero() {
+		if err := os.Chtimes(s.historyPath(key), spokenAt, spokenAt); err != nil {
+			return fmt.Errorf("restore session mtime: %w", err)
+		}
 	}
 	m.Skip = 0
 	if err := s.writeMeta(key, m); err != nil {
