@@ -40,6 +40,7 @@ than logging, so past failures become constraints it doesn't repeat.
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning`, `reasoning_effort`, or a `thinking` budget |
 | ☎️ **Answers the phone** | A real number to call, or it calls and texts you — barge-in, voicemail detection, optional fully local speech ([Phone](#phone-calls-and-sms)) |
 | 🎙️ **Listens in the room** | Mic in, speakers out, barge-in, optional wake word, push-to-talk via `factor talk` ([PC voice](#pc-voice-mic-and-speakers)) |
+| 👥 **Tells voices apart** | A recording is read voice by voice, so each person holds their own conversation — and company in the room moves the answer to a memory space it can hear ([PC voice](#pc-voice-mic-and-speakers)) |
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications on X11/Wayland/macOS/Windows — plus grid vision ([Desktop](#desktop)) |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed one ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills ([Extending](#extending-factor)) |
@@ -54,7 +55,7 @@ flowchart LR
     CLI([CLI]) <--> BUS
     PH([Phone]) <--> SHELL["voice shell sidecar · speech · barge-in"]
     SHELL <-->|chat completions on loopback| LOOP
-    PC([PC voice]) <--> MIC["mic + speakers · VAD · wake word · barge-in"]
+    PC([PC voice]) <--> MIC["mic + speakers · VAD · wake word · barge-in · speaker id"]
     MIC <-->|synchronous turns| LOOP
     BUS[message bus] --> LOOP["agent loop · one live turn per session"]
     LOOP <-->|recall · store| MEM[("smrti REST sidecar")]
@@ -152,7 +153,8 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "personality": "balanced",               // analytical | curious | empathetic | maverick | deterministic
     "space": "main",                         // where conversations are remembered
     "space_strategy": "origin",              // origin: cron and job turns use system_space | single: one space for all
-    "system_space": "system"
+    "system_space": "system",
+    "shared_space": "shared"                 // what a turn other people can hear reads and writes
   },
   "channels": {
     "telegram": { "token": "123:ABC", "allow_from": ["your-telegram-id"] },
@@ -180,8 +182,10 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
       "tts": { "provider": "elevenlabs" },     // elevenlabs | local-openai
       "elevenlabs_api_key": "...",
       "speaker_id": false,                     // tell the room apart; needs a local speech tier
-      "speaker_threshold": 0.5,                // similarity below which a voice is nobody enrolled
+      "speaker_threshold": 0.35,               // similarity below which a voice is nobody enrolled
       "unknown_speaker": "anonymous",          // anonymous | enroll
+      "room_isolation": null,                  // null = on wherever speaker_id is
+      "room_timeout_minutes": 30,              // how long a voice counts as still in the room
       "output_volume": 100                     // 1–100; lower it when the speakers reach the mic
     }
   },
@@ -434,16 +438,48 @@ against the words Factor just sent to them: its own voice is dropped instead of
 answered, or stripped off the front of what you actually said. `output_volume` turns
 the reply down in rooms where the speakers overpower the microphone.
 
-**Who is talking.** With `speaker_id` on, every utterance's voice is matched against
-the profiles in `~/.factor/voice-speakers.json`. The first voice enrolled is the
-owner and holds the main conversation; a recognized guest gets a session of their
-own and is named to the agent as the person speaking, so two people in a room don't
-share one thread. `unknown_speaker` decides what a new voice gets — a profile on the
-spot, or the main conversation, unnamed — and the `voice_speakers` tool renames
-whoever spoke last, which is how a profile born `speaker-2` becomes Roxana. It needs
-a local speech tier, which is what computes the voice embeddings. Every decision
-lands in the log with the similarity behind it, so a turn answered as the wrong
-person is readable rather than a guess.
+**Who is talking.** With `speaker_id` on, every utterance is matched against the
+profiles in `~/.factor/voice-speakers.json` — voice by voice, not clip by clip. Two
+people talking to each other leave gaps far shorter than the silence that closes an
+utterance, so their whole exchange arrives as one recording, and a single embedding
+of that is a blend landing on whichever profile it sits nearest: one name for two
+people, in a room the log then calls empty. The speech server separates the tracks
+first, embeds each person's speech with every overlap removed, and returns them in
+the order they spoke.
+
+The turn belongs to whoever opened the recording, since the wake word was at its
+front; anyone who joined halfway through is the room, not the asker. The first voice
+enrolled is the owner and holds the main conversation, a recognized guest gets a
+session of their own and is named to the agent as the person speaking, and
+`unknown_speaker` decides what a new voice gets: a profile on the spot, or the main
+conversation, unnamed. The `voice_speakers` tool renames whoever spoke last, which is
+how a profile born `speaker-2` becomes Roxana. Three bars rise with the stakes: one
+second of speech to put a name to a voice, two to fold it into that profile, three to
+create one, because a spurious profile never goes away and competes for every match
+after it. It needs a local speech tier, which is what computes the embeddings, and
+every decision lands in the log with the similarity behind it, so a turn answered as
+the wrong person is readable rather than a guess.
+
+**Who can hear the answer.** Separating the voices answers the question
+confidentiality actually turns on: who is listening, not who is speaking. A second
+voice in a recording makes the room shared — at most one of them is the owner, so
+the rest are company — and that holds before anyone is enrolled and even when nobody
+could be named. Every utterance the mic resolves is evidence, including the ones the
+wake word turned away: someone talking to *you* is still someone in the room.
+
+| Room | Session | Recalls from | Remembers into |
+|---|---|---|---|
+| private | `voice:local`, or the guest's own | `space` + `shared_space` | `space` |
+| shared | `voice:local:room` — everyone in one thread | `shared_space` | `shared_space` |
+
+One utterance declares company; `room_timeout_minutes` of silence or the `room` tool
+takes it back. The asymmetry is deliberate: a room wrongly called shared costs you a
+coy answer, one wrongly called private says something private to a guest. Sound only
+reports people who make it, so the `room` tool is also how you mention someone who
+came in quietly or left. Either flip is spoken before the answer that depends on it,
+and the room outlives the process, aged against the wall clock rather than uptime,
+so a 9pm upgrade doesn't bring Factor back up private while the guest is still on the
+sofa.
 
 The local tier keeps to itself. Factor sets `ORT_DISABLE_TELEMETRY=1` in the speech
 process's environment before it starts, because onnxruntime otherwise uploads your
