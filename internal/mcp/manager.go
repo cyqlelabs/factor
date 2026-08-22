@@ -160,13 +160,10 @@ func (t *mcpTool) Execute(ctx context.Context, args map[string]any) *tools.Resul
 	if text == "" {
 		text = "(empty result)"
 	}
-	// Bound what enters the context and the session log — a runaway MCP
-	// result must not make the session history unreadable.
-	const maxResult = 32 * 1024
-	if len(text) > maxResult {
-		half := maxResult / 2
-		text = text[:half] + fmt.Sprintf("\n... [%d bytes truncated] ...\n", len(text)-maxResult) + text[len(text)-half:]
-	}
+	// Bounding a runaway result is the registry's job, not this one: every
+	// tool's output passes through the same cap on its way back to the loop,
+	// and a second limit here would only cut what that one is about to cut
+	// again, in a different place and with a different explanation.
 	return &tools.Result{ForLLM: text, IsError: isErr}
 }
 

@@ -103,7 +103,7 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 			result = Errorf("tool %s panicked: %v", name, rec)
 		}
 		if result != nil {
-			result.ForLLM = r.filter(result.ForLLM)
+			result.ForLLM = capResult(name, r.filter(result.ForLLM))
 			result.ForUser = r.filter(result.ForUser)
 		}
 	}()
@@ -123,6 +123,33 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 		res = Text("(no output)")
 	}
 	return res
+}
+
+// maxResultChars bounds one tool result at roughly four thousand tokens.
+// That is generous for an answer and stingy for a document: a page, a log or
+// a directory listing that runs past it was never going to be read whole, and
+// what it costs is charged on every turn for the rest of the session, not
+// just the one that asked for it.
+const maxResultChars = 16000
+
+// capResult truncates an oversized tool result and says so in the result
+// itself. A silent cut reads to the model as the whole answer — the page
+// really did end there, the search really did return nine hits — so the note
+// is the part that matters: it names what was withheld and how to ask for
+// less, which turns a truncation into a next step instead of a wrong fact.
+func capResult(name, text string) string {
+	if len(text) <= maxResultChars {
+		return text
+	}
+	kept := text[:maxResultChars]
+	// Ending mid-line invites the model to complete the sentence itself.
+	if i := strings.LastIndexByte(kept, '\n'); i > maxResultChars/2 {
+		kept = kept[:i]
+	}
+	slog.Info("tool result truncated", "tool", name, "chars", len(text), "kept", len(kept))
+	return fmt.Sprintf("%s\n\n[Truncated: %d of %d characters shown, and the rest is not in your context. "+
+		"Narrow the call — a filter, a query, a smaller range, a specific path — to see the part you need.]",
+		kept, len(kept), len(text))
 }
 
 // ValidateArgs checks required fields, primitive types, and string enums

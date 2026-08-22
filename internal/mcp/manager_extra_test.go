@@ -23,7 +23,7 @@ const (
 	modeBadList      = "bad-list"      // answers tools/list with the wrong shape
 )
 
-// bigResultBytes overshoots mcpTool's 32KB result cap so Execute must truncate.
+// bigResultBytes overshoots the registry's result cap so Execute must truncate.
 const bigResultBytes = 40 * 1024
 
 // richToolSpecs is what the rich server advertises from tools/list. Note that
@@ -252,16 +252,17 @@ func TestMCPToolTruncatesOversizedResults(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("execute = %+v", res)
 	}
-	const resultCap = 32 * 1024
 	if len(res.ForLLM) >= bigResultBytes {
 		t.Errorf("result is %d bytes, want it truncated below the %d byte source", len(res.ForLLM), bigResultBytes)
 	}
-	marker := fmt.Sprintf("[%d bytes truncated]", bigResultBytes-resultCap)
-	if !strings.Contains(res.ForLLM, marker) {
-		t.Errorf("result does not carry the truncation marker %q", marker)
+	// One cap, applied to every tool alike: an MCP server cannot flood the
+	// context by the back door, and what it says when it does is the same
+	// sentence every other tool gets.
+	if !strings.Contains(res.ForLLM, fmt.Sprintf("of %d characters shown", bigResultBytes)) {
+		t.Errorf("result does not say what it withheld: %q", res.ForLLM[max(len(res.ForLLM)-200, 0):])
 	}
-	if !strings.HasPrefix(res.ForLLM, strings.Repeat("A", 64)) || !strings.HasSuffix(res.ForLLM, strings.Repeat("A", 64)) {
-		t.Error("truncation should keep the head and the tail of the result")
+	if !strings.HasPrefix(res.ForLLM, strings.Repeat("A", 64)) {
+		t.Error("truncation dropped the head of the result")
 	}
 }
 
