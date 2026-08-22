@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -235,7 +236,8 @@ func TestApplyReplacesTheBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o100 == 0 {
+	// Windows carries executability in the extension, not a mode bit.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o100 == 0 {
 		t.Errorf("the installed binary is not executable (%v)", info.Mode())
 	}
 	for _, leftover := range []string{exe + ".new", exe + ".old"} {
@@ -440,10 +442,18 @@ func TestApplyIntoAnUnwritableDirectory(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("the old build"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
+	// Windows has no mode bit that stops a write into a directory, so the
+	// staging path is blocked by putting a directory where the file must go.
+	if runtime.GOOS == "windows" {
+		if err := os.Mkdir(exe+".new", 0o700); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	prev := executablePath
 	executablePath = func() (string, error) { return exe, nil }
 	t.Cleanup(func() { executablePath = prev })

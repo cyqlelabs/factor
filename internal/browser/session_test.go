@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -26,13 +27,26 @@ func fakeBrowserOnPath(t *testing.T, names ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for _, name := range names {
-		path := filepath.Join(dir, name)
+		path := filepath.Join(dir, exeName(name))
 		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if runtime.GOOS == "windows" {
+		t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+	}
 	t.Setenv("PATH", dir)
 	return dir
+}
+
+// exeName is how this platform spells an executable's filename. Windows
+// resolves a bare name through PATHEXT, so an extensionless stub is invisible
+// to LookPath however executable its mode bits are.
+func exeName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
 }
 
 func TestFindBrowserBinaryResolvesTheConfiguredCommand(t *testing.T) {
@@ -41,7 +55,7 @@ func TestFindBrowserBinaryResolvesTheConfiguredCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	if want := filepath.Join(dir, "my-browser"); got != want {
+	if want := filepath.Join(dir, exeName("my-browser")); got != want {
 		t.Errorf("path = %q, want %q", got, want)
 	}
 }
@@ -60,7 +74,7 @@ func TestFindBrowserBinaryAutoDetectsAChromiumFamilyBrowser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auto-detect: %v", err)
 	}
-	if want := filepath.Join(dir, "chromium"); got != want {
+	if want := filepath.Join(dir, exeName("chromium")); got != want {
 		t.Errorf("path = %q, want %q", got, want)
 	}
 }

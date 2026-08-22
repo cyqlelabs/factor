@@ -250,12 +250,12 @@ func xmlEscape(s string) string {
 // gatewayCommand renders the start command for a unit or entry, quoting the
 // paths so a space in one survives the launcher's word splitting.
 func gatewayCommand(exe, configPath string, detach bool) string {
-	cmd := fmt.Sprintf("%q gateway", exe)
+	cmd := quotePath(exe) + " gateway"
 	if detach {
 		cmd += " -d"
 	}
 	if configPath != "" {
-		cmd += fmt.Sprintf(" -c %q", configPath)
+		cmd += " -c " + quotePath(configPath)
 	}
 	return cmd
 }

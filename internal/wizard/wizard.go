@@ -1635,7 +1635,11 @@ func activationIndex(existing voiceSection) int {
 func (w *wiz) stepVoice(ctx context.Context) error {
 	env := w.opts.Audio
 	if !voice.MachineHasAudio(env) {
-		w.ui.Note("no sound system detected — skipping PC voice (mic + speakers)")
+		if env.GOOS == "windows" {
+			w.ui.Note("PC voice (mic + speakers) is not supported on Windows yet — skipping")
+		} else {
+			w.ui.Note("no sound system detected — skipping PC voice (mic + speakers)")
+		}
 		return nil
 	}
 	existing := voiceChannelConfig(w.cfg)

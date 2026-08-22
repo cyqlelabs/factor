@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -42,19 +43,34 @@ func tempHome(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("FACTOR_HOME", home)
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // what os.UserHomeDir reads on Windows
 	t.Setenv("PATH", filepath.Join(home, "bin"))
+	if runtime.GOOS == "windows" {
+		t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+	}
 	return home
 }
 
 // fakeBrowserOnPath satisfies the browser probe so the default flow does not
 // stop to offer an install; the tests that exercise provisioning leave it out.
+// fakeBrowserPath is where the stub lives. Windows resolves a bare name
+// through PATHEXT, so an extensionless file is invisible to LookPath and the
+// wizard would stop to offer an install the tests do not expect.
+func fakeBrowserPath(home string) string {
+	name := "chromium"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(home, "bin", name)
+}
+
 func fakeBrowserOnPath(t *testing.T, home string) string {
 	t.Helper()
 	bin := filepath.Join(home, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(bin, "chromium")
+	path := fakeBrowserPath(home)
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

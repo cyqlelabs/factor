@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,13 @@ func hearingAudio(bins ...string) voice.Env {
 // install path can be exercised without a real package manager.
 func plantManager(t *testing.T, home string) {
 	t.Helper()
-	path := filepath.Join(home, "bin", "apt-get")
+	// The suffix is what makes it visible to LookPath on Windows, which
+	// resolves a bare name through PATHEXT.
+	name := "apt-get"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(home, "bin", name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}

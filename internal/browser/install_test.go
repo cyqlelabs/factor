@@ -91,7 +91,7 @@ func unpackHelium(t *testing.T) func(string) {
 }
 
 func TestEnsureEngineUsesInstalledBrowser(t *testing.T) {
-	want := filepath.Join(fakeBrowserOnPath(t, "chromium"), "chromium")
+	want := filepath.Join(fakeBrowserOnPath(t, "chromium"), exeName("chromium"))
 	got, installed, err := EnsureEngine(context.Background(), t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("EnsureEngine: %v", err)

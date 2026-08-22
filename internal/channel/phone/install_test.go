@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -337,7 +338,7 @@ func TestWriteScriptIsIdempotentAndSelfHealing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && first.Mode().Perm() != 0o600 {
 		t.Errorf("script mode = %v, want 0600 (it carries no secrets, but nothing else should edit it)", first.Mode().Perm())
 	}
 

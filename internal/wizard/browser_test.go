@@ -25,7 +25,7 @@ import (
 // tools?", took yes for an answer, and left the machine with no browser.
 func TestWizardInstallsBrowserWhenMissing(t *testing.T) {
 	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y", "n")
-	if err := os.Remove(filepath.Join(h.home, "bin", "chromium")); err != nil {
+	if err := os.Remove(fakeBrowserPath(h.home)); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.run(); err != nil {
@@ -47,7 +47,7 @@ func TestWizardInstallsBrowserWhenMissing(t *testing.T) {
 // behind them, and nothing left that would ever install one.
 func TestWizardReportsAFailedBrowserInstall(t *testing.T) {
 	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y", "n")
-	if err := os.Remove(filepath.Join(h.home, "bin", "chromium")); err != nil {
+	if err := os.Remove(fakeBrowserPath(h.home)); err != nil {
 		t.Fatal(err)
 	}
 	h.opts.EnsureBrowser = func(context.Context, browser.Progress) (string, bool, error) {
@@ -71,7 +71,7 @@ func TestWizardReportsAFailedBrowserInstall(t *testing.T) {
 
 func TestWizardKeepsBrowserToolsWhenInstallDeclined(t *testing.T) {
 	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n", "n")
-	if err := os.Remove(filepath.Join(h.home, "bin", "chromium")); err != nil {
+	if err := os.Remove(fakeBrowserPath(h.home)); err != nil {
 		t.Fatal(err)
 	}
 	h.opts.EnsureBrowser = func(context.Context, browser.Progress) (string, bool, error) {
@@ -101,7 +101,7 @@ func TestWizardUsesTheBrowserAlreadyInstalled(t *testing.T) {
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
-	want := filepath.Join(h.home, "bin", "chromium")
+	want := fakeBrowserPath(h.home)
 	if h.saved().Browser.Command != want {
 		t.Errorf("command = %q, want %q", h.saved().Browser.Command, want)
 	}

@@ -255,11 +255,15 @@ func TestAppendFailsWhenLogPathIsNotAFile(t *testing.T) {
 
 func TestReadAllPropagatesOpenError(t *testing.T) {
 	s := newStore(t)
-	// A key long enough that the resulting filename is rejected by the
-	// filesystem: os.Open fails with something other than "not exist".
-	key := strings.Repeat("a", 300)
+	// A directory where the log file belongs: opening it succeeds and reading
+	// it fails, on every platform. A too-long filename would not do — Windows
+	// reports that as "path not found", which readAll deliberately tolerates.
+	key := "unreadable"
+	if err := os.Mkdir(s.historyPath(key), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.History(key); err == nil {
-		t.Error("want an error when the log path cannot be opened")
+		t.Error("want an error when the log path cannot be read")
 	}
 }
 

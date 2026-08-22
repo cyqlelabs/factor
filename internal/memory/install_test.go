@@ -91,10 +91,10 @@ func writeBinary(t *testing.T, dir string) string {
 }
 
 func TestFindSmrtiPrefersPath(t *testing.T) {
-	f := newFakeEnv(t, "smrti")
+	f := newFakeEnv(t, BinaryName())
 	_ = f
 	path, ok := FindSmrti("", t.TempDir())
-	if !ok || path != "/usr/bin/smrti" {
+	if !ok || path != "/usr/bin/"+BinaryName() {
 		t.Fatalf("FindSmrti = %q, %v; want the PATH hit", path, ok)
 	}
 }
@@ -103,7 +103,7 @@ func TestFindSmrtiFallsBackToVenv(t *testing.T) {
 	newFakeEnv(t) // nothing on PATH
 	home := t.TempDir()
 	want := writeBinary(t, venvBinDir(home))
-	got, ok := FindSmrti("smrti", home)
+	got, ok := FindSmrti(BinaryName(), home)
 	if !ok || got != want {
 		t.Fatalf("FindSmrti = %q, %v; want %q", got, ok, want)
 	}
@@ -185,7 +185,7 @@ func TestInstallRetriesExternallyManagedPython(t *testing.T) {
 	f.fail("pip3 install --user --upgrade smrti", "error: externally-managed-environment")
 	f.onRun = func(argv []string) {
 		if strings.Contains(strings.Join(argv, " "), "break-system-packages") {
-			writeBinary(t, filepath.Join(home, "venv", "bin"))
+			writeBinary(t, venvBinDir(home))
 		}
 	}
 
@@ -224,7 +224,7 @@ func TestInstallReportsFailureDetail(t *testing.T) {
 }
 
 func TestEnsureSmrtiSkipsInstallWhenPresent(t *testing.T) {
-	f := newFakeEnv(t, "smrti")
+	f := newFakeEnv(t, BinaryName())
 	path, installed, err := EnsureSmrti(context.Background(), "", t.TempDir(), true, nil)
 	if err != nil || installed || path == "" {
 		t.Fatalf("EnsureSmrti = %q, %v, %v", path, installed, err)
@@ -239,9 +239,9 @@ func TestEnsureSmrtiSkipsInstallWhenPresent(t *testing.T) {
 // wheels this CPU has no instructions for exits 132 on every invocation, and
 // adopting it would hand the supervisor a binary that can only crash.
 func TestEnsureSmrtiReinstallsAnUnrunnableBinary(t *testing.T) {
-	f := newFakeEnv(t, "smrti", "uv")
+	f := newFakeEnv(t, BinaryName(), "uv")
 	home := t.TempDir()
-	f.fail("/usr/bin/smrti --help", "Illegal instruction")
+	f.fail("/usr/bin/"+BinaryName()+" --help", "Illegal instruction")
 	f.onRun = func([]string) { writeBinary(t, venvBinDir(home)) }
 
 	var steps []string
@@ -264,8 +264,8 @@ func TestEnsureSmrtiReinstallsAnUnrunnableBinary(t *testing.T) {
 // With auto_install off there is nothing to fall back on, so the error has to
 // say what is wrong and what would fix it.
 func TestEnsureSmrtiReportsAnUnrunnableBinaryWithoutAutoInstall(t *testing.T) {
-	f := newFakeEnv(t, "smrti")
-	f.fail("/usr/bin/smrti --help", "Illegal instruction")
+	f := newFakeEnv(t, BinaryName())
+	f.fail("/usr/bin/"+BinaryName()+" --help", "Illegal instruction")
 
 	_, _, err := EnsureSmrti(context.Background(), "", t.TempDir(), false, nil)
 	if err == nil || !strings.Contains(err.Error(), "cannot run") {
@@ -278,7 +278,7 @@ func TestEnsureSmrtiReportsAnUnrunnableBinaryWithoutAutoInstall(t *testing.T) {
 
 func TestEnsureSmrtiRespectsAutoInstallOff(t *testing.T) {
 	newFakeEnv(t)
-	_, _, err := EnsureSmrti(context.Background(), "smrti", t.TempDir(), false, nil)
+	_, _, err := EnsureSmrti(context.Background(), BinaryName(), t.TempDir(), false, nil)
 	if err == nil || !strings.Contains(err.Error(), "auto_install") {
 		t.Fatalf("error = %v", err)
 	}
@@ -348,7 +348,7 @@ func TestInstallPinsNumpyOnAnOldCPU(t *testing.T) {
 			[]string{"python3"},
 			[]string{"python3 -m pip install --user --upgrade smrti numpy<2"},
 			"boom",
-			filepath.Join("venv", "bin", "pip") + " install --upgrade smrti numpy<2",
+			filepath.Join("venv", venvBinBase(), pipName()) + " install --upgrade smrti numpy<2",
 		},
 	}
 	for _, c := range cases {
@@ -403,4 +403,20 @@ func TestNeedsNumpyPinLeavesCapableMachinesAlone(t *testing.T) {
 			t.Errorf("%s has no x86 baseline problem to work around", runtime.GOARCH)
 		}
 	}
+}
+
+// venvBinBase and pipName spell the virtualenv layout of this platform, which
+// is what the installer's own commands are built from.
+func venvBinBase() string {
+	if runtime.GOOS == "windows" {
+		return "Scripts"
+	}
+	return "bin"
+}
+
+func pipName() string {
+	if runtime.GOOS == "windows" {
+		return "pip.exe"
+	}
+	return "pip"
 }

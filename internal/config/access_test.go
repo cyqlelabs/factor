@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -203,6 +204,9 @@ func TestLoadFileRejectsMalformedJSON(t *testing.T) {
 }
 
 func TestLoadUnreadableFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows has no mode bit that stops a read")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores file permissions")
 	}

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -63,9 +62,7 @@ func TestRunStartsConfiguredChannelsAndHeartbeat(t *testing.T) {
 		t.Errorf("channels = %v, want just the telegram connector", body["channels"])
 	}
 
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
+	stopSelf(t)
 	select {
 	case err := <-errCh:
 		if err != nil {
@@ -126,9 +123,7 @@ func TestRunStartsThePhoneChannel(t *testing.T) {
 		t.Errorf("channels = %v, want the phone connector", body["channels"])
 	}
 
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
+	stopSelf(t)
 	select {
 	case err := <-errCh:
 		if err != nil {

@@ -261,7 +261,7 @@ func TestDialogRunFailure(t *testing.T) {
 }
 
 func TestAskRunnerReportsExitCode(t *testing.T) {
-	out, code, err := askRunner(context.Background(), "sh", "-c", "echo hello; exit 3")
+	out, code, err := askRunner(context.Background(), winArgv("echo hello; exit 3", "(echo hello)& exit /b 3")...)
 	if err != nil {
 		t.Fatal(err)
 	}

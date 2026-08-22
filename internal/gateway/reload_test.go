@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -77,6 +76,7 @@ func TestSettleStopsWaitingWhenTheDaemonIsToldToStop(t *testing.T) {
 }
 
 func TestNotifyReloadTurnsSighupIntoARequest(t *testing.T) {
+	requireSighup(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -97,6 +97,7 @@ func TestNotifyReloadTurnsSighupIntoARequest(t *testing.T) {
 }
 
 func TestRunRestartsIntoTheNewBinary(t *testing.T) {
+	requireSighup(t)
 	fastSettle(t)
 	cfg, path := gatewayConfig(t)
 	// The chat below is only an address while its connector is running, so
@@ -132,9 +133,7 @@ func TestRunRestartsIntoTheNewBinary(t *testing.T) {
 	}
 
 	// What `factor upgrade` does to a daemon whose binary it just replaced.
-	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
-		t.Fatal(err)
-	}
+	hangupSelf(t)
 
 	select {
 	case err := <-errCh:
@@ -161,6 +160,7 @@ func TestRunRestartsIntoTheNewBinary(t *testing.T) {
 }
 
 func TestStopDuringTheRestartWaitDoesNotRelaunch(t *testing.T) {
+	requireSighup(t)
 	fastSettle(t)
 	settleGrace = 3 * time.Second // hold the daemon in the wait long enough to stop it
 
@@ -178,13 +178,9 @@ func TestStopDuringTheRestartWaitDoesNotRelaunch(t *testing.T) {
 		t.Fatal("gateway never served /health")
 	}
 
-	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
-		t.Fatal(err)
-	}
+	hangupSelf(t)
 	time.Sleep(300 * time.Millisecond) // the daemon is now inside the restart wait
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
+	stopSelf(t)
 
 	select {
 	case err := <-errCh:
@@ -215,9 +211,7 @@ func TestShutdownDoesNotRelaunch(t *testing.T) {
 	if waitForHealth(t, healthURL, 20*time.Second) == nil {
 		t.Fatal("gateway never served /health")
 	}
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
+	stopSelf(t)
 	select {
 	case err := <-errCh:
 		if err != nil {
@@ -236,6 +230,7 @@ func TestShutdownDoesNotRelaunch(t *testing.T) {
 // agent — voice_write, a cron result, this notice — would have reported a
 // delivery that never happened.
 func TestRestartLeavesNoNoticeForAChannelThisGatewayDoesNotRun(t *testing.T) {
+	requireSighup(t)
 	fastSettle(t)
 	cfg, path := gatewayConfig(t)
 	healthURL := fmt.Sprintf("http://%s/health", net.JoinHostPort(cfg.Gateway.Host, strconv.Itoa(cfg.Gateway.Port)))
@@ -254,9 +249,7 @@ func TestRestartLeavesNoNoticeForAChannelThisGatewayDoesNotRun(t *testing.T) {
 	if waitForHealth(t, healthURL, 20*time.Second) == nil {
 		t.Fatal("gateway never served /health")
 	}
-	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
-		t.Fatal(err)
-	}
+	hangupSelf(t)
 	select {
 	case err := <-errCh:
 		if err != nil {

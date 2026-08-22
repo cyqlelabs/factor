@@ -3,9 +3,15 @@
 package jobs
 
 import (
+	"context"
 	"os/exec"
 	"syscall"
 )
+
+// shellCommand runs a job's payload through the platform shell.
+func shellCommand(ctx context.Context, command string) *exec.Cmd {
+	return exec.CommandContext(ctx, "sh", "-c", command)
+}
 
 func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

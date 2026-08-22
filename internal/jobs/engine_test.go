@@ -45,7 +45,7 @@ func waitCount(t *testing.T, counter *atomic.Int64, want int64, what string) {
 func TestSnapshotCopiesJobStateWhileRunningAndAfterFinishing(t *testing.T) {
 	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
 	origin := Origin{Channel: "cli", ChatID: "1", SessionKey: "cli:1"}
-	job, err := e.Start(KindExec, "sleeper", "sleep 30", origin)
+	job, err := e.Start(KindExec, "sleeper", payloadSleep, origin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestEngineWithoutANotifierStillFinishesJobs(t *testing.T) {
 
 func TestPruneDropsTheOldestFinishedJobsAndKeepsRunningOnes(t *testing.T) {
 	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
-	sleeper, err := e.Start(KindExec, "sleeper", "sleep 30", Origin{})
+	sleeper, err := e.Start(KindExec, "sleeper", payloadSleep, Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestPruneDropsTheOldestFinishedJobsAndKeepsRunningOnes(t *testing.T) {
 	// Start, so the engine never prunes while a worker is still writing state.
 	var ids []string
 	for range keepFinished + 5 {
-		job, err := e.Start(KindExec, "", "true", Origin{})
+		job, err := e.Start(KindExec, "", payloadOK, Origin{})
 		if err != nil {
 			t.Fatal(err)
 		}

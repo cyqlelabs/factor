@@ -18,7 +18,7 @@ func TestReadFileMissingFile(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("reading a missing file succeeded: %+v", res)
 	}
-	if !strings.Contains(res.ForLLM, "no such file") {
+	if !isNotFoundMessage(res.ForLLM) || !strings.Contains(res.ForLLM, "absent.txt") {
 		t.Errorf("error = %q, want it to name the missing file", res.ForLLM)
 	}
 }
@@ -226,7 +226,7 @@ func TestEditFileMissingFile(t *testing.T) {
 	res := fsTool(t, g, "edit_file").Execute(context.Background(), map[string]any{
 		"path": "gone.txt", "old_string": "a", "new_string": "b",
 	})
-	if !res.IsError || !strings.Contains(res.ForLLM, "no such file") {
+	if !res.IsError || !isNotFoundMessage(res.ForLLM) {
 		t.Errorf("result = %+v", res)
 	}
 }
@@ -333,10 +333,10 @@ func TestFSToolsRejectPathsOutsideWorkspace(t *testing.T) {
 	g := testGuard(t)
 	ctx := context.Background()
 	calls := map[string]map[string]any{
-		"read_file":  {"path": "/etc/hostname"},
-		"write_file": {"path": "/etc/factor-should-not-exist", "content": "x"},
-		"edit_file":  {"path": "/etc/hostname", "old_string": "a", "new_string": "b"},
-		"list_dir":   {"path": "/etc"},
+		"read_file":  {"path": outsideFile},
+		"write_file": {"path": outsideNewFile, "content": "x"},
+		"edit_file":  {"path": outsideFile, "old_string": "a", "new_string": "b"},
+		"list_dir":   {"path": outsideDir},
 	}
 	for name, args := range calls {
 		t.Run(name, func(t *testing.T) {
@@ -366,7 +366,7 @@ func TestExecRunsInTheGivenWorkingDir(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	res := execTool(t, g).Execute(context.Background(), map[string]any{"command": "pwd", "working_dir": "sub"})
+	res := execTool(t, g).Execute(context.Background(), map[string]any{"command": cmdPrintCwd, "working_dir": "sub"})
 	if res.IsError {
 		t.Fatalf("res = %+v", res)
 	}
@@ -385,7 +385,7 @@ func TestExecRunsInTheGivenWorkingDir(t *testing.T) {
 
 func TestExecRejectsWorkingDirOutsideWorkspace(t *testing.T) {
 	res := execTool(t, testGuard(t)).Execute(context.Background(), map[string]any{
-		"command": "pwd", "working_dir": "/etc",
+		"command": cmdPrintCwd, "working_dir": outsideDir,
 	})
 	if !res.IsError || !strings.Contains(res.ForLLM, "outside workspace denied") {
 		t.Errorf("result = %+v, want a workspace denial", res)
@@ -428,7 +428,7 @@ func TestExecTruncatesLargeOutput(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(g.Workspace(), "big.txt"), bytes.Repeat([]byte("z"), size), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res := et.Execute(context.Background(), map[string]any{"command": "cat big.txt"})
+	res := et.Execute(context.Background(), map[string]any{"command": cmdCatBig})
 	if res.IsError {
 		t.Fatalf("res = %+v", res)
 	}
@@ -444,7 +444,7 @@ func TestExecTruncatesLargeOutput(t *testing.T) {
 }
 
 func TestExecReportsNoOutputForSilentCommands(t *testing.T) {
-	res := execTool(t, testGuard(t)).Execute(context.Background(), map[string]any{"command": "true"})
+	res := execTool(t, testGuard(t)).Execute(context.Background(), map[string]any{"command": cmdSilent})
 	if res.IsError || res.ForLLM != "(no output)" {
 		t.Errorf("result = %+v, want the (no output) placeholder", res)
 	}
@@ -452,7 +452,7 @@ func TestExecReportsNoOutputForSilentCommands(t *testing.T) {
 
 func TestExecCapturesStderr(t *testing.T) {
 	res := execTool(t, testGuard(t)).Execute(context.Background(), map[string]any{
-		"command": "echo to-stderr >&2; exit 1",
+		"command": cmdStderrOne,
 	})
 	if !res.IsError || !strings.Contains(res.ForLLM, "to-stderr") {
 		t.Errorf("result = %+v, want stderr folded into the combined output", res)

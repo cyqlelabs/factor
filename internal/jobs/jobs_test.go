@@ -60,7 +60,7 @@ func TestExecJobCompletesAndNotifies(t *testing.T) {
 func TestExecJobFailureState(t *testing.T) {
 	rec := newNotifyRecorder()
 	e := NewEngine(context.Background(), t.TempDir(), nil, rec.notify)
-	_, err := e.Start(KindExec, "", "echo oops >&2; exit 2", Origin{})
+	_, err := e.Start(KindExec, "", payloadFailErr, Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestTaskJobRunsDelegate(t *testing.T) {
 func TestCancelRunningJob(t *testing.T) {
 	rec := newNotifyRecorder()
 	e := NewEngine(context.Background(), t.TempDir(), nil, rec.notify)
-	job, err := e.Start(KindExec, "long", "sleep 30", Origin{})
+	job, err := e.Start(KindExec, "long", payloadSleep, Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestCancelRunningJob(t *testing.T) {
 func TestOutputTailBounded(t *testing.T) {
 	rec := newNotifyRecorder()
 	e := NewEngine(context.Background(), t.TempDir(), nil, rec.notify)
-	if _, err := e.Start(KindExec, "", "yes 0123456789 | head -c 100000", Origin{}); err != nil {
+	if _, err := e.Start(KindExec, "", payloadFlood, Origin{}); err != nil {
 		t.Fatal(err)
 	}
 	done := rec.wait(t)
@@ -144,7 +144,7 @@ func TestListOrdersAndPrunes(t *testing.T) {
 	rec := newNotifyRecorder()
 	e := NewEngine(context.Background(), t.TempDir(), nil, rec.notify)
 	for range 3 {
-		if _, err := e.Start(KindExec, "", "true", Origin{}); err != nil {
+		if _, err := e.Start(KindExec, "", payloadOK, Origin{}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -74,6 +75,9 @@ func TestRunChatOneShotPrintsTheReply(t *testing.T) {
 // The gateway subcommand is the daemon entry point: it must boot from the
 // CLI and shut down on a signal.
 func TestCLIGatewayCommandBootsAndStops(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows has no cross-process stop signal; its clean shutdown goes through the tray, covered by internal/gateway")
+	}
 	home := t.TempDir()
 	port := freeCLIPort(t)
 

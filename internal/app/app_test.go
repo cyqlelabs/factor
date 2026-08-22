@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -174,6 +175,11 @@ func TestDesktopToolsFollowConfig(t *testing.T) {
 	}
 
 	// A headless machine (no DISPLAY) leaves them out on the auto setting.
+	// Windows and macOS always have one, which MachineHasDisplay says by
+	// construction, so there is no headless state to simulate there.
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return
+	}
 	cfg = testConfig(t)
 	t.Setenv("DISPLAY", "")
 	t.Setenv("WAYLAND_DISPLAY", "")

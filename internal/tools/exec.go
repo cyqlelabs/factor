@@ -44,7 +44,8 @@ func NewExecTool(guard *PathGuard, timeout time.Duration, enableDeny bool, custo
 	}
 	patterns := customDeny
 	if enableDeny {
-		patterns = append(append([]string{}, defaultDenyPatterns...), customDeny...)
+		patterns = append(append([]string{}, defaultDenyPatterns...), platformDenyPatterns...)
+		patterns = append(patterns, customDeny...)
 	}
 	for _, p := range patterns {
 		re, err := regexp.Compile(p)
@@ -58,7 +59,7 @@ func NewExecTool(guard *PathGuard, timeout time.Duration, enableDeny bool, custo
 
 func (t *ExecTool) Name() string { return "exec" }
 func (t *ExecTool) Description() string {
-	return "Run a shell command (sh -c) in the workspace. Returns combined output and exit code. Long or interactive commands will be killed at the timeout."
+	return "Run a shell command (" + shellName + ") in the workspace. Returns combined output and exit code. Long or interactive commands will be killed at the timeout."
 }
 func (t *ExecTool) Parameters() map[string]any {
 	return map[string]any{
@@ -99,9 +100,9 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *Result {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd := shellCommand(ctx, command)
 	cmd.Dir = dir
-	// Without these, a killed sh can leave grandchildren holding the output
+	// Without these, a killed shell can leave grandchildren holding the output
 	// pipe and CombinedOutput would block long past the timeout.
 	cmd.WaitDelay = 2 * time.Second
 	setProcessGroup(cmd)

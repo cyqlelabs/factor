@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -484,7 +485,14 @@ func TestNotifyAndOpen(t *testing.T) {
 	if !m.ranWith(filepath.Join(ws, "note.txt")) {
 		t.Errorf("ran %v", m.lastCall())
 	}
-	if res := run(t, byName["open"], map[string]any{"target": "/etc/passwd"}); !res.IsError {
+	// A path that is absolute on this platform: on Windows a leading slash is
+	// not, so "/etc/passwd" would resolve inside the workspace and prove the
+	// opposite of what this asserts.
+	outside := "/etc/passwd"
+	if runtime.GOOS == "windows" {
+		outside = `C:\Windows\System32\drivers\etc\hosts`
+	}
+	if res := run(t, byName["open"], map[string]any{"target": outside}); !res.IsError {
 		t.Error("open escaped the workspace")
 	}
 }

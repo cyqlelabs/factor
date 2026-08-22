@@ -61,6 +61,9 @@ func TestRunWithoutASessionReturnsAtOnce(t *testing.T) {
 }
 
 func TestQuitEndsRun(t *testing.T) {
+	if underWine() {
+		t.Skip("wine has no notification area for the icon to register in; this needs a real shell")
+	}
 	if runtime.GOOS != "windows" {
 		// A bus address nothing answers on: systray's loop comes up, fails to
 		// register, and idles — exactly the state Quit must be able to end.

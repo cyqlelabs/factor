@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -205,9 +204,7 @@ func TestRunServesHealthAndShutsDownOnSignal(t *testing.T) {
 	}
 
 	// SIGTERM triggers a clean shutdown (the handler is installed by now)
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
+	stopSelf(t)
 	select {
 	case err := <-errCh:
 		if err != nil {

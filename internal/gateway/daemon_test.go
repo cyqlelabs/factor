@@ -1,5 +1,3 @@
-//go:build unix
-
 package gateway
 
 import (
@@ -8,7 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -22,16 +19,17 @@ func fastConfirm(t *testing.T) {
 	t.Cleanup(func() { confirmTimeout, confirmPoll = oldTimeout, oldPoll })
 }
 
-// fakeGateway stands in for the factor binary: a shell script Daemonize
-// spawns instead of re-execing the test binary.
-func fakeGateway(t *testing.T, home, script string) {
+// fakeGateway points Daemonize at this test binary, which TestMain makes
+// behave like the named flavour of `factor gateway`.
+func fakeGateway(t *testing.T, mode string) {
 	t.Helper()
-	path := filepath.Join(home, "fake-gateway")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+	exe, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("FACTOR_TEST_GATEWAY_MODE", mode)
 	old := daemonExecutable
-	daemonExecutable = func() (string, error) { return path, nil }
+	daemonExecutable = func() (string, error) { return exe, nil }
 	t.Cleanup(func() { daemonExecutable = old })
 }
 
@@ -39,16 +37,13 @@ func TestDaemonizeSpawnsDetachedGateway(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("FACTOR_HOME", home)
 	fastConfirm(t)
-	fakeGateway(t, home, `echo "args: $@"
-echo $$ > "$FACTOR_HOME/factor.pid"
-sleep 30
-`)
+	fakeGateway(t, "serve")
 
 	pid, err := Daemonize(filepath.Join(home, "config.json"), []string{"-p", "127.0.0.1:9"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	t.Cleanup(func() { killProcess(pid) })
 	if !pidAlive(pid) {
 		t.Errorf("reported pid %d is not alive", pid)
 	}
@@ -91,9 +86,7 @@ func TestDaemonizeReportsChildDeathFromTheLog(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("FACTOR_HOME", home)
 	fastConfirm(t)
-	fakeGateway(t, home, `echo "factor: boom" >&2
-exit 3
-`)
+	fakeGateway(t, "die")
 
 	_, err := Daemonize("", nil)
 	if err == nil || !strings.Contains(err.Error(), "factor: boom") {
@@ -105,9 +98,7 @@ func TestDaemonizeTimesOutOnSilentChild(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("FACTOR_HOME", home)
 	fastConfirm(t)
-	fakeGateway(t, home, `echo $$ > "$FACTOR_HOME/child.pid"
-sleep 30
-`)
+	fakeGateway(t, "silent")
 
 	_, err := Daemonize("", nil)
 	if err == nil || !strings.Contains(err.Error(), LogPath()) {
@@ -116,7 +107,7 @@ sleep 30
 	// The child never became a gateway; do not leave it sleeping around.
 	if data, err := os.ReadFile(filepath.Join(home, "child.pid")); err == nil {
 		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			killProcess(pid)
 		}
 	}
 }

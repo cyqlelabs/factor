@@ -248,7 +248,15 @@ func playbackCommand(e Env, device string) ([]string, error) {
 // the box works the whole time, so the devices are probed, not the
 // environment.
 func MachineHasAudio(e Env) bool {
-	if e.GOOS == "darwin" || e.GOOS == "windows" {
+	// Windows is the one platform with no helper on either side —
+	// captureCommand and playbackCommand both refuse — so however good the
+	// sound card is, there is none Factor can reach. Answering yes here is
+	// what used to make the wizard offer PC voice and configure a channel
+	// that could only fail on its first utterance.
+	if e.GOOS == "windows" {
+		return false
+	}
+	if e.GOOS == "darwin" {
 		return true
 	}
 	if e.Glob == nil {

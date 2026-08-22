@@ -155,6 +155,7 @@ func TestUseFindsAWellKnownCertificate(t *testing.T) {
 	clearProxyEnv(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // what os.UserHomeDir reads on Windows
 	dir := filepath.Join(home, ".mitmproxy")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

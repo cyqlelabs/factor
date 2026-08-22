@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -524,19 +525,19 @@ func TestNewPkgInstallToolWiring(t *testing.T) {
 	if got := tool.euid(); got != os.Geteuid() {
 		t.Errorf("euid() = %d, want the real %d", got, os.Geteuid())
 	}
-	if _, err := tool.lookPath("sh"); err != nil {
+	if _, err := tool.lookPath(shellExe); err != nil {
 		t.Errorf("lookPath is not wired to PATH lookup: %v", err)
 	}
 
 	// Exercise the real runner on inert shell commands — never a real install.
-	out, err := tool.runner(context.Background(), []string{"sh", "-c", "printf hello; printf oops >&2"})
+	out, err := tool.runner(context.Background(), winArgv("printf hello; printf oops >&2", "(echo hello)& (echo oops)1>&2"))
 	if err != nil {
 		t.Fatalf("runner returned an error for a successful command: %v", err)
 	}
 	if !strings.Contains(out, "hello") || !strings.Contains(out, "oops") {
 		t.Errorf("runner output = %q, want stdout and stderr combined", out)
 	}
-	if _, err := tool.runner(context.Background(), []string{"sh", "-c", "exit 7"}); err == nil {
+	if _, err := tool.runner(context.Background(), winArgv("exit 7", "exit /b 7")); err == nil {
 		t.Error("runner swallowed a non-zero exit status")
 	}
 }
@@ -661,8 +662,15 @@ func TestDetectSystemManagerIgnoresUserLevelInstallers(t *testing.T) {
 func fakeManagersOnPath(t *testing.T, probes ...string) {
 	t.Helper()
 	dir := t.TempDir()
+	// Windows resolves a bare name through PATHEXT, so an extensionless file
+	// is invisible to LookPath there however executable its mode bits are.
+	suffix, body := "", "#!/bin/sh\nexit 0\n"
+	if runtime.GOOS == "windows" {
+		suffix, body = ".bat", "@exit /b 0\r\n"
+		t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+	}
 	for _, name := range probes {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name+suffix), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

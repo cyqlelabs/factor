@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -204,7 +203,7 @@ func (e *Engine) Start(kind Kind, description, payload string, origin Origin) (*
 func (e *Engine) runExec(ctx context.Context, job *Job) error {
 	ctx, cancel := context.WithTimeout(ctx, execTimeLimit)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", job.Payload)
+	cmd := shellCommand(ctx, job.Payload)
 	cmd.Dir = e.workdir
 	cmd.WaitDelay = 5 * time.Second
 	setProcessGroup(cmd)

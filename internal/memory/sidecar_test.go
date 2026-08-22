@@ -125,6 +125,9 @@ func waitHealthy(t *testing.T, eng Engine, within time.Duration) bool {
 
 func TestSidecarSpawnsAndPassesEnvironment(t *testing.T) {
 	cfg := sidecarConfig(t, "serve")
+	// Stop the child with the engine: a sidecar left running holds its log
+	// open, and Windows will not remove a directory a live process is using.
+	cfg.KeepAlive = false
 	logDir := t.TempDir()
 	extract := ExtractSettings{Mode: "hybrid", URL: "http://127.0.0.1:11434", Model: "qwen3", Key: "llm-key"}
 

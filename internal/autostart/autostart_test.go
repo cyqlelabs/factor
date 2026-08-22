@@ -176,6 +176,7 @@ func TestUninstallWithNothingInstalledIsQuiet(t *testing.T) {
 func TestInstallLaunchdAgent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // what os.UserHomeDir reads on Windows
 	t.Setenv("FACTOR_HOME", filepath.Join(home, ".factor"))
 	env, calls, _ := fakeEnv(t, "darwin", "")
 
@@ -216,19 +217,6 @@ func TestInstallLaunchdAgent(t *testing.T) {
 	}
 	if _, err := os.Stat(plist); !os.IsNotExist(err) {
 		t.Error("plist survived the uninstall")
-	}
-}
-
-func TestWindowsDispatchReachesTheRegistryStub(t *testing.T) {
-	env, _, _ := fakeEnv(t, "windows", "")
-	if _, err := Install(context.Background(), env, `C:\factor.exe`, ""); err == nil {
-		t.Error("the non-windows registry stub reported success")
-	}
-	if _, ok := Installed(env); ok {
-		t.Error("Installed = true through the non-windows stub")
-	}
-	if err := Uninstall(context.Background(), env); err == nil {
-		t.Error("Uninstall through the stub reported success")
 	}
 }
 

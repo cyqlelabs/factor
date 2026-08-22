@@ -182,6 +182,9 @@ func TestLiveDesktop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
 	}
+	if underWine() {
+		t.Skip("wine has no desktop to drive; this test needs real Windows")
+	}
 	env := DefaultEnv()
 	if !HasDisplay(env) {
 		t.Skip("no graphical session")

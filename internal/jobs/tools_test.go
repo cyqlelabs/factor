@@ -82,7 +82,7 @@ func TestJobStartRecordsToolContextAsOrigin(t *testing.T) {
 	})
 
 	res := suiteFor(t, e)["job_start"].Execute(ctx, map[string]any{
-		"kind": "exec", "description": "greet", "payload": "true",
+		"kind": "exec", "description": "greet", "payload": payloadOK,
 	})
 	if res.IsError {
 		t.Fatalf("job_start: %s", res.ForLLM)
@@ -110,7 +110,7 @@ func TestJobStartWithoutToolContextLeavesOriginEmpty(t *testing.T) {
 	defer e.Wait()
 
 	res := suiteFor(t, e)["job_start"].Execute(context.Background(), map[string]any{
-		"kind": "exec", "description": "greet", "payload": "true",
+		"kind": "exec", "description": "greet", "payload": payloadOK,
 	})
 	if res.IsError {
 		t.Fatalf("job_start: %s", res.ForLLM)
@@ -202,7 +202,7 @@ func TestJobStartRejectsTaskKindWithoutARunner(t *testing.T) {
 func TestJobStartWithUnknownKindIsRejected(t *testing.T) {
 	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
 	res := suiteFor(t, e)["job_start"].Execute(context.Background(), map[string]any{
-		"kind": "bogus", "payload": "true",
+		"kind": "bogus", "payload": payloadOK,
 	})
 	if !res.IsError {
 		t.Fatalf("job_start accepted an unknown kind: %s", res.ForLLM)
@@ -224,7 +224,7 @@ func TestJobListReportsNothingUntilAJobExists(t *testing.T) {
 	}
 
 	res := byName["job_start"].Execute(context.Background(), map[string]any{
-		"kind": "exec", "description": "greet", "payload": "true",
+		"kind": "exec", "description": "greet", "payload": payloadOK,
 	})
 	if res.IsError {
 		t.Fatalf("job_start: %s", res.ForLLM)
@@ -274,7 +274,7 @@ func TestJobStatusSaysSoWhenAJobPrintedNothing(t *testing.T) {
 	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
 	byName := suiteFor(t, e)
 	if res := byName["job_start"].Execute(context.Background(), map[string]any{
-		"kind": "exec", "payload": "true",
+		"kind": "exec", "payload": payloadOK,
 	}); res.IsError {
 		t.Fatalf("job_start: %s", res.ForLLM)
 	}
@@ -299,7 +299,7 @@ func TestJobCancelRejectsAFinishedJob(t *testing.T) {
 	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
 	byName := suiteFor(t, e)
 	if res := byName["job_start"].Execute(context.Background(), map[string]any{
-		"kind": "exec", "payload": "true",
+		"kind": "exec", "payload": payloadOK,
 	}); res.IsError {
 		t.Fatalf("job_start: %s", res.ForLLM)
 	}
@@ -316,7 +316,7 @@ func TestJobCancelStopsARunningJob(t *testing.T) {
 	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
 	byName := suiteFor(t, e)
 	if res := byName["job_start"].Execute(context.Background(), map[string]any{
-		"kind": "exec", "payload": "sleep 30",
+		"kind": "exec", "payload": payloadSleep,
 	}); res.IsError {
 		t.Fatalf("job_start: %s", res.ForLLM)
 	}

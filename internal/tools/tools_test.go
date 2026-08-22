@@ -93,7 +93,7 @@ func TestRegistryDefinitionsSorted(t *testing.T) {
 
 func TestGuardBlocksEscapes(t *testing.T) {
 	g := testGuard(t)
-	cases := []string{"../outside.txt", "/etc/passwd", "a/../../x"}
+	cases := []string{"../outside.txt", outsideAbs, "a/../../x"}
 	for _, c := range cases {
 		if _, err := g.CheckWrite(c); err == nil {
 			t.Errorf("CheckWrite(%q) allowed", c)
@@ -129,10 +129,10 @@ func TestGuardAllowPaths(t *testing.T) {
 
 func TestGuardReadOutsideToggle(t *testing.T) {
 	g := NewPathGuard(t.TempDir(), true, true, nil)
-	if _, err := g.CheckRead("/etc/hostname"); err != nil {
+	if _, err := g.CheckRead(outsideFile); err != nil {
 		t.Errorf("read outside denied despite allow_read_outside: %v", err)
 	}
-	if _, err := g.CheckWrite("/etc/hostname"); err == nil {
+	if _, err := g.CheckWrite(outsideFile); err == nil {
 		t.Error("write outside allowed")
 	}
 }
