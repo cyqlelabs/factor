@@ -31,6 +31,7 @@ type Config struct {
 	Gateway       GatewayConfig              `json:"gateway"`
 	Upgrade       UpgradeConfig              `json:"upgrade"`
 	Cost          CostConfig                 `json:"cost"`
+	Proxy         ProxyConfig                `json:"proxy"`
 
 	// LogLevel is the lowest severity that reaches the log: "debug", "info"
 	// (the default), "warn", or "error". Debug is where the per-decision
@@ -240,6 +241,28 @@ type HeartbeatConfig struct {
 type GatewayConfig struct {
 	Host string `json:"host" env:"FACTOR_GATEWAY_HOST"`
 	Port int    `json:"port" env:"FACTOR_GATEWAY_PORT"`
+}
+
+// ProxyConfig is the `-p` flag made durable. The flag reaches only the process
+// a person typed it at, which leaves the one process that matters — the
+// gateway systemd or the desktop starts at login, with no flags at all — the
+// single Factor that can never be captured. Everything the daemon does on its
+// own runs there: the heartbeat, cron, memory extraction, every proactive
+// turn, and precisely the traffic worth watching when something goes wrong
+// unattended.
+//
+// The flag still wins where both are set: a proxy someone typed is a decision
+// about this run, and a stored one is a decision about the install.
+type ProxyConfig struct {
+	// Address is the proxy every HTTP client in this process and its children
+	// routes through, host:port or a full URL. Empty is no proxy, which is
+	// the default and the shipping state.
+	Address string `json:"address,omitempty" env:"FACTOR_PROXY"`
+	// CA is a certificate authority to trust on top of the system roots, for
+	// a proxy that intercepts TLS. Empty falls back to the well-known
+	// mitmproxy and Burp paths, which is what makes the ordinary local
+	// capture need no second key.
+	CA string `json:"ca,omitempty" env:"FACTOR_PROXY_CA"`
 }
 
 // UpgradeConfig controls the release check. The gateway only ever reports a

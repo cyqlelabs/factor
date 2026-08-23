@@ -181,3 +181,61 @@ func writeConfig(t *testing.T, path string, cfg *config.Config) {
 func marshalConfig(cfg *config.Config) ([]byte, error) {
 	return json.MarshalIndent(cfg, "", "  ")
 }
+
+// writeProxyConfig writes a config naming a proxy and returns its path.
+func writeProxyConfig(t *testing.T, addr, ca string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Proxy.Address = addr
+	cfg.Proxy.CA = ca
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The gateway that starts at login is handed no flags at all, so a capture
+// that only exists as a flag never reaches the one Factor worth watching.
+func TestTheProxyCanComeFromTheConfig(t *testing.T) {
+	path := writeProxyConfig(t, "127.0.0.1:9090", "/home/nico/.factor/mitm-ca.pem")
+	addr, ca := resolveProxy("", "", path)
+	if addr != "127.0.0.1:9090" || ca != "/home/nico/.factor/mitm-ca.pem" {
+		t.Errorf("resolveProxy = %q, %q; want the pair the config named", addr, ca)
+	}
+}
+
+// A proxy someone typed is a decision about this run and outranks the stored
+// one — and it does not borrow the stored authority, which may belong to an
+// entirely different proxy.
+func TestATypedProxyOutranksTheStoredOne(t *testing.T) {
+	path := writeProxyConfig(t, "127.0.0.1:9090", "/home/nico/.factor/mitm-ca.pem")
+	addr, ca := resolveProxy("127.0.0.1:8080", "", path)
+	if addr != "127.0.0.1:8080" {
+		t.Errorf("addr = %q; want the typed one", addr)
+	}
+	if ca != "" {
+		t.Errorf("ca = %q; the typed proxy borrowed the stored one's certificate", ca)
+	}
+}
+
+// version and a bare usage run open no config, and a file that will not parse
+// must not take them down: the subcommands that need one load it again and
+// report it properly.
+func TestAnUnreadableConfigLeavesTheProxyOff(t *testing.T) {
+	broken := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(broken, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if addr, ca := resolveProxy("", "", broken); addr != "" || ca != "" {
+		t.Errorf("resolveProxy = %q, %q; want nothing from a config that will not parse", addr, ca)
+	}
+	missing := filepath.Join(t.TempDir(), "absent.json")
+	if addr, _ := resolveProxy("", "", missing); addr != "" {
+		t.Errorf("addr = %q; want nothing when there is no config at all", addr)
+	}
+}

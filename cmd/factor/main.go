@@ -54,7 +54,9 @@ Flags:
   -p ADDR      route HTTP through a proxy (e.g. -p 127.0.0.1:8080) so every
                provider call can be inspected; loopback and the browser are
                left alone. mitmproxy's CA is trusted when installed, or name
-               another with --proxy-ca.
+               another with --proxy-ca. Set "proxy" in the config instead to
+               capture the gateway that starts at login, which is handed no
+               flags; the flag wins where both are set.
   -d           gateway: run in the background (logs to ~/.factor/gateway.log)
   -y           init: skip the wizard and accept the defaults
   --no-install init: never install smrti, desktop helpers, or a browser
@@ -83,13 +85,14 @@ func main() {
 
 	// Before anything builds an HTTP client or spawns a sidecar: the proxy is
 	// read from the environment once, and the children inherit it.
+	addr, ca := resolveProxy(*proxyAddr, *proxyCA, *configPath)
 	var proxyArgs []string
-	if *proxyAddr != "" {
-		proxyArgs = append(proxyArgs, "-p", *proxyAddr)
-		if *proxyCA != "" {
-			proxyArgs = append(proxyArgs, "--proxy-ca", *proxyCA)
+	if addr != "" {
+		proxyArgs = append(proxyArgs, "-p", addr)
+		if ca != "" {
+			proxyArgs = append(proxyArgs, "--proxy-ca", ca)
 		}
-		line, perr := proxy.Use(*proxyAddr, *proxyCA)
+		line, perr := proxy.Use(addr, ca)
 		if perr != nil {
 			fmt.Fprintf(os.Stderr, "factor: %v\n", perr)
 			os.Exit(1)
@@ -121,6 +124,32 @@ func main() {
 		fmt.Fprintf(os.Stderr, "factor: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// resolveProxy settles where the proxy comes from: the flags if an address
+// was typed, otherwise the config file. The address and its authority travel
+// as a pair — a typed address may well be a different proxy from the stored
+// one, and handing it the stored proxy's certificate would be worse than
+// falling back to the well-known paths.
+//
+// The config has to be read here rather than left to the subcommand, because
+// by the time a subcommand has its config the HTTP clients and the sidecars
+// it proxies for are already built. Reading it twice is the price, and it is
+// a file read.
+//
+// A config that will not parse is not reported here. Every subcommand that
+// needs one loads it again and says so properly, and the two commands that
+// need none — version, and a run that only wants the usage text — should not
+// be taken down by a file they were never going to open.
+func resolveProxy(flagAddr, flagCA, configPath string) (addr, ca string) {
+	if flagAddr != "" {
+		return flagAddr, flagCA
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return "", ""
+	}
+	return cfg.Proxy.Address, cfg.Proxy.CA
 }
 
 func signalContext() (context.Context, context.CancelFunc) {
