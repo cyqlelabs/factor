@@ -1,6 +1,7 @@
 package voice
 
 import (
+	"context"
 	"math"
 	"os"
 	"path/filepath"
@@ -21,16 +22,21 @@ func TestSpeakerStoreEnrollsAndRecognizes(t *testing.T) {
 		t.Error("the first voice enrolled is the primary one")
 	}
 
-	name, similarity := store.match(vec(0.9, 0.1, 0))
-	if name != "speaker-1" || similarity < 0.9 {
-		t.Errorf("match = %q at %.2f", name, similarity)
+	m := store.match(vec(0.9, 0.1, 0))
+	if m.name != "speaker-1" || m.best < 0.9 {
+		t.Errorf("match = %q at %.2f", m.name, m.best)
+	}
+	// Two profiles, and this reading is plainly one of them: the runner-up
+	// has to be far enough back for the caller to act on the winner.
+	if m.best-m.runnerUp < speakerRunnerUpMargin {
+		t.Errorf("runner-up %.2f sits too close behind %.2f to name anybody", m.runnerUp, m.best)
 	}
 }
 
 func TestSpeakerStoreMatchOnAnEmptyStore(t *testing.T) {
 	store := newSpeakerStore(t.TempDir())
-	if name, similarity := store.match(vec(1, 0)); name != "" || similarity != 0 {
-		t.Errorf("match on empty = %q, %.2f", name, similarity)
+	if m := store.match(vec(1, 0)); m.name != "" || m.best != 0 {
+		t.Errorf("match on empty = %q, %.2f", m.name, m.best)
 	}
 }
 
@@ -41,15 +47,13 @@ func TestSpeakerStoreLearnsAVoiceOverTime(t *testing.T) {
 
 	// The voice drifts; the profile follows it.
 	store.learn("speaker-1", vec(0, 1, 0))
-	_, similarity := store.match(vec(0, 1, 0))
-	if similarity <= 0.5 {
-		t.Errorf("after learning, similarity to the new voice = %.2f", similarity)
+	if got := store.match(vec(0, 1, 0)).best; got <= 0.5 {
+		t.Errorf("after learning, similarity to the new voice = %.2f", got)
 	}
 
 	// Everything survives a restart.
 	reloaded := newSpeakerStore(home)
-	name, _ := reloaded.match(vec(0, 1, 0))
-	if name != "speaker-1" {
+	if name := reloaded.match(vec(0, 1, 0)).name; name != "speaker-1" {
 		t.Errorf("reloaded match = %q", name)
 	}
 	if got := reloaded.list(); len(got) != 1 || got[0].Utterances != 2 {
@@ -75,14 +79,14 @@ func TestSpeakerStoreRenameAndForget(t *testing.T) {
 	if err := store.rename("speaker-1", "Roxana!"); err == nil {
 		t.Error("a name that slugs identically to another speaker's was accepted")
 	}
-	if name, _ := store.match(vec(0, 1)); name != "Roxana" {
+	if name := store.match(vec(0, 1)).name; name != "Roxana" {
 		t.Errorf("after rename, match = %q", name)
 	}
 
 	if err := store.forget("Roxana"); err != nil {
 		t.Fatalf("forget: %v", err)
 	}
-	if name, _ := newSpeakerStore(home).match(vec(0, 1)); name == "Roxana" {
+	if name := newSpeakerStore(home).match(vec(0, 1)).name; name == "Roxana" {
 		t.Error("a forgotten profile still matches after reload")
 	}
 }
@@ -175,5 +179,40 @@ func TestSpeakerStoreClearsProfilesWithNoRecordedModel(t *testing.T) {
 	s.useModel("model-a")
 	if s.hasProfiles() {
 		t.Error("profiles of unknown provenance were kept")
+	}
+}
+
+// The branch a similarity alone cannot explain, asserted where it is decided:
+// a reading equidistant from two profiles is refused rather than rounded to
+// the nearer one, and it carries the runner-up that made it a refusal.
+func TestNameVoiceRefusesAReadingBetweenTwoProfiles(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	cfg := validConfig()
+	cfg.SpeakerThreshold = defaultSpeakerThreshold
+	cfg.UnknownSpeaker = unknownEnroll
+	v, err := New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.speakers = newSpeakerStore(v.home)
+	v.speakers.enroll(vec(1, 0, 0))
+	v.speakers.enroll(vec(0, 1, 0))
+
+	between := voiceReading{Seconds: 5, Embedding: vec(1, 1, 0)}
+	who := v.nameVoice(context.Background(), between, true)
+	if who.via != viaAmbiguous || who.name != "" {
+		t.Errorf("a reading between two profiles was named: %+v", who)
+	}
+	if who.runnerUp == 0 || who.similarity != who.runnerUp {
+		t.Errorf("the runner-up did not ride the decision: %+v", who)
+	}
+	if got := v.speakers.list(); len(got) != 2 {
+		t.Errorf("an ambiguous reading minted a profile: %+v", got)
+	}
+
+	// Unmistakably the first profile: named, and the store follows it.
+	clear := voiceReading{Seconds: 5, Embedding: vec(1, 0, 0)}
+	if who := v.nameVoice(context.Background(), clear, true); who.name != "speaker-1" || who.via != viaMatch {
+		t.Errorf("a clear reading was not named: %+v", who)
 	}
 }

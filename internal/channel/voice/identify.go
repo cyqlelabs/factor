@@ -58,6 +58,19 @@ const (
 	// against the moved one. That is how profiles drift into each other, and
 	// it is what "it stopped recognizing me" looks like from the inside.
 	speakerLearnMargin = 0.15
+
+	// speakerRunnerUpMargin is how far the closest profile has to sit ahead
+	// of the next one before the read is treated as evidence of who spoke.
+	//
+	// A threshold alone cannot carry this. Measured on this machine the two
+	// score distributions overlap — the same person has matched their own
+	// profile at 0.36, and a different person has come within 0.45 of one —
+	// so "above the threshold" describes a great many readings that are
+	// really a coin flip between two profiles. The distance back to the
+	// runner-up is what separates them: a genuine match leaves the wrong
+	// profile far behind, while a blend of two voices, or a bad second of
+	// audio, lands between them and lands close to both.
+	speakerRunnerUpMargin = 0.10
 )
 
 // How one identity was arrived at. It rides the decision purely so the log
@@ -69,6 +82,7 @@ const (
 	viaUnknown     = "unknown"     // nobody matched, and no profile was created
 	viaOverlap     = "overlap"     // recorded with the agent's voice in it: not read
 	viaShort       = "short"       // too little speech to identify
+	viaAmbiguous   = "ambiguous"   // two profiles too close together to choose between
 	viaUnavailable = "unavailable" // the recording could not be read at all
 )
 
@@ -78,6 +92,10 @@ const (
 type speakerIdentity struct {
 	name    string
 	primary bool
+	// runnerUp is how close the second-closest profile came. It rides along
+	// only for the ambiguous branch, which is the one decision the winning
+	// score alone cannot explain.
+	runnerUp float64
 
 	// via and similarity are the decision's own account of itself, for the
 	// log: which branch named this voice, and how close the closest profile
@@ -176,15 +194,20 @@ func (v *Voice) readVoices(ctx context.Context, utterance capturedUtterance, tea
 	// person who started talking is the one talking to Factor, and anyone who
 	// joined partway through is the room.
 	speaker := present[0]
-	if speaker.name == "" && speaker.via == viaShort {
-		// Too little voice to name anybody, but somebody is plainly
-		// mid-conversation: a "yes" belongs to whoever was just talking.
-		// Inheriting is right here where clearing is right for viaUnknown —
-		// that one is a voice long enough to read that matched nobody, which
-		// is evidence of a different person, not of a brief one.
-		inherited := v.stickySpeaker(viaShort)
-		// How much voice there was is why this branch ran, so it travels on
-		// even though the name did not come from it.
+	if speaker.name == "" && (speaker.via == viaShort || speaker.via == viaAmbiguous) {
+		// Too little voice to name anybody, or too little daylight between
+		// two profiles to choose — but somebody is plainly mid-conversation:
+		// a "yes" belongs to whoever was just talking. Inheriting is right
+		// for both where clearing is right for viaUnknown — that one is a
+		// voice long enough to read that matched nobody, which is evidence
+		// of a different person rather than of an unreadable moment.
+		inherited := v.stickySpeaker(speaker.via)
+		// Which of the two reasons it was, and the numbers behind it, are why
+		// this branch ran — so they travel on even though the name did not
+		// come from them. Reporting both as "short" would hide an ambiguity
+		// behind a length, and the two are tuned by different knobs.
+		inherited.similarity = speaker.similarity
+		inherited.runnerUp = speaker.runnerUp
 		inherited.seconds = speaker.seconds
 		return heardVoices{speaker: inherited, present: present}
 	}
@@ -198,7 +221,8 @@ func (v *Voice) nameVoice(ctx context.Context, reading voiceReading, commit bool
 	if reading.Seconds < speakerMatchMinSeconds || len(reading.Embedding) == 0 {
 		return speakerIdentity{via: viaShort, seconds: reading.Seconds}
 	}
-	name, similarity := v.speakers.match(reading.Embedding)
+	m := v.speakers.match(reading.Embedding)
+	name, similarity := m.name, m.best
 	// Every profile's score, for tuning speaker_threshold against real voices
 	// — the one question the decision alone cannot answer is how close the
 	// runners-up were. Built only when the log would print it.
@@ -207,6 +231,14 @@ func (v *Voice) nameVoice(ctx context.Context, reading voiceReading, commit bool
 			"seconds", round2(reading.Seconds), "threshold", v.cfg.SpeakerThreshold)
 	}
 	if name != "" && similarity >= v.cfg.SpeakerThreshold {
+		if similarity-m.runnerUp < speakerRunnerUpMargin {
+			// Close to two profiles at once. Naming the nearer one would be
+			// a coin flip, and folding this reading into it would pull the
+			// two closer still — which is how two people's profiles collapse
+			// into one and neither is ever recognized again.
+			return speakerIdentity{via: viaAmbiguous, similarity: similarity,
+				runnerUp: m.runnerUp, seconds: reading.Seconds}
+		}
 		if commit && similarity >= v.cfg.SpeakerThreshold+speakerLearnMargin &&
 			reading.Seconds >= speakerLearnMinSeconds {
 			v.speakers.learn(name, reading.Embedding)
@@ -333,6 +365,9 @@ func (who speakerIdentity) logFields(session string, addressed bool) []any {
 	switch who.via {
 	case viaMatch, viaEnrolled, viaUnknown:
 		fields = append(fields, "similarity", round2(who.similarity), "seconds", round2(who.seconds))
+	case viaAmbiguous:
+		fields = append(fields, "similarity", round2(who.similarity),
+			"runner_up", round2(who.runnerUp), "seconds", round2(who.seconds))
 	case viaShort:
 		fields = append(fields, "seconds", round2(who.seconds))
 	}

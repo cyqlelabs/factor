@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -738,7 +739,7 @@ func TestVoiceSpeakersTool(t *testing.T) {
 		"action": "rename", "new_name": "Roxana"}); res.IsError {
 		t.Fatalf("rename: %s", res.ForLLM)
 	}
-	if name, _ := h.v.speakers.match(vec(0, 1)); name != "Roxana" {
+	if name := h.v.speakers.match(vec(0, 1)).name; name != "Roxana" {
 		t.Errorf("the last speaker was not the one renamed; match = %q", name)
 	}
 	if h.v.lastSpeakerName() != "Roxana" {
@@ -755,7 +756,7 @@ func TestVoiceSpeakersTool(t *testing.T) {
 		"action": "forget", "name": "Roxana"}); res.IsError {
 		t.Fatalf("forget: %s", res.ForLLM)
 	}
-	if name, _ := h.v.speakers.match(vec(0, 1)); name == "Roxana" {
+	if name := h.v.speakers.match(vec(0, 1)).name; name == "Roxana" {
 		t.Error("a forgotten voice still matches")
 	}
 }
@@ -1303,6 +1304,50 @@ func TestVoiceTellsTwoPeopleApartInOneRecording(t *testing.T) {
 	h.turn(10 * time.Second)
 	if got := h.v.speakers.list(); len(got) != 2 {
 		t.Errorf("a guest speaking alone was not enrolled: %+v", got)
+	}
+}
+
+// A score above the threshold is not on its own evidence of who spoke. In
+// this house the two distributions overlap — the same person has matched
+// their own profile at 0.36 and a different person has come within 0.45 of
+// one — so what has to decide is the distance back to the second-closest
+// profile. A reading that sits between two of them is a coin flip, and
+// calling it would both answer as the wrong person and drag the two profiles
+// toward each other, which is how they collapse into one.
+func TestVoiceWillNotChooseBetweenTwoProfilesTooCloseTogether(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownAnonymous)
+	h.start()
+
+	h.v.speakers.enroll(vec(0, 0, 1)) // the owner, who keeps the plain session
+	h.v.speakers.enroll(vec(1, 0, 0))
+	h.v.speakers.enroll(vec(0, 1, 0))
+	if err := h.v.speakers.rename("speaker-2", "Ana"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.v.speakers.rename("speaker-3", "Bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ana, unmistakably.
+	h.setEmbedding(vec(1, 0, 0))
+	h.say()
+	if got := h.turn(10 * time.Second).session; got != sessionKey+":ana" {
+		t.Fatalf("session = %q, want Ana's", got)
+	}
+	h.waitQuiet()
+	settled := h.v.speakers.list()
+
+	// Now a reading exactly between Ana and Bob.
+	h.setEmbedding(vec(1, 1, 0))
+	h.say()
+	call := h.turn(10 * time.Second)
+
+	if call.session != sessionKey+":ana" {
+		t.Errorf("session = %q: an unreadable moment mid-conversation belongs to whoever was just talking", call.session)
+	}
+	if got := h.v.speakers.list(); !reflect.DeepEqual(got, settled) {
+		t.Errorf("an ambiguous reading moved the store: %+v, was %+v", got, settled)
 	}
 }
 

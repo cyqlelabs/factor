@@ -105,18 +105,42 @@ func (s *speakerStore) useModel(name string) {
 		"was", was, "now", name, "forgotten", count)
 }
 
-// match returns the closest profile and how close it is; "" when none exist.
-func (s *speakerStore) match(embedding []float64) (string, float64) {
+// speakerMatch is how one embedding scored against the store: the closest
+// profile, how close it was, and how close the next one got.
+//
+// The runner-up is not a diagnostic — it decides. Measured in this house the
+// two distributions overlap: the same person has matched their own profile at
+// 0.36 and a different person has come within 0.45 of one, so a score above
+// the threshold is not on its own evidence of who was talking. What separates
+// a real match from a coin flip is the distance back to the second-closest
+// profile.
+type speakerMatch struct {
+	name     string
+	best     float64
+	runnerUp float64
+}
+
+// match scores an embedding against every profile. The name is "" when none
+// exist, and runnerUp is 0 with fewer than two — a lone profile has nothing
+// to be confused with.
+func (s *speakerStore) match(embedding []float64) speakerMatch {
 	embedding = unit(embedding)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	best, bestSim := "", 0.0
+	var m speakerMatch
 	for _, p := range s.profiles {
-		if sim := cosine(embedding, p.Embedding); best == "" || sim > bestSim {
-			best, bestSim = p.Name, sim
+		sim := cosine(embedding, p.Embedding)
+		switch {
+		case m.name == "" || sim > m.best:
+			if m.name != "" {
+				m.runnerUp = m.best
+			}
+			m.name, m.best = p.Name, sim
+		case sim > m.runnerUp:
+			m.runnerUp = sim
 		}
 	}
-	return best, bestSim
+	return m
 }
 
 // scores is every profile's similarity to one embedding, formatted for a
