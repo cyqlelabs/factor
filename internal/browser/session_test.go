@@ -34,6 +34,14 @@ func fakeBrowserOnPath(t *testing.T, names ...string) string {
 	}
 	if runtime.GOOS == "windows" {
 		t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+		// The well-known locations are not on PATH, so replacing PATH does not
+		// hide them, and Edge ships with Windows. wellKnownBrowsers builds
+		// those paths from these variables; aiming them at the scratch
+		// directory leaves the lookup itself under test while making the host
+		// machine's own browsers invisible to it.
+		for _, root := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
+			t.Setenv(root, dir)
+		}
 	}
 	t.Setenv("PATH", dir)
 	return dir

@@ -47,6 +47,15 @@ func tempHome(t *testing.T) string {
 	t.Setenv("PATH", filepath.Join(home, "bin"))
 	if runtime.GOOS == "windows" {
 		t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+		// Clearing PATH is not enough to describe a machine with no browser.
+		// The fixed install locations are never on PATH - that is why they
+		// exist - and every Windows machine has Edge under Program Files, so
+		// the probe finds one and the install steps never run. Those paths are
+		// built from these three variables, so pointing them at the throwaway
+		// home is what makes the machine look bare.
+		for _, root := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
+			t.Setenv(root, home)
+		}
 	}
 	return home
 }

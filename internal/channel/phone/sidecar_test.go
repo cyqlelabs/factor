@@ -104,21 +104,36 @@ func freePort(t *testing.T) int {
 func portsApart(t *testing.T, n int, avoid ...int) []int {
 	t.Helper()
 	for attempt := 0; attempt < 100; attempt++ {
-		listeners := make([]net.Listener, 0, n)
-		ports := append([]int(nil), avoid...)
-		for i := 0; i < n; i++ {
+		// Twice as many candidates as are needed, every listener held open at
+		// once so the kernel cannot hand the same number out twice. The size
+		// of the pool is what makes this work on Windows, where ephemeral
+		// ports are handed out in sequence: two consecutive listens there are
+		// always adjacent, so retrying the old two-at-a-time approach could
+		// never separate them and the helper failed every time. Among 2n
+		// consecutive numbers there is always an alternating subset of n that
+		// is not adjacent, and on a kernel that randomises instead the first n
+		// candidates are usually taken as they come.
+		listeners := make([]net.Listener, 0, 2*n)
+		pool := make([]int, 0, 2*n)
+		for i := 0; i < 2*n; i++ {
 			l, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
 			}
 			listeners = append(listeners, l)
-			ports = append(ports, l.Addr().(*net.TCPAddr).Port)
+			pool = append(pool, l.Addr().(*net.TCPAddr).Port)
 		}
 		for _, l := range listeners {
 			_ = l.Close()
 		}
-		if apart(ports) {
-			return ports[len(avoid):]
+		ports := append([]int(nil), avoid...)
+		for _, p := range pool {
+			if candidate := append(append([]int(nil), ports...), p); apart(candidate) {
+				ports = candidate
+			}
+			if len(ports) == len(avoid)+n {
+				return ports[len(avoid):]
+			}
 		}
 	}
 	t.Fatalf("could not reserve %d ports far enough apart", n)
