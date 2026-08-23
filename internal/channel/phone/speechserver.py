@@ -116,6 +116,12 @@ OUTPUT_RATE = int(CFG.get("output_sample_rate") or 24000)
 MIN_TRANSCRIBE_SECONDS = 0.2
 MAX_NO_SPEECH_PROB = 0.6
 MIN_AVG_LOGPROB = -1.0
+# A segment whose text gzips down by more than this is repetition — "no, no,
+# no, no…" — the loop the decoder falls into over music and over a room of
+# overlapping speech. It is the one family the two confidence scores miss,
+# because the decoder is perfectly confident about every repeated token.
+# Whisper's own transcribe() draws the line at the same 2.4.
+MAX_COMPRESSION_RATIO = 2.4
 
 # The CPU transcriber of choice. A transducer's cost scales with the audio it
 # is handed, where Whisper pays for a thirty-second window per call however
@@ -671,13 +677,17 @@ def wav_duration(raw: bytes) -> float:
 
 
 def is_hallucination(segment) -> bool:
-    """Reject a segment the decoder is not really confident it heard.
+    """Reject a segment the decoder did not really hear a person say.
 
-    Both signals matter: no_speech_prob catches the confident-sounding phrase
-    invented over silence, and avg_logprob catches the mumbling that comes back
-    from line noise. Neither is worth putting in front of the model as though
-    the caller had said it."""
+    Three signals, and each catches what the others cannot. no_speech_prob
+    catches the confident-sounding phrase invented over silence; avg_logprob
+    catches the mumbling that comes back from line noise; and the compression
+    ratio catches the repetition loop, which the first two wave through
+    because the decoder means every word of it. None is worth putting in front
+    of the model as though the caller had said it."""
     if getattr(segment, "no_speech_prob", 0.0) > MAX_NO_SPEECH_PROB:
+        return True
+    if getattr(segment, "compression_ratio", 0.0) > MAX_COMPRESSION_RATIO:
         return True
     return getattr(segment, "avg_logprob", 0.0) < MIN_AVG_LOGPROB
 

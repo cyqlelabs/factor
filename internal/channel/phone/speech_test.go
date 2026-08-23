@@ -752,3 +752,85 @@ func TestEmbeddedSpeechServerKnowsTheSpeakerModel(t *testing.T) {
 		}
 	}
 }
+
+// runSpeechSnippet imports the real speechserver.py — with the same stubs the
+// loader tests use, so no model is touched — and runs snippet against it as
+// `mod`, returning what it printed. Testing the module itself is the point:
+// a restatement of these rules in Go would agree with a broken script.
+func runSpeechSnippet(t *testing.T, snippet string) string {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed on this machine")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "speechserver.py")
+	if err := WriteSpeechScript(script); err != nil {
+		t.Fatal(err)
+	}
+	stubs := filepath.Join(dir, "stubs")
+	for name, body := range map[string]string{
+		"fastapi/__init__.py":  stubFastAPI,
+		"fastapi/responses.py": stubFastAPIResponses,
+		"onnx_asr/__init__.py": stubOnnxAsr,
+		"onnx_asr/utils.py":    stubOnnxAsrUtils,
+	} {
+		path := filepath.Join(stubs, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := json.Marshal(map[string]any{"data_dir": filepath.Join(dir, "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, "-c", `
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("speechserver", os.environ["SCRIPT"])
+mod = importlib.util.module_from_spec(spec)
+sys.modules["speechserver"] = mod
+spec.loader.exec_module(mod)
+exec(os.environ["SNIPPET"])
+`)
+	cmd.Env = append(os.Environ(),
+		"PYTHONPATH="+stubs, "SCRIPT="+script, "SNIPPET="+snippet,
+		"FACTOR_SPEECH_CONFIG="+string(cfg))
+	out, err := cmd.CombinedOutput()
+	if strings.Contains(string(out), "No module named 'audioop'") {
+		t.Skip("this python has no audioop and the server's resampler needs it")
+	}
+	if err != nil {
+		t.Fatalf("snippet failed: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+// Three signals, each catching what the others wave through. The repetition
+// loop is the one the two confidence scores cannot see: the decoder means
+// every word of "no, no, no, no…", so it scores as clean speech.
+func TestEmbeddedSpeechServerRejectsWhatNobodySaid(t *testing.T) {
+	out := runSpeechSnippet(t, `
+class Seg:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+def seg(**kw):
+    base = dict(no_speech_prob=0.1, avg_logprob=-0.2, compression_ratio=1.4)
+    base.update(kw)
+    return Seg(**base)
+
+cases = [
+    seg(),                            # a person, plainly
+    seg(no_speech_prob=0.9),          # invented over silence
+    seg(avg_logprob=-1.5),            # mumbled out of line noise
+    seg(compression_ratio=3.1),       # the repetition loop
+]
+print(",".join(str(mod.is_hallucination(s)) for s in cases))
+`)
+	if got := strings.TrimSpace(out); got != "False,True,True,True" {
+		t.Errorf("is_hallucination verdicts = %q, want False,True,True,True", got)
+	}
+}
