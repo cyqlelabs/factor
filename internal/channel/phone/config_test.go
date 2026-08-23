@@ -122,6 +122,7 @@ func TestValidateRejectsBrokenSections(t *testing.T) {
 		{"elevenlabs without a key", func(c *Config) { c.ElevenLabsAPIKey = "" }, "elevenlabs_api_key"},
 		{"unknown tts provider", func(c *Config) { c.TTS.Provider = "festival" }, "unknown tts.provider"},
 		{"unknown proactive mode", func(c *Config) { c.Proactive = "carrier-pigeon" }, "unknown proactive"},
+		{"a pace no voice can carry", func(c *Config) { c.SpeechServer.SpeechSpeed = 0.01 }, "speech_speed"},
 		{"unknown tunnel mode", func(c *Config) { c.Tunnel = "ssh" }, "unknown tunnel"},
 		{"no tunnel and no webhook url", func(c *Config) { c.Tunnel = "none" }, "webhook_url is required"},
 		{"bridge port on the control port", func(c *Config) {

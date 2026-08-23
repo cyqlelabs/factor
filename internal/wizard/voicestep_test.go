@@ -176,6 +176,48 @@ func TestWizardVoiceLocalTierInstallsSpeech(t *testing.T) {
 	}
 }
 
+// Setup rewrites the speech_server section whole, and the section holds knobs
+// setup never asks about — the pace of the voice, the speaker model, the port.
+// Rewriting it from the installer's answers alone is how re-running `factor
+// init` silently undoes a hand-tuned voice.
+func TestWizardVoiceKeepsHandSetSpeechKnobs(t *testing.T) {
+	provider := fakeProvider(t, "big-model")
+	h := newHarness(t, voiceAnswers(provider,
+		"y",  // set up PC voice
+		"es", // language
+		"4",  // tier: fully local
+		"1",  // Factor installs the server
+		"1",  // activation: always listening
+	)...)
+	h.opts.Audio = hearingAudio("parec", "paplay")
+
+	cfg, err := config.ReadFile(h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Channels = map[string]json.RawMessage{
+		"voice": json.RawMessage(`{"speech_server":{"speech_speed":0.92,"speaker_model":"wespeaker_en_voxceleb_CAM++","port":9001}}`),
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.run(); err != nil {
+		t.Fatalf("wizard: %v\n%s", err, h.out.String())
+	}
+	section := savedVoice(t, h)
+	if section.SpeechServer == nil {
+		t.Fatalf("no speech_server was saved; output:\n%s", h.out.String())
+	}
+	if section.SpeechServer.SpeechSpeed != 0.92 || section.SpeechServer.SpeakerModel != "wespeaker_en_voxceleb_CAM++" ||
+		section.SpeechServer.Port != 9001 {
+		t.Errorf("speech_server = %+v, want the hand-set knobs untouched", section.SpeechServer)
+	}
+	if section.SpeechServer.PiperVoice != "es-test-medium" {
+		t.Errorf("speech_server = %+v, want the installer's choices recorded beside them", section.SpeechServer)
+	}
+}
+
 func TestWizardVoiceInstallsMissingAudioHelpers(t *testing.T) {
 	provider := fakeProvider(t, "big-model")
 	h := newHarness(t, voiceAnswers(provider,

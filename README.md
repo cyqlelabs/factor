@@ -352,6 +352,10 @@ name: the wizard lists your ElevenLabs voices on the cloud tier and the catalogu
 the local one, and a voice named in `speech_server.piper_voice` is downloaded on the
 next start.
 
+`speech_server.speech_speed` paces it: 0.9 speaks a tenth slower, 1.1 a tenth faster.
+Piper stretches the phonemes rather than the audio, so the voice keeps its pitch —
+past about 1.2 either way it stops sounding like a person.
+
 Whisper decodes a fixed 30-second window however little audio it gets, and the phone
 pipeline feeds it about a second at a time — so its cost is per chunk, not per second
 of speech. Measured on this design: `small` takes ~2.4 s per 1 s chunk on a CPU and

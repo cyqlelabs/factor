@@ -1061,14 +1061,27 @@ type phoneSection struct {
 	SpeechServer *speechSection `json:"speech_server,omitempty"`
 }
 
-// speechSection mirrors channels.phone.speech_server.
-type speechSection struct {
-	SttEngine      string `json:"stt_engine,omitempty"`
-	SttModel       string `json:"stt_model,omitempty"`
-	WhisperModel   string `json:"whisper_model,omitempty"`
-	WhisperDevice  string `json:"whisper_device,omitempty"`
-	WhisperCompute string `json:"whisper_compute,omitempty"`
-	PiperVoice     string `json:"piper_voice,omitempty"`
+// speechSection is channels.phone.speech_server itself rather than a mirror of
+// it: the section is rewritten whole on every setup run, and a mirror listing
+// only the keys the wizard asks about is a mirror that deletes the rest.
+type speechSection = phone.SpeechConfig
+
+// speechServerWith carries what the installer settled on into the section,
+// leaving every knob beside it alone. speech_speed, speaker_model and the port
+// are all hand-set and none of them is ever asked about, so re-running setup
+// must return them unchanged.
+func speechServerWith(existing *speechSection, choices phone.SpeechChoices) *speechSection {
+	section := speechSection{}
+	if existing != nil {
+		section = *existing
+	}
+	section.SttEngine = choices.SttEngine
+	section.SttModel = choices.SttModel
+	section.WhisperModel = choices.WhisperModel
+	section.WhisperDevice = choices.WhisperDevice
+	section.WhisperCompute = choices.WhisperCompute
+	section.PiperVoice = choices.PiperVoice
+	return &section
 }
 
 func phoneConfig(cfg *config.Config) phoneSection {
@@ -1416,14 +1429,7 @@ func (w *wiz) installLocalSpeech(ctx context.Context, section *phoneSection, loc
 		return nil
 	}
 
-	section.SpeechServer = &speechSection{
-		SttEngine:      choices.SttEngine,
-		SttModel:       choices.SttModel,
-		WhisperModel:   choices.WhisperModel,
-		WhisperDevice:  choices.WhisperDevice,
-		WhisperCompute: choices.WhisperCompute,
-		PiperVoice:     choices.PiperVoice,
-	}
+	section.SpeechServer = speechServerWith(phoneConfig(w.cfg).SpeechServer, choices)
 	w.ui.Success("local speech ready — %s", choices.Summary())
 	if choices.Warning != "" {
 		w.ui.Warn("%s", choices.Warning)
@@ -1911,14 +1917,7 @@ func (w *wiz) setUpLocalVoiceSpeech(ctx context.Context, section *voiceSection, 
 			w.ui.Warn("the local speech install did not finish — Factor will try again when it starts")
 			return nil
 		}
-		section.SpeechServer = &speechSection{
-			SttEngine:      choices.SttEngine,
-			SttModel:       choices.SttModel,
-			WhisperModel:   choices.WhisperModel,
-			WhisperDevice:  choices.WhisperDevice,
-			WhisperCompute: choices.WhisperCompute,
-			PiperVoice:     choices.PiperVoice,
-		}
+		section.SpeechServer = speechServerWith(existing.SpeechServer, choices)
 		w.ui.Success("local speech ready — %s", choices.Summary())
 		if choices.Warning != "" {
 			w.ui.Warn("%s", choices.Warning)

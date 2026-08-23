@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -708,6 +709,18 @@ def _param(default=None, **kwargs):
 Body = File = Form = Header = _param
 `
 
+const stubPiper = `
+class SynthesisConfig:
+    def __init__(self, speaker_id=None, length_scale=None, noise_scale=None,
+                 noise_w_scale=None, normalize_audio=True, volume=1.0):
+        self.speaker_id = speaker_id
+        self.length_scale = length_scale
+        self.noise_scale = noise_scale
+        self.noise_w_scale = noise_w_scale
+        self.normalize_audio = normalize_audio
+        self.volume = volume
+`
+
 const stubFastAPIResponses = `
 class JSONResponse:
     def __init__(self, *args, **kwargs):
@@ -759,6 +772,13 @@ func TestEmbeddedSpeechServerKnowsTheSpeakerModel(t *testing.T) {
 // a restatement of these rules in Go would agree with a broken script.
 func runSpeechSnippet(t *testing.T, snippet string) string {
 	t.Helper()
+	return runSpeechSnippetWith(t, nil, snippet)
+}
+
+// runSpeechSnippetWith is runSpeechSnippet with settings folded into the
+// server's configuration, which it reads once at import.
+func runSpeechSnippetWith(t *testing.T, settings map[string]any, snippet string) string {
+	t.Helper()
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 is not installed on this machine")
@@ -774,6 +794,7 @@ func runSpeechSnippet(t *testing.T, snippet string) string {
 		"fastapi/responses.py": stubFastAPIResponses,
 		"onnx_asr/__init__.py": stubOnnxAsr,
 		"onnx_asr/utils.py":    stubOnnxAsrUtils,
+		"piper/__init__.py":    stubPiper,
 	} {
 		path := filepath.Join(stubs, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -783,7 +804,12 @@ func runSpeechSnippet(t *testing.T, snippet string) string {
 			t.Fatal(err)
 		}
 	}
-	cfg, err := json.Marshal(map[string]any{"data_dir": filepath.Join(dir, "data")})
+	settings = maps.Clone(settings)
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	settings["data_dir"] = filepath.Join(dir, "data")
+	cfg, err := json.Marshal(settings)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -832,5 +858,70 @@ print(",".join(str(mod.is_hallucination(s)) for s in cases))
 `)
 	if got := strings.TrimSpace(out); got != "False,True,True,True" {
 		t.Errorf("is_hallucination verdicts = %q, want False,True,True,True", got)
+	}
+}
+
+// speedSnippet is a scripted Piper: it records the synthesis configuration it
+// was handed, which is the only place the pace actually lives.
+const speedSnippet = `
+class Chunk:
+    audio_int16_bytes = b"\x00\x00" * 8
+    sample_rate = mod.OUTPUT_RATE
+    sample_width = 2
+    sample_channels = 1
+
+class Voice:
+    # A voice whose own configuration holds it back, so a speed applied
+    # against 1.0 rather than against the voice would show up here.
+    class config:
+        length_scale = 1.2
+
+    def __init__(self):
+        self.seen = []
+
+    def synthesize(self, text, syn_config=None):
+        self.seen.append(syn_config)
+        yield Chunk()
+
+mod._tts = Voice()
+`
+
+// Piper's own knob is length_scale — how long each phoneme is held — and it is
+// the reciprocal of a speed. Reaching for the audio instead would be the bug
+// this guards: resampling slows the words down and drops the pitch with them,
+// which is a different voice rather than a slower one.
+func TestEmbeddedSpeechServerPacesTheVoiceByPhonemeLength(t *testing.T) {
+	out := runSpeechSnippetWith(t, map[string]any{"speech_speed": 0.9}, speedSnippet+`
+mod.speech({"input": "hola"})                 # the configured pace
+mod.speech({"input": "hola", "speed": 1.5})   # what the request asked for
+mod.synthesize("hola", 1.0)                   # nothing to say about the pace
+
+seen = mod._tts.seen
+print(round(seen[0].length_scale, 4), round(seen[1].length_scale, 4), seen[2])
+`)
+	if got := strings.TrimSpace(out); got != "1.3333 0.8 None" {
+		t.Errorf("length scales = %q, want 1.3333 0.8 None (1.2 ÷ the speed, and the voice's own where there is none)", got)
+	}
+}
+
+// The pace arrives from a hand-edited config file and from callers Factor does
+// not write, so it is read defensively: anything unusable is the configured
+// pace rather than an error mid-sentence, and zero is a division.
+func TestEmbeddedSpeechServerReadsAPaceItCanSpeakAt(t *testing.T) {
+	out := runSpeechSnippet(t, `
+values = [None, "", "0.9", 0.9, 0, -1, 9.0, 0.01, float("nan")]
+print(",".join(str(mod.read_speed(v, 1.0)) for v in values))
+`)
+	want := "1.0,1.0,0.9,0.9,1.0,1.0,4.0,0.25,1.0"
+	if got := strings.TrimSpace(out); got != want {
+		t.Errorf("read_speed = %q, want %q", got, want)
+	}
+}
+
+// The knob is the server's, so it has to survive the trip to the server.
+func TestRenderSpeechConfigCarriesTheSpeechSpeed(t *testing.T) {
+	rendered := renderSpeechConfig(SpeechConfig{SpeechSpeed: 0.92}, t.TempDir(), "es", "tok", false, true, false)
+	if rendered.SpeechSpeed != 0.92 {
+		t.Errorf("speech_speed = %v, dropped on the way to the server", rendered.SpeechSpeed)
 	}
 }

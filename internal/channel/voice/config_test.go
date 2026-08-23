@@ -101,6 +101,7 @@ func TestValidateRejectsWhatWouldFailMidConversation(t *testing.T) {
 		{"speaker id without the managed server", func(c *Config) { c.SpeakerID = true }, "speaker_id"},
 		{"unknown unknown_speaker", func(c *Config) { c.UnknownSpeaker = "sometimes" }, "unknown_speaker"},
 		{"speaker threshold beyond cosine", func(c *Config) { c.SpeakerThreshold = 1.5 }, "speaker_threshold"},
+		{"a pace no voice can carry", func(c *Config) { c.SpeechServer.SpeechSpeed = 12 }, "speech_speed"},
 		{"speech port colliding with control", func(c *Config) {
 			c.STT = phone.AudioEndpoint{Provider: providerLocalOpenAI}
 			c.SpeechServer.Port = 8730

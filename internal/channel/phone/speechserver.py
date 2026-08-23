@@ -14,10 +14,11 @@ its adapters expect:
   * POST /v1/audio/transcriptions — multipart upload of a 16 kHz mono WAV,
     answered with {"text": ...}; verbose_json also carries per-segment
     avg_logprob, which Patter turns into a confidence score.
-  * POST /v1/audio/speech — {"model", "input", "voice", "response_format"},
-    answered with headerless 24 kHz mono signed 16-bit PCM. Patter hardcodes
-    response_format="pcm" and resamples 24 kHz down to the 8 kHz phone band, so
-    anything else arrives at the caller's ear transposed.
+  * POST /v1/audio/speech — {"model", "input", "voice", "response_format"} and
+    an optional "speed" over the configured one, answered with headerless
+    24 kHz mono signed 16-bit PCM. Patter hardcodes response_format="pcm" and
+    resamples 24 kHz down to the 8 kHz phone band, so anything else arrives at
+    the caller's ear transposed.
 
 One more route exists for the PC voice channel alone: POST /v1/audio/voices
 answers a WAV upload with one embedding per person in it, which is what Factor
@@ -43,6 +44,7 @@ import asyncio
 import audioop
 import io
 import json
+import math
 import os
 import shutil
 import sys
@@ -104,6 +106,32 @@ WHISPER_MODEL = CFG.get("whisper_model") or "base"
 WHISPER_DEVICE = CFG.get("whisper_device") or "cpu"
 WHISPER_COMPUTE = CFG.get("whisper_compute") or "int8"
 PIPER_VOICE = CFG.get("piper_voice") or ""
+
+# The pace of the voice, in OpenAI's terms: 1.0 is the pace the voice was built
+# at, below it slower, above it faster. Piper's own knob is the reciprocal —
+# length_scale, how long each phoneme is held — and it is the one way to change
+# the pace without changing the voice: resampling the audio would slow the words
+# down and drop the pitch with them.
+#
+# The range is OpenAI's documented one, and its bottom is the bound that
+# matters: a speed of zero or below is a division rather than a slow voice.
+MIN_SPEECH_SPEED = 0.25
+MAX_SPEECH_SPEED = 4.0
+
+
+def read_speed(value, default: float) -> float:
+    """One speed off the config or off the wire, or default where it is unusable."""
+    try:
+        speed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(speed) or speed <= 0:
+        return default
+    return min(max(speed, MIN_SPEECH_SPEED), MAX_SPEECH_SPEED)
+
+
+# What this server speaks at when a request does not name a speed of its own.
+SPEECH_SPEED = read_speed(CFG.get("speech_speed"), 1.0)
 
 # Patter's OpenAI TTS adapter resamples 24 kHz to the phone band and nothing
 # else, so this rate is a contract rather than a preference.
@@ -507,8 +535,10 @@ def speech(payload: dict = Body(...), authorization: str | None = Header(default
     if not text:
         raise HTTPException(status_code=400, detail="input is required")
 
+    speed = read_speed(payload.get("speed"), SPEECH_SPEED)
+
     with _tts_lock:
-        pcm, rate, width, channels = synthesize(text)
+        pcm, rate, width, channels = synthesize(text, speed)
 
     if rate != OUTPUT_RATE:
         pcm, _ = audioop.ratecv(pcm, width, channels, rate, OUTPUT_RATE, None)
@@ -731,11 +761,18 @@ def transcribe_parakeet(raw: bytes) -> tuple[str, float]:
     return result.text.strip(), avg
 
 
-def synthesize(text: str) -> tuple[bytes, int, int, int]:
-    """Render text through Piper, returning raw PCM and its shape."""
+def synthesize(text: str, speed: float = 1.0) -> tuple[bytes, int, int, int]:
+    """Render text through Piper at speed, returning raw PCM and its shape."""
+    syn_config = None
+    if speed != 1.0:
+        from piper import SynthesisConfig
+
+        # Against the voice's own pace rather than against 1.0: a voice whose
+        # config holds it back stays held back, and speed moves it from there.
+        syn_config = SynthesisConfig(length_scale=_tts.config.length_scale / speed)
     pcm = bytearray()
     rate, width, channels = OUTPUT_RATE, 2, 1
-    for chunk in _tts.synthesize(text):
+    for chunk in _tts.synthesize(text, syn_config=syn_config):
         pcm.extend(chunk.audio_int16_bytes)
         rate, width, channels = chunk.sample_rate, chunk.sample_width, chunk.sample_channels
     return bytes(pcm), rate, width, channels

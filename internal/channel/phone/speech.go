@@ -100,6 +100,18 @@ type SpeechConfig struct {
 	// from the language against Piper's catalogue.
 	PiperVoice string `json:"piper_voice,omitempty"`
 
+	// SpeechSpeed paces that voice: 1.0 (the default) is the pace the voice
+	// was built at, below it slower, above it faster. It rides Piper's
+	// length_scale — how long each phoneme is held — which is the one way to
+	// change the pace and keep the voice: resampling the audio instead would
+	// slow the words down and drop the pitch with them. A small step is the
+	// point, 1.05 to 1.10 the other way for a voice that rushes; past about
+	// 1.2 either way it stops sounding like a person. It is a server-wide
+	// default, so it reaches everything the server speaks for — the phone as
+	// well as the PC voice — and a request naming its own OpenAI-style
+	// "speed" overrides it.
+	SpeechSpeed float64 `json:"speech_speed,omitempty"`
+
 	// SpeakerModel names the voice-embedding model behind /v1/audio/voices,
 	// by its file name in sherpa-onnx's speaker-recognition release — one of
 	// wespeaker_en_voxceleb_CAM++_LM (the default), wespeaker_en_voxceleb_CAM++,
@@ -117,6 +129,26 @@ type SpeechConfig struct {
 }
 
 func (s SpeechConfig) autoInstall() bool { return s.AutoInstall == nil || *s.AutoInstall }
+
+// The pace the server will carry, which is OpenAI's documented range for the
+// field. Well outside it the words stop being words, and the server clamps to
+// the same bounds — this is only so a typo is answered at startup rather than
+// silently rounded on the first thing the agent says.
+const (
+	minSpeechSpeed = 0.25
+	maxSpeechSpeed = 4.0
+)
+
+// Validate checks the knobs a user sets by hand. It is exported because the
+// voice channel carries this same section and has to hold it to the same
+// bounds. Zero is "unset", which the server reads as the voice's own pace.
+func (s SpeechConfig) Validate() error {
+	if s.SpeechSpeed != 0 && (s.SpeechSpeed < minSpeechSpeed || s.SpeechSpeed > maxSpeechSpeed) {
+		return fmt.Errorf("speech_server.speech_speed %g is out of range (want %g–%g, and near 1.0 to still sound like a person)",
+			s.SpeechSpeed, minSpeechSpeed, maxSpeechSpeed)
+	}
+	return nil
+}
 
 // SpeechVenvDir is the private virtualenv the speech server runs in. It is
 // deliberately not the voice shell's: the speech engines drag in a large,
@@ -356,13 +388,14 @@ type speechServerConfig struct {
 	DataDir  string `json:"data_dir"`
 	Language string `json:"language"`
 
-	SttEngine      string `json:"stt_engine,omitempty"`
-	SttModel       string `json:"stt_model,omitempty"`
-	WhisperModel   string `json:"whisper_model,omitempty"`
-	WhisperDevice  string `json:"whisper_device,omitempty"`
-	WhisperCompute string `json:"whisper_compute,omitempty"`
-	PiperVoice     string `json:"piper_voice,omitempty"`
-	SpeakerModel   string `json:"speaker_model,omitempty"`
+	SttEngine      string  `json:"stt_engine,omitempty"`
+	SttModel       string  `json:"stt_model,omitempty"`
+	WhisperModel   string  `json:"whisper_model,omitempty"`
+	WhisperDevice  string  `json:"whisper_device,omitempty"`
+	WhisperCompute string  `json:"whisper_compute,omitempty"`
+	PiperVoice     string  `json:"piper_voice,omitempty"`
+	SpeechSpeed    float64 `json:"speech_speed,omitempty"`
+	SpeakerModel   string  `json:"speaker_model,omitempty"`
 
 	// NeedSTT and NeedTTS follow the tier: a tier that keeps one half in the
 	// cloud must not pay for the other half's weights or memory. NeedSpeaker
@@ -385,6 +418,7 @@ func renderSpeechConfig(cfg SpeechConfig, home, language, token string, needSTT,
 		WhisperDevice:  cfg.WhisperDevice,
 		WhisperCompute: cfg.WhisperCompute,
 		PiperVoice:     cfg.PiperVoice,
+		SpeechSpeed:    cfg.SpeechSpeed,
 		SpeakerModel:   cfg.SpeakerModel,
 		NeedSTT:        needSTT,
 		NeedTTS:        needTTS,

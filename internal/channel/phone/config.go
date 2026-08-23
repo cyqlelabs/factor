@@ -300,6 +300,9 @@ func (c Config) validate() error {
 		return fmt.Errorf("bridge_port %d collides with the voice shell's control port %d or its webhook port %d",
 			c.BridgePort, c.SidecarPort, c.webhookPort())
 	}
+	if err := c.SpeechServer.Validate(); err != nil {
+		return err
+	}
 	if c.managedSpeech() {
 		speech := speechPort(c.SpeechServer)
 		for _, taken := range [](struct {

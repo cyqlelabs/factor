@@ -282,7 +282,7 @@ func (c Config) validate() error {
 	if c.managedSpeech() && c.SpeechServer.Port == c.ControlPort {
 		return fmt.Errorf("speech_server.port %d collides with control_port", c.SpeechServer.Port)
 	}
-	return nil
+	return c.SpeechServer.Validate()
 }
 
 // roomIsolation reports whether turns should be scoped to the room's audience.
