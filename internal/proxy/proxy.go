@@ -28,10 +28,17 @@ import (
 // proxy. Both cases are written because both are read in the wild.
 var proxyEnv = []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"}
 
-// caEnv is what the Python sidecars read to find a certificate authority.
-// This process does not use them — it builds its own pool — so they exist
-// purely so a spawned child trusts what this one trusts.
-var caEnv = []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"}
+// caEnv is what a spawned child reads to find a certificate authority. This
+// process does not use any of them — it builds its own pool — so they exist
+// purely so a child trusts what this one trusts, and they are not
+// interchangeable: each name belongs to one TLS stack. OpenSSL reads
+// SSL_CERT_FILE, Python's requests reads REQUESTS_CA_BUNDLE, curl reads
+// CURL_CA_BUNDLE, and git reads GIT_SSL_CAINFO — on Debian and Ubuntu it is
+// linked against libcurl-gnutls, which honours neither of the two before it.
+// A missing name is a tool that fails on every https URL while the proxy is
+// on, which is what `git clone` did mid-turn while Factor's own calls went
+// through the same proxy without complaint.
+var caEnv = []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"}
 
 // wellKnownCAs are the paths intercepting proxies conventionally write their
 // certificate authority to. Nothing but a convenience: --proxy-ca names one

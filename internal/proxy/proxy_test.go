@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -229,5 +230,22 @@ func TestVerifyReportsAnInterceptingProxyItCannotTrust(t *testing.T) {
 	http.DefaultTransport = srv.Client().Transport
 	if hint := verify("http://p:9"); hint != "" {
 		t.Errorf("a working proxy produced %q", hint)
+	}
+}
+
+// The names are a list of TLS stacks, not a list of synonyms: each tool reads
+// one of them and ignores the rest. Losing one is silent — Factor's own calls
+// keep working, and only the child that reads that name starts failing on
+// every https URL it touches.
+func TestTheAuthorityReachesEveryKindOfChild(t *testing.T) {
+	for _, want := range []string{
+		"SSL_CERT_FILE",      // OpenSSL, and anything built on it
+		"REQUESTS_CA_BUNDLE", // Python requests — smrti and the voice shell
+		"CURL_CA_BUNDLE",     // curl
+		"GIT_SSL_CAINFO",     // git, linked against libcurl-gnutls, which reads neither of the two above
+	} {
+		if !slices.Contains(caEnv, want) {
+			t.Errorf("caEnv lost %s, so that stack no longer trusts the proxy", want)
+		}
 	}
 }

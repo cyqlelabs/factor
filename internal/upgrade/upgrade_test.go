@@ -3,6 +3,8 @@ package upgrade
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -501,5 +503,47 @@ func TestLatestGivesUpOnAServerThatNeverAnswers(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Latest hung on a server that never answers")
+	}
+}
+
+// An intercepting proxy (mitmproxy, Burp) is trusted by putting its authority
+// on http.DefaultTransport, which main() does after reading the config — long
+// after this package's variables are initialised. A client built at init
+// carries the system roots alone, which made self-upgrade the one call that
+// died on GitHub's certificate while every other call Factor makes went
+// through the same proxy happily.
+func TestTheUpgradeClientTrustsWhatTheProxyInstalled(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+
+	mux := http.NewServeMux()
+	srv := httptest.NewUnstartedServer(mux)
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `{"tag_name":"v9.9.9","html_url":"https://example.test/v9.9.9","assets":[`+
+			`{"name":%q,"browser_download_url":"%s/dl/binary","size":6},`+
+			`{"name":"SHA256SUMS","browser_download_url":"%s/dl/SHA256SUMS","size":6}]}`,
+			AssetName(), srv.URL, srv.URL)
+	})
+	prev := releaseAPI
+	releaseAPI = srv.URL + "/releases/latest"
+	t.Cleanup(func() { releaseAPI = prev })
+
+	// Exactly what proxy.Use does to this process: the extra authority is
+	// added to the transport everything else clones.
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	original := http.DefaultTransport
+	clone := original.(*http.Transport).Clone()
+	clone.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	http.DefaultTransport = clone
+	t.Cleanup(func() { http.DefaultTransport = original })
+
+	rel, err := Latest(context.Background())
+	if err != nil {
+		t.Fatalf("looking up a release through a trusted intercepting proxy: %v", err)
+	}
+	if rel.Version != "v9.9.9" {
+		t.Errorf("release = %+v", rel)
 	}
 }

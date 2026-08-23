@@ -33,29 +33,41 @@ const DefaultCheckInterval = 24 * time.Hour
 // real binary to overwrite.
 var (
 	releaseAPI = "https://api.github.com/repos/" + repo + "/releases/latest"
-	// Every request here is a rare one-off — a check a day, a download now and
-	// then — so a pooled connection buys nothing and costs everything: the one
-	// kept from the last lookup is the one the network quietly dropped in
-	// between, and an HTTP/2 stream reopened on it answers nothing while the
-	// download's fifteen minutes run out. A fresh HTTP/1.1 connection per
-	// request cannot wedge that way, and the dial and the wait for headers are
-	// bounded so only the body may take its time.
-	httpClient = &http.Client{
-		Timeout: 15 * time.Minute,
-		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 15 * time.Second}).DialContext,
-			TLSHandshakeTimeout:   15 * time.Second,
-			ResponseHeaderTimeout: 30 * time.Second,
-			DisableKeepAlives:     true,
-		},
-	}
 	// A lookup is one small JSON GET; the budget above is the download's.
 	lookupTimeout  = 30 * time.Second
 	executablePath = os.Executable
 	goos           = runtime.GOOS
 	goarch         = runtime.GOARCH
 )
+
+// httpClient is built for each request rather than kept, and it is built from
+// whatever http.DefaultTransport is at that moment. That is the whole point:
+// `-p` / proxy.address installs the proxy's certificate authority there, and a
+// client built when this package was loaded would have copied the transport
+// that existed before main() had read the config — which is how a self-upgrade
+// behind an intercepting proxy failed on GitHub's certificate while every
+// other call Factor makes went through.
+//
+// Every request here is a rare one-off — a check a day, a download now and
+// then — so a pooled connection buys nothing and costs everything: the one
+// kept from the last lookup is the one the network quietly dropped in
+// between, and an HTTP/2 stream reopened on it answers nothing while the
+// download's fifteen minutes run out. A fresh HTTP/1.1 connection per
+// request cannot wedge that way, and the dial and the wait for headers are
+// bounded so only the body may take its time.
+func httpClient() *http.Client {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		transport = &http.Transport{}
+	}
+	clone := transport.Clone()
+	clone.Proxy = http.ProxyFromEnvironment
+	clone.DialContext = (&net.Dialer{Timeout: 15 * time.Second}).DialContext
+	clone.TLSHandshakeTimeout = 15 * time.Second
+	clone.ResponseHeaderTimeout = 30 * time.Second
+	clone.DisableKeepAlives = true
+	return &http.Client{Timeout: 15 * time.Minute, Transport: clone}
+}
 
 // Progress reports steps to whoever is watching (the CLI prints them).
 type Progress func(format string, args ...any)
@@ -93,7 +105,7 @@ func Latest(ctx context.Context) (Release, error) {
 		return Release{}, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := httpClient.Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
 		return Release{}, fmt.Errorf("looking up the latest factor release: %w", err)
 	}
@@ -281,7 +293,7 @@ func fetch(ctx context.Context, url string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
