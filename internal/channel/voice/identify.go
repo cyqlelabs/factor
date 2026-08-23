@@ -149,14 +149,21 @@ func (v *Voice) readVoices(ctx context.Context, utterance capturedUtterance, tea
 	if len(readings) == 0 {
 		return v.unread(viaShort, teach)
 	}
-	// Nobody else may have been in the recording for it to teach a profile.
-	// A diarized stretch is clean by construction, but "clean" rests on the
-	// split having been right, and a profile is the one thing here that
-	// outlives the mistake.
+	// Nobody else may have been in the recording for it to move the store at
+	// all — neither to teach a profile nor to mint one. A diarized stretch is
+	// clean by construction, but "clean" rests on the split having been
+	// right, and a profile is the one thing here that outlives the mistake.
+	//
+	// Minting used to be exempt from this, which had it backwards: teaching
+	// moves a centroid that later matches are judged against, but a spurious
+	// profile never goes away, competes for every future match, and is how a
+	// household of three ends up with fifteen voices. The more expensive
+	// mistake cannot have the looser bar. Nothing is lost by waiting —
+	// somebody who lives here says something on their own soon enough.
 	alone := len(readings) == 1
 	present := make([]speakerIdentity, 0, len(readings))
 	for _, reading := range readings {
-		present = append(present, v.nameVoice(ctx, reading, teach && alone, teach))
+		present = append(present, v.nameVoice(ctx, reading, teach && alone))
 	}
 	if !teach {
 		// The ambient path names the voices for the room and for the log, but
@@ -184,9 +191,10 @@ func (v *Voice) readVoices(ctx context.Context, utterance capturedUtterance, tea
 	return heardVoices{speaker: v.rememberSpeaker(speaker), present: present}
 }
 
-// nameVoice matches one voice against the profiles. learn allows it to move
-// the matched profile; enroll allows it to create one.
-func (v *Voice) nameVoice(ctx context.Context, reading voiceReading, learn, enroll bool) speakerIdentity {
+// nameVoice matches one voice against the profiles. commit allows it to move
+// the store — to fold the reading into the profile it matched, or to create
+// one for a voice that matched nothing.
+func (v *Voice) nameVoice(ctx context.Context, reading voiceReading, commit bool) speakerIdentity {
 	if reading.Seconds < speakerMatchMinSeconds || len(reading.Embedding) == 0 {
 		return speakerIdentity{via: viaShort, seconds: reading.Seconds}
 	}
@@ -199,13 +207,13 @@ func (v *Voice) nameVoice(ctx context.Context, reading voiceReading, learn, enro
 			"seconds", round2(reading.Seconds), "threshold", v.cfg.SpeakerThreshold)
 	}
 	if name != "" && similarity >= v.cfg.SpeakerThreshold {
-		if learn && similarity >= v.cfg.SpeakerThreshold+speakerLearnMargin &&
+		if commit && similarity >= v.cfg.SpeakerThreshold+speakerLearnMargin &&
 			reading.Seconds >= speakerLearnMinSeconds {
 			v.speakers.learn(name, reading.Embedding)
 		}
 		return v.identity(name, viaMatch, similarity, reading.Seconds)
 	}
-	if enroll && v.cfg.UnknownSpeaker == unknownEnroll && reading.Seconds >= speakerEnrollMinSeconds {
+	if commit && v.cfg.UnknownSpeaker == unknownEnroll && reading.Seconds >= speakerEnrollMinSeconds {
 		enrolled := v.speakers.enroll(reading.Embedding)
 		slog.Info("a new voice enrolled", "speaker", enrolled, "closest", name,
 			"similarity", round2(similarity), "threshold", v.cfg.SpeakerThreshold,

@@ -1282,14 +1282,27 @@ func TestVoiceTellsTwoPeopleApartInOneRecording(t *testing.T) {
 	h.sayFor(220)
 	call := h.turn(10 * time.Second)
 
-	if got := h.v.speakers.list(); len(got) != 2 {
-		t.Errorf("two voices in one recording became %d profile(s): %+v", len(got), got)
-	}
 	if call.audience != tools.AudienceShared {
 		t.Errorf("audience = %q, want shared: two people were in the recording", call.audience)
 	}
 	if call.session != sessionKey+":"+roomSessionSlug {
 		t.Errorf("session = %q, want the room's", call.session)
+	}
+	// Told apart, but not written down. A recording holding two people is
+	// the one the diarizer is most likely to have split wrongly, and a
+	// profile outlives the mistake — so the guest is recognized as somebody
+	// else without a profile being minted for them here.
+	if got := h.v.speakers.list(); len(got) != 1 {
+		t.Errorf("a recording holding two voices minted profiles: %+v", got)
+	}
+
+	// They get one the moment they say something on their own.
+	h.waitQuiet()
+	h.setEmbedding([]float64{0, 1, 0})
+	h.say()
+	h.turn(10 * time.Second)
+	if got := h.v.speakers.list(); len(got) != 2 {
+		t.Errorf("a guest speaking alone was not enrolled: %+v", got)
 	}
 }
 
