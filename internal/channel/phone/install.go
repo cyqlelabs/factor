@@ -155,7 +155,20 @@ func systemPython() (string, error) {
 }
 
 func pythonCandidates() []string {
-	return []string{"python3.14", "python3.13", "python3.12", "python3.11", "python3", "python"}
+	names := []string{"python3.14", "python3.13", "python3.12", "python3.11", "python3", "python"}
+	if runtime.GOOS == "windows" {
+		// None of the versioned names exist on Windows, and neither does
+		// python3: the python.org installer lays down python.exe and the py
+		// launcher, nothing else. python.exe is also the weakest candidate
+		// there, because Windows ships App Execution Alias stubs for it that
+		// resolve and then exit 9009 advertising the Microsoft Store, and the
+		// installer leaves "Add python.exe to PATH" unticked by default - so
+		// on a stock machine every name above misses even with Python
+		// installed. py.exe is installed to C:\Windows, which is always on
+		// PATH, and picks the newest Python 3 it can find.
+		names = append(names, "py")
+	}
+	return names
 }
 
 // Install builds the private venv and installs the pinned Patter release into
