@@ -17,7 +17,7 @@ export CGO_ENABLED=0
 
 COVER_MIN := 90
 
-.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check clean version version-next
+.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check clean version version-next win-setup test-windows test-windows-race
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/factor
@@ -55,6 +55,21 @@ cover:
 	@go tool cover -func=coverage.out | tail -1
 	@total=$$(go tool cover -func=coverage.out | tail -1 | awk '{print $$3}' | tr -d '%'); \
 	awk -v t="$$total" -v min="$(COVER_MIN)" 'BEGIN { if (t+0 < min+0) { printf "FAIL: coverage %.1f%% is below the %s%% minimum\n", t, min; exit 1 } printf "coverage %.1f%% meets the %s%% minimum\n", t, min }'
+
+# The Windows gate. CI only ever cross-compiles the Windows target, so until
+# these run, ~1000 lines across 12 _windows.go files have never executed. The
+# suite runs inside a VirtualBox guest, in its logged-on session — a desktop
+# screenshot and a tray icon have nowhere to land in the session ssh gets.
+# `make win-setup` provisions the guest and captures the snapshot once;
+# `make test-windows` restores that snapshot and runs the suite on it.
+win-setup:
+	./test/windows/run.sh setup
+
+test-windows:
+	./test/windows/run.sh ci
+
+test-windows-race:
+	./test/windows/run.sh race
 
 vet:
 	go vet ./...
