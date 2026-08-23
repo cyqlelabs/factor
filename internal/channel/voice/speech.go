@@ -75,19 +75,43 @@ func (s *speechClient) transcribe(ctx context.Context, pcm []byte) (string, erro
 		if model == "" {
 			model = whisperModel
 		}
-		return s.transcribeOpenAI(ctx, base, model, s.cfg.STTAPIKey, pcm)
+		return s.transcribeOpenAI(ctx, base, model, s.cfg.STTAPIKey, pcm, scoreSegments)
 	default: // local-openai
 		token := ""
 		if s.cfg.managedSpeech() {
 			token = s.token
 		}
-		return s.transcribeOpenAI(ctx, s.cfg.STT.BaseURL, s.cfg.STT.Model, token, pcm)
+		// Plain text on purpose. Factor's own server has already applied
+		// these bars before answering, and a server the user pointed us at
+		// is theirs — asking an unknown implementation for a response format
+		// it may not implement would trade a defence for an outage.
+		return s.transcribeOpenAI(ctx, s.cfg.STT.BaseURL, s.cfg.STT.Model, token, pcm, plainText)
 	}
 }
 
+// What the managed server drops before it answers (is_hallucination, in
+// speechserver.py), held here against the scores a cloud tier reports.
+// Without this the fallback in resolveAudioTier silently gives up every
+// defence the local tier had — and it fires exactly when things have already
+// gone wrong, which is the worst moment to start answering questions nobody
+// asked.
+const (
+	maxNoSpeechProb = 0.6
+	minAvgLogprob   = -1.0
+
+	// minDeepgramConfidence is a floor against a transcript squeezed out of
+	// noise, not a quality bar. Deepgram scores ordinary speech far above it,
+	// and quiet or heavily accented speech has to survive.
+	minDeepgramConfidence = 0.5
+
+	// Named so the call sites say what the flag buys.
+	scoreSegments = true
+	plainText     = false
+)
+
 // transcribeOpenAI speaks the OpenAI transcription protocol, which the
 // managed server, user-run local servers, and OpenAI itself all accept.
-func (s *speechClient) transcribeOpenAI(ctx context.Context, base, model, key string, pcm []byte) (string, error) {
+func (s *speechClient) transcribeOpenAI(ctx context.Context, base, model, key string, pcm []byte, scored bool) (string, error) {
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
 	part, err := form.CreateFormFile("file", "utterance.wav")
@@ -104,6 +128,11 @@ func (s *speechClient) transcribeOpenAI(ctx context.Context, base, model, key st
 	}
 	if err := form.WriteField("language", s.cfg.Language); err != nil {
 		return "", err
+	}
+	if scored {
+		if err := form.WriteField("response_format", "verbose_json"); err != nil {
+			return "", err
+		}
 	}
 	if err := form.Close(); err != nil {
 		return "", err
@@ -122,12 +151,31 @@ func (s *speechClient) transcribeOpenAI(ctx context.Context, base, model, key st
 		return "", fmt.Errorf("transcription: %w", err)
 	}
 	var reply struct {
-		Text string `json:"text"`
+		Text     string `json:"text"`
+		Segments []struct {
+			Text         string  `json:"text"`
+			AvgLogprob   float64 `json:"avg_logprob"`
+			NoSpeechProb float64 `json:"no_speech_prob"`
+		} `json:"segments"`
 	}
 	if err := json.Unmarshal(raw, &reply); err != nil {
 		return "", fmt.Errorf("transcription reply: %w", err)
 	}
-	return strings.TrimSpace(reply.Text), nil
+	// No segments is not an empty answer: a server that ignored the request
+	// for them is taken at its word rather than silenced.
+	if !scored || len(reply.Segments) == 0 {
+		return strings.TrimSpace(reply.Text), nil
+	}
+	var kept []string
+	for _, segment := range reply.Segments {
+		if segment.NoSpeechProb > maxNoSpeechProb || segment.AvgLogprob < minAvgLogprob {
+			continue
+		}
+		if text := strings.TrimSpace(segment.Text); text != "" {
+			kept = append(kept, text)
+		}
+	}
+	return strings.Join(kept, " "), nil
 }
 
 func (s *speechClient) transcribeDeepgram(ctx context.Context, pcm []byte) (string, error) {
@@ -156,6 +204,10 @@ func (s *speechClient) transcribeDeepgram(ctx context.Context, pcm []byte) (stri
 			Channels []struct {
 				Alternatives []struct {
 					Transcript string `json:"transcript"`
+					// A pointer, so a carrier that does not score its answer
+					// is taken at its word instead of read as zero and
+					// thrown away.
+					Confidence *float64 `json:"confidence"`
 				} `json:"alternatives"`
 			} `json:"channels"`
 		} `json:"results"`
@@ -166,7 +218,11 @@ func (s *speechClient) transcribeDeepgram(ctx context.Context, pcm []byte) (stri
 	if len(reply.Results.Channels) == 0 || len(reply.Results.Channels[0].Alternatives) == 0 {
 		return "", nil
 	}
-	return strings.TrimSpace(reply.Results.Channels[0].Alternatives[0].Transcript), nil
+	best := reply.Results.Channels[0].Alternatives[0]
+	if best.Confidence != nil && *best.Confidence < minDeepgramConfidence {
+		return "", nil
+	}
+	return strings.TrimSpace(best.Transcript), nil
 }
 
 // voiceReading is one person's speech inside an utterance, as the speech

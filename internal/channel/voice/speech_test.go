@@ -401,3 +401,92 @@ func voicedSeconds(wav []byte) float64 {
 	}
 	return float64(voiced) / float64(captureRate)
 }
+
+// stubSTT answers every transcription request with one canned body.
+func stubSTT(t *testing.T, body string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// The cloud tier is what resolveAudioTier falls back to when the local server
+// stops answering — the moment the machine can least afford to start
+// answering questions nobody asked. It reports the same scores the managed
+// server filters on, so the same bars are held against them here.
+func TestTranscribeWhisperDropsWhatTheDecoderDidNotHear(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{
+			name: "the confident phrase invented over silence",
+			body: `{"text":"Thanks for watching!","segments":[
+				{"text":"Thanks for watching!","avg_logprob":-0.2,"no_speech_prob":0.95}]}`,
+			want: "",
+		},
+		{
+			name: "the mumbling read out of line noise",
+			body: `{"text":"mm hm","segments":[
+				{"text":"mm hm","avg_logprob":-1.8,"no_speech_prob":0.1}]}`,
+			want: "",
+		},
+		{
+			name: "a real sentence with one bad segment in it",
+			body: `{"text":"open the door mm","segments":[
+				{"text":"open the door","avg_logprob":-0.3,"no_speech_prob":0.05},
+				{"text":" mm","avg_logprob":-2.0,"no_speech_prob":0.1}]}`,
+			want: "open the door",
+		},
+		{
+			// A server that ignored the request for scores is taken at its
+			// word: silencing it would be worse than not filtering it.
+			name: "a server that reported no segments",
+			body: `{"text":"open the door"}`,
+			want: "open the door",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := stubSTT(t, tc.body)
+			client, _ := clientFor(t, func(c *Config) {
+				c.STT = phone.AudioEndpoint{Provider: providerWhisper}
+				c.STTAPIKey = "sk-openai"
+				c.STTAPIBase = base
+			})
+			got, err := client.transcribe(context.Background(), toneFrame(1000))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("text = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTranscribeDeepgramHoldsAConfidenceFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"scored well", `{"results":{"channels":[{"alternatives":[
+			{"transcript":"open the door","confidence":0.98}]}]}}`, "open the door"},
+		{"squeezed out of noise", `{"results":{"channels":[{"alternatives":[
+			{"transcript":"uh","confidence":0.11}]}]}}`, ""},
+		// Nothing to judge it by, so it stands.
+		{"unscored", `{"results":{"channels":[{"alternatives":[
+			{"transcript":"open the door"}]}]}}`, "open the door"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := stubSTT(t, tc.body)
+			client, _ := clientFor(t, func(c *Config) { c.STTAPIBase = base })
+			got, err := client.transcribe(context.Background(), toneFrame(1000))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("text = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
