@@ -71,6 +71,26 @@ const (
 	// profile far behind, while a blend of two voices, or a bad second of
 	// audio, lands between them and lands close to both.
 	speakerRunnerUpMargin = 0.10
+
+	// A flat threshold is the wrong shape, because how much a similarity is
+	// worth depends on how much voice it was computed over. Across 221 real
+	// matches on this machine the median rises with the reading and the floor
+	// rises with it too:
+	//
+	//	under 1.5s   median 0.61, and 18% of true matches under 0.50
+	//	1.5s to 3s   median 0.70, and 7% under 0.50
+	//	3s to 6s     median 0.77, and 1% under 0.50
+	//	over 6s      median 0.83, and none under 0.69
+	//
+	// Meanwhile a different person has been measured within 0.45 of a
+	// profile. So the configured threshold is only safe for a reading long
+	// enough to have earned it: below speakerConfidentSeconds the bar rises
+	// toward speakerShortMargin above it, reaching the top at the shortest
+	// reading that gets read at all. It is the same idea as the length bars
+	// above — what is at stake decides the bar — applied to the score rather
+	// than to the decision.
+	speakerConfidentSeconds = 3.0
+	speakerShortMargin      = 0.15
 )
 
 // How one identity was arrived at. It rides the decision purely so the log
@@ -82,6 +102,7 @@ const (
 	viaUnknown     = "unknown"     // nobody matched, and no profile was created
 	viaOverlap     = "overlap"     // recorded with the agent's voice in it: not read
 	viaShort       = "short"       // too little speech to identify
+	viaUnsure      = "unsure"      // over the threshold, under the bar this reading's length demands
 	viaAmbiguous   = "ambiguous"   // two profiles too close together to choose between
 	viaUnavailable = "unavailable" // the recording could not be read at all
 )
@@ -96,6 +117,9 @@ type speakerIdentity struct {
 	// only for the ambiguous branch, which is the one decision the winning
 	// score alone cannot explain.
 	runnerUp float64
+	// bar is the similarity this reading had to clear, which is not the
+	// configured threshold whenever the reading was brief.
+	bar float64
 
 	// via and similarity are the decision's own account of itself, for the
 	// log: which branch named this voice, and how close the closest profile
@@ -194,13 +218,14 @@ func (v *Voice) readVoices(ctx context.Context, utterance capturedUtterance, tea
 	// person who started talking is the one talking to Factor, and anyone who
 	// joined partway through is the room.
 	speaker := present[0]
-	if speaker.name == "" && (speaker.via == viaShort || speaker.via == viaAmbiguous) {
-		// Too little voice to name anybody, or too little daylight between
-		// two profiles to choose — but somebody is plainly mid-conversation:
-		// a "yes" belongs to whoever was just talking. Inheriting is right
-		// for both where clearing is right for viaUnknown — that one is a
-		// voice long enough to read that matched nobody, which is evidence
-		// of a different person rather than of an unreadable moment.
+	if speaker.name == "" && speaker.unreadable() {
+		// Too little voice to name anybody, too little daylight between two
+		// profiles to choose, or a score too weak for how brief the reading
+		// was — but somebody is plainly mid-conversation: a "yes" belongs to
+		// whoever was just talking. Inheriting is right for all three where
+		// clearing is right for viaUnknown — that one is a voice long enough
+		// to read that matched nobody, which is evidence of a different
+		// person rather than of an unreadable moment.
 		inherited := v.stickySpeaker(speaker.via)
 		// Which of the two reasons it was, and the numbers behind it, are why
 		// this branch ran — so they travel on even though the name did not
@@ -208,6 +233,7 @@ func (v *Voice) readVoices(ctx context.Context, utterance capturedUtterance, tea
 		// behind a length, and the two are tuned by different knobs.
 		inherited.similarity = speaker.similarity
 		inherited.runnerUp = speaker.runnerUp
+		inherited.bar = speaker.bar
 		inherited.seconds = speaker.seconds
 		return heardVoices{speaker: inherited, present: present}
 	}
@@ -231,6 +257,15 @@ func (v *Voice) nameVoice(ctx context.Context, reading voiceReading, commit bool
 			"seconds", round2(reading.Seconds), "threshold", v.cfg.SpeakerThreshold)
 	}
 	if name != "" && similarity >= v.cfg.SpeakerThreshold {
+		if bar := v.matchBar(reading.Seconds); similarity < bar {
+			// Over the configured threshold on a reading too brief for that
+			// to mean much. Treated as an unreadable moment rather than as a
+			// stranger: a couple of seconds is the ordinary shape of a reply
+			// mid-conversation, and answering it as nobody would put the
+			// person who never stopped talking into a different session.
+			return speakerIdentity{via: viaUnsure, similarity: similarity,
+				bar: bar, seconds: reading.Seconds}
+		}
 		if similarity-m.runnerUp < speakerRunnerUpMargin {
 			// Close to two profiles at once. Naming the nearer one would be
 			// a coin flip, and folding this reading into it would pull the
@@ -253,6 +288,20 @@ func (v *Voice) nameVoice(ctx context.Context, reading voiceReading, commit bool
 		return v.identity(enrolled, viaEnrolled, similarity, reading.Seconds)
 	}
 	return speakerIdentity{via: viaUnknown, similarity: similarity, seconds: reading.Seconds}
+}
+
+// matchBar is the similarity this reading has to clear to name somebody. It
+// is the configured threshold for a reading long enough to be judged on it,
+// rising toward speakerShortMargin above that as the reading shortens. Only
+// ever called for a reading past speakerMatchMinSeconds, which is where the
+// slope tops out.
+func (v *Voice) matchBar(seconds float64) float64 {
+	if seconds >= speakerConfidentSeconds {
+		return v.cfg.SpeakerThreshold
+	}
+	brief := (speakerConfidentSeconds - seconds) /
+		(speakerConfidentSeconds - speakerMatchMinSeconds)
+	return v.cfg.SpeakerThreshold + brief*speakerShortMargin
 }
 
 // unread is the answer for an utterance whose voices could not be read at
@@ -344,6 +393,18 @@ func (who speakerIdentity) session() string {
 	return sessionKey + ":" + speakerSlug(who.name)
 }
 
+// unreadable reports whether this is a moment the reader could not commit to,
+// as against a voice it read and did not recognize. The three of them behave
+// alike: none names anybody, none moves the store, and each inherits whoever
+// was already talking rather than declaring a stranger.
+func (who speakerIdentity) unreadable() bool {
+	switch who.via {
+	case viaShort, viaAmbiguous, viaUnsure:
+		return true
+	}
+	return false
+}
+
 func (who speakerIdentity) attributed() string {
 	if who.primary {
 		return ""
@@ -368,6 +429,9 @@ func (who speakerIdentity) logFields(session string, addressed bool) []any {
 	case viaAmbiguous:
 		fields = append(fields, "similarity", round2(who.similarity),
 			"runner_up", round2(who.runnerUp), "seconds", round2(who.seconds))
+	case viaUnsure:
+		fields = append(fields, "similarity", round2(who.similarity),
+			"bar", round2(who.bar), "seconds", round2(who.seconds))
 	case viaShort:
 		fields = append(fields, "seconds", round2(who.seconds))
 	}

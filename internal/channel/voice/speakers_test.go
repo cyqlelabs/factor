@@ -216,3 +216,67 @@ func TestNameVoiceRefusesAReadingBetweenTwoProfiles(t *testing.T) {
 		t.Errorf("a clear reading was not named: %+v", who)
 	}
 }
+
+// How much a similarity is worth depends on how much voice it was computed
+// over: measured here, a true match under a second and a half falls below
+// 0.50 eighteen percent of the time, while past six seconds it never does —
+// and a different person has been measured within 0.45 of a profile. So the
+// bar a reading has to clear rises as the reading shortens.
+func TestMatchBarRisesAsTheReadingShortens(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	cfg := validConfig()
+	cfg.SpeakerThreshold = 0.35
+	v, err := New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		seconds, want float64
+	}{
+		{speakerMatchMinSeconds, 0.35 + speakerShortMargin}, // the shortest read at all
+		{2.0, 0.35 + speakerShortMargin/2},
+		{speakerConfidentSeconds, 0.35}, // long enough to be judged on the threshold
+		{30.0, 0.35},
+	} {
+		if got := v.matchBar(tc.seconds); math.Abs(got-tc.want) > 1e-9 {
+			t.Errorf("matchBar(%.1fs) = %.3f, want %.3f", tc.seconds, got, tc.want)
+		}
+	}
+}
+
+// A score over the threshold on a reading too brief for that to mean much is
+// an unreadable moment, not a stranger — a couple of seconds is the ordinary
+// shape of a reply once a conversation is under way, and answering it as
+// nobody would move whoever never stopped talking into another session.
+func TestNameVoiceDistrustsAWeakScoreOnABriefReading(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	cfg := validConfig()
+	cfg.SpeakerThreshold = 0.35
+	cfg.UnknownSpeaker = unknownEnroll
+	v, err := New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.speakers = newSpeakerStore(v.home)
+	v.speakers.enroll(vec(1, 0, 0))
+
+	// Similarity 0.40: over the configured threshold either way.
+	weak := vec(0.4, math.Sqrt(1-0.4*0.4), 0)
+
+	brief := v.nameVoice(context.Background(), voiceReading{Seconds: 1.2, Embedding: weak}, true)
+	if brief.via != viaUnsure || brief.name != "" {
+		t.Errorf("a weak score on a brief reading named somebody: %+v", brief)
+	}
+	if brief.bar <= cfg.SpeakerThreshold {
+		t.Errorf("the bar did not rise for a brief reading: %+v", brief)
+	}
+	if !brief.unreadable() {
+		t.Error("an unsure reading has to inherit, not declare a stranger")
+	}
+
+	// The same score, on a reading long enough to have earned it.
+	settled := v.nameVoice(context.Background(), voiceReading{Seconds: 4, Embedding: weak}, true)
+	if settled.via != viaMatch || settled.name != "speaker-1" {
+		t.Errorf("a long reading over the threshold was not named: %+v", settled)
+	}
+}
