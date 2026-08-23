@@ -180,10 +180,12 @@ func occupantFor(who speakerIdentity, hasProfiles bool) (name string, refreshOnl
 			return roomUnknownOccupant, false
 		}
 	}
-	// viaOverlap and viaShort arrive here only when the sticky window was
-	// empty, and viaUnavailable means the room could not be read at all.
-	// None of them may invent an occupant: an embedding outage means the
-	// microphone went blind, not that the room filled up.
+	// viaOverlap, viaShort, viaAmbiguous and viaUnsure arrive here only when
+	// the sticky window was empty, and viaUnavailable means the room could
+	// not be read at all. None of them may invent an occupant: a reading the
+	// identifier would not commit to says nothing about who is here, and an
+	// embedding outage means the microphone went blind, not that the room
+	// filled up.
 	return "", false
 }
 

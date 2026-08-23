@@ -8,6 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -488,5 +492,41 @@ func TestTranscribeDeepgramHoldsAConfidenceFloor(t *testing.T) {
 				t.Errorf("text = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// The bars the cloud tiers are held to are the managed server's own,
+// restated in Go because the two cannot share a constant. Restated is how
+// they drift, and a drift here is silent: the local tier would keep filtering
+// while the fallback quietly stopped agreeing with it.
+func TestCloudBarsMatchTheManagedServersOwn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "speechserver.py")
+	if err := phone.WriteSpeechScript(path); err != nil {
+		t.Fatal(err)
+	}
+	script, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		constant string
+		want     float64
+	}{
+		{"MAX_NO_SPEECH_PROB", maxNoSpeechProb},
+		{"MIN_AVG_LOGPROB", minAvgLogprob},
+	} {
+		found := regexp.MustCompile(tc.constant + ` = (-?[0-9.]+)`).FindSubmatch(script)
+		if found == nil {
+			t.Errorf("speechserver.py no longer defines %s", tc.constant)
+			continue
+		}
+		got, err := strconv.ParseFloat(string(found[1]), 64)
+		if err != nil {
+			t.Errorf("%s = %q, which is not a number", tc.constant, found[1])
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s = %v in the script but %v in the cloud tiers", tc.constant, got, tc.want)
+		}
 	}
 }

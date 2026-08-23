@@ -227,10 +227,10 @@ func (v *Voice) readVoices(ctx context.Context, utterance capturedUtterance, tea
 		// to read that matched nobody, which is evidence of a different
 		// person rather than of an unreadable moment.
 		inherited := v.stickySpeaker(speaker.via)
-		// Which of the two reasons it was, and the numbers behind it, are why
-		// this branch ran — so they travel on even though the name did not
-		// come from them. Reporting both as "short" would hide an ambiguity
-		// behind a length, and the two are tuned by different knobs.
+		// Which of the three reasons it was, and the numbers behind it, are
+		// why this branch ran — so they travel on even though the name did
+		// not come from them. Reporting all of them as "short" would hide an
+		// ambiguity behind a length, and each is tuned by its own knob.
 		inherited.similarity = speaker.similarity
 		inherited.runnerUp = speaker.runnerUp
 		inherited.bar = speaker.bar

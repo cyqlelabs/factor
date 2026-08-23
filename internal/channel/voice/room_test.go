@@ -295,6 +295,10 @@ func TestSeveralVoicesInOneRecordingAreCompany(t *testing.T) {
 func TestOneVoiceIsNeverCompanyByArithmetic(t *testing.T) {
 	for _, who := range []speakerIdentity{
 		heard("nicolas", true, viaMatch), {via: viaShort}, {via: viaUnavailable},
+		// A reading the identifier would not commit to is not a stranger.
+		// Inventing an occupant out of one would make every brief reply of
+		// the owner's read as somebody new in the room.
+		{via: viaAmbiguous}, {via: viaUnsure},
 	} {
 		r := newRoom("", time.Hour)
 		r.heard([]speakerIdentity{who}, true, t0)
