@@ -87,12 +87,12 @@ exit \$LASTEXITCODE
 EOF
 }
 
-# The guest deliberately carries no Python, no Docker and no drivable
-# Chromium, so the packages whose tests need them are named here and left out
-# of the default gate. Named, not silently skipped: a run that quietly drops
+# The guest carries no Docker and no drivable Chromium, so the packages whose
+# tests need them are named here and left out of the default gate. Python and
+# SoX are provisioned by setup, so the voice tier is in the gate. Named, not silently skipped: a run that quietly drops
 # coverage reads as "everything passed", and a gate nobody can ever get green
 # stops being read at all. FACTOR_WIN_ALL=1 runs the whole tree anyway.
-WIN_EXCLUDE=${FACTOR_WIN_EXCLUDE:-"internal/browser internal/channel/phone"}
+WIN_EXCLUDE=${FACTOR_WIN_EXCLUDE:-"internal/browser"}
 
 win_packages() {
   if [ -n "${FACTOR_WIN_ALL:-}" ]; then echo "./..."; return; fi
@@ -103,7 +103,7 @@ win_packages() {
 
 announce_exclusions() {
   [ -n "${FACTOR_WIN_ALL:-}" ] && { echo "==> including every package (FACTOR_WIN_ALL)"; return; }
-  echo "==> excluding $WIN_EXCLUDE - they need Python and a drivable Chromium, which this guest does not carry; FACTOR_WIN_ALL=1 to run them"
+  echo "==> excluding $WIN_EXCLUDE - needs a drivable Chromium, which this guest does not carry; FACTOR_WIN_ALL=1 to run it"
 }
 
 cmd_sync() { sync_tree; }
@@ -155,6 +155,11 @@ cmd_setup() {
   sleep 20
   "$VMCTL" wait-ssh 420
   "$VMCTL" wait-session 300
+  # Python and SoX, so the local voice tier is exercised rather than skipped.
+  # Nine of its tests used to skip silently on a guest without them, which
+  # read as a green package that had never run the speech path at all.
+  echo "==> provisioning the local voice tier"
+  "$VMCTL" gcjob "$HERE/provision-voice.ps1" 1800
   cmd_prime
   "$VMCTL" ssh "shutdown /s /t 0" || true
   echo "==> waiting for the guest to power down"

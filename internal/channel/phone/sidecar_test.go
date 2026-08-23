@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -79,15 +80,43 @@ func selfCommand(t *testing.T, mode string) string {
 	return os.Args[0]
 }
 
+// issuedPorts remembers every number these helpers have handed out in this
+// process. Both of them have to close their listener before returning - the
+// caller is the one that binds it - so nothing stops the kernel offering the
+// same number to the next caller moments later, and a connector then clashes
+// with itself: its bridge port and its control port are the same number, and
+// the failure reads as an unrelated "address already in use".
+var (
+	issuedMu    sync.Mutex
+	issuedPorts = map[int]bool{}
+)
+
+// claimPort reports whether this port is ours to hand out, taking it if so.
+func claimPort(port int) bool {
+	issuedMu.Lock()
+	defer issuedMu.Unlock()
+	if issuedPorts[port] {
+		return false
+	}
+	issuedPorts[port] = true
+	return true
+}
+
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for attempt := 0; attempt < 100; attempt++ {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		_ = l.Close()
+		if claimPort(port) {
+			return port
+		}
 	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	return port
+	t.Fatal("could not reserve a port this process has not already handed out")
+	return 0
 }
 
 // portsApart reserves n ports that a phone config will accept: distinct from
@@ -128,9 +157,11 @@ func portsApart(t *testing.T, n int, avoid ...int) []int {
 		}
 		ports := append([]int(nil), avoid...)
 		for _, p := range pool {
-			if candidate := append(append([]int(nil), ports...), p); apart(candidate) {
-				ports = candidate
+			candidate := append(append([]int(nil), ports...), p)
+			if !apart(candidate) || !claimPort(p) {
+				continue
 			}
+			ports = candidate
 			if len(ports) == len(avoid)+n {
 				return ports[len(avoid):]
 			}

@@ -385,9 +385,9 @@ func TestEmbeddedScriptIsValidPython(t *testing.T) {
 		}
 	}
 
-	python, err := exec.LookPath("python3")
+	python, err := systemPython()
 	if err != nil {
-		t.Skip("python3 is not installed on this machine")
+		t.Skip("no Python interpreter this machine can run the voice shell with")
 	}
 	path := filepath.Join(t.TempDir(), "voiceshell.py")
 	if err := WriteScript(path); err != nil {
@@ -412,9 +412,9 @@ type carrierCall struct {
 // functions, so it loads on a machine that has never installed it.
 func runShellFunc(t *testing.T, carrierBase, snippet string) string {
 	t.Helper()
-	python, err := exec.LookPath("python3")
+	python, err := systemPython()
 	if err != nil {
-		t.Skip("python3 is not installed on this machine")
+		t.Skip("no Python interpreter this machine can run the voice shell with")
 	}
 	path := filepath.Join(t.TempDir(), "voiceshell.py")
 	if err := WriteScript(path); err != nil {

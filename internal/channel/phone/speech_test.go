@@ -533,9 +533,9 @@ type loadCall struct {
 // as the half-finished download of an install that was cut short.
 func runLoadParakeet(t *testing.T, failWhenExists bool, leftover []byte) ([]loadCall, string) {
 	t.Helper()
-	python, err := exec.LookPath("python3")
+	python, err := systemPython()
 	if err != nil {
-		t.Skip("python3 is not installed on this machine")
+		t.Skip("no Python interpreter this machine can run the voice shell with")
 	}
 
 	dir := t.TempDir()
@@ -779,9 +779,9 @@ func runSpeechSnippet(t *testing.T, snippet string) string {
 // server's configuration, which it reads once at import.
 func runSpeechSnippetWith(t *testing.T, settings map[string]any, snippet string) string {
 	t.Helper()
-	python, err := exec.LookPath("python3")
+	python, err := systemPython()
 	if err != nil {
-		t.Skip("python3 is not installed on this machine")
+		t.Skip("no Python interpreter this machine can run the voice shell with")
 	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "speechserver.py")
