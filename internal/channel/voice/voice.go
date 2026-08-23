@@ -522,12 +522,21 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 	switch {
 	case dec.accept:
 		heard = v.identifySpeaker(ctx, utterance)
-	case v.room != nil && !dec.echo:
+	case v.room != nil && !dec.echo && !dec.noise:
 		// Speech the gate turned away still says who is in the room. Reading
 		// it costs one embedding and buys the case that matters most: a guest
 		// who has been talking to the user for ten minutes is known to be
 		// there before they ever address Factor, so the first private thing
 		// asked after they walked in is already answered to the room.
+		//
+		// Speech is the word that matters: an utterance the transcriber
+		// returned nothing for holds no person, and one that came back as a
+		// subtitle credit holds a television. Reading either names somebody
+		// out of a door slam — on this machine that has read as a voice at
+		// 0.40 against the owner's own profile — and declares a room shared
+		// on the strength of it. Nearly a fifth of what the detector opens
+		// transcribes to nothing, so skipping it is also the cheapest
+		// round-trip in the loop: the one not taken.
 		heard = v.presenceOf(ctx, utterance)
 	}
 	who := heard.speaker
@@ -551,6 +560,11 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		action = "acknowledge"
 	case dec.echo:
 		action = "echo"
+	case dec.noise && text != "":
+		// Distinct from "ignored", which is the gate deciding a real sentence
+		// was not addressed to Factor. This is the transcriber handing back
+		// something nobody said.
+		action = "noise"
 	}
 	fields := []any{"text", text, "action", action}
 	if v.speakers != nil && (dec.accept || who.via != "") {
@@ -586,6 +600,7 @@ type decision struct {
 	accept      bool
 	acknowledge bool // the bare wake word: attention, not a request
 	echo        bool // the agent's own voice off the speakers, nothing else
+	noise       bool // nothing a person said: no transcript, or a subtitle credit
 	text        string
 }
 
@@ -600,8 +615,8 @@ type decision struct {
 // transcript has to be cleaned of the agent's own words.
 func (v *Voice) gate(text string, started time.Time, barged, overlapped bool) decision {
 	text = strings.TrimSpace(text)
-	if text == "" {
-		return decision{}
+	if text == "" || noiseOnly(text) {
+		return decision{noise: true}
 	}
 	if overlapped {
 		// The speakers' own sound is in this recording. At high volume it

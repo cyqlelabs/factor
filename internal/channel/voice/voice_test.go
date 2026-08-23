@@ -1205,6 +1205,42 @@ func TestVoiceNeverEmbedsAudioItsOwnVoiceIsIn(t *testing.T) {
 	}
 }
 
+// Nearly a fifth of everything the detector opens comes back from the
+// transcriber as nothing at all — a door, a chair, a dog — and a little of
+// what is left comes back as the credits of a subtitled video, which the
+// decoder is entirely confident it heard. Neither holds a person. Reading a
+// voice out of that audio names somebody who was never in the room (on this
+// machine it has scored 0.40 against the owner's own profile) and, with a
+// room being tracked, declares the house shared on the strength of it.
+func TestVoiceDoesNotReadVoicesOutOfAudioNobodySpokeIn(t *testing.T) {
+	for _, tc := range []struct{ name, transcript string }{
+		{"nothing at all", ""},
+		{"a subtitle credit", "Gracias por ver el video."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newVoiceHarness(t, nil)
+			h.enableSpeakerID(unknownEnroll)
+			h.enableRoom(time.Hour)
+			h.start()
+
+			h.setEmbedding([]float64{1, 0, 0})
+			h.setTranscript(tc.transcript)
+			h.say()
+			h.noTurn(2 * time.Second)
+
+			if got := h.embedded(); len(got) != 0 {
+				t.Errorf("audio no person was transcribed out of was embedded anyway: %v", got)
+			}
+			if h.v.speakers.hasProfiles() {
+				t.Error("a profile was enrolled from audio nobody spoke in")
+			}
+			if h.v.room.snapshot(time.Now()).Shared {
+				t.Error("noise declared the room shared")
+			}
+		})
+	}
+}
+
 // Creating a profile is the most expensive mistake this store can make. A
 // spurious one never goes away on its own, it competes for every later match,
 // and it is how a household of three ends up with fifteen voices — so minting
