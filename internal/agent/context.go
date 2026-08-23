@@ -86,8 +86,46 @@ func (cb *ContextBuilder) TurnContext(ctx context.Context, history []provider.Me
 	if brief := channelBriefing(tc.Channel, tc.Audience); brief != "" {
 		parts = append(parts, brief)
 	}
+	// Last of all, so it is the last thing read before the user's own
+	// message. On voice and phone the line above it tells the model to be
+	// brief and conversational, which is the one instruction in the prompt
+	// that pulls directly against stopping to reach for a tool — and it is
+	// repeated every turn from the strongest position a prompt has, while the
+	// rules that answer it sit at the head going quiet.
+	if estimateTokens(history) > rulesFadeAt {
+		parts = append(parts, toolDiscipline)
+	}
 	return strings.Join(parts, "\n\n")
 }
+
+// rulesFadeAt is the conversation size past which the operating rules stop
+// being read where they live. They open the request, which is one of the two
+// positions a long input is read well at — but it is the fixed one, and every
+// exchange added behind it moves it toward the middle, where recall is
+// weakest. The rules do not move; the conversation grows past them, and what
+// the model answers from instead is the pattern of the last twenty turns.
+//
+// The number is deliberately low, and it is measured against the raw history
+// rather than the masked copy the request will carry, so it errs toward
+// firing early. Both are on purpose: a false positive costs one line of text,
+// and a false negative is the bug this exists to close.
+const rulesFadeAt = 8000
+
+// toolDiscipline is the part of operatingRules a long session loses first,
+// restated where a long session can still read it. It says nothing new —
+// every clause of it is already in the rules at the head of the prompt — and
+// it names itself as a restatement so the model does not read it as a fresh
+// instruction that arrived this turn.
+//
+// It is about *which* tool, not about using more of them. What decays is not
+// the appetite for tools, it is the discipline of preferring the machine's
+// answer to the model's own; a reminder that read as "call something" would
+// turn a greeting into a search.
+const toolDiscipline = "Still in force this turn, from the rules at the top of this prompt: " +
+	"when a tool can settle a question, run it rather than answering from memory; " +
+	"work web pages with the browser tools rather than a fetch or the screen; " +
+	"hand anything slower than about thirty seconds to job_start and reply that it is running; " +
+	"and keep what is worth keeping with remember."
 
 // sessionGap is how long a session has to sit untouched before the next
 // message is treated as a return rather than a continuation. Two hours is

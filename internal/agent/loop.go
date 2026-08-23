@@ -494,6 +494,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 	overflowRecoveries := 0
 
 	for iteration := 0; iteration < l.cfg.Agent.MaxToolIterations; iteration++ {
+		messages = l.trimInFlight(messages)
 		l.emit(in.sessionKey, PhaseThinking, "")
 		resp, err := l.chat.Chat(ctx, &provider.Request{
 			Messages:    messages,
@@ -629,7 +630,7 @@ func (l *Loop) wrapUp(ctx context.Context, in turnInput, messages []provider.Mes
 	}
 	l.emit(in.sessionKey, PhaseThinking, "")
 	resp, err := l.chat.Chat(ctx, &provider.Request{
-		Messages:    append(messages, nudge),
+		Messages:    l.trimInFlight(append(messages, nudge)),
 		MaxTokens:   l.cfg.Provider.MaxTokens,
 		Temperature: l.cfg.Provider.Temperature,
 	})

@@ -149,19 +149,50 @@ func (l *Loop) budget() int {
 // five-figure cost on every call — budgeting the history alone declares a
 // session small while the request that carries it is already large.
 func (l *Loop) overhead() int {
-	total := 0
+	total := l.toolSchemaTokens()
 	if l.builder != nil {
 		total += len(l.builder.SystemPrompt()) / 4
 	}
-	if l.registry != nil {
-		for _, def := range l.registry.Definitions() {
-			total += len(def.Name)/4 + len(def.Description)/4 + 16
-			if schema, err := json.Marshal(def.Parameters); err == nil {
-				total += len(schema) / 4
-			}
+	return total
+}
+
+// toolSchemaTokens is the schema half of the overhead on its own, for the
+// callers that are already holding the system prompt as a message and would
+// otherwise count it twice.
+func (l *Loop) toolSchemaTokens() int {
+	if l.registry == nil {
+		return 0
+	}
+	total := 0
+	for _, def := range l.registry.Definitions() {
+		total += len(def.Name)/4 + len(def.Description)/4 + 16
+		if schema, err := json.Marshal(def.Parameters); err == nil {
+			total += len(schema) / 4
 		}
 	}
 	return total
+}
+
+// trimInFlight masks the older tool results of a turn that has outgrown the
+// budget while it is still running.
+//
+// Masking otherwise happens once, when the request is assembled, and nothing
+// touches the turn that grows behind it: twenty tool iterations at four
+// thousand tokens a result is more than the whole budget, and the only thing
+// that notices is the provider refusing the request outright. The working
+// ceiling exists because recall and instruction-following decay long before a
+// window fills, so a turn allowed to run past it is precisely where the rules
+// at the head of the prompt stop being read and the core tools start being
+// ignored.
+//
+// Under budget nothing is touched. A turn reading eight files to compare them
+// needs all eight, and clearing half of them to save tokens that were
+// affordable would be answering with half the evidence.
+func (l *Loop) trimInFlight(messages []provider.Message) []provider.Message {
+	if estimateTokens(messages)+l.toolSchemaTokens() <= l.budget() {
+		return messages
+	}
+	return maskOldToolResults(messages)
 }
 
 // needsCompaction reports whether the session has outgrown the budget. It

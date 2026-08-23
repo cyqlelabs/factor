@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyqlelabs/factor/internal/provider"
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 // toolExchange builds one assistant call and its result.
@@ -134,5 +137,95 @@ func TestTheBudgetMeasuresTheMaskedHistoryNotTheRawLog(t *testing.T) {
 	h.loop.cfg.Agent.MaxContextTokens = h.loop.overhead() + masked - 200
 	if !h.loop.needsCompaction(history) {
 		t.Error("compaction did not fire when even the masked request overflows")
+	}
+}
+
+// fatTool returns a result at the registry's per-result cap, which is what a
+// browser read or a long log actually costs.
+type fatTool struct{}
+
+func (f *fatTool) Name() string        { return "fat" }
+func (f *fatTool) Description() string { return "returns a page-sized result" }
+func (f *fatTool) Parameters() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
+func (f *fatTool) Execute(context.Context, map[string]any) *tools.Result {
+	return tools.Text(strings.Repeat("x", 16000))
+}
+
+func fatCall(id string) func(*provider.Request) (*provider.Response, error) {
+	return func(*provider.Request) (*provider.Response, error) {
+		return &provider.Response{ToolCalls: []provider.ToolCall{{ID: id, Name: "fat", Args: map[string]any{}}}}, nil
+	}
+}
+
+// runFatTurn spends six tool iterations on page-sized results and returns the
+// request that carried the turn's last call.
+func runFatTurn(t *testing.T, ceiling int) []provider.Message {
+	t.Helper()
+	var script []func(*provider.Request) (*provider.Response, error)
+	for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
+		script = append(script, fatCall(id))
+	}
+	script = append(script, final("listo"))
+
+	h := newHarness(t, script...)
+	h.loop.cfg.Agent.MaxToolIterations = 8
+	h.loop.cfg.Agent.MaxContextTokens = ceiling
+	h.registry.Register(&fatTool{})
+
+	if _, err := h.loop.ProcessDirect(context.Background(), "trabaja", "cli:test"); err != nil {
+		t.Fatal(err)
+	}
+	// Compaction may follow the turn onto the same fake provider; let it land
+	// before reading what the fake recorded.
+	h.loop.WaitBackground(10 * time.Second)
+
+	if len(h.chat.requests) < 7 {
+		t.Fatalf("the turn made %d calls, not the seven it was scripted for", len(h.chat.requests))
+	}
+	return h.chat.requests[6].Messages
+}
+
+func countToolResults(msgs []provider.Message) (stubs, whole int) {
+	for _, m := range msgs {
+		if m.Role != "tool" {
+			continue
+		}
+		if strings.Contains(m.Content, "was cleared to save context") {
+			stubs++
+			continue
+		}
+		whole++
+	}
+	return stubs, whole
+}
+
+// Masking used to run once, when the request was assembled, and then leave the
+// turn free to grow behind it. Twenty tool iterations at four thousand tokens
+// a result is more than the whole budget, so a long turn ran past the working
+// ceiling with nothing noticing until the provider refused the request — and a
+// request that far past the ceiling is exactly where the rules at the head of
+// the prompt stop being read.
+func TestALongTurnIsTrimmedWhileItIsStillRunning(t *testing.T) {
+	stubs, whole := countToolResults(runFatTurn(t, 12000))
+	if stubs == 0 {
+		t.Errorf("a turn six page-sized results past a 12k budget was never trimmed")
+	}
+	if whole != keepRecentToolResults {
+		t.Errorf("the turn kept %d results whole, want the newest %d", whole, keepRecentToolResults)
+	}
+}
+
+// The other half of the rule: under budget nothing is touched. A turn reading
+// six pages to compare them needs all six, and clearing half to save tokens
+// that were affordable is answering with half the evidence.
+func TestATurnWithinBudgetKeepsEveryResult(t *testing.T) {
+	stubs, whole := countToolResults(runFatTurn(t, 1<<20))
+	if stubs != 0 {
+		t.Errorf("a turn well inside its budget lost %d results", stubs)
+	}
+	if whole != 6 {
+		t.Errorf("the turn carried %d results, want all 6", whole)
 	}
 }
