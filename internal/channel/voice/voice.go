@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -368,10 +369,17 @@ func (v *Voice) run(ctx context.Context) {
 
 	backoff := 2 * time.Second
 	for ctx.Err() == nil {
+		opened := time.Now()
 		err := v.captureLoop(ctx)
 		v.ready.Store(false)
 		if ctx.Err() != nil {
 			return
+		}
+		if time.Since(opened) > time.Minute {
+			// The stream that just failed had been healthy for a while: this
+			// is a fresh incident, not the next retry of the last one, and it
+			// should not inherit a backoff the last one ran up.
+			backoff = 2 * time.Second
 		}
 		v.setDown("microphone capture failed: %v", err)
 		slog.Warn("microphone capture failed; reopening", "error", err, "backoff", backoff)
@@ -402,10 +410,15 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 	slog.Info("listening on the microphone", "helper", argv[0], "activation", v.cfg.Activation)
 
 	// A live microphone always carries noise; an unbroken run of exact-zero
-	// samples means the signal path is dead — usually the default source
-	// being the wrong device — and that deserves saying once, not silence.
+	// samples means the signal path is dead — the wrong device, or a helper
+	// whose device was re-enumerated under it, which keeps reading zeroes
+	// without ever failing. Warning was not enough for the second case: the
+	// reopen path a dead helper takes never ran, and the channel stayed deaf
+	// until somebody restarted it. So a dead signal path is handed back as a
+	// dead stream, and reopening resolves the device afresh. The silent flag
+	// stays up across the reopen until sound actually returns.
 	const silentStreamFrames = 10 * 1000 / frameMs
-	zeroRun, silenceWarned := 0, false
+	zeroRun := 0
 
 	seg := newSegmenter(v.cfg.VADRatio, v.cfg.BargeRatio, v.cfg.SilenceMs)
 	frame := make([]byte, frameBytes)
@@ -419,15 +432,14 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 		v.micLevel.Store(math.Float64bits(level))
 		v.micFloor.Store(math.Float64bits(seg.floor))
 		if level == 0 {
-			zeroRun++
+			if zeroRun++; zeroRun >= silentStreamFrames {
+				v.micSilent.Store(true)
+				return errors.New("the stream carried ten seconds of pure digital silence — if this " +
+					"repeats, the device is wrong: list sources and set channels.voice.input_device")
+			}
 		} else {
-			zeroRun, silenceWarned = 0, false
-		}
-		v.micSilent.Store(zeroRun >= silentStreamFrames)
-		if zeroRun >= silentStreamFrames && !silenceWarned {
-			silenceWarned = true
-			slog.Warn("the microphone is delivering pure digital silence — likely the wrong device; "+
-				"list sources and set channels.voice.input_device", "helper", argv[0])
+			zeroRun = 0
+			v.micSilent.Store(false)
 		}
 
 		playing := v.player.playing()

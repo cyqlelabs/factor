@@ -915,9 +915,11 @@ func TestVoiceHealthReportsMicrophoneGauges(t *testing.T) {
 	})
 }
 
-// An unbroken run of exact-zero samples is the signature of capturing the
-// wrong device; the channel must say so instead of listening to nothing.
-func TestVoiceReportsADigitallySilentMicrophone(t *testing.T) {
+// An unbroken run of exact-zero samples is the signature of a dead signal
+// path — the wrong device, or a helper whose device was re-enumerated under
+// it, which reads zeroes forever without failing. The channel must reopen the
+// stream rather than warn and keep listening to nothing.
+func TestVoiceRecoversFromADigitallySilentMicrophone(t *testing.T) {
 	h := newVoiceHarness(t, nil)
 	h.start()
 
@@ -926,13 +928,22 @@ func TestVoiceReportsADigitallySilentMicrophone(t *testing.T) {
 		_, _, silent := micHealth(t, h.v.cfg.ControlPort)
 		return silent
 	})
+	// The dead stream is handed back and reopened, and the flag holds
+	// through the reopen: no sound has returned yet.
+	waitUntil(t, func() bool { return h.mic.opens.Load() >= 2 })
+	waitUntil(t, func() bool { return h.v.ready.Load() })
+	if _, _, silent := micHealth(t, h.v.cfg.ControlPort); !silent {
+		t.Error("the silent flag dropped on reopen, before any sound returned")
+	}
 
-	// Real signal clears the flag.
+	// Real signal clears the flag, and the reopened stream hears end to end.
 	h.mic.feed(repeat(toneFrame(500), 5)...)
 	waitUntil(t, func() bool {
 		_, _, silent := micHealth(t, h.v.cfg.ControlPort)
 		return !silent
 	})
+	h.say()
+	h.turn(10 * time.Second)
 }
 
 func TestVoiceStartFailures(t *testing.T) {
