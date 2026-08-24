@@ -33,9 +33,11 @@ const (
 	// MinPythonMinor is the oldest Python 3.x minor Patter supports.
 	MinPythonMinor = 11
 
-	// InstallHint is what a user is told to run when the automatic install is
-	// off or has failed.
-	InstallHint = "python3 -m venv ~/.factor/voice-venv && ~/.factor/voice-venv/bin/pip install " + PackageSpec
+	// unixInstallHint and windowsInstallHint are what a user is told to run
+	// when the automatic install is off or has failed. Windows keeps a venv's
+	// programs in Scripts, not bin, so one string cannot serve both.
+	unixInstallHint    = "python3 -m venv ~/.factor/voice-venv && ~/.factor/voice-venv/bin/pip install " + PackageSpec
+	windowsInstallHint = `py -m venv %USERPROFILE%\.factor\voice-venv && %USERPROFILE%\.factor\voice-venv\Scripts\pip install ` + PackageSpec
 
 	// InstallTimeout bounds one install attempt (the wheels are chunky).
 	InstallTimeout = 15 * time.Minute
@@ -70,6 +72,14 @@ func (p Progress) emit(format string, args ...any) {
 }
 
 // VenvDir is the private virtualenv the voice shell runs in.
+// InstallHint is the command to run by hand on this platform.
+func InstallHint() string {
+	if runtime.GOOS == "windows" {
+		return windowsInstallHint
+	}
+	return unixInstallHint
+}
+
 func VenvDir(home string) string { return filepath.Join(home, "voice-venv") }
 
 func venvPython(home string) string {
@@ -206,7 +216,7 @@ func EnsurePatter(ctx context.Context, home string, autoInstall bool, progress P
 		return p, false, nil
 	}
 	if !autoInstall {
-		return "", false, fmt.Errorf("the Patter voice shell is not installed and auto_install is off — %s", InstallHint)
+		return "", false, fmt.Errorf("the Patter voice shell is not installed and auto_install is off — %s", InstallHint())
 	}
 	p, err := Install(ctx, home, progress)
 	if err != nil {

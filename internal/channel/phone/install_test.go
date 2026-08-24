@@ -295,7 +295,7 @@ func TestEnsurePatter(t *testing.T) {
 	if err == nil || installed {
 		t.Fatalf("EnsurePatter installed with auto_install off (installed=%v, err=%v)", installed, err)
 	}
-	if !strings.Contains(err.Error(), InstallHint) {
+	if !strings.Contains(err.Error(), InstallHint()) {
 		t.Errorf("error %q does not tell the user how to install it", err)
 	}
 

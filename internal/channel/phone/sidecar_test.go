@@ -544,7 +544,7 @@ func TestResolveCommandRefusesToInstallWhenAutoInstallIsOff(t *testing.T) {
 	if err == nil {
 		t.Fatal("resolveCommand produced an interpreter out of an empty home")
 	}
-	for _, want := range []string{"auto_install is off", InstallHint} {
+	for _, want := range []string{"auto_install is off", InstallHint()} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
