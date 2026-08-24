@@ -883,8 +883,22 @@ func (t *navigateTool) localOrRemote(url string) (string, error) {
 		return url, nil
 	case strings.HasPrefix(url, "file://"):
 		path = strings.TrimPrefix(url, "file://")
-	case strings.HasPrefix(url, "/"):
-		path = url // a bare absolute path is a file, never a host
+		// file:///C:/x is how a Windows path is spelled as a URL, and cutting
+		// the scheme off leaves a slash in front of the drive letter that no
+		// Windows API accepts. Left there, the path is not absolute, so the
+		// workspace guard reads it as one of its own and resolves it inside
+		// the workspace - which is both a wrong answer and a weaker check
+		// than the one that was asked for.
+		if runtime.GOOS == "windows" && len(path) > 2 && path[0] == '/' && path[2] == ':' {
+			path = path[1:]
+		}
+	case strings.HasPrefix(url, "/"), filepath.IsAbs(url):
+		// A bare absolute path is a file, never a host. Both forms are
+		// checked because neither covers the other: filepath.IsAbs does not
+		// accept /etc/hosts on Windows, and a leading slash is not how an
+		// absolute path is spelled there - C:\report.html is, and it used to
+		// fall through and be dialled as a hostname.
+		path = url
 	default:
 		return "https://" + url, nil
 	}

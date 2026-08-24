@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -389,7 +390,14 @@ func TestNavigateOpensALocalFile(t *testing.T) {
 		t.Errorf("a bare path was not read as a file:\n%s", out)
 	}
 	// And a path the workspace does not cover is refused as the read it is.
-	res := byName["browser_navigate"].Execute(context.Background(), map[string]any{"url": "file:///etc/hostname"})
+	// The path has to be absolute on the platform running the test: /etc/
+	// hostname is not absolute on Windows, so the guard rightly reads it as
+	// workspace-relative and the browser reports a missing file instead.
+	outside := "/etc/hostname"
+	if runtime.GOOS == "windows" {
+		outside = filepath.ToSlash(filepath.Join(os.Getenv("SystemRoot"), "win.ini"))
+	}
+	res := byName["browser_navigate"].Execute(context.Background(), map[string]any{"url": "file:///" + strings.TrimPrefix(outside, "/")})
 	if !res.IsError || !strings.Contains(res.ForLLM, "outside workspace") {
 		t.Errorf("the guard did not refuse the read: %+v", res)
 	}

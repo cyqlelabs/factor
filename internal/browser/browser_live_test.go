@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -263,14 +265,36 @@ func TestBrowserScreenshotReportsWorkspaceFailures(t *testing.T) {
 	if err := os.MkdirAll(shots, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(shots, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(shots, 0o755) })
+	denyWrites(t, shots)
 	s.workspace = readOnly
 	if res := shot.Execute(ctx, nil); !res.IsError {
 		t.Errorf("screenshot into a read-only directory succeeded: %q", res.ForLLM)
 	}
+}
+
+// denyWrites leaves dir one this process cannot create a file in. Chmod is
+// not that on Windows: Go maps it to the read-only attribute, which a
+// directory ignores when something creates a child, so the screenshot would
+// be written and the test would pass for entirely the wrong reason. An
+// explicit deny entry is the equivalent there - and it only bites because the
+// suite runs unprivileged, which is the other half of why it must.
+func denyWrites(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+		return
+	}
+	who := os.Getenv("USERNAME")
+	if who == "" {
+		t.Skip("no USERNAME on this machine to deny writes for")
+	}
+	if out, err := exec.Command("icacls", dir, "/deny", who+":(WD,AD)").CombinedOutput(); err != nil {
+		t.Fatalf("icacls deny: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("icacls", dir, "/remove:d", who).Run() })
 }
 
 func TestRunStopsWhenTheCallerCancels(t *testing.T) {
