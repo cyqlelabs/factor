@@ -42,7 +42,7 @@ run_interactive() {
   # job.out goes too, not just job.rc: the snapshot carries whatever the last
   # job printed, and the host starts reading before the task truncates it, so
   # the previous run's output arrives as though it were this one's.
-  "$VMCTL" ssh 'del /q C:\factor-test\job.rc C:\factor-test\job.out 2>nul & schtasks /run /tn FactorInteractive' >/dev/null
+  "$VMCTL" ssh 'del /q C:\factor-test\job.rc C:\factor-test\job.out 2>nul & schtasks /run /tn FactorTests' >/dev/null
 
   local seen=0 deadline=$(( $(date +%s) + timeout )) rc=
   while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -64,6 +64,19 @@ run_interactive() {
   if [ "$lines" -gt "$seen" ]; then tail -n +$((seen + 1)) "$tmp"; fi
   rm -f "$tmp"
   return "$rc"
+}
+
+# withCount ensures -count=1 is on a `go test` invocation. Go caches test
+# results and replays them, and what it keys on does not include the machine's
+# configuration - so a skip recorded when the guest had no Developer Mode, no
+# Python or no browser is replayed verbatim onto a guest that now has all
+# three. The gate then reports a pass over tests that never ran, which is the
+# one failure this harness exists to make impossible.
+withCount() {
+  case "$1" in
+    test*) case "$1" in *-count=*) echo "$1" ;; *) echo "test -count=1 ${1#test }" ;; esac ;;
+    *) echo "$1" ;;
+  esac
 }
 
 # job writes the script the guest will run. GOFLAGS carries no -race by
@@ -121,6 +134,7 @@ cmd_fast() {
   sync_tree
   local args=$*
   if [ -z "$args" ]; then announce_exclusions; args="test $(win_packages)"; fi
+  args=$(withCount "$args")
   echo "==> go $args (non-interactive session)"
   "$VMCTL" ssh "cd /d $GUEST_SRC_WIN && go $args"
 }
@@ -130,6 +144,7 @@ cmd_test() {
   "$VMCTL" wait-session 300
   local args=$*
   if [ -z "$args" ]; then announce_exclusions; args="test $(win_packages)"; fi
+  args=$(withCount "$args")
   local tmp; tmp=$(mktemp)
   job "$args" 0 > "$tmp"
   echo "==> go $args (interactive session)"
@@ -140,7 +155,7 @@ cmd_race() {
   sync_tree
   "$VMCTL" wait-session 300
   local tmp; tmp=$(mktemp)
-  job "test -race ./..." 1 > "$tmp"
+  job "test -race -count=1 ./..." 1 > "$tmp"
   echo "==> go test -race ./... (interactive session, cgo on)"
   run_interactive "$tmp" 5400
 }
@@ -159,7 +174,7 @@ cmd_setup() {
   # Nine of its tests used to skip silently on a guest without them, which
   # read as a green package that had never run the speech path at all.
   echo "==> provisioning the local voice tier"
-  "$VMCTL" gcjob "$HERE/provision-voice.ps1" 1800
+  "$VMCTL" gcjob "$HERE/provision.ps1" 1800
   cmd_prime
   "$VMCTL" ssh "shutdown /s /t 0" || true
   echo "==> waiting for the guest to power down"

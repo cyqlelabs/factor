@@ -1,7 +1,9 @@
-# Adds what the local voice tier needs: a real Python for the Patter venv, and
-# SoX for capture and playback. Kept out of bootstrap.ps1 because it is a
-# choice - the default guest carries neither, and the gate says so - but kept
-# in the repo so the snapshot it produces is reproducible.
+# Everything the suite needs beyond a Go toolchain: a real Python for the
+# Patter venv, SoX for capture and playback, Patter itself so the speech stack
+# on disk is the real one, and a Chromium the browser suite can actually
+# drive. Separate from bootstrap.ps1 only because it is slower and heavier,
+# not because any of it is optional - with these missing, packages skip or
+# fail for reasons that have nothing to do with the code under test.
 param(
   [string]$PythonVersion = "3.12.8",
   [string]$SoxVersion    = "14.4.2"
@@ -12,7 +14,7 @@ $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $root = "C:\factor-test"
-function Say($m) { Write-Host "[voice] $m" }
+function Say($m) { Write-Host "[provision] $m" }
 
 # Looking python.exe up is not a test for Python on Windows. The App Execution
 # Aliases put stubs for python.exe and python3.exe in WindowsApps which resolve
@@ -96,10 +98,80 @@ if (-not (Get-Command rec.exe -ErrorAction SilentlyContinue)) {
   RefreshPath
 }
 
+# --- Patter ---------------------------------------------------------------
+# The venv Factor itself would build, built here so the real Piper and
+# onnxruntime wheels are on disk rather than assumed to work.
+$venv = Join-Path $env:USERPROFILE ".factor\voice-venv"
+if (-not (Test-Path (Join-Path $venv "Scripts\python.exe"))) {
+  Say "creating the voice venv"
+  & python.exe -m venv $venv
+  if ($LASTEXITCODE -ne 0) { throw "could not create $venv" }
+}
+# Probing an interpreter means running it, and a native command that writes to
+# stderr is a terminating error while ErrorActionPreference is Stop - so the
+# probe for a package that is legitimately absent would kill the script that
+# is about to install it. Exit codes are read explicitly from here down.
 $ErrorActionPreference = "Continue"
+
+$venvPython = Join-Path $venv "Scripts\python.exe"
+$venvPip    = Join-Path $venv "Scripts\pip.exe"
+& $venvPython -c "import getpatter" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  Say "installing Patter (this pulls onnxruntime and piper; it is not quick)"
+  & $venvPip install --upgrade --quiet getpatter==0.6.2 2>&1 | ForEach-Object { Write-Host "  $_" }
+  if ($LASTEXITCODE -ne 0) { throw "pip could not install getpatter" }
+  & $venvPython -c "import getpatter" 2>&1 | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "pip reported success but getpatter is not importable" }
+}
+
+# --- symlinks -------------------------------------------------------------
+# Creating a symlink on Windows needs a privilege a standard user does not
+# have, so the PathGuard escape test skips - and a skip is not a pass. Turning
+# on Developer Mode grants it without making the suite run elevated, which is
+# the thing that must not happen for Chrome's sake.
+$unlock = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"
+New-Item -Path $unlock -Force | Out-Null
+Set-ItemProperty $unlock AllowDevelopmentWithoutDevLicense 1 -Type DWord
+Say "developer mode on (symlinks for standard users)"
+
+# --- git ------------------------------------------------------------------
+# One test resolves a repository through git; without it that test skips, and
+# a skip is not a pass.
+if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
+  Say "installing git via winget"
+  & winget install --exact --silent --accept-package-agreements --accept-source-agreements `
+      --disable-interactivity Git.Git 2>&1 | Out-Null
+  RefreshPath
+}
+
+# --- Chromium -------------------------------------------------------------
+# Edge is present on every Windows box and Factor finds it, but it refuses to
+# be driven headless from this session, so the browser suite needs a real
+# Chromium of its own.
+if (-not (Test-Path "C:\chromium\chrome.exe")) {
+  Say "installing Chromium via winget"
+  & winget install --exact --silent --accept-package-agreements --accept-source-agreements `
+      --disable-interactivity Hibbiki.Chromium 2>&1 | Out-Null
+  $found = Get-ChildItem "C:\Program Files\Chromium", "C:\Program Files (x86)\Chromium", `
+      (Join-Path $env:LOCALAPPDATA "Chromium") -Recurse -Filter chrome.exe -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+  if ($found) {
+    Say "chromium at $($found.FullName)"
+    $dir = $found.Directory.FullName
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    if ($machinePath -notlike "*$dir*") {
+      [Environment]::SetEnvironmentVariable("Path", "$machinePath;$dir", "Machine")
+    }
+  } else {
+    Say "WARNING: winget reported no Chromium binary"
+  }
+}
+
 Say "python: $(& python.exe --version 2>&1)"
 Say "py:     $(& py.exe --version 2>&1)"
 Say "pip:    $(& python.exe -m pip --version 2>&1)"
 Say "rec:    $(if (Test-Path 'C:\sox\rec.exe') { 'C:\sox\rec.exe' } else { 'MISSING' })"
 Say "play:   $(if (Test-Path 'C:\sox\play.exe') { 'C:\sox\play.exe' } else { 'MISSING' })"
+Say "patter: $(& (Join-Path $venv 'Scripts\python.exe') -c 'import getpatter,sys; print(getpatter.__file__)' 2>&1)"
+Say "chrome: $((Get-Command chrome.exe -ErrorAction SilentlyContinue).Source)"
 exit 0

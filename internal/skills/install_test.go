@@ -39,6 +39,19 @@ func runGit(t *testing.T, args ...string) {
 }
 
 // rewriteURL makes git resolve url to target instead of dialing out.
+// fileURL renders a local path as a file URL git will accept. Backslashes
+// cannot survive the trip: a git config value treats them as escapes, so a
+// Windows path written raw arrives with its separators eaten and git reports
+// that C:UsersnicoTemp... is not a repository. Windows also needs the third
+// slash, since the path starts at a drive letter rather than at a root.
+func fileURL(path string) string {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return "file://" + p
+}
+
 func rewriteURL(t *testing.T, cfg, url, target string) {
 	t.Helper()
 	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0o600)
@@ -46,7 +59,7 @@ func rewriteURL(t *testing.T, cfg, url, target string) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if _, err := fmt.Fprintf(f, "[url \"file://%s\"]\n\tinsteadOf = %s\n", target, url); err != nil {
+	if _, err := fmt.Fprintf(f, "[url \"%s\"]\n\tinsteadOf = %s\n", fileURL(target), url); err != nil {
 		t.Fatal(err)
 	}
 }

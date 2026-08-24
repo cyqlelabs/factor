@@ -40,7 +40,7 @@ if [ -s "$CREDFILE" ]; then GC_PASS=(--password-file "$CREDFILE"); else GC_PASS=
 GC() { VBoxManage guestcontrol "$VM" --username "$SSH_USER" "${GC_PASS[@]}" "$@"; }
 GCRUN() { GC run --exe 'C:\Windows\System32\cmd.exe' --wait-stdout --wait-stderr -- /c "$1"; }
 
-# gcjob runs a PowerShell script through the FactorInteractive task, using
+# gcjob runs a PowerShell script through the FactorSetup task, using
 # Guest Additions as the transport. This is the channel that exists before
 # ssh does, and the only one that is both elevated and attached to a desktop:
 # guestcontrol hands out a UAC-filtered token with Administrators marked deny
@@ -56,7 +56,7 @@ gcjob() {
   GC copyto --target-directory 'C:\factor-test\' "$stage/job.ps1" >/dev/null
   rm -rf "$stage"
   GCRUN "del /q C:\factor-test\job.rc C:\factor-test\job.out" >/dev/null 2>&1 || true
-  GCRUN "schtasks /run /tn FactorInteractive" >/dev/null 2>&1
+  GCRUN "schtasks /run /tn FactorSetup" >/dev/null 2>&1
 
   local deadline=$(( $(date +%s) + timeout )) rc=
   while [ "$(date +%s)" -lt "$deadline" ]; do

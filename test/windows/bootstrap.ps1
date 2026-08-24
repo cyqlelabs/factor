@@ -203,19 +203,14 @@ foreach ($dir in @("C:\go\bin", "C:\w64devkit\bin", "$env:USERPROFILE\go\bin")) 
 [Environment]::SetEnvironmentVariable("Path", $machinePath, "Machine")
 [Environment]::SetEnvironmentVariable("GOTOOLCHAIN", "local", "Machine")
 
-# --- the interactive runner ----------------------------------------------
-# Anything ssh starts lands in a non-interactive window station: no desktop
-# to capture, no notification area for a tray icon to register in. A task
-# registered against the logged-on session is how a command crosses back into
-# a session that has both.
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
-  -Argument "-NoProfile -ExecutionPolicy Bypass -File $root\interactive.ps1"
-$principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-  -ExecutionTimeLimit (New-TimeSpan -Hours 2) -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName FactorInteractive -Action $action -Principal $principal `
-  -Settings $settings -Force | Out-Null
-Say "registered the FactorInteractive task"
+# --- the interactive runners ----------------------------------------------
+# Anything ssh starts lands in a non-interactive window station: no desktop to
+# capture, no notification area for a tray icon to register in. Tasks bound to
+# the logged-on session are how a command crosses back into one that has both.
+# Two of them, differing only in integrity - see register-task.ps1 for why the
+# suite must not run elevated.
+& "$root\register-task.ps1"
+Say "registered the interactive task pair"
 
 # The password came in only to be written into Winlogon; it has no reason to
 # stay on the disk the snapshot is about to capture.
