@@ -14,6 +14,10 @@ type managerSpec struct {
 	probe   string   // binary that must exist
 	install []string // command template; packages appended
 	system  bool     // needs root (sudo -n when not root)
+	// oneAtATime is for managers whose install verb takes a single package.
+	// winget reads everything after the verb as one query, so a list would
+	// install nothing and report success on whatever it matched first.
+	oneAtATime bool
 }
 
 var managerSpecs = map[string]managerSpec{
@@ -30,10 +34,18 @@ var managerSpecs = map[string]managerSpec{
 	"pipx": {probe: "pipx", install: []string{"pipx", "install"}},
 	"uv":   {probe: "uv", install: []string{"uv", "tool", "install"}},
 	"npm":  {probe: "npm", install: []string{"npm", "install", "-g"}},
+	// Windows. winget ships with Windows 10 1709 and later, elevates on its
+	// own when a package needs it, and is the only system manager a stock
+	// Windows machine has - without it setup could do nothing there but print
+	// a download link. The agreement flags matter: it stops for a prompt
+	// nobody is watching otherwise.
+	"winget": {probe: "winget", install: []string{"winget", "install", "--exact", "--silent",
+		"--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"},
+		oneAtATime: true},
 }
 
 // autoOrder is the probe order for system managers in auto mode.
-var autoOrder = []string{"apt", "apk", "dnf", "pacman", "xbps", "pkg"}
+var autoOrder = []string{"apt", "apk", "dnf", "pacman", "xbps", "pkg", "winget"}
 
 // DetectSystemManager returns the system package manager available on this
 // machine ("" when none of the supported ones is installed). The wizard uses
@@ -141,9 +153,25 @@ func (t *PkgInstallTool) Execute(ctx context.Context, args map[string]any) *Resu
 		argv = append([]string{"sudo", "-n"}, argv...)
 		elevated = true
 	}
-	argv = append(argv, packages...)
-
-	out, err := t.runner(ctx, argv)
+	// A manager that takes one package per call is run once per package, and
+	// the first failure is the one reported: carrying on would install the
+	// rest and still have to fail, which reads as a partial success nobody
+	// asked for.
+	var out string
+	if spec.oneAtATime {
+		for _, pkg := range packages {
+			var o string
+			o, err = t.runner(ctx, append(append([]string{}, argv...), pkg))
+			out += o
+			if err != nil {
+				argv = append(argv, pkg) // the one that failed is the one to suggest
+				break
+			}
+		}
+	} else {
+		argv = append(argv, packages...)
+		out, err = t.runner(ctx, argv)
+	}
 	if len(out) > 8*1024 {
 		out = out[len(out)-8*1024:]
 	}
