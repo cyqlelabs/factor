@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -675,4 +676,72 @@ func fakeManagersOnPath(t *testing.T, probes ...string) {
 		}
 	}
 	t.Setenv("PATH", dir)
+}
+
+// winget takes one package per invocation, so the tool has to call it once per
+// package rather than handing it a list it would read as a single query.
+func TestPkgInstallRunsWingetOncePerPackage(t *testing.T) {
+	var calls [][]string
+	tool := &PkgInstallTool{
+		lookPath: func(bin string) (string, error) {
+			if bin == "winget" {
+				return `C:\winget.exe`, nil
+			}
+			return alwaysMissing(bin)
+		},
+		euid: func() int { return 0 },
+		runner: func(_ context.Context, argv []string) (string, error) {
+			calls = append(calls, argv)
+			return "installed", nil
+		},
+	}
+	res := tool.Execute(context.Background(), map[string]any{
+		"packages": []any{"ChrisBagwell.SoX", "Git.Git"}, "manager": "winget",
+	})
+	if res.IsError {
+		t.Fatalf("install: %+v", res)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("winget ran %d times, want one call per package: %v", len(calls), calls)
+	}
+	for i, want := range []string{"ChrisBagwell.SoX", "Git.Git"} {
+		if got := calls[i][len(calls[i])-1]; got != want {
+			t.Errorf("call %d installed %q, want %q", i, got, want)
+		}
+		if calls[i][0] != "winget" || !slices.Contains(calls[i], "--silent") {
+			t.Errorf("call %d = %v, want a silent winget install", i, calls[i])
+		}
+	}
+}
+
+// The first failure is the answer: installing the rest and failing anyway
+// would read as a partial success nobody asked for, and the package that
+// failed is the one worth naming back.
+func TestPkgInstallWingetStopsAtTheFirstFailure(t *testing.T) {
+	var calls int
+	tool := &PkgInstallTool{
+		lookPath: func(bin string) (string, error) {
+			if bin == "winget" {
+				return `C:\winget.exe`, nil
+			}
+			return alwaysMissing(bin)
+		},
+		euid: func() int { return 0 },
+		runner: func(_ context.Context, argv []string) (string, error) {
+			calls++
+			return "no applicable installer", errors.New("exit status 1")
+		},
+	}
+	res := tool.Execute(context.Background(), map[string]any{
+		"packages": []any{"Bad.Package", "Git.Git"}, "manager": "winget",
+	})
+	if !res.IsError {
+		t.Fatalf("a failed install reported success: %+v", res)
+	}
+	if calls != 1 {
+		t.Errorf("winget ran %d times after a failure, want it to stop at the first", calls)
+	}
+	if !strings.Contains(res.ForLLM, "Bad.Package") {
+		t.Errorf("the failure does not name the package that failed: %s", res.ForLLM)
+	}
 }

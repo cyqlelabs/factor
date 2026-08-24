@@ -157,13 +157,14 @@ func (t *PkgInstallTool) Execute(ctx context.Context, args map[string]any) *Resu
 	// the first failure is the one reported: carrying on would install the
 	// rest and still have to fail, which reads as a partial success nobody
 	// asked for.
-	var out string
+	var out, failed string
 	if spec.oneAtATime {
 		for _, pkg := range packages {
 			var o string
 			o, err = t.runner(ctx, append(append([]string{}, argv...), pkg))
 			out += o
 			if err != nil {
+				failed = pkg
 				argv = append(argv, pkg) // the one that failed is the one to suggest
 				break
 			}
@@ -184,6 +185,9 @@ func (t *PkgInstallTool) Execute(ctx context.Context, args map[string]any) *Resu
 			}
 			return Errorf("%s needs an interactive sudo password; ask the user to run: sudo %s",
 				name, strings.Join(suggestion, " "))
+		}
+		if failed != "" {
+			return Errorf("installing %s failed via %s: %v\n%s", failed, name, err, out)
 		}
 		return Errorf("install failed via %s: %v\n%s", name, err, out)
 	}
