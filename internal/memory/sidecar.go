@@ -227,6 +227,13 @@ func (s *Sidecar) buildEnv() []string {
 	if _, tuned := os.LookupEnv("MALLOC_ARENA_MAX"); !tuned {
 		env = append(env, "MALLOC_ARENA_MAX="+arenaMax)
 	}
+	// smrti embeds on onnxruntime, which posts the machine to Microsoft as it
+	// initializes — OS build, CPU model, memory, network type, a persistent
+	// device id, and the interpreter path, which carries the user's name.
+	// The switch has to be in the environment before the interpreter starts,
+	// since the events are logged while the runtime is created, before
+	// anything in the sidecar could turn them off (microsoft/onnxruntime#25573).
+	env = append(env, "ORT_DISABLE_TELEMETRY=1")
 	env = append(env,
 		"SMRTI_DB="+s.cfg.DBPath,
 		"SMRTI_TENANT_ID="+s.cfg.Tenant,

@@ -214,6 +214,17 @@ func TestSidecarBuildEnvCapsMallocArenas(t *testing.T) {
 	}
 }
 
+// onnxruntime uploads the machine — OS build, CPU, memory, a persistent
+// device id and the interpreter path, which carries the user's name — the
+// moment it initializes, so the switch has to be in the environment the
+// sidecar is born with rather than set from inside it.
+func TestSidecarBuildEnvSilencesOnnxruntimeTelemetry(t *testing.T) {
+	s := &Sidecar{cfg: config.Default().Memory, extract: ExtractSettings{Mode: "local"}}
+	if !slices.Contains(s.buildEnv(), "ORT_DISABLE_TELEMETRY=1") {
+		t.Error("ORT_DISABLE_TELEMETRY=1 missing: smrti will post this machine to Microsoft")
+	}
+}
+
 func TestSidecarKeepAliveLeavesProcessRunning(t *testing.T) {
 	cfg := sidecarConfig(t, "serve")
 	cfg.KeepAlive = true
