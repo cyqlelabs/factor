@@ -22,6 +22,12 @@ func TestChannelBriefingWarnsAboutCompany(t *testing.T) {
 	if !strings.Contains(shared, "besides the user is in the room") {
 		t.Errorf("the shared briefing never mentions the room: %q", shared)
 	}
+	// The notice argues for company from the strongest position in the
+	// request, so it must carry the correction the sensor cannot make: the
+	// user saying everyone has left settles it, via the room tool.
+	if !strings.Contains(shared, "action=alone") || !strings.Contains(shared, "outranks") {
+		t.Errorf("the shared briefing never grants the user's word the override: %q", shared)
+	}
 	if strings.Contains(private, "in the room") {
 		t.Errorf("a private turn was warned about company: %q", private)
 	}

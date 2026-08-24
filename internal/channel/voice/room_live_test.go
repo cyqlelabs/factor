@@ -284,6 +284,11 @@ func TestRoomToolDrivesTheRoom(t *testing.T) {
 	if res.IsError || !strings.Contains(res.ForLLM, "Roxana") {
 		t.Errorf("company = %+v", res)
 	}
+	// A shared reading must say how the user's word corrects it: the
+	// microphone hears arrivals, never departures.
+	if !strings.Contains(res.ForLLM, "action=alone") {
+		t.Errorf("a shared room never offered the correction: %+v", res)
+	}
 
 	res = tool.Execute(context.Background(), map[string]any{"action": "left", "names": []any{"Roxana"}})
 	if res.IsError || !strings.Contains(res.ForLLM, "private") {

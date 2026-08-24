@@ -224,7 +224,9 @@ func (t *roomTool) Execute(_ context.Context, args map[string]any) *tools.Result
 		return tools.Textf("The room is private: nobody but the user is within earshot.")
 	}
 	return tools.Textf("The room is shared with %s. Replies are audible to them, and only shared "+
-		"memory is being recalled.", strings.Join(st.Present, ", "))
+		"memory is being recalled. Nothing announces a departure to the microphone, so if the "+
+		"user says nobody else is here, they are right and this state is stale: correct it with "+
+		"action=alone, or action=left naming who went.", strings.Join(st.Present, ", "))
 }
 
 // stringsArg reads a JSON array of strings, which arrives as []any.

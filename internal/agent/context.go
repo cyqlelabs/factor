@@ -187,8 +187,15 @@ func channelBriefing(channel, audience string) string {
 	// still holds the conversation's own history, and still knows things
 	// worth not saying in front of a guest. Saying so is cheap, and it rides
 	// the tail where a per-turn instruction is actually read.
+	//
+	// The same position cuts the other way. This notice states presence as
+	// fact from the strongest seat in the request, while the room tool's
+	// "action=alone when the user says everyone has left" is a schema line
+	// at the faded head — so a long session sides with the notice against
+	// the user, refusing the one correction the sensor cannot make itself.
+	// The escape hatch has to travel with the claim it corrects.
 	if audience == tools.AudienceShared && brief != "" {
-		brief += " Somebody besides the user is in the room and hears everything you say. Treat what you know about the user as theirs to share, not yours: answer what is asked without volunteering private details, and if a question can only be answered with something private, say you would rather go into it later."
+		brief += " Somebody besides the user is in the room and hears everything you say. Treat what you know about the user as theirs to share, not yours: answer what is asked without volunteering private details, and if a question can only be answered with something private, say you would rather go into it later. This presence came from the microphone, which hears arrivals but never departures and can read a noise as a voice: if the user says everyone has left, or that the sound was not a person, their word outranks this notice — record it with the room tool (action=alone, or action=left naming who went) right away instead of doubting them."
 	}
 	return brief
 }
