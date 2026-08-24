@@ -158,23 +158,32 @@ func TestAudioCommandsReportWhatIsMissing(t *testing.T) {
 // Windows has no PulseAudio, PipeWire or ALSA helper; SoX carries both
 // directions there and is the only thing the chain may reach for.
 func TestWindowsAudioRunsThroughSox(t *testing.T) {
-	argv, err := captureCommand(scriptedEnv("windows", "rec"), "")
+	argv, err := captureCommand(scriptedEnv("windows", "sox"), "")
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}
-	if argv[0] != "rec" {
-		t.Errorf("capture helper = %q, want rec", argv[0])
+	if argv[0] != "sox" {
+		t.Errorf("capture helper = %q, want sox", argv[0])
+	}
+	// The device is named even when the caller named none: bare rec reports
+	// no default audio device on a machine whose default is set and working,
+	// while waveaudio "default" records from exactly that device.
+	if line := strings.Join(argv, " "); !strings.Contains(line, "-t waveaudio default") {
+		t.Errorf("capture %q does not name the default waveaudio device", line)
 	}
 	if line := strings.Join(argv, " "); !strings.Contains(line, "16000") || !strings.Contains(line, "-t raw") {
 		t.Errorf("capture %q does not ask for 16 kHz raw", line)
 	}
 
-	argv, err = playbackCommand(scriptedEnv("windows", "play"), "")
+	argv, err = playbackCommand(scriptedEnv("windows", "sox"), "")
 	if err != nil {
 		t.Fatalf("playback: %v", err)
 	}
-	if argv[0] != "play" {
-		t.Errorf("playback helper = %q, want play", argv[0])
+	if argv[0] != "sox" {
+		t.Errorf("playback helper = %q, want sox", argv[0])
+	}
+	if line := strings.Join(argv, " "); !strings.Contains(line, "-t waveaudio default") {
+		t.Errorf("playback %q does not name the default waveaudio device", line)
 	}
 	if line := strings.Join(argv, " "); !strings.Contains(line, "24000") {
 		t.Errorf("playback %q does not ask for 24 kHz", line)
@@ -269,12 +278,18 @@ func TestMissingHelpersListsEachDirectionOnce(t *testing.T) {
 		t.Errorf("ALSA-only machine reported %v missing", got)
 	}
 
-	// A Windows report has to name programs a Windows user can install.
+	// A Windows report has to name a program a Windows user can install, and
+	// SoX ships sox.exe alone there - rec and play are a Unix packaging
+	// convention, so asking for them sent people after files that do not
+	// exist in the official distribution.
 	win := MissingHelpers(scriptedEnv("windows"))
-	if len(win) != 2 || win[0].Bin != "rec" || win[1].Bin != "play" {
-		t.Errorf("windows missing = %v, want rec and play", win)
+	if len(win) != 2 || win[0].Bin != "sox" || win[1].Bin != "sox" {
+		t.Errorf("windows missing = %v, want both directions naming sox", win)
 	}
-	if got := MissingHelpers(scriptedEnv("windows", "rec", "play")); len(got) != 0 {
+	if win[0].Package("winget") != "ChrisBagwell.SoX" {
+		t.Errorf("windows package = %v, want the winget id", win[0].Packages)
+	}
+	if got := MissingHelpers(scriptedEnv("windows", "sox")); len(got) != 0 {
 		t.Errorf("a machine with SoX reported %v missing", got)
 	}
 }

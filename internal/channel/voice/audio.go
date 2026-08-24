@@ -248,34 +248,35 @@ func playbackCommand(e Env, device string) ([]string, error) {
 // device needs the full `sox` spelling with its waveaudio driver, because the
 // Env seam runs a bare argv — AUDIODEV, how SoX is usually pointed at a
 // device, would need an environment it has no way to pass.
-const soxHint = "install SoX (https://sourceforge.net/projects/sox/) and put rec.exe and play.exe on PATH"
+const soxHint = "install SoX (winget install ChrisBagwell.SoX) and put sox.exe on PATH"
 
+// The device is always named, and "default" is a name like any other. Two
+// things forced that. SoX for Windows ships sox.exe alone - rec and play are
+// a Unix packaging convention, so requiring them meant requiring binaries the
+// official distribution does not contain. And bare `rec` fails outright with
+// "there is no default audio device configured" even on a machine whose
+// default recording device is set and healthy, whatever AUDIODEV says, while
+// `sox -t waveaudio default` records from that same device happily.
 func windowsCapture(e Env, device string) ([]string, error) {
 	raw := []string{"-t", "raw", "-b", "16", "-e", "signed-integer", "-r", "16000", "-c", "1", "-"}
-	if device != "" {
-		if !e.has("sox") {
-			return nil, fmt.Errorf("naming a capture device needs sox itself, not just rec — %s", soxHint)
-		}
-		return append([]string{"sox", "-q", "-t", "waveaudio", device}, raw...), nil
+	if !e.has("sox") {
+		return nil, fmt.Errorf("no microphone helper is installed — %s", soxHint)
 	}
-	if e.has("rec") {
-		return append([]string{"rec", "-q"}, raw...), nil
+	if device == "" {
+		device = "default"
 	}
-	return nil, fmt.Errorf("no microphone helper is installed — %s", soxHint)
+	return append([]string{"sox", "-q", "-t", "waveaudio", device}, raw...), nil
 }
 
 func windowsPlayback(e Env, device string) ([]string, error) {
 	raw := []string{"-t", "raw", "-b", "16", "-e", "signed-integer", "-r", "24000", "-c", "1", "-"}
-	if device != "" {
-		if !e.has("sox") {
-			return nil, fmt.Errorf("naming a playback device needs sox itself, not just play — %s", soxHint)
-		}
-		return append(append([]string{"sox", "-q"}, raw...), "-t", "waveaudio", device), nil
+	if !e.has("sox") {
+		return nil, fmt.Errorf("no speaker helper is installed — %s", soxHint)
 	}
-	if e.has("play") {
-		return append([]string{"play", "-q"}, raw...), nil
+	if device == "" {
+		device = "default"
 	}
-	return nil, fmt.Errorf("no speaker helper is installed — %s", soxHint)
+	return append(append([]string{"sox", "-q"}, raw...), "-t", "waveaudio", device), nil
 }
 
 // MachineHasAudio reports whether this machine has a sound system at all —
@@ -315,8 +316,10 @@ var (
 
 	// On Windows both directions are SoX, so the names a report shows have to
 	// be its own: parec and paplay are not programs a Windows user can install.
-	windowsCaptureHelper  = desktop.Helper{Bin: "rec", Purpose: "microphone capture (SoX)"}
-	windowsPlaybackHelper = desktop.Helper{Bin: "play", Purpose: "speaker playback (SoX)"}
+	windowsCaptureHelper = desktop.Helper{Bin: "sox", Purpose: "microphone capture (SoX)",
+		Packages: map[string]string{"winget": "ChrisBagwell.SoX"}}
+	windowsPlaybackHelper = desktop.Helper{Bin: "sox", Purpose: "speaker playback (SoX)",
+		Packages: map[string]string{"winget": "ChrisBagwell.SoX"}}
 )
 
 // MissingHelpers lists what the channel needs and cannot find; empty means
