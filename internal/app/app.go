@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -74,6 +75,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// The one place both the daemon and a chat session pass through, so the
 	// log level is settled here before anything below it logs a line.
 	cfg.ApplyLogLevel()
+
+	// Same reason, for the screen: a gateway started at login is handed no
+	// DISPLAY, and everything that reaches the desktop below reads it from
+	// the environment.
+	if adopted := desktop.AdoptDisplay(desktop.DefaultEnv(), os.Setenv); adopted != "" {
+		slog.Info("adopted the machine's screen", "display", adopted)
+	}
 
 	ws := cfg.Agent.Workspace
 	if err := config.EnsureWorkspace(ws); err != nil {

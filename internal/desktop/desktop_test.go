@@ -658,3 +658,99 @@ func TestMachineHasDisplayNeedsNoGlobOnDesktopPlatforms(t *testing.T) {
 		}
 	}
 }
+
+// A gateway started at login inherits no DISPLAY while X is running for that
+// same user, which is how ask_user came to tell a user sitting in front of
+// the screen that the machine hasn't got one.
+func TestAdoptDisplayNamesTheScreenTheMachineDrives(t *testing.T) {
+	env := Env{
+		GOOS:   "linux",
+		Getenv: func(string) string { return "" },
+		Glob: func(pattern string) ([]string, error) {
+			if pattern == "/tmp/.X11-unix/X*" {
+				return []string{"/tmp/.X11-unix/X1", "/tmp/.X11-unix/X0"}, nil
+			}
+			return nil, nil
+		},
+	}
+	set := map[string]string{}
+	adopted := AdoptDisplay(env, func(k, v string) error { set[k] = v; return nil })
+	if adopted != "DISPLAY=:0" {
+		t.Errorf("adopted = %q, want the lowest-numbered socket", adopted)
+	}
+	if set["DISPLAY"] != ":0" {
+		t.Errorf("DISPLAY set to %q", set["DISPLAY"])
+	}
+}
+
+func TestAdoptDisplayFallsBackToWayland(t *testing.T) {
+	env := Env{
+		GOOS: "linux",
+		Getenv: func(key string) string {
+			if key == "XDG_RUNTIME_DIR" {
+				return "/run/user/1000"
+			}
+			return ""
+		},
+		// The lock file outlives the compositor that wrote it and is not a
+		// socket to connect to, so it must never be adopted.
+		Glob: func(pattern string) ([]string, error) {
+			if pattern == "/run/user/1000/wayland-*" {
+				return []string{"/run/user/1000/wayland-0.lock", "/run/user/1000/wayland-0"}, nil
+			}
+			return nil, nil
+		},
+	}
+	if got := AdoptDisplay(env, func(string, string) error { return nil }); got != "WAYLAND_DISPLAY=wayland-0" {
+		t.Errorf("adopted = %q", got)
+	}
+}
+
+func TestAdoptDisplayLeavesAProcessThatAlreadyHasOneAlone(t *testing.T) {
+	env := Env{
+		GOOS:   "linux",
+		Getenv: func(key string) string { return map[string]string{"DISPLAY": ":3"}[key] },
+		Glob:   func(string) ([]string, error) { return []string{"/tmp/.X11-unix/X0"}, nil },
+	}
+	if got := AdoptDisplay(env, func(string, string) error {
+		t.Fatal("overwrote the display this process was given")
+		return nil
+	}); got != "" {
+		t.Errorf("adopted = %q, want none", got)
+	}
+}
+
+func TestAdoptDisplayReportsNothingWithoutAScreen(t *testing.T) {
+	linux := Env{GOOS: "linux", Getenv: func(string) string { return "" }, Glob: func(string) ([]string, error) { return nil, nil }}
+	if got := AdoptDisplay(linux, func(string, string) error { return nil }); got != "" {
+		t.Errorf("headless adopted %q", got)
+	}
+	// A lock file with no socket beside it is not a screen either.
+	stale := linux
+	stale.Getenv = func(key string) string { return map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000"}[key] }
+	stale.Glob = func(string) ([]string, error) { return []string{"/run/user/1000/wayland-0.lock"}, nil }
+	if got := AdoptDisplay(stale, func(string, string) error { return nil }); got != "" {
+		t.Errorf("a stale lock adopted %q", got)
+	}
+	// macOS and Windows always have a screen and no socket to find.
+	for _, goos := range []string{"darwin", "windows"} {
+		env := Env{GOOS: goos, Getenv: func(string) string { return "" }}
+		if got := AdoptDisplay(env, func(string, string) error { return nil }); got != "" {
+			t.Errorf("%s adopted %q", goos, got)
+		}
+	}
+	if got := AdoptDisplay(linux, nil); got != "" {
+		t.Errorf("adopted %q with nowhere to set it", got)
+	}
+}
+
+func TestAdoptDisplayReportsNothingWhenTheSetFails(t *testing.T) {
+	env := Env{
+		GOOS:   "linux",
+		Getenv: func(string) string { return "" },
+		Glob:   func(string) ([]string, error) { return []string{"/tmp/.X11-unix/X0"}, nil },
+	}
+	if got := AdoptDisplay(env, func(string, string) error { return errors.New("read-only") }); got != "" {
+		t.Errorf("adopted = %q after the set failed", got)
+	}
+}

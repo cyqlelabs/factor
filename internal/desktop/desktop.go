@@ -262,24 +262,70 @@ func HasDisplay(env Env) bool {
 // `factor init` came to skip the desktop step, and its dependencies, on
 // exactly the desktop machines that needed them.
 func MachineHasDisplay(env Env) bool {
-	if HasDisplay(env) {
+	if HasDisplay(env) || env.GOOS == "darwin" || env.GOOS == "windows" {
 		return true
 	}
-	if env.GOOS == "darwin" || env.GOOS == "windows" {
-		return true
+	key, _ := findDisplay(env)
+	return key != ""
+}
+
+// AdoptDisplay points this process at the screen the machine drives when it
+// was started without one, and reports what it adopted ("DISPLAY=:1"), or ""
+// when this process already had a screen or the machine has none.
+//
+// A gateway started by systemd, launchd or a desktop autostart entry inherits
+// no DISPLAY while X is running for that same user the whole time. Every
+// helper program then fails to open a display, and ask_user tells a user
+// sitting in front of the screen that the machine hasn't got one. The
+// variable is set on the process rather than on each command so that
+// everything downstream inherits it: the dialogs, the desktop helpers, the
+// browser, and anything they spawn in turn.
+func AdoptDisplay(env Env, setenv func(key, value string) error) string {
+	if setenv == nil || HasDisplay(env) || env.GOOS == "darwin" || env.GOOS == "windows" {
+		return ""
 	}
+	key, value := findDisplay(env)
+	if key == "" || setenv(key, value) != nil {
+		return ""
+	}
+	return key + "=" + value
+}
+
+// findDisplay looks for a display server this process was not told about and
+// names it the way a helper program expects it: DISPLAY=:1 for X, and
+// WAYLAND_DISPLAY=wayland-0 for Wayland.
+func findDisplay(env Env) (key, value string) {
 	if env.Glob == nil {
-		return false
+		return "", ""
 	}
-	for _, pattern := range []string{"/tmp/.X11-unix/X*", filepath.Join(env.env("XDG_RUNTIME_DIR"), "wayland-*")} {
-		if pattern == "wayland-*" {
-			continue // no XDG_RUNTIME_DIR: the pattern would match the cwd
-		}
-		if matches, err := env.Glob(pattern); err == nil && len(matches) > 0 {
-			return true
+	if sock := firstSocket(env, "/tmp/.X11-unix/X*"); sock != "" {
+		return "DISPLAY", ":" + strings.TrimPrefix(filepath.Base(sock), "X")
+	}
+	// With no XDG_RUNTIME_DIR the pattern would be a bare "wayland-*",
+	// which Glob would resolve against the working directory.
+	if dir := env.env("XDG_RUNTIME_DIR"); dir != "" {
+		if sock := firstSocket(env, filepath.Join(dir, "wayland-*")); sock != "" {
+			return "WAYLAND_DISPLAY", filepath.Base(sock)
 		}
 	}
-	return false
+	return "", ""
+}
+
+// firstSocket returns the lowest-numbered match, skipping the lock file a
+// Wayland compositor leaves beside its socket: it is not one to connect to,
+// and it outlives the compositor that wrote it.
+func firstSocket(env Env, pattern string) string {
+	matches, err := env.Glob(pattern)
+	if err != nil {
+		return ""
+	}
+	sort.Strings(matches)
+	for _, m := range matches {
+		if !strings.HasSuffix(m, ".lock") {
+			return m
+		}
+	}
+	return ""
 }
 
 // MissingHelpers lists helpers the controller wants but cannot find.

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/config"
+	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/jobs"
 	"github.com/cyqlelabs/factor/internal/tools"
 )
@@ -174,7 +175,9 @@ func TestDesktopToolsFollowConfig(t *testing.T) {
 		t.Error("desktop.enabled=false still registered the desktop tools")
 	}
 
-	// A headless machine (no DISPLAY) leaves them out on the auto setting.
+	// On the auto setting they follow the machine rather than this process:
+	// clearing DISPLAY no longer makes a box that is running X look headless,
+	// because New goes and finds the screen a service was started without.
 	// Windows and macOS always have one, which MachineHasDisplay says by
 	// construction, so there is no headless state to simulate there.
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
@@ -183,8 +186,9 @@ func TestDesktopToolsFollowConfig(t *testing.T) {
 	cfg = testConfig(t)
 	t.Setenv("DISPLAY", "")
 	t.Setenv("WAYLAND_DISPLAY", "")
-	if names(t, cfg)["screenshot"] {
-		t.Error("desktop tools registered without a graphical session")
+	want := desktop.MachineHasDisplay(desktop.DefaultEnv())
+	if got := names(t, cfg)["screenshot"]; got != want {
+		t.Errorf("registered the desktop tools = %v, machine drives a screen = %v", got, want)
 	}
 }
 
