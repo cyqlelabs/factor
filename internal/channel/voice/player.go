@@ -50,6 +50,10 @@ type player struct {
 	offset int
 	active bool
 	paused bool
+	// tone marks the clip as a sound rather than the agent's voice. It
+	// outlives the clip, because playbackTail does: what is fading out of
+	// the speakers is still not something anyone can interrupt.
+	tone   bool
 	cancel context.CancelFunc
 	done   chan playResult
 	// quietAt is when the last sample was handed over, which playbackTail is
@@ -68,10 +72,29 @@ func (p *player) play(ctx context.Context, pcm []byte) <-chan playResult {
 	defer p.mu.Unlock()
 	p.endLocked(false)
 	p.gen++
+	p.tone = false
 	p.pcm, p.offset = pcm, 0
 	p.done = make(chan playResult, 1)
 	p.startLocked(ctx)
 	return p.done
+}
+
+// chime plays a short tone, but only over silence: the speakers belong to a
+// reply that is playing or merely paused, and a courtesy that talks over the
+// answer is not one. It reports whether the tone went out. Nothing waits for
+// it to finish — a tone nobody is listening for has no ending worth reporting.
+func (p *player) chime(ctx context.Context, pcm []byte) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.active || p.paused {
+		return false
+	}
+	p.gen++
+	p.tone = true
+	p.pcm, p.offset = pcm, 0
+	p.done = nil
+	p.startLocked(ctx)
+	return true
 }
 
 // pause kills the helper mid-clip but keeps the position; resume picks it
@@ -109,14 +132,22 @@ func (p *player) stop() {
 	p.endLocked(false)
 }
 
-// playing reports whether sound is in the air right now — the signal the
-// segmenter uses to raise its bar, and the one that marks an utterance as
-// carrying the agent's own voice. It stays true through playbackTail past the
-// end of a clip, because the audio outlives the helper that fed it.
-func (p *player) playing() bool {
+// sound reports what is in the air right now. playing covers any sound at
+// all — the signal the segmenter raises its bar against, and the one that
+// marks an utterance as carrying the agent's own voice; speaking narrows it
+// to the agent's voice, the only thing there is to interrupt. Both stay true
+// through playbackTail past the end of a clip, because the audio outlives the
+// helper that fed it.
+func (p *player) sound() (playing, speaking bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.active || time.Since(p.quietAt) < playbackTail
+	playing = p.active || time.Since(p.quietAt) < playbackTail
+	return playing, playing && !p.tone
+}
+
+func (p *player) playing() bool {
+	out, _ := p.sound()
+	return out
 }
 
 // busy reports whether a clip is underway at all, paused included.

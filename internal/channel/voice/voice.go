@@ -135,6 +135,7 @@ type Voice struct {
 	turnCancel    context.CancelFunc
 	pttUntil      time.Time
 	windowUntil   time.Time
+	lastChime     time.Time
 	lastSpeaker   string
 	lastSpeakerAt time.Time
 }
@@ -442,7 +443,7 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 			v.micSilent.Store(false)
 		}
 
-		playing := v.player.playing()
+		playing, speaking := v.player.sound()
 		wasOpen := seg.inSpeech
 		started, ended, utterance := seg.push(frame, playing)
 		if playing && (wasOpen || started) {
@@ -460,7 +461,7 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 			// outlive the window it was begun in.
 			utterStart = time.Now()
 		}
-		if started && playing {
+		if started && speaking {
 			// A barge-in: hold the reply while the utterance is heard out,
 			// and remember the context — its transcript will carry the
 			// agent's own words from the speakers alongside the user's.
@@ -603,6 +604,9 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		v.player.stop()
 		v.spawn(func() { v.speak(ctx, ackLine(v.cfg.Language)) })
 	default:
+		if dec.turnedAway() {
+			v.chime(ctx)
+		}
 		v.player.resume(ctx)
 	}
 }
@@ -614,6 +618,13 @@ type decision struct {
 	echo        bool // the agent's own voice off the speakers, nothing else
 	noise       bool // nothing a person said: no transcript, or a subtitle credit
 	text        string
+}
+
+// turnedAway reports the gate refusing a sentence somebody really said: words,
+// and not for Factor. Narrower than the log's "ignored", which also covers an
+// utterance the transcriber returned nothing for.
+func (d decision) turnedAway() bool {
+	return !d.accept && !d.acknowledge && !d.echo && !d.noise
 }
 
 // gate decides an utterance's fate. started is when the user began the

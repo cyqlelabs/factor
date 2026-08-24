@@ -192,7 +192,8 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
       "unknown_speaker": "anonymous",          // anonymous | enroll
       "room_isolation": null,                  // null = on wherever speaker_id is
       "room_timeout_minutes": 30,              // how long a voice counts as still in the room
-      "output_volume": 100                     // 1–100; lower it when the speakers reach the mic
+      "output_volume": 100,                    // 1–100; lower it when the speakers reach the mic
+      "ignored_chime": true                    // a soft tone when it heard you and did not take it
     }
   },
   "mcp": {
@@ -483,6 +484,12 @@ through is matched against the words Factor just sent them: its own voice is dro
 instead of answered, or stripped off the front of what you actually said.
 `output_volume` turns the reply down in rooms where the speakers overpower the
 microphone.
+
+A sentence the wake word never reached gets a soft two-note chime, so a misfire sounds
+different from a machine that never heard you. It is a tone and not a voice, so talking
+across it is not an interruption and still needs the wake word; it waits fifteen seconds
+between chimes, because a conversation held in front of the machine is turned away
+sentence by sentence. `ignored_chime` turns it off.
 
 </details>
 

@@ -134,6 +134,13 @@ type Config struct {
 	// 0 means full volume.
 	OutputVolume int `json:"output_volume,omitempty"`
 
+	// IgnoredChime sounds a soft tone when the gate turns a sentence away —
+	// words nobody addressed to Factor — so a wake word that misfired is
+	// audible standing in the room rather than only in the log. Silence is
+	// the other reading of a misheard wake word, and the two are worth
+	// telling apart. nil means on.
+	IgnoredChime *bool `json:"ignored_chime,omitempty"`
+
 	// VADRatio is how far above the noise floor speech has to rise;
 	// BargeRatio is the same bar while the agent is speaking, set higher so
 	// the speakers' own sound does not interrupt the reply.
@@ -146,6 +153,10 @@ type Config struct {
 	// APIs' base URLs.
 	STTAPIBase string `json:"stt_api_base,omitempty"`
 	TTSAPIBase string `json:"tts_api_base,omitempty"`
+}
+
+func (c Config) ignoredChime() bool {
+	return c.IgnoredChime == nil || *c.IgnoredChime
 }
 
 func (c Config) localAudioFallback() bool {
