@@ -307,6 +307,12 @@ func PrepareSpeech(ctx context.Context, home, language string, cfg SpeechConfig,
 	if !ok {
 		return SpeechChoices{}, fmt.Errorf("the speech engines are not installed in %s", SpeechVenvDir(home))
 	}
+	// pip reporting success is not the same as the engines loading: on Windows
+	// they need a C++ runtime the machine may not have, and every path to the
+	// models runs through here.
+	if err := ensureSpeechRuntime(ctx, python, progress); err != nil {
+		return SpeechChoices{}, err
+	}
 	script := speechScriptPath(home)
 	if err := WriteSpeechScript(script); err != nil {
 		return SpeechChoices{}, err
