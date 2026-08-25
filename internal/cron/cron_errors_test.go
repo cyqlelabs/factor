@@ -170,6 +170,27 @@ func TestNextWakeSkipsUnparsableSchedule(t *testing.T) {
 	}
 }
 
+// A one-shot only survives its own dispatch when the write removing it
+// failed. It must not be scheduled for a moment in the past: dueJobs will
+// take it on the next pass, and a negative sleep would spin the loop against
+// the disk that just refused the write.
+func TestNextWakeIgnoresAOneOffWhoseMomentHasGoneBy(t *testing.T) {
+	s := newService(t, nil, nil)
+	now := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	s.jobs["cron-stuck"] = &Job{ID: "cron-stuck", At: now.Add(-time.Hour), Message: "late", Enabled: true}
+	if next, found := s.nextWake(); found {
+		t.Errorf("nextWake scheduled a wake-up for %v, already in the past", next)
+	}
+	// It is still due, so it still runs — and is gone afterwards.
+	if due := s.dueJobs(); len(due) != 1 {
+		t.Fatalf("the overdue one-off did not fire: %+v", due)
+	}
+	if jobs := s.List(); len(jobs) != 0 {
+		t.Errorf("the one-off outlived its run: %+v", jobs)
+	}
+}
+
 func TestDueJobsSkipsUnparsableSchedule(t *testing.T) {
 	s := newService(t, nil, nil)
 	s.now = func() time.Time { return time.Date(2026, 1, 1, 9, 0, 5, 0, time.UTC) }

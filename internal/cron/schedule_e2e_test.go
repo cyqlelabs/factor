@@ -89,7 +89,23 @@ type scheduleModel struct {
 	ahead time.Duration
 
 	mu    sync.Mutex
+	once  bool             // ask for a one-off moment rather than a cron expression
 	calls []map[string]any // the cron arguments it asked for, in order
+}
+
+// oneOff makes the model schedule the way a person asks for a reminder: a
+// single moment, not a repeating expression. Guarded, because the server
+// serving this model is already accepting when a test chooses.
+func (m *scheduleModel) oneOff() {
+	m.mu.Lock()
+	m.once = true
+	m.mu.Unlock()
+}
+
+func (m *scheduleModel) wantsOneOff() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.once
 }
 
 // clockLine pulls the "Current time:" line out of whatever crossed the wire.
@@ -148,11 +164,13 @@ func (m *scheduleModel) serve(w http.ResponseWriter, r *http.Request) {
 		reply(w, reminderSaid)
 	case strings.Contains(content, reminderAsk):
 		at := clockLine(m.t, body).Add(m.ahead)
-		m.call(w, map[string]any{
-			"action":   "add",
-			"schedule": fmt.Sprintf("%d %d * * *", at.Minute(), at.Hour()),
-			"message":  reminderBody,
-		})
+		args := map[string]any{"action": "add", "message": reminderBody}
+		if m.wantsOneOff() {
+			args["at"] = at.Format("2006-01-02 15:04")
+		} else {
+			args["schedule"] = fmt.Sprintf("%d %d * * *", at.Minute(), at.Hour())
+		}
+		m.call(w, args)
 	default:
 		// Anything else is a scheduled message with nothing to work out: say
 		// it back, so two jobs due together are told apart by what arrives.
@@ -638,5 +656,172 @@ func TestAScheduledTurnRunsInItsOwnSession(t *testing.T) {
 	}
 	if len(scheduled) == 0 {
 		t.Fatalf("the scheduled turn left no history under cron:%s", id)
+	}
+}
+
+// --- one-off reminders -------------------------------------------------------
+
+// What a person actually asks for. The model names a moment, the reminder
+// arrives once, and the job is gone afterwards — not left to come round again
+// next year, which is all a cron expression can offer.
+func TestAOneOffReminderArrivesOnceAndDeletesItself(t *testing.T) {
+	impatient(t)
+	r := newRig(t, t.TempDir())
+	r.model.oneOff()
+	r.schedule(t)
+
+	r.ask(t, reminderAsk)
+
+	jobs := r.svc.List()
+	if len(jobs) != 1 {
+		t.Fatalf("the turn scheduled %d jobs, want 1: %+v", len(jobs), jobs)
+	}
+	if !jobs[0].Once() {
+		t.Fatalf("the reminder was stored as recurring: %+v", jobs[0])
+	}
+	if jobs[0].Schedule != "" {
+		t.Errorf("a one-off carries a cron expression too: %+v", jobs[0])
+	}
+
+	r.clock.jump(askAhead + time.Minute)
+	got := r.await(t, "the one-off reminder")
+	if got.content != reminderSaid {
+		t.Errorf("delivered %q, want %q", got.content, reminderSaid)
+	}
+
+	// Gone from the store, and gone for good: a year from now it stays quiet.
+	if left := r.svc.List(); len(left) != 0 {
+		t.Errorf("the one-off is still scheduled after running: %+v", left)
+	}
+	r.clock.jump(366 * 24 * time.Hour)
+	r.nothingFor(t, 200*time.Millisecond)
+}
+
+// A one-off missed while the process was down still arrives, for the same
+// reason a recurring one does — more so, since it has no second chance at all.
+func TestAOneOffMissedWhileTheProcessWasDownStillArrives(t *testing.T) {
+	impatient(t)
+	store := t.TempDir()
+
+	before := newRig(t, store)
+	before.model.oneOff()
+	before.schedule(t)
+	before.ask(t, reminderAsk)
+
+	after := newRig(t, store)
+	after.clock.jump(askAhead + time.Minute)
+	after.schedule(t)
+
+	if got := after.await(t, "the one-off missed during the restart"); got.content != reminderSaid {
+		t.Errorf("delivered %q, want %q", got.content, reminderSaid)
+	}
+	after.nothingFor(t, 100*time.Millisecond)
+}
+
+// The mistake that started all this, refused at the door: a moment that has
+// already gone by is a reminder worked out against the wrong day, and firing
+// it instantly or filing it for next year are both worse than saying so.
+func TestAOneOffInThePastIsRefused(t *testing.T) {
+	r := newRig(t, t.TempDir())
+	ctx := withOrigin(context.Background())
+
+	res := r.tool.Execute(ctx, map[string]any{
+		"action": "add", "message": "the thing I meant for this morning",
+		"at": time.Now().Add(-2 * time.Hour).Format("2006-01-02 15:04"),
+	})
+	if !res.IsError {
+		t.Fatalf("a moment in the past was accepted: %+v", res)
+	}
+	if !strings.Contains(res.ForLLM, "already gone by") {
+		t.Errorf("the refusal does not say what is wrong: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "now") {
+		t.Errorf("the refusal does not say what time it is, so it cannot be corrected: %s", res.ForLLM)
+	}
+	if jobs := r.svc.List(); len(jobs) != 0 {
+		t.Errorf("the refused reminder was stored anyway: %+v", jobs)
+	}
+}
+
+// Both fields at once means the caller does not know which it meant.
+func TestAddRefusesAMomentAndAScheduleTogether(t *testing.T) {
+	r := newRig(t, t.TempDir())
+	res := r.tool.Execute(withOrigin(context.Background()), map[string]any{
+		"action": "add", "message": "which is it",
+		"at": time.Now().Add(time.Hour).Format("2006-01-02 15:04"), "schedule": "0 9 * * *",
+	})
+	if !res.IsError || !strings.Contains(res.ForLLM, "not both") {
+		t.Errorf("add = %+v", res)
+	}
+	if res := r.tool.Execute(withOrigin(context.Background()), map[string]any{
+		"action": "add", "message": "when?"}); !res.IsError {
+		t.Errorf("add with neither a moment nor a schedule succeeded: %+v", res)
+	}
+	// A readable moment with nothing to say at it is still not a reminder.
+	if res := r.tool.Execute(withOrigin(context.Background()), map[string]any{
+		"action": "add", "at": time.Now().Add(time.Hour).Format("2006-01-02 15:04"),
+	}); !res.IsError {
+		t.Errorf("add with a moment but no message succeeded: %+v", res)
+	}
+}
+
+// The listing has to tell the two kinds apart, or a user cannot see which of
+// their reminders is going to come back.
+func TestListTellsOneOffsAndRecurringApart(t *testing.T) {
+	r := newRig(t, t.TempDir())
+	ctx := withOrigin(context.Background())
+	if res := r.tool.Execute(ctx, map[string]any{"action": "add", "message": "once only",
+		"at": time.Now().Add(time.Hour).Format("2006-01-02 15:04")}); res.IsError {
+		t.Fatalf("add once: %+v", res)
+	}
+	if res := r.tool.Execute(ctx, map[string]any{"action": "add", "message": "every day",
+		"schedule": "0 9 * * *"}); res.IsError {
+		t.Fatalf("add recurring: %+v", res)
+	}
+
+	listed := r.tool.Execute(ctx, map[string]any{"action": "list"}).ForLLM
+	if !strings.Contains(listed, "once") {
+		t.Errorf("the listing does not mark the one-off: %s", listed)
+	}
+	if !strings.Contains(listed, "0 9 * * *") {
+		t.Errorf("the listing does not show the recurring schedule: %s", listed)
+	}
+}
+
+// A one-off survives the store being shared, and being reloaded from disk with
+// its moment intact.
+func TestAOneOffSurvivesAReloadFromDisk(t *testing.T) {
+	store := t.TempDir()
+	first := newRig(t, store)
+	at := time.Now().Add(90 * time.Minute).Truncate(time.Minute)
+	if _, err := first.svc.AddOnce(at, "still here", "telegram", "77"); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := newRig(t, store).svc.List()
+	if len(reloaded) != 1 || !reloaded[0].Once() {
+		t.Fatalf("reloaded = %+v", reloaded)
+	}
+	if !reloaded[0].At.Equal(at) {
+		t.Errorf("the moment came back as %v, want %v", reloaded[0].At, at)
+	}
+}
+
+// Turning a one-off off holds it rather than losing it.
+func TestADisabledOneOffDoesNotRun(t *testing.T) {
+	impatient(t)
+	r := newRig(t, t.TempDir())
+	r.schedule(t)
+	job, err := r.svc.AddOnce(time.Now().Add(askAhead), "held", "telegram", "77")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.svc.SetEnabled(job.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	r.clock.jump(askAhead + time.Minute)
+	r.nothingFor(t, 200*time.Millisecond)
+	if jobs := r.svc.List(); len(jobs) != 1 {
+		t.Errorf("a disabled one-off was dropped rather than held: %+v", jobs)
 	}
 }

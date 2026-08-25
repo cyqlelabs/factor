@@ -16,15 +16,28 @@ import (
 	"github.com/adhocore/gronx"
 )
 
+// stamp is how a moment is written wherever a person or the model reads it:
+// the weekday included, because "next run 2027-08-24" is a date somebody has
+// to work out and "Tue 2027-08-24" is one they can see is wrong.
+const stamp = "Mon 2006-01-02 15:04 MST"
+
+// A Job is either recurring or one-shot: Schedule holds a cron expression, or
+// At holds the single moment to run at. One-shots exist because most of what a
+// person asks for is one — "remind me at four" — and a cron expression cannot
+// say it: the nearest thing, a date and month, comes round again every year.
 type Job struct {
 	ID       string    `json:"id"`
-	Schedule string    `json:"schedule"` // cron expression
-	Message  string    `json:"message"`  // prompt run as an agent turn
-	Channel  string    `json:"channel"`  // where to deliver the result
+	Schedule string    `json:"schedule,omitempty"` // cron expression; empty on a one-shot
+	At       time.Time `json:"at,omitzero"`        // one-shot: the moment to run, then it is gone
+	Message  string    `json:"message"`            // prompt run as an agent turn
+	Channel  string    `json:"channel"`            // where to deliver the result
 	ChatID   string    `json:"chat_id"`
 	Enabled  bool      `json:"enabled"`
 	LastRun  time.Time `json:"last_run,omitzero"`
 }
+
+// Once reports whether this job runs one time and is then deleted.
+func (j Job) Once() bool { return !j.At.IsZero() }
 
 // Handler runs one due job and returns the text to deliver ("" = silent).
 type Handler func(ctx context.Context, job Job) (string, error)
@@ -144,13 +157,10 @@ func (s *Service) List() []Job {
 	return out
 }
 
-// Add validates and persists a new job, waking the scheduler.
+// Add validates and persists a new recurring job, waking the scheduler.
 func (s *Service) Add(schedule, message, channelName, chatID string) (Job, error) {
 	if !gronx.New().IsValid(schedule) {
 		return Job{}, fmt.Errorf("invalid cron expression %q", schedule)
-	}
-	if message == "" {
-		return Job{}, fmt.Errorf("message is required")
 	}
 	// Syntax is not enough: "0 12 31 2 *" parses and never comes round, and a
 	// job that can never run is worse than a rejected one, because it is
@@ -158,23 +168,40 @@ func (s *Service) Add(schedule, message, channelName, chatID string) (Job, error
 	if _, err := gronx.NextTickAfter(schedule, s.now(), false); err != nil {
 		return Job{}, fmt.Errorf("cron expression %q has no next occurrence", schedule)
 	}
+	return s.insert(&Job{Schedule: schedule, Message: message, Channel: channelName, ChatID: chatID})
+}
+
+// AddOnce persists a job that runs at a single moment and is then deleted.
+// A moment already gone by is refused rather than fired immediately: it is
+// almost always a reminder worked out against the wrong day, and the caller
+// can only notice that if somebody says so.
+func (s *Service) AddOnce(at time.Time, message, channelName, chatID string) (Job, error) {
+	if at.IsZero() {
+		return Job{}, fmt.Errorf("a one-off reminder needs a time to run at")
+	}
+	if now := s.now(); !at.After(now) {
+		return Job{}, fmt.Errorf("%s has already gone by; it is %s now",
+			at.Format(stamp), now.Format(stamp))
+	}
+	return s.insert(&Job{At: at, Message: message, Channel: channelName, ChatID: chatID})
+}
+
+// insert numbers, stores and persists a validated job, waking the scheduler.
+func (s *Service) insert(job *Job) (Job, error) {
+	if job.Message == "" {
+		return Job{}, fmt.Errorf("message is required")
+	}
 	s.mu.Lock()
 	// Another process may have added jobs since this one last looked; adding
 	// on top of a stale map reuses their ids and saves them away.
 	s.reload()
 	s.seq++
-	job := &Job{
-		ID:       fmt.Sprintf("cron-%d", s.seq),
-		Schedule: schedule,
-		Message:  message,
-		Channel:  channelName,
-		ChatID:   chatID,
-		Enabled:  true,
-		// Stamped now, not left zero: the scheduler fires anything overdue
-		// the moment it wakes, and a job whose last run is unknown counts the
-		// minute before it was created as missed.
-		LastRun: s.now(),
-	}
+	job.ID = fmt.Sprintf("cron-%d", s.seq)
+	job.Enabled = true
+	// Stamped now, not left zero: the scheduler fires anything overdue the
+	// moment it wakes, and a job whose last run is unknown counts the minute
+	// before it was created as missed.
+	job.LastRun = s.now()
 	s.jobs[job.ID] = job
 	err := s.save()
 	if err != nil {
@@ -235,6 +262,9 @@ func (s *Service) SetEnabled(id string, enabled bool) error {
 // has already gone by this year is indistinguishable from a correct one until
 // somebody says out loud that the next run is eleven months away.
 func (s *Service) nextRun(job Job) (time.Time, bool) {
+	if job.Once() {
+		return job.At, true
+	}
 	tick, err := gronx.NextTickAfter(job.Schedule, s.now(), false)
 	if err != nil {
 		return time.Time{}, false
@@ -259,8 +289,8 @@ func (s *Service) nextWake() (time.Time, bool) {
 		if !j.Enabled {
 			continue
 		}
-		tick, err := gronx.NextTickAfter(j.Schedule, s.now(), false)
-		if err != nil {
+		tick, ok := s.nextTick(*j)
+		if !ok {
 			continue
 		}
 		if !found || tick.Before(next) {
@@ -270,7 +300,30 @@ func (s *Service) nextWake() (time.Time, bool) {
 	return next, found
 }
 
-// dueJobs returns enabled jobs due at or before now, marking LastRun.
+// nextTick is when a job is next owed a wake-up: the moment itself for a
+// one-shot, the next matching minute for a cron expression. A one-shot whose
+// moment has gone by is not one — it is due, and dueJobs has it. That only
+// happens when the write deleting it failed and a reload brought it back, and
+// answering with a time in the past would put the loop in a spin against a
+// disk it cannot write to. The caller holds mu.
+func (s *Service) nextTick(job Job) (time.Time, bool) {
+	if job.Once() {
+		if !job.At.After(s.now()) {
+			return time.Time{}, false
+		}
+		return job.At, true
+	}
+	tick, err := gronx.NextTickAfter(job.Schedule, s.now(), false)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return tick, true
+}
+
+// dueJobs returns enabled jobs due at or before now, marking LastRun. A
+// one-shot is dropped from the store as it is dispatched, in the same write:
+// it has no second run to be owed, and leaving it behind would show the user a
+// reminder that is already on its way.
 func (s *Service) dueJobs() []Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -278,6 +331,14 @@ func (s *Service) dueJobs() []Job {
 	var due []Job
 	for _, j := range s.jobs {
 		if !j.Enabled {
+			continue
+		}
+		if j.Once() {
+			if !j.At.After(now) {
+				j.LastRun = now
+				due = append(due, *j)
+				delete(s.jobs, j.ID)
+			}
 			continue
 		}
 		ref := j.LastRun

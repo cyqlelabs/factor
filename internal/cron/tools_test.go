@@ -143,3 +143,54 @@ func TestListSaysSoWhenAJobWillNeverRunAgain(t *testing.T) {
 		t.Errorf("list = %s", res.ForLLM)
 	}
 }
+
+func TestParseAtReadsWhatAModelWrites(t *testing.T) {
+	// A Wednesday, mid-afternoon, in a zone with a whole-hour offset.
+	zone := time.FixedZone("TST", -3*60*60)
+	now := time.Date(2026, 9, 2, 15, 30, 0, 0, zone)
+
+	for _, tc := range []struct {
+		in   string
+		want time.Time
+	}{
+		{"2026-09-05 10:00", time.Date(2026, 9, 5, 10, 0, 0, 0, zone)},
+		{"2026-09-05 10:00:30", time.Date(2026, 9, 5, 10, 0, 30, 0, zone)},
+		{"2026-09-05T10:00", time.Date(2026, 9, 5, 10, 0, 0, 0, zone)},
+		{"2026-09-05T10:00:00", time.Date(2026, 9, 5, 10, 0, 0, 0, zone)},
+		{"2026-09-05T10:00:00-03:00", time.Date(2026, 9, 5, 10, 0, 0, 0, zone)},
+		{"  2026-09-05 10:00  ", time.Date(2026, 9, 5, 10, 0, 0, 0, zone)},
+		// A bare clock is the next time it comes round: still ahead today...
+		{"16:00", time.Date(2026, 9, 2, 16, 0, 0, 0, zone)},
+		// ...and tomorrow once it has gone by.
+		{"09:00", time.Date(2026, 9, 3, 9, 0, 0, 0, zone)},
+	} {
+		got, err := parseAt(tc.in, now)
+		if err != nil {
+			t.Errorf("parseAt(%q) = %v", tc.in, err)
+			continue
+		}
+		if !got.Equal(tc.want) {
+			t.Errorf("parseAt(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+
+	for _, bad := range []string{"", "tomorrow at four", "next tuesday", "10am", "2026-13-45 10:00"} {
+		if got, err := parseAt(bad, now); err == nil {
+			t.Errorf("parseAt(%q) = %v, want an error naming what to write instead", bad, got)
+		}
+	}
+	_, err := parseAt("soon", now)
+	if err == nil || !strings.Contains(err.Error(), "2006-01-02 15:04") {
+		t.Errorf("the parse error does not show the format to use: %v", err)
+	}
+}
+
+func TestAddOnceRejectsAMomentThatIsMissing(t *testing.T) {
+	s := newService(t, nil, nil)
+	if _, err := s.AddOnce(time.Time{}, "when", "telegram", "77"); err == nil {
+		t.Error("AddOnce accepted a zero time")
+	}
+	if _, err := s.AddOnce(time.Now().Add(time.Hour), "", "telegram", "77"); err == nil {
+		t.Error("AddOnce accepted an empty message")
+	}
+}
