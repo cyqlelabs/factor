@@ -188,6 +188,17 @@ func TestWindowsAudioRunsThroughSox(t *testing.T) {
 	if line := strings.Join(argv, " "); !strings.Contains(line, "24000") {
 		t.Errorf("playback %q does not ask for 24 kHz", line)
 	}
+	// waveaudio's close is a waveOutReset that discards whatever is still
+	// queued, so the clip must end in enough padded silence to fill the whole
+	// queue — and the queue's capacity is only known because --buffer pins it.
+	line := strings.Join(argv, " ")
+	if !strings.Contains(line, "--buffer "+soxPlaybackBuffer) || !strings.HasSuffix(line, "pad 0 "+soxPlaybackPadSecs) {
+		t.Errorf("playback %q does not pad the tail the waveaudio reset discards", line)
+	}
+	capture, _ := captureCommand(scriptedEnv("windows", "sox"), "")
+	if captureLine := strings.Join(capture, " "); strings.Contains(captureLine, "pad") {
+		t.Errorf("capture %q pads audio; the drain problem is playback's alone", captureLine)
+	}
 }
 
 // A named device needs the full sox spelling: rec and play only ever open the
@@ -207,7 +218,7 @@ func TestWindowsAudioNamesADeviceThroughSox(t *testing.T) {
 		t.Fatalf("playback: %v", err)
 	}
 	line = strings.Join(argv, " ")
-	if argv[0] != "sox" || !strings.HasSuffix(line, "-t waveaudio Speakers (USB)") {
+	if argv[0] != "sox" || !strings.Contains(line, "-t waveaudio Speakers (USB) pad") {
 		t.Errorf("playback invocation lost the device: %v", argv)
 	}
 

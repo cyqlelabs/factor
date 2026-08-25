@@ -268,6 +268,23 @@ func windowsCapture(e Env, device string) ([]string, error) {
 	return append([]string{"sox", "-q", "-t", "waveaudio", device}, raw...), nil
 }
 
+// SoX's waveaudio driver does not drain on close: its stopwrite is a
+// waveOutReset, which discards every buffer still queued on the device
+// (sox/src/waveaudio.c — stop() serves both directions), and writing only
+// ever waits for a free buffer, never for completion. So at stdin EOF SoX
+// submits the tail of the clip and immediately resets the device, and the
+// end of the last word is thrown away unrendered. The pad effect appends
+// silence for that reset to swallow. It has to cover the queue's whole
+// capacity — four buffers of --buffer bytes each — because whatever is
+// still queued at close is the newest capacity's worth of the stream, and
+// only a pad at least that long makes all of it provably silence. Pinning
+// --buffer at 4096 keeps that capacity (four 85 ms buffers, ~341 ms) under
+// the 400 ms pad while leaving the device ~256 ms of queued audio against
+// scheduling stalls, which a VirtualBox guest actually needs.
+const soxPlaybackBuffer = "4096"
+
+const soxPlaybackPadSecs = "0.4"
+
 func windowsPlayback(e Env, device string) ([]string, error) {
 	raw := []string{"-t", "raw", "-b", "16", "-e", "signed-integer", "-r", "24000", "-c", "1", "-"}
 	if !e.has("sox") {
@@ -276,7 +293,8 @@ func windowsPlayback(e Env, device string) ([]string, error) {
 	if device == "" {
 		device = "default"
 	}
-	return append(append([]string{"sox", "-q"}, raw...), "-t", "waveaudio", device), nil
+	argv := append([]string{"sox", "-q", "--buffer", soxPlaybackBuffer}, raw...)
+	return append(argv, "-t", "waveaudio", device, "pad", "0", soxPlaybackPadSecs), nil
 }
 
 // MachineHasAudio reports whether this machine has a sound system at all —
