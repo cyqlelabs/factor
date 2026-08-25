@@ -104,7 +104,7 @@ func installVCRedist(ctx context.Context) error {
 	if err := fetchFile(ctx, vcRedistURL, installer); err != nil {
 		return fmt.Errorf("could not download the Visual C++ runtime: %w", err)
 	}
-	defer os.Remove(installer)
+	defer func() { _ = os.Remove(installer) }()
 
 	out, err := runCmd(ctx, []string{installer, "/install", "/quiet", "/norestart"})
 	if err == nil {
@@ -148,7 +148,7 @@ func fetchFile(ctx context.Context, url, dest string) error {
 	}
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		f.Close()
-		os.Remove(dest)
+		_ = os.Remove(dest)
 		return err
 	}
 	return f.Close()
