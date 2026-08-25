@@ -197,12 +197,6 @@ func (m *scheduleModel) call(w http.ResponseWriter, args map[string]any) {
 	}, "tool_calls")
 }
 
-func (m *scheduleModel) scheduled() []map[string]any {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]map[string]any(nil), m.calls...)
-}
-
 func reply(w http.ResponseWriter, text string) {
 	writeChat(w, map[string]any{"role": "assistant", "content": text}, "stop")
 }
