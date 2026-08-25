@@ -852,9 +852,13 @@ func (w *wiz) ensureSmrti(ctx context.Context) error {
 	// Found is not the same as usable: a stale venv or a wheel this CPU cannot
 	// execute stats fine and dies on every spawn, and a checkmark here would
 	// skip the install that repairs it.
-	if path, ok := memory.FindSmrti(w.cfg.Memory.Command, w.opts.Home); ok && memory.Runnable(ctx, path) {
-		w.ui.Success("smrti found at %s", path)
-		return nil
+	if path, ok := memory.FindSmrti(w.cfg.Memory.Command, w.opts.Home); ok {
+		if runnable, detail := memory.Runnable(ctx, path); runnable {
+			w.ui.Success("smrti found at %s", path)
+			return nil
+		} else if detail != "" {
+			w.ui.Warn("the smrti at %s cannot run: %s", path, detail)
+		}
 	}
 	if w.opts.NoInstall {
 		w.ui.Warn("smrti is not installed (install it with: pip install smrti)")

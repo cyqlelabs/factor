@@ -250,6 +250,9 @@ func TestInstallDoesNotAdoptABinaryThatCannotRun(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no runnable") {
 		t.Fatalf("error = %v; a binary that cannot run must not be adopted", err)
 	}
+	if !strings.Contains(err.Error(), "No Python at") {
+		t.Errorf("error = %v; the probe's output must explain why nothing ran", err)
+	}
 }
 
 // The venv leftover shadows every later install in the search order, so when
@@ -335,6 +338,11 @@ func TestEnsureSmrtiReinstallsAnUnrunnableBinary(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(steps, " "), "cannot run") {
 		t.Errorf("progress = %v; the reason must reach the user", steps)
+	}
+	// The probe's own output travels with the verdict: "cannot run" without
+	// the traceback that says why is a diagnosis only ssh could make.
+	if !strings.Contains(strings.Join(steps, " "), "Illegal instruction") {
+		t.Errorf("progress = %v; the probe's output must reach the user", steps)
 	}
 }
 

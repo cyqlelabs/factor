@@ -113,18 +113,25 @@ func (s *Sidecar) resolveCommand(ctx context.Context) (string, error) {
 	// execute dies with SIGILL on every spawn, and adopting it would put the
 	// supervisor into a restart loop that no backoff ever escapes.
 	found, ok := FindSmrti(s.cfg.Command, config.Home())
-	if ok && Runnable(ctx, found) {
-		return found, nil
+	var probeDetail string
+	if ok {
+		runnable, detail := Runnable(ctx, found)
+		if runnable {
+			return found, nil
+		}
+		probeDetail = detail
 	}
 	// A successful install can land somewhere the configured command cannot
 	// name (a custom command, a directory outside the search set). The path it
 	// resolved is remembered so a later restart spawns it again instead of
 	// reporting an install that worked as one that failed.
-	if s.installedPath != "" && Runnable(ctx, s.installedPath) {
-		return s.installedPath, nil
+	if s.installedPath != "" {
+		if runnable, _ := Runnable(ctx, s.installedPath); runnable {
+			return s.installedPath, nil
+		}
 	}
 	if ok {
-		slog.Warn("the installed smrti cannot run on this machine; reinstalling it", "path", found)
+		slog.Warn("the installed smrti cannot run on this machine; reinstalling it", "path", found, "probe", probeDetail)
 	}
 	if !s.cfg.AutoInstall {
 		if ok {

@@ -173,12 +173,18 @@ const runnableTimeout = 60 * time.Second
 // to constrain the install so it works here.
 //
 // --help is the cheapest command that still loads the whole import chain, so
-// the probe fails for exactly the reasons serving would.
-func Runnable(ctx context.Context, path string) bool {
+// the probe fails for exactly the reasons serving would. When it does, detail
+// carries the tail of the probe's output: "cannot run" without the traceback
+// that says why (an smrti importing fcntl on Windows, say) is a diagnosis
+// that cannot be made from the log.
+func Runnable(ctx context.Context, path string) (ok bool, detail string) {
 	ctx, cancel := context.WithTimeout(ctx, runnableTimeout)
 	defer cancel()
-	_, err := runCmd(ctx, []string{path, "--help"})
-	return err == nil
+	out, err := runCmd(ctx, []string{path, "--help"})
+	if err == nil {
+		return true, ""
+	}
+	return false, strings.TrimSpace(lastLines(out, 6))
 }
 
 // findRunnableSmrti resolves the default binary the way FindSmrti does, but
@@ -186,18 +192,28 @@ func Runnable(ctx context.Context, path string) bool {
 // order can still put a broken leftover ahead of the fresh binary — the PATH
 // hit a constrained reinstall was working around, or a stale venv shadowing a
 // pip --user install — and adopting one of those hands the supervisor a crash
-// loop; the freshly installed one is whichever candidate actually runs.
-func findRunnableSmrti(ctx context.Context, home string) (string, bool) {
-	if path, err := lookPath(BinaryName()); err == nil && Runnable(ctx, path) {
-		return path, true
+// loop; the freshly installed one is whichever candidate actually runs. When
+// nothing runs, detail carries the last candidate's probe output — the error
+// an install that "succeeded" needs to explain itself with.
+func findRunnableSmrti(ctx context.Context, home string) (path string, ok bool, detail string) {
+	if p, err := lookPath(BinaryName()); err == nil {
+		ok, probe := Runnable(ctx, p)
+		if ok {
+			return p, true, ""
+		}
+		detail = probe
 	}
 	for _, dir := range searchDirs(home) {
 		candidate := filepath.Join(dir, BinaryName())
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && Runnable(ctx, candidate) {
-			return candidate, true
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			ok, probe := Runnable(ctx, candidate)
+			if ok {
+				return candidate, true, ""
+			}
+			detail = probe
 		}
 	}
-	return "", false
+	return "", false, detail
 }
 
 type installStrategy struct {
@@ -352,11 +368,15 @@ func Install(ctx context.Context, home string, progress Progress) (path, method 
 			}
 			continue
 		}
-		if p, ok := findRunnableSmrti(ctx, home); ok {
+		p, ok, detail := findRunnableSmrti(ctx, home)
+		if ok {
 			progress.emit("installed %s via %s (%s)", PackageName, s.name, p)
 			return p, s.name, nil
 		}
-		lastErr = fmt.Errorf("%s reported success but no runnable %s was found", s.name, BinaryName())
+		if detail == "" {
+			detail = "nothing on disk"
+		}
+		lastErr = fmt.Errorf("%s reported success but no runnable %s was found: %s", s.name, BinaryName(), detail)
 		progress.emit("%s finished but no runnable %s was found; trying the next installer", s.name, BinaryName())
 	}
 
@@ -383,11 +403,12 @@ func Answering(ctx context.Context, cfg config.MemoryConfig) bool {
 // installed reports whether this call performed the installation.
 func EnsureSmrti(ctx context.Context, command, home string, autoInstall bool, progress Progress) (path string, installed bool, err error) {
 	found, ok := FindSmrti(command, home)
-	if ok && Runnable(ctx, found) {
-		return found, false, nil
-	}
 	if ok {
-		progress.emit("%s is installed but cannot run on this machine; reinstalling it", found)
+		runnable, detail := Runnable(ctx, found)
+		if runnable {
+			return found, false, nil
+		}
+		progress.emit("%s is installed but cannot run on this machine (%s); reinstalling it", found, detail)
 	}
 	if !autoInstall {
 		if ok {
