@@ -91,6 +91,7 @@ type Sidecar struct {
 
 	binaryMissing atomic.Bool
 	installTried  atomic.Bool
+	installedPath string // what a successful automatic install resolved (run goroutine only)
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	probeInterval time.Duration // healthy re-probe cadence; zero means 30s
@@ -115,6 +116,13 @@ func (s *Sidecar) resolveCommand(ctx context.Context) (string, error) {
 	if ok && Runnable(ctx, found) {
 		return found, nil
 	}
+	// A successful install can land somewhere the configured command cannot
+	// name (a custom command, a directory outside the search set). The path it
+	// resolved is remembered so a later restart spawns it again instead of
+	// reporting an install that worked as one that failed.
+	if s.installedPath != "" && Runnable(ctx, s.installedPath) {
+		return s.installedPath, nil
+	}
 	if ok {
 		slog.Warn("the installed smrti cannot run on this machine; reinstalling it", "path", found)
 	}
@@ -125,7 +133,7 @@ func (s *Sidecar) resolveCommand(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("%q not found in PATH and memory.auto_install is off (pip install smrti)", s.cfg.Command)
 	}
 	if s.installTried.Swap(true) {
-		return "", fmt.Errorf("%q not found and the automatic install already failed this run", s.cfg.Command)
+		return "", fmt.Errorf("%q not found and the automatic install was already attempted this run", s.cfg.Command)
 	}
 	slog.Info("smrti not found; installing it automatically")
 	path, method, err := Install(ctx, config.Home(), func(format string, args ...any) {
@@ -135,6 +143,7 @@ func (s *Sidecar) resolveCommand(ctx context.Context) (string, error) {
 		return "", err
 	}
 	slog.Info("smrti installed", "path", path, "method", method)
+	s.installedPath = path
 	return path, nil
 }
 

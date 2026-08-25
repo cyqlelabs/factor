@@ -484,3 +484,27 @@ func TestSidecarDelegatesEveryOperation(t *testing.T) {
 		t.Errorf("Status: %v", err)
 	}
 }
+
+// A restart after a successful automatic install must spawn the binary the
+// install resolved rather than reporting the install as failed: the
+// configured command can be a name FindSmrti will never see, and forgetting
+// the resolved path wedged the supervisor for the rest of the run.
+func TestResolveCommandRemembersTheInstalledPath(t *testing.T) {
+	f := newFakeEnv(t, "uv")
+	home := t.TempDir()
+	t.Setenv("FACTOR_HOME", home)
+	f.onRun = func([]string) { writeBinary(t, venvBinDir(home)) }
+
+	s := &Sidecar{cfg: config.MemoryConfig{Command: "smrti-custom", AutoInstall: true}}
+	first, err := s.resolveCommand(context.Background())
+	if err != nil || first == "" {
+		t.Fatalf("first resolve = %q, %v", first, err)
+	}
+	second, err := s.resolveCommand(context.Background())
+	if err != nil {
+		t.Fatalf("second resolve after a successful install: %v", err)
+	}
+	if second != first {
+		t.Errorf("second resolve = %q, want the installed %q", second, first)
+	}
+}

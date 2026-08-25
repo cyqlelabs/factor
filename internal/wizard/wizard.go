@@ -849,7 +849,10 @@ func (w *wiz) ensureSmrti(ctx context.Context) error {
 		w.ui.Success("smrti is already answering at %s", w.cfg.Memory.BaseURL())
 		return nil
 	}
-	if path, ok := memory.FindSmrti(w.cfg.Memory.Command, w.opts.Home); ok {
+	// Found is not the same as usable: a stale venv or a wheel this CPU cannot
+	// execute stats fine and dies on every spawn, and a checkmark here would
+	// skip the install that repairs it.
+	if path, ok := memory.FindSmrti(w.cfg.Memory.Command, w.opts.Home); ok && memory.Runnable(ctx, path) {
 		w.ui.Success("smrti found at %s", path)
 		return nil
 	}

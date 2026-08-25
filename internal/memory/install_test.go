@@ -122,6 +122,40 @@ func TestFindSmrtiExplicitPath(t *testing.T) {
 	}
 }
 
+// The default command has two spellings — the config default "smrti" on every
+// platform, and the platform binary name, which is "smrti.exe" on Windows.
+// Both must reach the well-known dirs: treating the mismatched spelling as a
+// custom command is how a Windows default config reported the venv install
+// missing on every start.
+func TestFindSmrtiDefaultCommandSpellingsSearchDirs(t *testing.T) {
+	for _, command := range []string{PackageName, PackageName + ".exe"} {
+		t.Run(command, func(t *testing.T) {
+			newFakeEnv(t) // nothing on PATH
+			home := t.TempDir()
+			want := writeBinary(t, venvBinDir(home))
+			got, ok := FindSmrti(command, home)
+			if !ok || got != want {
+				t.Fatalf("FindSmrti(%q) = %q, %v; want %q", command, got, ok, want)
+			}
+		})
+	}
+}
+
+// pip --user on Windows drops scripts under a per-version directory
+// (AppData\Roaming\Python\Python313\Scripts); without globbing the version,
+// every real pip --user install is invisible to the search.
+func TestFindSmrtiSearchesVersionedPipUserDir(t *testing.T) {
+	newFakeEnv(t)
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome) // what os.UserHomeDir reads on Windows
+	want := writeBinary(t, filepath.Join(userHome, "AppData", "Roaming", "Python", "Python313", "Scripts"))
+	got, ok := FindSmrti("", t.TempDir())
+	if !ok || got != want {
+		t.Fatalf("FindSmrti = %q, %v; want %q", got, ok, want)
+	}
+}
+
 // A custom command must not silently resolve to a stray default binary.
 func TestFindSmrtiCustomCommandDoesNotSearchDirs(t *testing.T) {
 	newFakeEnv(t)
@@ -144,7 +178,8 @@ func TestInstallPrefersUv(t *testing.T) {
 	if method != "uv" {
 		t.Errorf("method = %q, want uv", method)
 	}
-	if len(f.log) != 1 || f.log[0] != "uv tool install smrti" {
+	// The install, then the probe that proves what it produced can run.
+	if len(f.log) != 2 || f.log[0] != "uv tool install smrti" || !strings.HasSuffix(f.log[1], "--help") {
 		t.Errorf("commands = %v", f.log)
 	}
 	if path == "" {
@@ -171,8 +206,8 @@ func TestInstallFallsThroughToVenv(t *testing.T) {
 		t.Fatalf("method = %q, want venv (log: %v)", method, f.log)
 	}
 	wantVenv := "python3 -m venv " + VenvDir(home)
-	if f.log[len(f.log)-2] != wantVenv {
-		t.Errorf("venv command = %q, want %q", f.log[len(f.log)-2], wantVenv)
+	if f.log[len(f.log)-3] != wantVenv { // then the venv pip install, then the probe
+		t.Errorf("venv command = %q, want %q", f.log[len(f.log)-3], wantVenv)
 	}
 }
 
@@ -196,9 +231,51 @@ func TestInstallRetriesExternallyManagedPython(t *testing.T) {
 	if method != "pip" {
 		t.Errorf("method = %q, want pip", method)
 	}
-	last := f.log[len(f.log)-1]
-	if !strings.Contains(last, "--break-system-packages") {
-		t.Errorf("retry command = %q", last)
+	retry := f.log[len(f.log)-2] // the probe follows it
+	if !strings.Contains(retry, "--break-system-packages") {
+		t.Errorf("retry command = %q", retry)
+	}
+}
+
+// A strategy's success is not the last word: the search can land on a stale
+// binary an earlier install left behind, and adopting one that cannot run
+// hands the supervisor a crash loop.
+func TestInstallDoesNotAdoptABinaryThatCannotRun(t *testing.T) {
+	f := newFakeEnv(t, "uv")
+	home := t.TempDir()
+	f.onRun = func([]string) { writeBinary(t, venvBinDir(home)) }
+	f.fail(filepath.Join(venvBinDir(home), BinaryName())+" --help", "No Python at 'C:\\old\\python.exe'")
+
+	_, _, err := Install(context.Background(), home, nil)
+	if err == nil || !strings.Contains(err.Error(), "no runnable") {
+		t.Fatalf("error = %v; a binary that cannot run must not be adopted", err)
+	}
+}
+
+// The venv leftover shadows every later install in the search order, so when
+// it is broken — a stale venv pointing at a moved Python — the pip strategy's
+// success is rejected and the venv strategy must rebuild the shadowing venv
+// itself, healing the machine instead of wedging on it.
+func TestInstallRebuildsAStaleVenv(t *testing.T) {
+	forceNumpyPin(t, false)
+	f := newFakeEnv(t, "pip3", "python3")
+	home := t.TempDir()
+	stale := writeBinary(t, venvBinDir(home))
+	probe := stale + " --help"
+	f.fail(probe, "No Python at 'C:\\old\\python.exe'")
+	venvPip := filepath.Join(venvBinDir(home), pipName())
+	f.onRun = func(argv []string) {
+		if strings.Join(argv, " ") == venvPip+" install --upgrade smrti" {
+			delete(f.results, probe) // the rebuild repaired the venv
+		}
+	}
+
+	path, method, err := Install(context.Background(), home, nil)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if method != "venv" || path != stale {
+		t.Fatalf("Install = %q via %q; want the rebuilt venv binary (log: %v)", path, method, f.log)
 	}
 }
 

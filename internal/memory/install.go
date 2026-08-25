@@ -110,6 +110,12 @@ func searchDirs(home string) []string {
 			filepath.Join(userHome, "bin"),
 			filepath.Join(userHome, "AppData", "Roaming", "Python", "Scripts"), // pip --user on Windows
 		)
+		// pip --user on Windows actually drops scripts under a per-version
+		// directory (AppData\Roaming\Python\Python313\Scripts), so the fixed
+		// path above misses every real install; the version is globbed.
+		if versioned, err := filepath.Glob(filepath.Join(userHome, "AppData", "Roaming", "Python", "Python*", "Scripts")); err == nil {
+			dirs = append(dirs, versioned...)
+		}
 	}
 	return append(dirs, systemBinDirs...)
 }
@@ -135,8 +141,13 @@ func FindSmrti(command, home string) (string, bool) {
 		return path, true
 	}
 	// Only the default binary name is worth hunting for outside PATH; a user
-	// who configured a custom command means that exact command.
-	if command != BinaryName() {
+	// who configured a custom command means that exact command. The default
+	// has two spellings — the config default ("smrti") and this platform's
+	// binary ("smrti.exe" on Windows) — and both must count: comparing against
+	// the binary name alone made a default Windows config read as a custom
+	// command, which skipped the search below and reported the venv install
+	// missing on every start.
+	if strings.TrimSuffix(command, ".exe") != PackageName {
 		return "", false
 	}
 	for _, dir := range searchDirs(home) {
@@ -168,6 +179,25 @@ func Runnable(ctx context.Context, path string) bool {
 	defer cancel()
 	_, err := runCmd(ctx, []string{path, "--help"})
 	return err == nil
+}
+
+// findRunnableSmrti resolves the default binary the way FindSmrti does, but
+// skips candidates that cannot execute. Right after an install the search
+// order can still put a broken leftover ahead of the fresh binary — the PATH
+// hit a constrained reinstall was working around, or a stale venv shadowing a
+// pip --user install — and adopting one of those hands the supervisor a crash
+// loop; the freshly installed one is whichever candidate actually runs.
+func findRunnableSmrti(ctx context.Context, home string) (string, bool) {
+	if path, err := lookPath(BinaryName()); err == nil && Runnable(ctx, path) {
+		return path, true
+	}
+	for _, dir := range searchDirs(home) {
+		candidate := filepath.Join(dir, BinaryName())
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && Runnable(ctx, candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 type installStrategy struct {
@@ -322,11 +352,12 @@ func Install(ctx context.Context, home string, progress Progress) (path, method 
 			}
 			continue
 		}
-		if p, ok := FindSmrti("", home); ok {
+		if p, ok := findRunnableSmrti(ctx, home); ok {
 			progress.emit("installed %s via %s (%s)", PackageName, s.name, p)
 			return p, s.name, nil
 		}
-		lastErr = fmt.Errorf("%s reported success but %s is still not on disk", s.name, BinaryName())
+		lastErr = fmt.Errorf("%s reported success but no runnable %s was found", s.name, BinaryName())
+		progress.emit("%s finished but no runnable %s was found; trying the next installer", s.name, BinaryName())
 	}
 
 	switch {
