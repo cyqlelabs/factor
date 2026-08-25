@@ -63,6 +63,13 @@ func NewService(dir string, handler Handler, deliver Deliver) (*Service, error) 
 	return s, nil
 }
 
+// load replaces the in-memory jobs with what is on disk. jobs.json is shared
+// by every factor process on the machine — a `factor chat` session adds jobs
+// to the same file the gateway schedules from — so disk is the truth and this
+// map is only a cache of it. A file that is not there yet leaves the cache
+// alone: that is a store nobody has written, not a store somebody emptied.
+//
+// The caller holds mu.
 func (s *Service) load() error {
 	data, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
@@ -79,10 +86,24 @@ func (s *Service) load() error {
 		return fmt.Errorf("parse %s: %w", s.path, err)
 	}
 	s.seq = stored.Seq
+	s.jobs = make(map[string]*Job, len(stored.Jobs))
 	for _, j := range stored.Jobs {
 		s.jobs[j.ID] = j
 	}
 	return nil
+}
+
+// reload picks up whatever another process has written since this one last
+// looked. A read that fails is reported and ignored: a scheduler that stopped
+// running the jobs it already holds because a stat went wrong would trade a
+// small problem for the one this whole file exists to prevent.
+//
+// The caller holds mu.
+func (s *Service) reload() {
+	if err := s.load(); err != nil {
+		slog.Warn("cron store could not be re-read; scheduling from the last good copy",
+			"path", s.path, "error", err)
+	}
 }
 
 func (s *Service) save() error {
@@ -110,10 +131,12 @@ func (s *Service) list() []*Job {
 	return out
 }
 
-// List returns a snapshot of all jobs.
+// List returns a snapshot of all jobs, including any another process has
+// added since this one started.
 func (s *Service) List() []Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reload()
 	out := make([]Job, 0, len(s.jobs))
 	for _, j := range s.list() {
 		out = append(out, *j)
@@ -129,7 +152,16 @@ func (s *Service) Add(schedule, message, channelName, chatID string) (Job, error
 	if message == "" {
 		return Job{}, fmt.Errorf("message is required")
 	}
+	// Syntax is not enough: "0 12 31 2 *" parses and never comes round, and a
+	// job that can never run is worse than a rejected one, because it is
+	// reported as scheduled.
+	if _, err := gronx.NextTickAfter(schedule, s.now(), false); err != nil {
+		return Job{}, fmt.Errorf("cron expression %q has no next occurrence", schedule)
+	}
 	s.mu.Lock()
+	// Another process may have added jobs since this one last looked; adding
+	// on top of a stale map reuses their ids and saves them away.
+	s.reload()
 	s.seq++
 	job := &Job{
 		ID:       fmt.Sprintf("cron-%d", s.seq),
@@ -138,6 +170,10 @@ func (s *Service) Add(schedule, message, channelName, chatID string) (Job, error
 		Channel:  channelName,
 		ChatID:   chatID,
 		Enabled:  true,
+		// Stamped now, not left zero: the scheduler fires anything overdue
+		// the moment it wakes, and a job whose last run is unknown counts the
+		// minute before it was created as missed.
+		LastRun: s.now(),
 	}
 	s.jobs[job.ID] = job
 	err := s.save()
@@ -161,6 +197,7 @@ func (s *Service) Add(schedule, message, channelName, chatID string) (Job, error
 func (s *Service) Remove(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reload()
 	job, ok := s.jobs[id]
 	if !ok {
 		return fmt.Errorf("no cron job %q", id)
@@ -178,6 +215,7 @@ func (s *Service) Remove(id string) error {
 func (s *Service) SetEnabled(id string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reload()
 	j, ok := s.jobs[id]
 	if !ok {
 		return fmt.Errorf("no cron job %q", id)
@@ -190,6 +228,18 @@ func (s *Service) SetEnabled(id string, enabled bool) error {
 	}
 	s.wake()
 	return nil
+}
+
+// nextRun reports when a job will next fire, and whether it ever will. It is
+// what the cron tool answers with: a schedule the model wrote for a date that
+// has already gone by this year is indistinguishable from a correct one until
+// somebody says out loud that the next run is eleven months away.
+func (s *Service) nextRun(job Job) (time.Time, bool) {
+	tick, err := gronx.NextTickAfter(job.Schedule, s.now(), false)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return tick, true
 }
 
 func (s *Service) wake() {
@@ -251,30 +301,24 @@ func (s *Service) dueJobs() []Job {
 	return due
 }
 
+// maxSleep bounds how long the scheduler parks between checks. Two things
+// change without waking it: another factor process editing jobs.json, and the
+// wall clock itself — a suspended laptop resumes with a timer that still
+// thinks it has an hour to run. Neither is worth a timer, and a check twice a
+// minute costs one read of a small file.
+var maxSleep = 30 * time.Second
+
 // Run is the scheduler loop; it blocks until ctx is done.
 func (s *Service) Run(ctx context.Context) {
+	defer s.wg.Wait()
 	for ctx.Err() == nil {
-		next, found := s.nextWake()
-		var timer *time.Timer
-		if found {
-			d := time.Until(next)
-			if d < 0 {
-				d = 0
-			}
-			timer = time.NewTimer(d)
-		} else {
-			timer = time.NewTimer(time.Hour) // idle; wake() interrupts anyway
-		}
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			s.wg.Wait()
-			return
-		case <-s.notify:
-			timer.Stop()
-			continue
-		case <-timer.C:
-		}
+		// Overdue jobs run before this loop parks again, which is what makes
+		// a reminder survive its process. A tick that fell while the gateway
+		// was restarting — for a config change, an upgrade, a reboot — is
+		// otherwise skipped until the schedule next comes round: a day later
+		// for a daily job, and for the dated expression a model writes for
+		// "remind me on the 5th", a year.
+		s.reloadStore()
 		for _, job := range s.dueJobs() {
 			s.wg.Add(1)
 			go func(job Job) {
@@ -282,7 +326,34 @@ func (s *Service) Run(ctx context.Context) {
 				s.runJob(ctx, job)
 			}(job)
 		}
+
+		d := maxSleep
+		if next, found := s.nextWake(); found {
+			if until := time.Until(next); until < d {
+				d = until
+			}
+		}
+		if d < 0 {
+			d = 0
+		}
+		timer := time.NewTimer(d)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-s.notify:
+			timer.Stop()
+		case <-timer.C:
+		}
 	}
+}
+
+// reloadStore re-reads jobs.json under the lock, so the scheduling decisions
+// that follow see what every other factor process has written.
+func (s *Service) reloadStore() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reload()
 }
 
 func (s *Service) runJob(ctx context.Context, job Job) {

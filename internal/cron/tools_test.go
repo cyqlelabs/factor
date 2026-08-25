@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyqlelabs/factor/internal/tools"
 )
@@ -110,5 +111,35 @@ func TestCronToolEnableRoundTrip(t *testing.T) {
 	}
 	if res := tool.Execute(ctx, map[string]any{"action": "list"}); !strings.Contains(res.ForLLM, "[enabled]") {
 		t.Errorf("listing does not mark the job enabled: %+v", res)
+	}
+}
+
+func TestUntilTextSpeaksInUnitsAPersonUses(t *testing.T) {
+	for _, tc := range []struct {
+		in   time.Duration
+		want string
+	}{
+		{20 * time.Second, "in under a minute"},
+		{7 * time.Minute, "in 7 minutes"},
+		{90 * time.Minute, "in 1h30m"},
+		{47 * time.Hour, "in 47h00m"},
+		{50 * time.Hour, "in 2 days"},
+		{364 * 24 * time.Hour, "in 364 days"},
+	} {
+		if got := untilText(tc.in); got != tc.want {
+			t.Errorf("untilText(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A schedule nothing can parse can only come from a hand-edited or older
+// jobs.json. It will never fire, and the listing has to say so rather than
+// show a job that looks live.
+func TestListSaysSoWhenAJobWillNeverRunAgain(t *testing.T) {
+	s := newService(t, nil, nil)
+	s.jobs["cron-bad"] = &Job{ID: "cron-bad", Schedule: "not a schedule", Message: "orphan", Enabled: true}
+	res := (&Tool{Service: s}).Execute(toolCtx(), map[string]any{"action": "list"})
+	if !strings.Contains(res.ForLLM, "never runs again") {
+		t.Errorf("list = %s", res.ForLLM)
 	}
 }

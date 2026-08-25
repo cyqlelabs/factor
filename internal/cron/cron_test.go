@@ -157,8 +157,18 @@ func TestRunLoopFiresAndWakes(t *testing.T) {
 		return base
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go s.Run(ctx)
+	// Waited for, not just cancelled: a scheduler goroutine that outlives its
+	// test keeps reading the package's pacing while the next test writes it.
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); s.Run(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case <-stopped:
+		case <-time.After(5 * time.Second):
+			t.Error("Run did not return after its context was cancelled")
+		}
+	}()
 	time.Sleep(20 * time.Millisecond)
 
 	if _, err := s.Add("* * * * *", "tick", "", ""); err != nil { // wakes the loop
