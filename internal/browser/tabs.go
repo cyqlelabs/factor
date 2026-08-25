@@ -361,7 +361,7 @@ func (t *tabsTool) switchTab(ctx context.Context, query string) *tools.Result {
 	if err := t.s.switchTo(ctx, tab.ID); err != nil {
 		return tools.Errorf("switching to tab %d failed: %v", tab.Index, err)
 	}
-	r, err := t.s.read(ctx)
+	r, err := t.s.readSettled(ctx)
 	if err != nil {
 		return tools.Errorf("switched to tab %d, but read failed: %v", tab.Index, err)
 	}

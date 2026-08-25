@@ -93,6 +93,9 @@ func (t *uploadTool) Execute(ctx context.Context, args map[string]any) *tools.Re
 
 	var target string
 	if raw := tools.StringArg(args, "target"); raw != "" {
+		if why := t.s.staleRef(ctx, raw); why != "" {
+			return tools.Errorf("upload refused: %s", why)
+		}
 		target = t.s.selectorFor(raw)
 	}
 	targetJSON, _ := json.Marshal(target)
@@ -234,7 +237,7 @@ func (t *keysTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 		return tools.Errorf("pressing %s failed: %v", chord, err)
 	}
 	time.Sleep(700 * time.Millisecond) // let whatever it triggered happen
-	r, err := t.s.read(ctx)
+	r, err := t.s.readSettled(ctx)
 	if err != nil {
 		return tools.Textf("Pressed %s. The page could not be re-read afterwards: %v", chord, err)
 	}

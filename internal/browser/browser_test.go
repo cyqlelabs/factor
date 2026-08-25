@@ -30,13 +30,7 @@ func TestSelectorForRefMapping(t *testing.T) {
 
 func TestFormatRead(t *testing.T) {
 	r := &pageRead{Title: "T", URL: "http://x", Text: "body text"}
-	r.Elements = append(r.Elements, struct {
-		Ref      string `json:"ref"`
-		Tag      string `json:"tag"`
-		Type     string `json:"type"`
-		Label    string `json:"label"`
-		Selector string `json:"selector"`
-	}{Ref: "e1", Tag: "input", Type: "text", Label: "Name", Selector: "#n"})
+	r.Elements = append(r.Elements, pageElement{Ref: "e1", Tag: "input", Type: "text", Label: "Name", Selector: "#n"})
 	out := formatRead(r)
 	for _, want := range []string{"T — http://x", "body text", `e1 <input:text> "Name"`} {
 		if !strings.Contains(out, want) {
@@ -131,21 +125,7 @@ func TestBrowserEndToEnd(t *testing.T) {
 }
 
 func TestElementHeaderSaysWhatItLeftOut(t *testing.T) {
-	shown := func(n int) []struct {
-		Ref      string `json:"ref"`
-		Tag      string `json:"tag"`
-		Type     string `json:"type"`
-		Label    string `json:"label"`
-		Selector string `json:"selector"`
-	} {
-		return make([]struct {
-			Ref      string `json:"ref"`
-			Tag      string `json:"tag"`
-			Type     string `json:"type"`
-			Label    string `json:"label"`
-			Selector string `json:"selector"`
-		}, n)
-	}
+	shown := func(n int) []pageElement { return make([]pageElement, n) }
 	for _, tc := range []struct {
 		name       string
 		r          pageRead
@@ -180,6 +160,90 @@ func TestFormatReadReportsATruncatedPage(t *testing.T) {
 	}
 	if !strings.Contains(cut, "main content region") {
 		t.Errorf("a read from the main region did not say where it came from:\n%s", cut)
+	}
+}
+
+func TestFormatReadSaysWhenTheMainRegionIsEmpty(t *testing.T) {
+	// A page that answered its load event with an empty shell reads as "there
+	// is nothing here" unless the read says the emptiness may be temporary.
+	out := formatRead(&pageRead{Title: "T", URL: "u", FromMain: true, ElementTotal: 70})
+	if !strings.Contains(out, "main content region is empty") || !strings.Contains(out, "browser_read again") {
+		t.Errorf("an empty main region was reported silently:\n%s", out)
+	}
+	if strings.Contains(out, "(text read from the page's main content region)") {
+		t.Errorf("an empty main region still claimed to carry text:\n%s", out)
+	}
+}
+
+func TestFormatReadSaysWhenTheWholePageIsEmpty(t *testing.T) {
+	out := formatRead(&pageRead{Title: "T", URL: "u"})
+	if !strings.Contains(out, "reads as empty") || !strings.Contains(out, "browser_read again") {
+		t.Errorf("a blank page was reported silently:\n%s", out)
+	}
+	// A page with content in it must not carry either warning.
+	full := formatRead(&pageRead{Title: "T", URL: "u", Text: "body", TextTotal: 4})
+	if strings.Contains(full, "empty") {
+		t.Errorf("a page with text claimed to be empty:\n%s", full)
+	}
+	// about: pages are genuinely empty, not still loading.
+	blank := formatRead(&pageRead{Title: "", URL: "about:blank"})
+	if strings.Contains(blank, "still be loading") {
+		t.Errorf("about:blank claimed to be loading:\n%s", blank)
+	}
+}
+
+func TestFormatReadShowsWhereAContentLinkGoes(t *testing.T) {
+	r := &pageRead{Title: "T", URL: "u", Text: "x", TextTotal: 1}
+	r.Elements = append(r.Elements,
+		pageElement{Ref: "e1", Tag: "a", Label: "Malbec Pack x6", Href: "/p/MLA123"},
+		pageElement{Ref: "e2", Tag: "a", Label: "Home"})
+	out := formatRead(r)
+	if !strings.Contains(out, `e1 <a> "Malbec Pack x6" → /p/MLA123`) {
+		t.Errorf("a content link hid its target:\n%s", out)
+	}
+	if strings.Contains(out, `"Home" →`) {
+		t.Errorf("a link with no href grew an arrow:\n%s", out)
+	}
+}
+
+func TestHollowSpotsAShellPage(t *testing.T) {
+	for name, tc := range map[string]struct {
+		r    pageRead
+		want bool
+	}{
+		"an empty main region beside site furniture": {pageRead{URL: "https://x", FromMain: true, ElementTotal: 70}, true},
+		"a blank page":                    {pageRead{URL: "https://x"}, true},
+		"a main region with text":         {pageRead{URL: "https://x", FromMain: true, Text: "results"}, false},
+		"no main, but text":               {pageRead{URL: "https://x", Text: "words"}, false},
+		"no main, no text, real elements": {pageRead{URL: "https://x", ElementTotal: 4}, false},
+		"about:blank is empty, not late":  {pageRead{URL: "about:blank"}, false},
+	} {
+		if got := hollow(&tc.r); got != tc.want {
+			t.Errorf("%s: hollow = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestIsRefTellsRefsFromSelectors(t *testing.T) {
+	for target, want := range map[string]bool{
+		"e1": true, "e42": true,
+		"": false, "e": false, "e4x": false, "email": false, "#id": false, "div > a": false,
+	} {
+		if got := isRef(target); got != want {
+			t.Errorf("isRef(%q) = %v, want %v", target, got, want)
+		}
+	}
+}
+
+func TestStripFragment(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://x/a#menu=categories": "https://x/a",
+		"https://x/a":                 "https://x/a",
+		"":                            "",
+	} {
+		if got := stripFragment(in); got != want {
+			t.Errorf("stripFragment(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

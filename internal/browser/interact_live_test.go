@@ -503,3 +503,53 @@ func TestChromedpChatterStaysOutOfTheStandardLog(t *testing.T) {
 		t.Errorf("chromedp wrote to the standard logger:\n%s", stdlog.String())
 	}
 }
+
+func TestClickRefusesARefFromAnEarlierPage(t *testing.T) {
+	requireBrowser(t)
+	// Every read renumbers its refs from e1, so a ref remembered across a
+	// navigation resolves to whatever now sits at that position — on a real
+	// marketplace, a remembered product link came back as a category menu.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/b" {
+			fmt.Fprint(w, `<html><head><title>B</title></head><body><main><a href="/wrong">Beta Link</a></main></body></html>`)
+			return
+		}
+		fmt.Fprint(w, `<html><head><title>A</title></head><body><main><a href="/right">Alpha Link</a></main></body></html>`)
+	}))
+	t.Cleanup(srv.Close)
+	byName := liveSuite(t)
+	ctx := context.Background()
+
+	res := byName["browser_navigate"].Execute(ctx, map[string]any{"url": srv.URL + "/a"})
+	if res.IsError {
+		if strings.Contains(res.ForLLM, "browser start") {
+			t.Skipf("chrome cannot start here: %s", res.ForLLM)
+		}
+		t.Fatalf("navigate: %s", res.ForLLM)
+	}
+	var ref string
+	for _, line := range strings.Split(res.ForLLM, "\n") {
+		if strings.Contains(line, `"Alpha Link"`) {
+			ref = strings.Fields(strings.TrimSpace(line))[0]
+		}
+	}
+	if ref == "" {
+		t.Fatalf("no ref for Alpha Link in:\n%s", res.ForLLM)
+	}
+
+	if res := byName["browser_navigate"].Execute(ctx, map[string]any{"url": srv.URL + "/b"}); res.IsError {
+		t.Fatalf("second navigate: %s", res.ForLLM)
+	}
+	res = byName["browser_click"].Execute(ctx, map[string]any{"target": ref})
+	if !res.IsError {
+		t.Fatalf("a ref from the earlier page was clicked without complaint:\n%s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "browser_read") {
+		t.Errorf("the refusal does not say how to recover:\n%s", res.ForLLM)
+	}
+	// A fresh read hands out refs the click accepts again.
+	res = byName["browser_read"].Execute(ctx, nil)
+	if res.IsError || !strings.Contains(res.ForLLM, `"Beta Link"`) {
+		t.Fatalf("re-read after refusal: %s", res.ForLLM)
+	}
+}

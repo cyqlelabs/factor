@@ -194,3 +194,43 @@ func firstLines(s string, n int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// hydratingPage is the other shape that broke: a listing whose server answer
+// is an empty <main> shell, filled in by script after the load event. The
+// read that follows a navigation used to fire the moment the shell arrived,
+// see an empty main region beside real site furniture, and hand the model a
+// page with "no results" that the user was looking at.
+const hydratingPage = `<!doctype html><html><head><title>Late Shop</title></head><body>
+<nav><a href="/home">Home</a><a href="/help">Help</a></nav>
+<main id="m"></main>
+<script>
+  setTimeout(() => {
+    document.getElementById('m').innerHTML =
+      '<p>1.077 resultados</p><a href="/p/MLA1">Malbec Pack x6 costs $100</a>';
+  }, 1200);
+</script></body></html>`
+
+func TestNavigateWaitsForAPageThatRendersLate(t *testing.T) {
+	requireBrowser(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, hydratingPage)
+	}))
+	t.Cleanup(srv.Close)
+	byName := liveSuite(t)
+
+	res := byName["browser_navigate"].Execute(context.Background(), map[string]any{"url": srv.URL})
+	if res.IsError {
+		if strings.Contains(res.ForLLM, "browser start") {
+			t.Skipf("chrome cannot start here: %s", res.ForLLM)
+		}
+		t.Fatalf("navigate: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "Malbec Pack x6") {
+		t.Fatalf("the late-rendered results never reached the model:\n%s", res.ForLLM)
+	}
+	// A content link says where it goes, so opening a result never needs a
+	// guessed URL.
+	if !strings.Contains(res.ForLLM, `"Malbec Pack x6 costs $100" → /p/MLA1`) {
+		t.Errorf("the result link hid its target:\n%s", res.ForLLM)
+	}
+}

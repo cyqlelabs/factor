@@ -60,6 +60,8 @@ type Session struct {
 	cur         *tabHandle
 	tabRefs     map[int]target.ID // tab number from the last listing -> target
 	refs        map[string]string // eN -> CSS selector from the last read
+	refsURL     string            // fragment-stripped URL of the page those refs were read from
+	refSeq      int               // refs already handed out; the next read numbers from here
 }
 
 func NewSession(cfg config.BrowserConfig, workspace string, guard *tools.PathGuard) *Session {
@@ -557,6 +559,7 @@ func (s *Session) openTab(ctx context.Context) error {
 	}
 	s.cur = h
 	s.refs = map[string]string{}
+	s.refsURL = ""
 	return nil
 }
 
@@ -633,7 +636,7 @@ func (s *Session) selectorFor(refOrSelector string) string {
 // the furniture and none of the results. And the text is read from that same
 // region when there is one, for the same reason.
 const readTemplate = `(() => {
-  const FILTER = %s, LIMIT = %s, MAX_TEXT = %s;
+  const FILTER = %s, LIMIT = %s, MAX_TEXT = %s, START = %s;
   const sel = 'a[href], button, input, select, textarea, [role=button], [onclick]';
   const main = document.querySelector('main, [role=main]');
   const cssPath = (el) => {
@@ -671,17 +674,39 @@ const readTemplate = `(() => {
     if (inMain && !el.closest(CHROME)) return 0;
     return inMain ? 1 : 2;
   };
+  // A content link also says where it goes (its origin stripped when it is
+  // the page's own), because a model that cannot see a result's URL invents
+  // one — and a marketplace resolves an invented product id to a different
+  // product, not to an error. Furniture links stay label-only: there are
+  // hundreds of them and nothing navigates to site furniture by URL.
+  const hrefOf = (el) => {
+    if (el.tagName !== 'A') return '';
+    try {
+      const u = new URL(el.href);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+      const out = (u.origin === location.origin ? '' : u.origin) + u.pathname;
+      if (out === '' || out === location.pathname) return '';
+      return out.slice(0, 120);
+    } catch { return ''; }
+  };
+
   const ordered = [];
-  for (const tier of [0, 1, 2]) { for (const el of visible) { if (rank(el) === tier) ordered.push(el); } }
+  for (const tier of [0, 1, 2]) { for (const el of visible) { if (rank(el) === tier) ordered.push({el, tier}); } }
 
   const needle = FILTER.toLowerCase();
   const matched = needle
-    ? ordered.filter((el) => (labelOf(el) + ' ' + (el.getAttribute('href') || '')).toLowerCase().includes(needle))
+    ? ordered.filter(({el}) => (labelOf(el) + ' ' + (el.getAttribute('href') || '')).toLowerCase().includes(needle))
     : ordered;
 
-  const items = matched.slice(0, LIMIT).map((el, i) => ({
-    ref: 'e' + (i + 1), tag: el.tagName.toLowerCase(), type: el.type || '',
-    label: labelOf(el), selector: cssPath(el),
+  // Numbered from where the previous read stopped, never from e1: a page
+  // changes underneath remembered refs, and if two reads both hand out an
+  // e49, the model's memory of the first is a live pointer into the second —
+  // which is how a remembered product link clicked through to a category
+  // menu. A number used once is never reused, so a ref from an earlier read
+  // can only be refused, not misread.
+  const items = matched.slice(0, LIMIT).map(({el, tier}, i) => ({
+    ref: 'e' + (START + i + 1), tag: el.tagName.toLowerCase(), type: el.type || '',
+    label: labelOf(el), href: tier === 0 ? hrefOf(el) : '', selector: cssPath(el),
   }));
 
   const region = main || document.body;
@@ -717,20 +742,23 @@ type pageRead struct {
 	// the user already has the right account open in the next tab and one
 	// that can only find out by looking at the screen.
 	OtherTabs    []string
-	Title        string `json:"title"`
-	URL          string `json:"url"`
-	Text         string `json:"text"`
-	TextTotal    int    `json:"textTotal"`
-	FromMain     bool   `json:"fromMain"`
-	ElementTotal int    `json:"elementTotal"`
-	MatchTotal   int    `json:"matchTotal"`
-	Elements     []struct {
-		Ref      string `json:"ref"`
-		Tag      string `json:"tag"`
-		Type     string `json:"type"`
-		Label    string `json:"label"`
-		Selector string `json:"selector"`
-	} `json:"elements"`
+	Title        string        `json:"title"`
+	URL          string        `json:"url"`
+	Text         string        `json:"text"`
+	TextTotal    int           `json:"textTotal"`
+	FromMain     bool          `json:"fromMain"`
+	ElementTotal int           `json:"elementTotal"`
+	MatchTotal   int           `json:"matchTotal"`
+	Elements     []pageElement `json:"elements"`
+}
+
+type pageElement struct {
+	Ref      string `json:"ref"`
+	Tag      string `json:"tag"`
+	Type     string `json:"type"`
+	Label    string `json:"label"`
+	Href     string `json:"href"`
+	Selector string `json:"selector"`
 }
 
 // read returns the whole page at the default budget, which is what every
@@ -752,9 +780,12 @@ func elementLimit(limit int) int {
 func (s *Session) readPage(ctx context.Context, filter string, limit int) (*pageRead, error) {
 	filterJSON, _ := json.Marshal(filter)
 	limitJSON, _ := json.Marshal(elementLimit(limit))
+	s.mu.Lock()
+	start := s.refSeq
+	s.mu.Unlock()
 
 	var result pageRead
-	script := fmt.Sprintf(readTemplate, filterJSON, limitJSON, strconv.Itoa(maxTextChars))
+	script := fmt.Sprintf(readTemplate, filterJSON, limitJSON, strconv.Itoa(maxTextChars), strconv.Itoa(start))
 	if err := s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &result)); err != nil {
 		return nil, err
 	}
@@ -763,9 +794,104 @@ func (s *Session) readPage(ctx context.Context, filter string, limit int) (*page
 	for _, el := range result.Elements {
 		s.refs[el.Ref] = el.Selector
 	}
+	s.refsURL = stripFragment(result.URL)
+	s.refSeq = start + len(result.Elements)
 	s.mu.Unlock()
 	result.OtherTabs = s.otherTabs(ctx)
 	return &result, nil
+}
+
+// isRef reports whether a click or fill target is a ref handed out by a read
+// (e12) rather than a CSS selector.
+func isRef(target string) bool {
+	if len(target) < 2 || target[0] != 'e' {
+		return false
+	}
+	for _, c := range target[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func stripFragment(url string) string {
+	if i := strings.IndexByte(url, '#'); i >= 0 {
+		return url[:i]
+	}
+	return url
+}
+
+// staleRef says why a ref must not be resolved right now, or "" when it may
+// proceed. A ref from an earlier read is no longer in the table — numbers are
+// never reused, so it can only be refused, never misread. A ref from the
+// latest read is still checked against where the browser is now: a page that
+// redirected itself after the read leaves the table pointing into a document
+// that no longer exists. A fragment change is not a navigation.
+func (s *Session) staleRef(ctx context.Context, target string) string {
+	if !isRef(target) {
+		return ""
+	}
+	s.mu.Lock()
+	_, known := s.refs[target]
+	last := s.refsURL
+	seq := s.refSeq
+	s.mu.Unlock()
+	if last == "" {
+		return "" // nothing was ever read; let the action report the missing element
+	}
+	if !known {
+		if n, err := strconv.Atoi(target[1:]); err != nil || n > seq {
+			return "" // never handed out; the action reports the missing element
+		}
+		return fmt.Sprintf("%s is from an earlier read and the page has been read again since — browser_read for fresh refs", target)
+	}
+	var current string
+	if err := s.run(ctx, 10*time.Second, chromedp.Evaluate(`location.href`, &current)); err != nil {
+		return "" // the action itself will surface whatever is wrong here
+	}
+	if stripFragment(current) == last {
+		return ""
+	}
+	return fmt.Sprintf("%s is a ref from a read of %s, but the page is now %s — browser_read for fresh refs", target, last, stripFragment(current))
+}
+
+// readSettleWait bounds how long a read that follows a navigation or click
+// keeps waiting for a page that fired its load event around an empty shell.
+// A site that renders its listing client-side is empty at the load event and
+// full moments later; reading at the event handed the model a page with no
+// results while the user was looking at them. A var so tests can shrink it.
+var readSettleWait = 5 * time.Second
+
+const readSettlePoll = 250 * time.Millisecond
+
+// hollow reports a read that carries nothing the model could act on: a main
+// region with no text in it, or a page with no text and no elements at all.
+// about: pages are genuinely empty rather than still rendering.
+func hollow(r *pageRead) bool {
+	if r.Text != "" || strings.HasPrefix(r.URL, "about:") {
+		return false
+	}
+	return r.FromMain || r.ElementTotal == 0
+}
+
+// readSettled reads the page, and keeps reading while the read comes back
+// hollow. It settles the moment content appears, so a page that was already
+// rendered costs one read; a page that stays hollow past the wait is returned
+// as it is, and formatRead says out loud that it may still be rendering.
+func (s *Session) readSettled(ctx context.Context) (*pageRead, error) {
+	deadline := time.Now().Add(readSettleWait)
+	for {
+		r, err := s.read(ctx)
+		if err != nil || !hollow(r) || time.Now().After(deadline) {
+			return r, err
+		}
+		select {
+		case <-ctx.Done():
+			return r, nil
+		case <-time.After(readSettlePoll):
+		}
+	}
 }
 
 // formatRead renders a read for the model, and says out loud what it left
@@ -774,8 +900,16 @@ func (s *Session) readPage(ctx context.Context, filter string, limit int) (*page
 func formatRead(r *pageRead) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s — %s\n", r.Title, r.URL)
-	if r.FromMain {
+	// Emptiness is said out loud for the same reason truncation is: a shell a
+	// site will fill in a moment and a page with nothing on it produce the
+	// same read, and only one of them should be answered from.
+	switch {
+	case r.FromMain && r.Text == "":
+		b.WriteString("(the page's main content region is empty — it may still be rendering; browser_read again to retry)\n")
+	case r.FromMain:
 		b.WriteString("(text read from the page's main content region)\n")
+	case r.Text == "" && r.ElementTotal == 0 && !strings.HasPrefix(r.URL, "about:"):
+		b.WriteString("(the page reads as empty — it may still be loading; browser_read again to retry)\n")
 	}
 	if r.TextTotal > len(r.Text) {
 		fmt.Fprintf(&b, "(showing %d of %d characters — browser_scroll or browser_eval can reach the rest)\n",
@@ -787,7 +921,11 @@ func formatRead(r *pageRead) string {
 		if el.Type != "" {
 			kind += ":" + el.Type
 		}
-		fmt.Fprintf(&b, "  %s <%s> %q\n", el.Ref, kind, el.Label)
+		if el.Href != "" {
+			fmt.Fprintf(&b, "  %s <%s> %q → %s\n", el.Ref, kind, el.Label, el.Href)
+		} else {
+			fmt.Fprintf(&b, "  %s <%s> %q\n", el.Ref, kind, el.Label)
+		}
 	}
 	if len(r.OtherTabs) > 0 {
 		fmt.Fprintf(&b, "\nAlso open in this browser (browser_tabs to switch):\n%s\n", strings.Join(r.OtherTabs, "\n"))
@@ -941,7 +1079,7 @@ func (t *navigateTool) Execute(ctx context.Context, args map[string]any) *tools.
 	if err != nil && !stillLoading {
 		return tools.Errorf("navigate failed: %v", err)
 	}
-	r, rerr := t.s.read(ctx)
+	r, rerr := t.s.readSettled(ctx)
 	if rerr != nil {
 		if err != nil {
 			return tools.Errorf("navigate failed: %v", err)
@@ -992,7 +1130,11 @@ func (t *clickTool) Parameters() map[string]any {
 	}
 }
 func (t *clickTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
-	sel := t.s.selectorFor(tools.StringArg(args, "target"))
+	target := tools.StringArg(args, "target")
+	if why := t.s.staleRef(ctx, target); why != "" {
+		return tools.Errorf("click refused: %s", why)
+	}
+	sel := t.s.selectorFor(target)
 	selJSON, _ := json.Marshal(sel)
 	// Native element.click() beats synthesized mouse events for reliability
 	// across headless modes and Chrome versions.
@@ -1011,7 +1153,7 @@ func (t *clickTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 		return tools.Errorf("no element matches %q — run browser_read for fresh refs", sel)
 	}
 	time.Sleep(500 * time.Millisecond) // let navigations/XHR settle a beat
-	r, err := t.s.read(ctx)
+	r, err := t.s.readSettled(ctx)
 	if err != nil {
 		return tools.Errorf("clicked, but read failed: %v", err)
 	}
@@ -1098,7 +1240,11 @@ type fillOutcome struct {
 }
 
 func (t *fillTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
-	sel := t.s.selectorFor(tools.StringArg(args, "target"))
+	target := tools.StringArg(args, "target")
+	if why := t.s.staleRef(ctx, target); why != "" {
+		return tools.Errorf("fill refused: %s", why)
+	}
+	sel := t.s.selectorFor(target)
 	text := tools.StringArg(args, "text")
 	selJSON, _ := json.Marshal(sel)
 	textJSON, _ := json.Marshal(text)
@@ -1290,7 +1436,7 @@ func (t *backTool) Execute(ctx context.Context, _ map[string]any) *tools.Result 
 		return tools.Errorf("back failed: this tab has no earlier page to return to")
 	}
 	time.Sleep(600 * time.Millisecond) // let the restore or navigation settle
-	r, err := t.s.read(ctx)
+	r, err := t.s.readSettled(ctx)
 	if err != nil {
 		return tools.Errorf("went back, but read failed: %v", err)
 	}
