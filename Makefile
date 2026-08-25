@@ -17,7 +17,7 @@ export CGO_ENABLED=0
 
 COVER_MIN := 90
 
-.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check clean version version-next win-setup test-windows test-windows-race
+.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check hooks clean version version-next win-setup test-windows test-windows-race
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/factor
@@ -79,6 +79,10 @@ fmt:
 
 lint:
 	golangci-lint run
+
+# Point git at the tracked hooks, so every commit lints first.
+hooks:
+	git config core.hooksPath .githooks
 
 check: vet test-race cover
 	@gofmt -l . | tee /dev/stderr | wc -l | grep -q '^0$$'
