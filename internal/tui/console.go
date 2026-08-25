@@ -107,7 +107,7 @@ func newConsole(out *os.File) *Console {
 		return c
 	}
 	c.out = out
-	usable := os.Getenv("TERM") != "dumb" && term.IsTerminal(int(out.Fd()))
+	usable := os.Getenv("TERM") != "dumb" && term.IsTerminal(int(out.Fd())) && EnableVT(out)
 	c.color = usable && os.Getenv("NO_COLOR") == ""
 	c.barStyle = barStyle()
 	c.blue = blueStyle()

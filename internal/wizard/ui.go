@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"golang.org/x/term"
+
+	"github.com/cyqlelabs/factor/internal/tui"
 )
 
 // ErrAborted is returned when the user interrupts a prompt (Ctrl-C, EOF).
@@ -39,6 +41,12 @@ func New(in *os.File, out io.Writer) *UI {
 	u := &UI{in: in, reader: bufio.NewReader(in), out: out}
 	if in != nil && term.IsTerminal(int(in.Fd())) {
 		u.rawable = true
+	}
+	// The menus repaint themselves with VT escapes, which a Windows console
+	// only interprets once asked; one that refuses gets the numbered prompts
+	// instead of a menu drawn in literal "\x1b[2K"s.
+	if f, ok := out.(*os.File); ok && u.rawable && !tui.EnableVT(f) {
+		u.rawable = false
 	}
 	u.color = u.rawable && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 	return u
