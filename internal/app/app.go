@@ -45,8 +45,9 @@ type App struct {
 	Guard    *tools.PathGuard
 	Sessions *session.Store
 	Skills   *skills.Loader
-	// Ask carries the agent's questions to the user. It defaults to a
-	// desktop dialog; `factor chat` points it at the terminal instead.
+	// Ask carries the agent's questions to the user: into the chat whose
+	// turn is asking, with a desktop dialog as the fallback for turns no
+	// chat is behind; `factor chat` points it at the terminal instead.
 	Ask  *tools.AskTool
 	Loop *agent.Loop
 	Jobs *jobs.Engine
@@ -140,10 +141,11 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(tools.NewConfigTools(cfg)...)
 	registry.Register(cost.NewTool(meter)...)
 	registry.Register(tools.NewPkgInstallTool())
-	// A question needs somewhere to land. The daemon has only the machine's
-	// screen, so that is the default; a chat session swaps in its terminal,
-	// where the user already is (App.Ask).
-	askTool := tools.NewAskTool(tools.NewDialogAsker(tools.DefaultAskEnv()))
+	// A question needs somewhere to land: the chat whose turn is asking when
+	// there is one (wired below, once the loop exists), the machine's screen
+	// otherwise; a chat session swaps in its terminal instead (App.Ask).
+	dialogAsker := tools.NewDialogAsker(tools.DefaultAskEnv())
+	askTool := tools.NewAskTool(dialogAsker)
 	registry.Register(askTool)
 	restarter := &upgrade.Restarter{}
 	// The engine is upgraded in place, so what gates it is the graph being
@@ -181,6 +183,10 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	builder := agent.NewContextBuilder(cfg, skillLoader, ambient)
 	b := bus.New()
 	loop := agent.NewLoop(cfg, b, meter, registry, sessions, builder, ambient)
+	// A turn that arrived from a chat asks its questions there — the user the
+	// question is for is by definition looking at that chat, not necessarily
+	// at this machine's screen. The dialog stays for every turn without one.
+	askTool.SetAsker(loop.Asker(dialogAsker))
 	// Compaction budgets against the tightest window among the models the
 	// chain can serve a turn with — failover must not overflow the fallback.
 	// A model the catalog cannot size (locally served ones, above all) does
@@ -210,6 +216,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 				ChatID:  v.Origin.ChatID,
 				Content: content,
 				Time:    time.Now(),
+				System:  true, // never the user speaking: must not answer a standing ask_user
 			})
 		})
 	registry.Register(jobs.NewTools(jobEngine)...)

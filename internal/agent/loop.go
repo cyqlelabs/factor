@@ -45,6 +45,16 @@ type turn struct {
 	// refused across a widening of it: a message somebody else can hear must
 	// not be answered by a turn whose recall was scoped to a private one.
 	audience string
+	// busDriven marks a turn dispatched off the inbound bus, whose reply
+	// leaves on the outbound one — a chat, as opposed to a connector running
+	// its own turn (voice, the phone) or a caller waiting synchronously
+	// (cron, jobs). Only such a turn may ask a question on its own channel:
+	// the answer has to be able to arrive the same way the question left.
+	busDriven bool
+	// ask, when non-nil, is a question ask_user has standing on this turn's
+	// chat: the next inbound message the user writes there is its answer,
+	// not steering. Guarded by Loop.mu, like the map this turn lives in.
+	ask chan bus.InboundMessage
 }
 
 type Loop struct {
@@ -65,9 +75,10 @@ type Loop struct {
 	watchMu sync.RWMutex
 	watcher func(Activity)
 
-	lastMu      sync.Mutex
-	lastChannel bus.InboundMessage
-	reachable   func(channel string) bool
+	lastMu         sync.Mutex
+	lastChannel    bus.InboundMessage
+	reachable      func(channel string) bool
+	conversational func(channel string) bool
 
 	// seen is every session this process has run a turn for, with the tool
 	// context it ran under. Idle compaction works from it rather than from
@@ -198,7 +209,7 @@ func (l *Loop) noteSession(in turnInput) {
 // That second answer is what a synchronous caller needs: a message the live
 // turn took is already on its way to an answer, and one it could not take
 // must still be waited out rather than dropped on the floor.
-func (l *Loop) claim(key string, msg *bus.InboundMessage, steer bool) (t *turn, owned, steered bool) {
+func (l *Loop) claim(key string, msg *bus.InboundMessage, steer, busDriven bool) (t *turn, owned, steered bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if live, running := l.active[key]; running {
@@ -213,6 +224,19 @@ func (l *Loop) claim(key string, msg *bus.InboundMessage, steer bool) (t *turn, 
 				"session", key, "turn_audience", live.audience, "message_audience", msg.Audience)
 			return nil, false, false
 		}
+		if live.ask != nil && !msg.System {
+			// The turn has a question standing on this chat, and this is the
+			// user's next word there: it is the answer, not steering. A
+			// subsystem's message never is — a job finishing while the user
+			// is being asked something must not answer for them.
+			select {
+			case live.ask <- *msg:
+				slog.Info("inbound message answers the turn's question", "session", key)
+				return nil, false, true
+			default:
+				// The answer slot is already full; the rest is steering.
+			}
+		}
 		select {
 		case live.steering <- *msg:
 			slog.Info("steering message into live turn", "session", key)
@@ -222,7 +246,7 @@ func (l *Loop) claim(key string, msg *bus.InboundMessage, steer bool) (t *turn, 
 			return nil, false, false
 		}
 	}
-	t = &turn{steering: make(chan bus.InboundMessage, steeringBuffer), audience: msg.Audience}
+	t = &turn{steering: make(chan bus.InboundMessage, steeringBuffer), audience: msg.Audience, busDriven: busDriven}
 	l.active[key] = t
 	return t, true, false
 }
@@ -255,7 +279,7 @@ func (l *Loop) release(key string, t *turn) []bus.InboundMessage {
 
 func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 	key := msg.SessionKey()
-	t, ok, _ := l.claim(key, &msg, true)
+	t, ok, _ := l.claim(key, &msg, true, true)
 	if !ok {
 		return
 	}
@@ -336,7 +360,7 @@ func (l *Loop) processDirect(ctx context.Context, steer bool, content, sessionKe
 	}
 	var t *turn
 	for {
-		t2, owned, steered := l.claim(sessionKey, &msg, steer)
+		t2, owned, steered := l.claim(sessionKey, &msg, steer, false)
 		if owned {
 			t = t2
 			break
@@ -780,6 +804,18 @@ func (l *Loop) SetReachable(fn func(channel string) bool) {
 	l.lastMu.Lock()
 	defer l.lastMu.Unlock()
 	l.reachable = fn
+}
+
+// SetConversational teaches the loop which channels are running chats whose
+// conversation rides the bus both ways — where a question published outbound
+// lands as a message and the user's reply comes back inbound. A connector
+// that runs its own turns (voice, the phone) is not one, whatever else it
+// publishes: text pushed onto the bus for it is spoken or dialled, not
+// threaded into a chat. Unset — the CLI, tests — every channel counts.
+func (l *Loop) SetConversational(fn func(channel string) bool) {
+	l.lastMu.Lock()
+	defer l.lastMu.Unlock()
+	l.conversational = fn
 }
 
 // LastChannel returns the most recent external channel/chat, for heartbeat

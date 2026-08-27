@@ -23,9 +23,10 @@ type Answer struct {
 	Dismissed bool
 }
 
-// Asker puts a question in front of the user and waits for the reply. The
-// daemon uses a desktop dialog; a chat session uses the terminal it already
-// owns, so the question lands where the user actually is.
+// Asker puts a question in front of the user and waits for the reply: in the
+// chat whose turn is asking, on the daemon's desktop dialog when no chat is
+// behind the turn, or in the terminal a chat session already owns — wherever
+// the user actually is.
 type Asker interface {
 	Ask(ctx context.Context, q Question) (Answer, error)
 }
@@ -42,8 +43,8 @@ const (
 )
 
 // AskTool asks the user a question mid-turn. The asker is swapped at the
-// composition root: the CLI hands it the terminal, everything else keeps the
-// desktop dialog.
+// composition root: the CLI hands it the terminal, everything else routes by
+// the asking turn — its own chat first, the desktop dialog as the fallback.
 type AskTool struct {
 	mu    sync.RWMutex
 	asker Asker
@@ -122,8 +123,9 @@ func (t *AskTool) Execute(ctx context.Context, args map[string]any) *Result {
 	case errors.Is(err, ErrAskUnavailable):
 		return Errorf("%v — ask in the conversation instead", err)
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return Text(fmt.Sprintf("no answer after %s. The user is away from the machine — "+
-			"carry on without them, or leave the question in your reply.", timeout))
+		return Text(fmt.Sprintf("no answer after %s. That means only that this question went "+
+			"unanswered — not that the user is away. Carry on without an answer, or leave the "+
+			"question in your reply.", timeout))
 	case errors.Is(err, context.Canceled), errors.Is(ctx.Err(), context.Canceled):
 		return Errorf("the turn was cancelled before the user answered")
 	case err != nil:

@@ -399,3 +399,21 @@ func TestRegisteredIncludesRegisteredFactories(t *testing.T) {
 	}
 	t.Errorf("Registered() = %v, want it to include build-listed", Registered())
 }
+
+// A question can only ride a channel whose conversation goes both ways over
+// the bus: a plain chat qualifies, a connector that runs its own turns (the
+// phone, voice) does not, and neither does a channel nothing serves.
+func TestConversationalIsTheBusRidingChats(t *testing.T) {
+	chat := &fakeChannel{name: "telegram"}
+	caller := &turnRunner{fakeChannel: fakeChannel{name: "phone"}}
+	m := NewManager(bus.New(), []Channel{chat, caller})
+	if !m.Conversational("telegram") {
+		t.Error("a bus-riding chat was not conversational")
+	}
+	if m.Conversational("phone") {
+		t.Error("a connector that runs its own turns counted as conversational")
+	}
+	if m.Conversational("matrix") {
+		t.Error("a channel nothing serves counted as conversational")
+	}
+}

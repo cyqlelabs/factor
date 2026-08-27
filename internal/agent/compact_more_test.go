@@ -338,7 +338,7 @@ func TestIdleTracksLiveTurns(t *testing.T) {
 	}
 
 	// A live turn is what stops the gateway from restarting underneath it.
-	turn, claimed, _ := h.loop.claim("telegram:1", &bus.InboundMessage{Channel: "telegram", ChatID: "1"}, false)
+	turn, claimed, _ := h.loop.claim("telegram:1", &bus.InboundMessage{Channel: "telegram", ChatID: "1"}, false, false)
 	if !claimed {
 		t.Fatal("the first claim on a free session failed")
 	}
@@ -429,13 +429,13 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 func TestSteeringQueueOverflowDropsInsteadOfBlocking(t *testing.T) {
 	h := newHarness(t)
 	key := "telegram:overflow"
-	t2, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "overflow"}, false)
+	t2, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "overflow"}, false, false)
 	if !ok {
 		t.Fatal("claim failed on an idle session")
 	}
 	for i := range steeringBuffer + 5 {
 		h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "overflow",
-			Content: fmt.Sprintf("m%d", i)}, true)
+			Content: fmt.Sprintf("m%d", i)}, true, false)
 	}
 	leftover := h.loop.release(key, t2)
 	if len(leftover) != steeringBuffer {
@@ -452,11 +452,11 @@ func TestReleaseRepublishesLateSteering(t *testing.T) {
 
 	// A message that lands after the final drain must be answered, not lost.
 	key := "telegram:late"
-	turnHandle, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "late"}, false)
+	turnHandle, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "late"}, false, false)
 	if !ok {
 		t.Fatal("claim failed")
 	}
-	h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "late", Content: "too late"}, true)
+	h.loop.claim(key, &bus.InboundMessage{Channel: "telegram", ChatID: "late", Content: "too late"}, true, false)
 	for _, missed := range h.loop.release(key, turnHandle) {
 		h.bus.PublishInbound(missed)
 	}
@@ -473,7 +473,7 @@ func TestReleaseRepublishesLateSteering(t *testing.T) {
 func TestProcessDirectRespectsCancellationWhileWaiting(t *testing.T) {
 	h := newHarness(t)
 	key := "cli:busy-cancel"
-	held, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "cli", ChatID: "busy-cancel"}, false)
+	held, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "cli", ChatID: "busy-cancel"}, false, false)
 	if !ok {
 		t.Fatal("claim failed")
 	}

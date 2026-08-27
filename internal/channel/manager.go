@@ -43,6 +43,22 @@ func (m *Manager) Serves(name string) bool {
 	return ok
 }
 
+// Conversational reports whether a running connector is a chat whose
+// conversation rides the bus both ways: a message published outbound lands in
+// the chat, and what the user writes back comes in as inbound. A connector
+// that runs its own turns (voice, the phone) is not one, whatever else it
+// publishes — text pushed onto the bus for it is spoken or dialled rather
+// than threaded into the conversation, so a question sent that way could
+// never have its answer come back the same way.
+func (m *Manager) Conversational(name string) bool {
+	ch, ok := m.channels[name]
+	if !ok {
+		return false
+	}
+	_, runsOwnTurns := ch.(TurnRunner)
+	return !runsOwnTurns
+}
+
 func (m *Manager) Names() []string {
 	names := make([]string, 0, len(m.channels))
 	for n := range m.channels {

@@ -30,6 +30,12 @@ type InboundMessage struct {
 	// fields: the owner asking something private with a guest listening is
 	// their own turn on every axis except the one that matters.
 	Audience string
+
+	// System marks a message a subsystem wrote into the session rather than
+	// the user — a background job reporting completion. It steers into a live
+	// turn like anything else, but it can never answer a question ask_user
+	// has standing on the chat: an answer is something only a person gives.
+	System bool
 }
 
 type OutboundMessage struct {

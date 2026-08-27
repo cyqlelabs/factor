@@ -173,6 +173,10 @@ func serve(configPath string) (bool, error) {
 	// keeps writing to it: the message is dropped by the pump, and the agent,
 	// told the tool succeeded, says it sent something it did not.
 	a.Loop.SetReachable(manager.Serves)
+	// ask_user follows the same rule one step further: a question raised by a
+	// turn from a bus-riding chat is asked in that chat, and only a turn with
+	// no such chat behind it falls back to the desktop dialog.
+	a.Loop.SetConversational(manager.Conversational)
 	manager.Start(ctx)
 
 	// The tray's overview reads from here for as long as serve runs; the

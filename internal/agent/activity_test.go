@@ -156,7 +156,7 @@ func TestActivityReportsSteering(t *testing.T) {
 
 	// Steer a message in before the turn starts, so the first final answer is
 	// folded back into another provider round.
-	claimed, ok, _ := h.loop.claim("cli:test", &bus.InboundMessage{Channel: "cli", ChatID: "test"}, false)
+	claimed, ok, _ := h.loop.claim("cli:test", &bus.InboundMessage{Channel: "cli", ChatID: "test"}, false, false)
 	if !ok {
 		t.Fatal("could not claim the session")
 	}

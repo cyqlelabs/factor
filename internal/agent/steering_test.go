@@ -298,13 +298,13 @@ func TestAPrivateMessageStillSteersIntoASharedTurn(t *testing.T) {
 func TestAFullSteeringQueueMakesTheSpokenTurnWaitInsteadOfVanishing(t *testing.T) {
 	h := newHarness(t, final("answered at last"))
 	key := "voice:local"
-	held, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "voice", ChatID: "local"}, false)
+	held, ok, _ := h.loop.claim(key, &bus.InboundMessage{Channel: "voice", ChatID: "local"}, false, false)
 	if !ok {
 		t.Fatal("claim failed on an idle session")
 	}
 	for i := range steeringBuffer {
 		h.loop.claim(key, &bus.InboundMessage{Channel: "voice", ChatID: "local",
-			Content: string(rune('a' + i))}, true)
+			Content: string(rune('a' + i))}, true, false)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
