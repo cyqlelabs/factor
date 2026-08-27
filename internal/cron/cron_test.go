@@ -184,3 +184,52 @@ func TestRunLoopFiresAndWakes(t *testing.T) {
 		t.Fatal("cron job never fired")
 	}
 }
+
+// A missed run caught up seconds before the next boundary must count as the
+// boundary's run, not fire again when the boundary arrives one second later
+// (github.com/cyqlelabs/factor/issues/15).
+func TestCatchUpBeforeBoundaryFiresOnce(t *testing.T) {
+	s := newService(t, nil, nil)
+	base := time.Date(2026, 8, 21, 7, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return base }
+	if _, err := s.Add("0 8 * * *", "daily report", "telegram", "1"); err != nil {
+		t.Fatal(err)
+	}
+	base = time.Date(2026, 8, 21, 8, 0, 1, 0, time.UTC)
+	if due := s.dueJobs(); len(due) != 1 {
+		t.Fatalf("baseline run: due = %+v", due)
+	}
+	// The gateway is down all of Aug 22 and restarts one second before the
+	// Aug 23 boundary: the missed run catches up now, and the boundary owes
+	// nothing more.
+	base = time.Date(2026, 8, 23, 7, 59, 59, 0, time.UTC)
+	if due := s.dueJobs(); len(due) != 1 {
+		t.Fatalf("catch-up run: due = %+v", due)
+	}
+	base = time.Date(2026, 8, 23, 8, 0, 0, 0, time.UTC)
+	if due := s.dueJobs(); len(due) != 0 {
+		t.Errorf("job fired twice within 1s of its catch-up: %+v", due)
+	}
+	// The next day's run is still owed on time.
+	base = time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	if due := s.dueJobs(); len(due) != 1 {
+		t.Errorf("next scheduled run lost to the dedupe: due = %+v", due)
+	}
+}
+
+// The catch-up dedupe must not eat an every-minute schedule, whose on-time
+// ticks are always less than a minute from the next.
+func TestMinutelyScheduleStillFiresEveryMinute(t *testing.T) {
+	s := newService(t, nil, nil)
+	base := time.Date(2026, 8, 23, 7, 59, 30, 0, time.UTC)
+	s.now = func() time.Time { return base }
+	if _, err := s.Add("* * * * *", "every minute", "telegram", "1"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		base = time.Date(2026, 8, 23, 8, i, 0, 100_000_000, time.UTC)
+		if due := s.dueJobs(); len(due) != 1 {
+			t.Fatalf("minute %d: due = %+v", i, due)
+		}
+	}
+}

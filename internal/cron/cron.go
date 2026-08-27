@@ -351,6 +351,18 @@ func (s *Service) dueJobs() []Job {
 		}
 		if !tick.After(now) {
 			j.LastRun = now
+			// A catch-up fired seconds before the boundary is the boundary's
+			// run. Marking only now leaves the tick at 08:00:00 still owed
+			// after a missed run caught up at 07:59:59, and the user gets the
+			// same report twice, one second apart. So a stale tick's run also
+			// covers a next tick less than a minute out; an on-time run —
+			// tick within the last minute — never does, which is what keeps
+			// an every-minute schedule firing every minute.
+			if now.Sub(tick) >= time.Minute {
+				if next, err := gronx.NextTickAfter(j.Schedule, now, false); err == nil && next.Sub(now) < time.Minute {
+					j.LastRun = next
+				}
+			}
 			due = append(due, *j)
 		}
 	}
