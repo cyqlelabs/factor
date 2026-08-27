@@ -14,6 +14,7 @@ go test ./internal/agent -run TestName      # single test
 make test-race                              # race detector (needs CGO_ENABLED=1; everything else is CGO-free)
 make cover                                  # statement coverage, fails under 90%
 make lint                                   # golangci-lint (.golangci.yml) — its own CI job, so `make check` alone is not enough
+make hooks                                  # point git at .githooks, so every commit lints before it lands
 make build                                  # local binary
 make build-tiny                             # -tags nobrowser strips the CDP browser suite (stubs in internal/browser/browser_stub.go)
 ```

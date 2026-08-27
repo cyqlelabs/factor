@@ -136,4 +136,4 @@ place to look.
 | Factor picks up but never speaks | no ElevenLabs key, or a local speech server that is not answering | `factor status` names the tier; the log says when it fell back to the cloud |
 | Texts never arrive | the number has no SMS capability, or trial restrictions | check the number's capabilities in the console |
 | Startup complains about `phone_number` or `user_number` | not E.164 | write them as `+15550001234` |
-| `getpatter` will not install | Python older than 3.11 | install a newer Python, or set `channels.phone.command` to one |
+| `getpatter` will not install | Python older than 3.11 | install a newer Python (Windows finds it through the `py` launcher), or set `channels.phone.command` to one |

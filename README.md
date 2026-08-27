@@ -34,7 +34,7 @@ than logging, so past failures become constraints it doesn't repeat.
 | 🧠 **Memory as the soul** | Salience-ranked recall every turn, consolidation that decays and prunes, plus `remember` / `recall` / `forget` / `reflect` tools |
 | ⚡ **Never keeps you waiting** | Says what it's about to do while the tools run; long work becomes a background job that messages you when it lands |
 | 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations, not queued |
-| ❓ **Asks when only you know** | `ask_user` opens a dialog on your desktop mid-turn, or numbers the options in the terminal you're already in — and times out rather than hanging the turn when you're away |
+| ❓ **Asks when only you know** | `ask_user` puts the question where you are: the chat the turn came from, the terminal you're already in, or a dialog on your desktop — and times out rather than hanging the turn when you're away |
 | 🔁 **Provider failover** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with per-candidate cooldowns and overflow compaction |
 | 💸 **Counts what it spends** | Every call priced and billed to its session — status bar, tray, `usage` tool — with per-session and global caps |
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning`, `reasoning_effort`, or a `thinking` budget |
@@ -44,7 +44,7 @@ than logging, so past failures become constraints it doesn't repeat.
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications on X11/Wayland/macOS/Windows — plus grid vision ([Desktop](#desktop)) |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed one ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills ([Extending](#extending-factor)) |
-| 🔧 **Self-managing** | Edits its own config, installs packages, upgrades and restarts itself, runs cron and `HEARTBEAT.md` checks that cost nothing when idle |
+| 🔧 **Self-managing** | Edits its own config, installs packages, upgrades and restarts itself, schedules cron jobs and one-off reminders, runs `HEARTBEAT.md` checks that cost nothing when idle |
 | 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, scrubbed secrets — rails, not a sandbox ([Security](#security-model)) |
 
 ## How it works
@@ -442,8 +442,7 @@ factor status      # tier, activation, helpers, and whether anything is listenin
 whatever is playing, and `/talk` does the same inside the chat. Talk over a reply and
 it stops mid-word, cancelling the turn behind it. The speech tiers are the phone's,
 chosen the same way, with the local server on its own port so both channels can keep
-speech at home. Windows capture isn't wired up yet; the channel says so instead of
-pretending.
+speech at home.
 
 **It hears people, not clips.** Two people talking to each other leave gaps far
 shorter than the silence that closes a recording, so their whole exchange arrives as
@@ -470,12 +469,12 @@ coy answer, one wrongly called private says something private to a guest.
 <details>
 <summary><b>Microphone, meter and barge-in</b></summary>
 
-Audio rides the sound system's own helpers — `parec`/`paplay`, `arecord`/`aplay`,
-sox's `rec`/`play` on macOS — installed by the wizard, which also asks *which*
-microphone and proves it live: you make a noise, it measures, and a silent source is
-called out on the spot. The chat's status bar carries a live meter — `mic ▂▄▁` moves
-with the room and turns green on speech, `♪` lights cyan while Factor talks, a dead
-source shows `mic ✗`.
+Audio rides the sound system's own helpers — `parec`/`paplay`, `pw-record`/`pw-play`,
+`arecord`/`aplay`, sox's `rec`/`play` on macOS, sox's `waveaudio` driver on Windows —
+installed by the wizard, which also asks *which* microphone and proves it live: you
+make a noise, it measures, and a silent source is called out on the spot. The chat's
+status bar carries a live meter — `mic ▂▄▁` moves with the room and turns green on
+speech, `♪` lights cyan while Factor talks, a dead source shows `mic ✗`.
 
 Voice activity detection is pure Go: adaptive noise floor, a pre-roll so the first
 syllable survives, and a higher bar while the agent speaks so the speakers can't
@@ -571,6 +570,8 @@ can dial, with a bill attached to every minute, earns stricter rails.
 
 ```bash
 make check        # gofmt + vet + race tests + coverage gate (≥90%, what CI runs)
+make lint         # golangci-lint (its own CI job, so check alone is not the gate)
+make hooks        # point git at .githooks: every commit lints first
 make build        # local binary
 make build-all    # release cross-compile (incl. GOAMD64=v1 for old x86-64)
 make build-tiny   # -tags nobrowser: smallest binary

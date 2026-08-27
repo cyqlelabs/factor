@@ -10,30 +10,36 @@ Proposed
 
 ## Context
 
-A tool result enters the model's context verbatim and is re-sent on every
-subsequent turn until compaction moves past it — and compaction then drops
-tool results from its summary transcript entirely (`internal/agent/compact.go:178-192`),
-so whatever the result carried into the live window is all the model ever
-gets from it.
+A tool result enters the model's context verbatim and rides the next four tool
+calls whole. After that `maskOldToolResults` (`internal/agent/mask.go:43`)
+replaces it with a stub naming the call, recoverable only by calling again, and
+compaction drops tool results from its summary transcript altogether
+(`internal/agent/compact.go:256-270`). So what a result carries while it is
+whole is what the model gets from it — and the cost argument this ADR opened
+with, every result re-sent on every turn until compaction, no longer holds.
 
-Every high-volume tool bounds that today with its own ad-hoc cap:
+A registry-layer cap now bounds every tool alike, MCP servers included, and
+names what it withheld and how to ask for less
+(`internal/tools/registry.go:129-165`). The MCP suite's own cap was removed
+when that landed. Underneath it, the tools that shape their own output keep
+theirs:
 
 | Tool | Cap | Where |
 |---|---|---|
+| every tool, at the registry | 16 000 chars, head + a recovery line | `internal/tools/registry.go:134-165` |
 | `exec` | 32 KB, head+tail | `internal/tools/exec.go:41,111-114` |
-| MCP tools | 32 KB, head+tail | `internal/mcp/manager.go:165-169` |
 | `read_file` | 256 KB | `internal/tools/fs.go:13` |
 | `web_fetch` | 20 000 chars | `internal/tools/web.go:67` |
 | `clipboard` | 100 000 chars | `internal/desktop/tools.go:437` |
 
-The caps bound cost, but they cut blind: the middle of the result is gone,
-unrecoverably, and on `exec` and MCP the marker does not even say how to get
-it back. On a structured result that is the worst possible cut — a 40 KB JSON
-array of 200 items keeps items 1–20 and 180–200 and loses everything between,
-including, possibly, the one error object the model called the tool to find.
-`browser_read` already solved this for its own output (rank what matters,
-state what was withheld, name the recovery path — `internal/browser/browser.go:771-812`);
-nothing does it for the tools whose output Factor does not shape.
+The caps bound cost and the marker names the recovery path, but the cut is
+still blind: the registry keeps the head and drops the rest. On a structured
+result that is the worst possible cut — a 40 KB JSON array of 200 items keeps
+the first eighty and loses everything after, including, possibly, the one
+error object the model called the tool to find. `browser_read` already solved
+this for its own output (rank what matters, state what was withheld, name the
+recovery path — `internal/browser/browser.go:667-694,914-917`); nothing does
+it for the tools whose output Factor does not shape.
 
 The idea comes from analyzing [headroom](https://github.com/headroomlabs-ai/headroom),
 whose SmartCrusher compresses JSON tool output 60–95% with a deterministic
@@ -46,10 +52,11 @@ Add a pure-Go, size-triggered crusher for tool results, applied at the
 registry layer, with the size policy moved there too.
 
 **The hook.** A third injected func in `NewRegistry` beside `enabled` and
-`filter` (`internal/tools/registry.go:25`) — the existing style for
-cross-cutting policy: nil-tolerant, defaulted, testable as a closure. It runs
-in `Execute`'s deferred block (`registry.go:99-130`) *before* the secret
-filter, so redaction is applied to the final text.
+`filter` (`internal/tools/registry.go:22-26`) — the existing style for
+cross-cutting policy: nil-tolerant, defaulted, testable as a closure. It takes
+`capResult`'s place in `Execute`'s deferred block (`registry.go:107`), and
+runs *inside* `r.filter` rather than outside it as the cap does today, so the
+statistics the crusher writes are redacted along with everything else.
 
 **What it does.** When `ForLLM` exceeds the trigger threshold and parses as
 JSON containing a large array: keep the first and last k items, plus every
@@ -58,18 +65,21 @@ structural outlier; replace the crushed middle with per-field statistics
 (counts, ranges, distinct values); end with a line in the `browser_read`
 mold — how many items existed, how many were shown, and what call gets the
 rest (re-run with narrower arguments). Oversized results that are not
-crushable JSON keep head+tail, but the marker is upgraded to state the bytes
-withheld and the recovery path.
+crushable JSON fall through to the cap that is already there, which states
+what it withheld and how to narrow the call.
 
-**The policy move.** The MCP and `exec` caps rise to a transport ceiling of
-256 KB (matching `read_file`'s existing precedent) so the crusher sees the
-real payload instead of a pre-destroyed one; the registry's trigger becomes
-the effective bound. A hard ceiling stays at the source so a runaway result
-cannot force an unbounded parse.
+**The policy move.** Most of it has since happened on its own: the MCP cap is
+gone and the registry's cap is already the effective bound. What is left is
+`exec`, whose 32 KB head+tail reaches the registry pre-destroyed — it rises to
+a transport ceiling of 256 KB (matching `read_file`'s existing precedent) so
+the crusher sees the real payload. A hard ceiling stays at the source so a
+runaway result cannot force an unbounded parse.
 
-**Defaults** (tunable, in `ToolsConfig`): trigger at 16 KB, crushed output
-targeting ~8 KB. Both live in `internal/config` with the other tool knobs —
-defaults in `Defaults()`, zero-value guard in `normalize()`.
+**Defaults** (tunable, in `ToolsConfig`): the trigger is the cap that already
+exists, 16 000 characters, with crushed output targeting ~8 KB. Below it
+nothing changes; above it the crusher takes `capResult`'s place. Both knobs
+live in `internal/config` with the other tool knobs — defaults in
+`Defaults()`, zero-value guard in `normalize()`.
 
 ## Alternatives considered
 
@@ -124,14 +134,15 @@ defaults in `Defaults()`, zero-value guard in `normalize()`.
 1. **`internal/tools/crusher.go`** — array classifier, error/rare-status/
    outlier detection, k-split keep, per-field stats, output formatting with
    the withholding line. Deterministic; table-driven tests.
-2. **Registry hook** — third func in `NewRegistry`, applied at the top of the
-   `Execute` defer, before `r.filter`. Tests mirror the filter trio:
+2. **Registry hook** — third func in `NewRegistry`, taking `capResult`'s place
+   in the `Execute` defer and moving inside `r.filter` (`registry.go:107`).
+   Tests mirror the filter trio:
    nil-crusher passthrough, crusher applied, crusher/filter ordering
    (`internal/tools/tools_test.go:46`, `contract_test.go:301-330`).
-3. **Policy move** — raise the MCP cap (`internal/mcp/manager.go:165-169`)
-   and the exec cap (`internal/tools/exec.go:41`) to the 256 KB transport
-   ceiling. While there: exec's slice is byte-indexed and can split a rune —
-   cut on runes as `internal/jobs/tools.go:127-131` already does.
+3. **Policy move** — raise the exec cap (`internal/tools/exec.go:41`) to the
+   256 KB transport ceiling; the MCP cap is already gone. While there: exec's
+   slice is byte-indexed and can split a rune (`exec.go:112-114`) — cut on
+   runes as `internal/jobs/tools.go:122-131` already does.
 4. **Config** — `ToolsConfig` fields, `Defaults()`, first `normalize()`
    guard for the section, and config tests.
 5. **Verify** — `make check` and `make lint`; existing truncation tests
