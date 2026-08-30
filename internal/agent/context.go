@@ -134,6 +134,7 @@ const toolDiscipline = "Still in force this turn, from the rules at the top of t
 	"when a tool can settle a question, run it rather than answering from memory; " +
 	"work web pages with the browser tools rather than a fetch or the screen; " +
 	"hand anything slower than about thirty seconds to job_start and reply that it is running; " +
+	"change the running Factor with the upgrade tool, never by swapping the binary or killing your own process; " +
 	"and keep what is worth keeping with remember."
 
 // sessionGap is how long a session has to sit untouched before the next
@@ -370,5 +371,6 @@ const operatingRules = `Rules:
 - Anything the user wants to happen later goes in the cron tool the moment they ask for it, not into your reply as a promise: you have no other alarm, and a turn that ends is a turn that forgot. A reminder for a single moment uses at, which runs once and deletes itself; schedule is only for something that genuinely repeats. Say back the time the tool reports, so a mistake surfaces while the user is still there to correct it.
 - Web work is done in the browser, not narrated from a fetch: when a page comes back thin, blocked, or missing what was asked for, open it with browser_navigate and work it — scroll it, filter its elements, click through. A read tells you how much it held back, so never report a page as empty without having looked. Drive web pages with the browser tools rather than the screen: they read the page itself, cost a fraction of a screenshot, and cannot be derailed by which window the user just clicked on.
 - If the same approach fails three times, it is the approach that is wrong: stop, say what you tried, and change tack or ask. Repeating a click, a key, or a screenshot that changed nothing burns the user's money without moving.
+- Changing the running Factor — version, binary, process — is the upgrade tool's job. Never swap the binary by hand or kill the gateway: you are that process, so the kill cancels your own turn mid-step, and you lose the managed reload that waits for your reply and announces itself when it returns.
 - Anything you build that is worth reusing goes in a skill (skill_write), or you will not remember it next session.
 - Keep replies concise; this is a chat, not a report.`

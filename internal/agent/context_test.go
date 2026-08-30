@@ -66,6 +66,27 @@ func TestToolRulesAreRestatedOnceTheSessionIsLong(t *testing.T) {
 	}
 }
 
+// The failure this closes: far past rulesFadeAt the agent was asked to update
+// itself, never reached for the upgrade tool, and hand-rolled a binary swap
+// that killed its own gateway — which cancels the turn mid-step. The tool was
+// in the request the whole time; what was missing was a rule naming which tool
+// owns the job, in the one position a long session still reads.
+func TestSelfUpgradeRuleSurvivesALongSession(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Workspace = t.TempDir()
+	cb := NewContextBuilder(cfg, nil, nil)
+
+	if !strings.Contains(operatingRules, "upgrade tool") {
+		t.Error("the rules at the head of the prompt no longer name the upgrade tool")
+	}
+
+	history := []provider.Message{{Role: "user", Content: strings.Repeat("palabra ", rulesFadeAt)}}
+	long := cb.TurnContext(context.Background(), history, "actualizate", 0)
+	if !strings.Contains(long, "upgrade tool") {
+		t.Errorf("a long session lost the rule that changing the running Factor goes through the tool: %q", long)
+	}
+}
+
 // The clash this exists to settle: on voice the only per-turn instruction was
 // one telling the model to be brief and conversational, repeated every turn
 // from the tail, arguing against stopping to use a tool. Both lines now ride
