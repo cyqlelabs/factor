@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,8 @@ func (r release) start(t *testing.T) (string, *http.ServeMux) {
 	}
 
 	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+		// GitHub tags every answer, which is what the next check asks against.
+		w.Header().Set("ETag", `W/"`+r.tag+`"`)
 		var assets []string
 		for _, n := range names {
 			size := len(r.binary)
@@ -111,6 +114,7 @@ func (r release) start(t *testing.T) (string, *http.ServeMux) {
 
 	srv.Start()
 	t.Cleanup(srv.Close)
+	t.Setenv("FACTOR_HOME", t.TempDir()) // the release check caches its ETag under it
 	prev := releaseAPI
 	releaseAPI = base + "/releases/latest"
 	t.Cleanup(func() { releaseAPI = prev })
@@ -173,6 +177,7 @@ func TestLatestNoBuildForPlatform(t *testing.T) {
 }
 
 func TestLatestFailures(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/notfound":
@@ -478,6 +483,7 @@ func TestApplyIntoAnUnwritableDirectory(t *testing.T) {
 // sat idle looks exactly like this — and a turn that asked Factor to upgrade
 // itself would otherwise sit silent for the whole download budget.
 func TestLatestGivesUpOnAServerThatNeverAnswers(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
 	block := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-block
@@ -545,5 +551,109 @@ func TestTheUpgradeClientTrustsWhatTheProxyInstalled(t *testing.T) {
 	}
 	if rel.Version != "v9.9.9" {
 		t.Errorf("release = %+v", rel)
+	}
+}
+
+// GitHub gives an unauthenticated caller 60 requests an hour per address, and
+// a machine that checks at every start burns them on an answer it already has.
+// The second check must ask conditionally and be told nothing changed.
+func TestLatestAsksConditionallyOnceItHasAnAnswer(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	setPlatform(t, "linux", "amd64")
+	base, mux := release{tag: "v0.4.0", binary: []byte("binary")}.start(t)
+	_ = base
+
+	var conditional []string
+	mux.HandleFunc("/conditional/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		conditional = append(conditional, r.Header.Get("If-None-Match"))
+		w.Header().Set("ETag", `W/"tag-v0.4.0"`)
+		if r.Header.Get("If-None-Match") != "" {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		fmt.Fprintf(w, `{"tag_name":"v0.4.0","html_url":"https://example.test/v0.4.0","assets":[
+			{"name":"factor-linux-amd64","browser_download_url":"%s/dl/factor-linux-amd64","size":6},
+			{"name":"SHA256SUMS","browser_download_url":"%s/dl/SHA256SUMS","size":9}]}`, base, base)
+	})
+	prev := releaseAPI
+	releaseAPI = base + "/conditional/releases/latest"
+	t.Cleanup(func() { releaseAPI = prev })
+
+	first, err := Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Latest(context.Background())
+	if err != nil {
+		t.Fatalf("the conditional check failed: %v", err)
+	}
+	if second != first {
+		t.Errorf("second = %+v, want the cached %+v", second, first)
+	}
+	if len(conditional) != 2 || conditional[0] != "" || conditional[1] != `W/"tag-v0.4.0"` {
+		t.Errorf("If-None-Match sent = %q, want the second request to carry the ETag", conditional)
+	}
+}
+
+// A cache written for another machine's binary is no cache: asking
+// conditionally against it would answer 304 and hand back a release with a
+// download URL this platform cannot run.
+func TestLatestIgnoresACacheFromAnotherPlatform(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	setPlatform(t, "linux", "amd64")
+	release{tag: "v0.4.0", binary: []byte("binary")}.start(t)
+	if _, err := Latest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loadReleaseCache(); !ok {
+		t.Fatal("the first check stored no cache")
+	}
+	setPlatform(t, "darwin", "arm64")
+	if _, ok := loadReleaseCache(); ok {
+		t.Error("a cache resolved for another platform was accepted")
+	}
+}
+
+// "403 Forbidden" reads as a credential problem on a public repository. It is
+// the hourly budget, and what the reader needs is when it comes back.
+func TestLatestNamesTheRateLimit(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	reset := time.Now().Add(13 * time.Minute)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "60")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+	prev := releaseAPI
+	releaseAPI = srv.URL + "/releases/latest"
+	t.Cleanup(func() { releaseAPI = prev })
+
+	_, err := Latest(context.Background())
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	for _, want := range []string{"rate limit", "60 an hour", "clears at " + reset.Format("15:04")} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to mention %q", err, want)
+		}
+	}
+}
+
+// A 403 that is not the budget keeps its own words.
+func TestLatestKeepsAnOrdinaryForbidden(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "nope", http.StatusForbidden)
+	}))
+	defer srv.Close()
+	prev := releaseAPI
+	releaseAPI = srv.URL + "/releases/latest"
+	t.Cleanup(func() { releaseAPI = prev })
+
+	_, err := Latest(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("err = %v, want the status kept", err)
 	}
 }

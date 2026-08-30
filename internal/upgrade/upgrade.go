@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/config"
 )
 
 const repo = "cyqlelabs/factor"
@@ -105,13 +107,25 @@ func Latest(ctx context.Context) (Release, error) {
 		return Release{}, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	// An unauthenticated caller gets 60 requests an hour, counted per address,
+	// and every machine behind one router shares that. A check runs at every
+	// start — which on a box whose watchdog restarts the gateway is a check a
+	// minute — so the answer is asked for conditionally: GitHub does not count
+	// a 304 against the budget, and the release only changes on release day.
+	cached, conditional := loadReleaseCache()
+	if conditional {
+		req.Header.Set("If-None-Match", cached.ETag)
+	}
 	resp, err := httpClient().Do(req)
 	if err != nil {
 		return Release{}, fmt.Errorf("looking up the latest factor release: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified && conditional {
+		return cached.Release, nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return Release{}, fmt.Errorf("looking up the latest factor release: %s", resp.Status)
+		return Release{}, fmt.Errorf("looking up the latest factor release: %s", describeStatus(resp))
 	}
 	var body struct {
 		Tag    string `json:"tag_name"`
@@ -140,7 +154,67 @@ func Latest(ctx context.Context) (Release, error) {
 	if rel.URL == "" {
 		return Release{}, fmt.Errorf("release %s publishes no %s build", rel.Version, rel.Asset)
 	}
+	saveReleaseCache(releaseCache{ETag: resp.Header.Get("ETag"), Release: rel})
 	return rel, nil
+}
+
+// releaseCache is the last answer GitHub gave and the ETag identifying it, so
+// the next check can ask whether anything changed instead of asking again.
+type releaseCache struct {
+	ETag    string  `json:"etag"`
+	Release Release `json:"release"`
+}
+
+func releaseCachePath() string { return filepath.Join(config.Home(), "release-check.json") }
+
+// loadReleaseCache reports a usable cache: one with an ETag, holding a release
+// resolved for the binary this machine runs. Anything else — no file, a
+// rewritten home, a cache carried to another architecture — is no cache, and
+// the check falls back to an ordinary request.
+func loadReleaseCache() (releaseCache, bool) {
+	raw, err := os.ReadFile(releaseCachePath())
+	if err != nil {
+		return releaseCache{}, false
+	}
+	var c releaseCache
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return releaseCache{}, false
+	}
+	if c.ETag == "" || c.Release.Version == "" || c.Release.Asset != AssetName() {
+		return releaseCache{}, false
+	}
+	return c, true
+}
+
+// saveReleaseCache is best effort: a cache that cannot be written costs one
+// counted request next time, which is not worth failing an upgrade over.
+func saveReleaseCache(c releaseCache) {
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(releaseCachePath(), raw, 0o600); err != nil {
+		slog.Debug("could not cache the release check", "error", err)
+	}
+}
+
+// describeStatus says what a refusal actually was. A 403 from this endpoint is
+// almost never permissions on a public repository: it is the hourly budget,
+// spent by every unauthenticated caller sharing the address. Saying "403
+// Forbidden" sends the reader looking for a credential that was never needed.
+func describeStatus(resp *http.Response) string {
+	limited := resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests
+	if !limited || resp.Header.Get("X-RateLimit-Remaining") != "0" {
+		return resp.Status
+	}
+	msg := "GitHub's API rate limit for this address is used up"
+	if limit := resp.Header.Get("X-RateLimit-Limit"); limit != "" {
+		msg += " (" + limit + " an hour, shared by everything behind it)"
+	}
+	if secs, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+		msg += "; it clears at " + time.Unix(secs, 0).Format("15:04")
+	}
+	return msg
 }
 
 // Newer reports whether want is a later release than have. A have that is

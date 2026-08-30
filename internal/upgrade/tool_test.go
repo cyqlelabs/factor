@@ -110,6 +110,7 @@ func TestToolReportsFailures(t *testing.T) {
 	setPlatform(t, "linux", "amd64")
 
 	prev := releaseAPI
+	t.Setenv("FACTOR_HOME", t.TempDir())
 	releaseAPI = "http://127.0.0.1:0/nothing-listening"
 	res := (&Tool{Current: "v0.3.0"}).Execute(context.Background(), nil)
 	releaseAPI = prev
