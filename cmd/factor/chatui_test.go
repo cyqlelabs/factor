@@ -99,7 +99,11 @@ func TestChatUIWatchBarRepaintsWhileIdle(t *testing.T) {
 	ui.bar = func() tui.Bar { calls.Add(1); return tui.Bar{Session: "main"} }
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go ui.watchBar(ctx, time.Millisecond)
+	stopped := make(chan struct{})
+	go func() {
+		ui.watchBar(ctx, time.Millisecond)
+		close(stopped)
+	}()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for calls.Load() < 3 && time.Now().Before(deadline) {
@@ -109,9 +113,19 @@ func TestChatUIWatchBarRepaintsWhileIdle(t *testing.T) {
 	if calls.Load() < 3 {
 		t.Error("watchBar never repainted the idle bar")
 	}
+	// Allowing one repaint after the cancel is a race a loaded machine wins:
+	// a millisecond ticker slips several ticks before the goroutine gets its
+	// next trip round the select, which is how this failed in CI on an
+	// unrelated change. Wait for the goroutine to be gone instead, and then
+	// no repaint at all is possible.
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchBar did not return after its context was cancelled")
+	}
 	n := calls.Load()
 	time.Sleep(20 * time.Millisecond)
-	if calls.Load() > n+1 { // one tick may already be in flight at cancel
+	if calls.Load() != n {
 		t.Error("watchBar kept repainting after its context was cancelled")
 	}
 }
