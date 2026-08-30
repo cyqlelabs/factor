@@ -1,0 +1,15 @@
+flowchart TD
+    SHELL["voice shell · Patter"] -->|hears with| STT{{speech-to-text}}
+    SHELL -->|speaks with| TTS{{text-to-speech}}
+    subgraph LOCAL ["Factor's own speech server"]
+        WH["Parakeet<br/>Whisper"]
+        PI[Piper]
+    end
+    subgraph CLOUD ["audio leaves the machine"]
+        DG[Deepgram]
+        EL[ElevenLabs]
+    end
+    STT -.->|tiers 2, 4| WH
+    TTS -.->|tiers 3, 4| PI
+    STT -.->|tiers 1, 3| DG
+    TTS -.->|tiers 1, 2| EL

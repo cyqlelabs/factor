@@ -1,0 +1,8 @@
+flowchart TD
+    YOU([your phone]) -->|dials| TX[Telnyx]
+    TX -->|"signed<br/>webhook"| TUN["public URL<br/>tunnel or<br/>reverse proxy"]
+    TUN --> SH["voice shell · Patter<br/>:8723"]
+    SH -->|"speech in<br/>and out"| SPEECH{{"Deepgram · ElevenLabs<br/>or local"}}
+    SH -->|"OpenAI-compatible brain<br/>127.0.0.1:8724"| FA[Factor agent loop]
+    FA -->|"control API<br/>127.0.0.1:8722"| SH
+    SH -.->|"on every start:<br/>attach the number,<br/>point its webhook here"| TX

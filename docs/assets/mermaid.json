@@ -1,0 +1,10 @@
+{
+  "theme": "default",
+  "flowchart": {
+    "nodeSpacing": 22,
+    "rankSpacing": 38,
+    "padding": 8,
+    "curve": "basis",
+    "subGraphTitleMargin": { "top": 4, "bottom": 14 }
+  }
+}

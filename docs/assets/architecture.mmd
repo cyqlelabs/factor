@@ -1,0 +1,13 @@
+flowchart TD
+    TG([Telegram]) <--> BUS
+    CLI([CLI]) <--> BUS
+    PH([Phone]) <--> SHELL["voice shell sidecar<br/>speech · barge-in"]
+    PC([PC voice]) <--> MIC["mic + speakers<br/>VAD · wake word<br/>barge-in · speaker id"]
+    BUS[message bus] --> LOOP
+    SHELL <-->|chat completions<br/>on loopback| LOOP
+    MIC <-->|synchronous<br/>turns| LOOP
+    LOOP["agent loop<br/>one live turn<br/>per session"] <-->|recall<br/>store| MEM[("smrti REST<br/>sidecar")]
+    LOOP --> PROV["provider chain<br/>cost meter · failover<br/>cooldowns · compaction"]
+    LOOP --> REG[tool registry]
+    REG --- SUITES["fs · exec · web<br/>browser · desktop<br/>memory · jobs · cron<br/>config · pkg · skills · MCP"]
+    BG[jobs · cron<br/>heartbeat] -.->|proactive<br/>results| BUS

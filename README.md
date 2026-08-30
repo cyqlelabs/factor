@@ -50,21 +50,13 @@ than logging, so past failures become constraints it doesn't repeat.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    TG([Telegram]) <--> BUS
-    CLI([CLI]) <--> BUS
-    PH([Phone]) <--> SHELL["voice shell sidecar · speech · barge-in"]
-    SHELL <-->|chat completions on loopback| LOOP
-    PC([PC voice]) <--> MIC["mic + speakers · VAD · wake word · barge-in · speaker id"]
-    MIC <-->|synchronous turns| LOOP
-    BUS[message bus] --> LOOP["agent loop · one live turn per session"]
-    LOOP <-->|recall · store| MEM[("smrti REST sidecar")]
-    LOOP --> PROV["provider chain · cost meter · failover · cooldowns · compaction"]
-    LOOP --> REG[tool registry]
-    REG --- SUITES["fs · exec · web · browser · desktop · memory · jobs · cron · config · pkg · skills · MCP"]
-    BG[jobs · cron · heartbeat] -.->|proactive results| BUS
-```
+<!-- A PNG, not a mermaid fence: the GitHub mobile app shows mermaid as raw code.
+     Source: docs/assets/architecture.mmd — rebuild with: make diagrams -->
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cyqlelabs/factor/main/docs/assets/architecture.png" width="625"
+       alt="Telegram and the CLI reach the message bus, which feeds the agent loop. The phone reaches the loop through the voice shell sidecar and PC voice through the mic and speakers, both running turns directly. The loop recalls from and stores to the smrti REST sidecar, calls the provider chain, and drives the tool registry and its suites. Jobs, cron and the heartbeat publish proactive results onto the bus.">
+</p>
 
 Bus + bounded workers, mid-turn steering, narrow pluggable seams, CGO-free
 portability — [PicoClaw](https://github.com/sipeed/picoclaw)'s architecture in a
@@ -318,23 +310,13 @@ transcoding; Factor is its brain, over an endpoint that never leaves `127.0.0.1`
 
 A tier picks who serves each half of the pipeline; everything else is the same call:
 
-```mermaid
-flowchart LR
-    SHELL["voice shell · Patter"] -->|hears with| STT{{speech-to-text}}
-    SHELL -->|speaks with| TTS{{text-to-speech}}
-    subgraph LOCAL ["Factor's own speech server · 127.0.0.1"]
-        WH["Parakeet · Whisper"]
-        PI[Piper]
-    end
-    subgraph CLOUD [audio leaves the machine]
-        DG[Deepgram]
-        EL[ElevenLabs]
-    end
-    STT -.->|tiers 2, 4| WH
-    TTS -.->|tiers 3, 4| PI
-    STT -.->|tiers 1, 3| DG
-    TTS -.->|tiers 1, 2| EL
-```
+<!-- A PNG, not a mermaid fence: the GitHub mobile app shows mermaid as raw code.
+     Source: docs/assets/speech-tiers.mmd — rebuild with: make diagrams -->
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cyqlelabs/factor/main/docs/assets/speech-tiers.png" width="581"
+       alt="The voice shell hears with a speech-to-text engine and speaks with a text-to-speech one. Tiers 2 and 4 hear with Parakeet or Whisper and tiers 3 and 4 speak with Piper, both on Factor's own speech server; tiers 1 and 3 hear with Deepgram and tiers 1 and 2 speak with ElevenLabs, off the machine.">
+</p>
 
 Pick a local tier and Factor installs it: engines in their own virtualenv, your
 language's models on disk before setup finishes, nothing to start by hand.

@@ -17,7 +17,7 @@ export CGO_ENABLED=0
 
 COVER_MIN := 90
 
-.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check hooks clean version version-next win-setup test-windows test-windows-race
+.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check hooks diagrams clean version version-next win-setup test-windows test-windows-race
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/factor
@@ -79,6 +79,23 @@ fmt:
 
 lint:
 	golangci-lint run
+
+# The README and docs diagrams ship as PNGs, because the GitHub mobile app
+# shows a mermaid fence as raw code. Rebuild after editing any docs/assets/*.mmd.
+# Needs node; mermaid-cli renders in a Chrome puppeteer finds or downloads, and
+# puppeteer.json drops its sandbox, which a distro with user namespaces locked
+# down (Ubuntu 23.10+) refuses to start without. Pinned, so a new release can't
+# silently redraw every diagram. -s 3 renders at 3x, so the width the markdown
+# asks for is the width it is sharp at; the white background is opaque because
+# one image serves both GitHub themes, and the theme-aware tricks that would
+# avoid it are the ones the mobile app ignores.
+MMDC ?= npx -y @mermaid-js/mermaid-cli@11.16.0
+
+diagrams:
+	@cd docs/assets && for f in *.mmd; do \
+		echo "$$f"; \
+		$(MMDC) -c mermaid.json -p puppeteer.json -i "$$f" -o "$${f%.mmd}.png" -b white -s 3 || exit 1; \
+	done
 
 # Point git at the tracked hooks, so every commit lints first.
 hooks:

@@ -84,16 +84,13 @@ soon as it picks up, because silence on answer reads as a dropped call.
 
 ## How a call gets to the agent
 
-```mermaid
-flowchart LR
-    YOU([your phone]) -->|dials| TX[Telnyx]
-    TX -->|"signed webhook"| TUN["public URL<br/>tunnel or reverse proxy"]
-    TUN --> SH["voice shell · Patter<br/>:8723"]
-    SH -->|"speech in and out"| SPEECH{{"Deepgram · ElevenLabs<br/>or local"}}
-    SH -->|"OpenAI-compatible brain<br/>127.0.0.1:8724"| FA[Factor agent loop]
-    FA -->|"control API<br/>127.0.0.1:8722"| SH
-    SH -.->|"on every start:<br/>attach number to the application,<br/>point its webhook here"| TX
-```
+<!-- A PNG, not a mermaid fence: the GitHub mobile app shows mermaid as raw code.
+     Source: docs/assets/phone-telnyx.mmd — rebuild with: make diagrams -->
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cyqlelabs/factor/main/docs/assets/phone-telnyx.png" width="498"
+       alt="Your phone dials Telnyx, which posts a signed webhook to a public URL — a tunnel or reverse proxy — in front of the voice shell on port 8723. The shell runs speech in and out through Deepgram and ElevenLabs or local engines, and reaches the Factor agent loop over loopback: an OpenAI-compatible brain on 127.0.0.1:8724, and a control API back on 127.0.0.1:8722. On every start the shell attaches the number and points its webhook at itself.">
+</p>
 
 Patter auto-configures Twilio and never Telnyx, so Factor does that part itself.
 On every start, once the public hostname is known, it PATCHes the number's
