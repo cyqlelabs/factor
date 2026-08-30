@@ -107,23 +107,11 @@ func Latest(ctx context.Context) (Release, error) {
 		return Release{}, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	// An unauthenticated caller gets 60 requests an hour, counted per address,
-	// and every machine behind one router shares that. A check runs at every
-	// start — which on a box whose watchdog restarts the gateway is a check a
-	// minute — so the answer is asked for conditionally: GitHub does not count
-	// a 304 against the budget, and the release only changes on release day.
-	cached, conditional := loadReleaseCache()
-	if conditional {
-		req.Header.Set("If-None-Match", cached.ETag)
-	}
 	resp, err := httpClient().Do(req)
 	if err != nil {
 		return Release{}, fmt.Errorf("looking up the latest factor release: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotModified && conditional {
-		return cached.Release, nil
-	}
 	if resp.StatusCode != http.StatusOK {
 		return Release{}, fmt.Errorf("looking up the latest factor release: %s", describeStatus(resp))
 	}
@@ -154,23 +142,41 @@ func Latest(ctx context.Context) (Release, error) {
 	if rel.URL == "" {
 		return Release{}, fmt.Errorf("release %s publishes no %s build", rel.Version, rel.Asset)
 	}
-	saveReleaseCache(releaseCache{ETag: resp.Header.Get("ETag"), Release: rel})
+	saveReleaseCache(releaseCache{Checked: time.Now(), Release: rel})
 	return rel, nil
 }
 
-// releaseCache is the last answer GitHub gave and the ETag identifying it, so
-// the next check can ask whether anything changed instead of asking again.
+// releaseCheckFloor is how recent a stored answer has to be for the watcher's
+// startup check to trust it instead of asking again. GitHub's budget is 60 an
+// hour, counted per address, and it counts every request — a conditional one
+// answered 304 included, which is measured against the live API and not what
+// the documentation implies. So an hour is the useful floor: it is the window
+// the budget is spent in, and it caps a machine that restarts all day at one
+// request per window instead of one per restart.
+const releaseCheckFloor = time.Hour
+
+// latestNoOlderThan answers from the last stored check while it is younger
+// than age, so restarts cost nothing. An explicit `factor upgrade` never comes
+// through here: someone who asks is owed a fresh answer.
+func latestNoOlderThan(ctx context.Context, age time.Duration) (Release, error) {
+	if c, ok := loadReleaseCache(); ok && time.Since(c.Checked) < age {
+		return c.Release, nil
+	}
+	return Latest(ctx)
+}
+
+// releaseCache is the last answer GitHub gave and when it gave it.
 type releaseCache struct {
-	ETag    string  `json:"etag"`
-	Release Release `json:"release"`
+	Checked time.Time `json:"checked"`
+	Release Release   `json:"release"`
 }
 
 func releaseCachePath() string { return filepath.Join(config.Home(), "release-check.json") }
 
-// loadReleaseCache reports a usable cache: one with an ETag, holding a release
-// resolved for the binary this machine runs. Anything else — no file, a
-// rewritten home, a cache carried to another architecture — is no cache, and
-// the check falls back to an ordinary request.
+// loadReleaseCache reports a usable cache: one holding a release resolved for
+// the binary this machine runs. Anything else — no file, a rewritten home, a
+// cache carried to another architecture, a clock that moved backwards — is no
+// cache, and the check asks GitHub.
 func loadReleaseCache() (releaseCache, bool) {
 	raw, err := os.ReadFile(releaseCachePath())
 	if err != nil {
@@ -180,14 +186,14 @@ func loadReleaseCache() (releaseCache, bool) {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return releaseCache{}, false
 	}
-	if c.ETag == "" || c.Release.Version == "" || c.Release.Asset != AssetName() {
+	if c.Release.Version == "" || c.Release.Asset != AssetName() || c.Checked.After(time.Now()) {
 		return releaseCache{}, false
 	}
 	return c, true
 }
 
 // saveReleaseCache is best effort: a cache that cannot be written costs one
-// counted request next time, which is not worth failing an upgrade over.
+// counted request per restart, which is not worth failing an upgrade over.
 func saveReleaseCache(c releaseCache) {
 	raw, err := json.Marshal(c)
 	if err != nil {
@@ -408,9 +414,10 @@ func Watch(ctx context.Context, every time.Duration, current string, notify func
 		every = DefaultCheckInterval
 	}
 	told := ""
+	fresh := min(every, releaseCheckFloor)
 	watchLoop(ctx, every, func() {
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		rel, err := Latest(callCtx)
+		rel, err := latestNoOlderThan(callCtx, fresh)
 		cancel()
 		if err != nil {
 			slogDebug("release check failed", err)

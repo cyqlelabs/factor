@@ -92,8 +92,6 @@ func (r release) start(t *testing.T) (string, *http.ServeMux) {
 	}
 
 	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
-		// GitHub tags every answer, which is what the next check asks against.
-		w.Header().Set("ETag", `W/"`+r.tag+`"`)
 		var assets []string
 		for _, n := range names {
 			size := len(r.binary)
@@ -554,44 +552,77 @@ func TestTheUpgradeClientTrustsWhatTheProxyInstalled(t *testing.T) {
 	}
 }
 
-// GitHub gives an unauthenticated caller 60 requests an hour per address, and
-// a machine that checks at every start burns them on an answer it already has.
-// The second check must ask conditionally and be told nothing changed.
-func TestLatestAsksConditionallyOnceItHasAnAnswer(t *testing.T) {
+// GitHub gives an unauthenticated caller 60 requests an hour per address and
+// counts every request against it — a conditional one answered 304 included,
+// measured against the live API. So a watcher that checks at every start, on a
+// box whose watchdog restarts the gateway, must answer from what it already
+// knows rather than ask again.
+func TestWatchSpendsOneRequestPerWindowAcrossRestarts(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
 	setPlatform(t, "linux", "amd64")
 	base, mux := release{tag: "v0.4.0", binary: []byte("binary")}.start(t)
-	_ = base
 
-	var conditional []string
-	mux.HandleFunc("/conditional/releases/latest", func(w http.ResponseWriter, r *http.Request) {
-		conditional = append(conditional, r.Header.Get("If-None-Match"))
-		w.Header().Set("ETag", `W/"tag-v0.4.0"`)
-		if r.Header.Get("If-None-Match") != "" {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
+	var asked int
+	mux.HandleFunc("/counted/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+		asked++
 		fmt.Fprintf(w, `{"tag_name":"v0.4.0","html_url":"https://example.test/v0.4.0","assets":[
 			{"name":"factor-linux-amd64","browser_download_url":"%s/dl/factor-linux-amd64","size":6},
 			{"name":"SHA256SUMS","browser_download_url":"%s/dl/SHA256SUMS","size":9}]}`, base, base)
 	})
 	prev := releaseAPI
-	releaseAPI = base + "/conditional/releases/latest"
+	releaseAPI = base + "/counted/releases/latest"
 	t.Cleanup(func() { releaseAPI = prev })
 
-	first, err := Latest(context.Background())
+	first, err := latestNoOlderThan(context.Background(), releaseCheckFloor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := Latest(context.Background())
-	if err != nil {
-		t.Fatalf("the conditional check failed: %v", err)
+	for range 5 { // five restarts inside the window
+		rel, err := latestNoOlderThan(context.Background(), releaseCheckFloor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rel != first {
+			t.Fatalf("rel = %+v, want the stored %+v", rel, first)
+		}
 	}
-	if second != first {
-		t.Errorf("second = %+v, want the cached %+v", second, first)
+	if asked != 1 {
+		t.Errorf("asked GitHub %d times, want 1 for the whole window", asked)
 	}
-	if len(conditional) != 2 || conditional[0] != "" || conditional[1] != `W/"tag-v0.4.0"` {
-		t.Errorf("If-None-Match sent = %q, want the second request to carry the ETag", conditional)
+
+	// Past the window, the next start asks again.
+	if _, err := latestNoOlderThan(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if asked != 2 {
+		t.Errorf("asked GitHub %d times, want the stale answer refreshed", asked)
+	}
+}
+
+// An explicit `factor upgrade` is someone asking; it never answers from store.
+func TestLatestAlwaysAsks(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	setPlatform(t, "linux", "amd64")
+	base, mux := release{tag: "v0.4.0", binary: []byte("binary")}.start(t)
+
+	var asked int
+	mux.HandleFunc("/direct/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+		asked++
+		fmt.Fprintf(w, `{"tag_name":"v0.4.0","html_url":"https://example.test/v0.4.0","assets":[
+			{"name":"factor-linux-amd64","browser_download_url":"%s/dl/factor-linux-amd64","size":6},
+			{"name":"SHA256SUMS","browser_download_url":"%s/dl/SHA256SUMS","size":9}]}`, base, base)
+	})
+	prev := releaseAPI
+	releaseAPI = base + "/direct/releases/latest"
+	t.Cleanup(func() { releaseAPI = prev })
+
+	for range 3 {
+		if _, err := Latest(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if asked != 3 {
+		t.Errorf("asked GitHub %d times, want one per call", asked)
 	}
 }
 
