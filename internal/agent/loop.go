@@ -88,23 +88,29 @@ type Loop struct {
 	seenMu sync.Mutex
 	seen   map[string]tools.ToolContext
 
+	// pendingInduce is the last skill-worthy turn per session, waiting for
+	// the session to go quiet before it is distilled into the catalog.
+	induceMu      sync.Mutex
+	pendingInduce map[string]induceCandidate
+
 	windowFor func() int // context length of the models in play; 0 = unknown
 }
 
 func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry *tools.Registry,
 	sessions *session.Store, builder *ContextBuilder, ambient *memory.Ambient) *Loop {
 	return &Loop{
-		cfg:         cfg,
-		bus:         b,
-		chat:        chat,
-		registry:    registry,
-		sessions:    sessions,
-		builder:     builder,
-		ambient:     ambient,
-		active:      map[string]*turn{},
-		seen:        map[string]tools.ToolContext{},
-		sem:         make(chan struct{}, cfg.Agent.MaxConcurrentTurns),
-		lastChannel: loadLastChannel(),
+		cfg:           cfg,
+		bus:           b,
+		chat:          chat,
+		registry:      registry,
+		sessions:      sessions,
+		builder:       builder,
+		ambient:       ambient,
+		active:        map[string]*turn{},
+		seen:          map[string]tools.ToolContext{},
+		pendingInduce: map[string]induceCandidate{},
+		sem:           make(chan struct{}, cfg.Agent.MaxConcurrentTurns),
+		lastChannel:   loadLastChannel(),
 	}
 }
 
@@ -121,6 +127,7 @@ func (l *Loop) Run(ctx context.Context) {
 			return
 		case <-sweep.C:
 			l.compactIdleSessions(ctx)
+			l.induceIdleSessions(ctx)
 		case msg := <-l.bus.Inbound():
 			l.dispatch(ctx, msg)
 		}
@@ -557,6 +564,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 			// Final answer — unless steering arrived mid-turn; then keep going.
 			steered := l.drainSteering(in, t, record)
 			if len(steered) == 0 {
+				l.noteInduceCandidate(in, messages, thisTurn, resp.Content)
 				l.maybeCompactAsync(in)
 				return resp.Content, nil
 			}

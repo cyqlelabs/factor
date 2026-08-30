@@ -60,6 +60,10 @@ type AgentConfig struct {
 	MaxContextTokens   int    `json:"max_context_tokens"`
 	KeepRecentMessages int    `json:"keep_recent_messages"`
 	ExtraInstructions  string `json:"extra_instructions,omitempty"`
+	// LearnSkills lets the idle sweep distill a finished multi-tool turn into
+	// a reusable skill in the workspace catalog, so work figured out once by
+	// trial and error is a recipe the next time it comes up.
+	LearnSkills bool `json:"learn_skills" env:"FACTOR_LEARN_SKILLS"`
 }
 
 // Candidate identifies one provider+model combination in the failover chain.
@@ -334,6 +338,7 @@ func Default() *Config {
 			SummarizeAtPercent: 75,
 			MaxContextTokens:   48000,
 			KeepRecentMessages: 8,
+			LearnSkills:        true,
 		},
 		Provider: ProviderConfig{
 			Type:             "openrouter",

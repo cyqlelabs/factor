@@ -40,6 +40,15 @@ func NewContextBuilder(cfg *config.Config, loader *skills.Loader, ambient *memor
 	return &ContextBuilder{cfg: cfg, skills: loader, ambient: ambient, stamps: map[string]int64{}}
 }
 
+// SkillsCatalog is every skill the model can currently see, for callers that
+// need the list itself rather than the rendered prompt section.
+func (cb *ContextBuilder) SkillsCatalog() []skills.Skill {
+	if cb.skills == nil {
+		return nil
+	}
+	return cb.skills.List()
+}
+
 // SystemPrompt is the stable head of every request: identity, the built-in
 // persona, the user's workspace files, drop-in instructions, the skills
 // catalog, and the operating rules that close it. It takes no arguments

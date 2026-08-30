@@ -304,8 +304,7 @@ func (t *WriteTool) Execute(_ context.Context, args map[string]any) *tools.Resul
 	path := filepath.Join(dir, "SKILL.md")
 	_, statErr := os.Stat(path)
 	existed := statErr == nil
-	doc := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n\n%s\n", name, desc, content)
-	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(renderSkillDoc(name, desc, content, false)), 0o644); err != nil {
 		return tools.Errorf("write SKILL.md: %v", err)
 	}
 
