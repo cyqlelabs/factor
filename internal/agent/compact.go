@@ -278,7 +278,8 @@ func (l *Loop) compact(ctx context.Context, sessionKey string) error {
 			{Role: "system", Content: prompt},
 			{Role: "user", Content: transcript.String()},
 		},
-		MaxTokens: 1024,
+		MaxTokens:   1024,
+		NoReasoning: true,
 	}
 	resp, err := l.chat.Chat(ctx, req)
 	if err != nil {
@@ -297,7 +298,15 @@ func (l *Loop) compact(ctx context.Context, sessionKey string) error {
 		}
 	}
 
-	if err := l.sessions.SetSummaryAt(sessionKey, strings.TrimSpace(resp.Content), priorSkip+cut); err != nil {
+	// Truncation is irreversible for the live history, so an empty summary is
+	// not a summary to store: it would trade the conversation for nothing.
+	// Leaving it uncompacted costs one oversized request and the next idle
+	// sweep tries again.
+	summary := strings.TrimSpace(resp.Content)
+	if summary == "" {
+		return fmt.Errorf("summarize: the model returned no summary (finish reason %q)", resp.FinishReason)
+	}
+	if err := l.sessions.SetSummaryAt(sessionKey, summary, priorSkip+cut); err != nil {
 		return err
 	}
 	return l.sessions.Compact(sessionKey)

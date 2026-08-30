@@ -186,7 +186,8 @@ func (l *Loop) induce(ctx context.Context, sessionKey string, cand induceCandida
 			{Role: "system", Content: inducePrompt},
 			{Role: "user", Content: induceInput(cand, catalog, learned, atCap)},
 		},
-		MaxTokens: induceMaxTokens,
+		MaxTokens:   induceMaxTokens,
+		NoReasoning: true,
 	})
 	if err != nil {
 		// A cap is a decision the user made; hitting it here is the feature

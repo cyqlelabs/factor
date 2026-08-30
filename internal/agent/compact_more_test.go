@@ -489,3 +489,43 @@ func TestProcessDirectRespectsCancellationWhileWaiting(t *testing.T) {
 		t.Error("ProcessDirect ignored cancellation for too long")
 	}
 }
+
+// The failure this guards is data loss, not a missing summary. A reasoning
+// model handed 1024 tokens spends all 1024 thinking and returns null content;
+// storing that emptiness and truncating the history behind it left a session
+// with no summary and no conversation.
+func TestCompactKeepsHistoryWhenTheSummaryComesBackEmpty(t *testing.T) {
+	h := newHarness(t)
+	key := "cli:empty-summary"
+	for i := range 12 {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		_ = h.store.Append(key, provider.Message{Role: role, Content: fmt.Sprintf("m%d", i)})
+	}
+	if err := h.store.SetSummaryAt(key, "what the session knew", 0); err != nil {
+		t.Fatal(err)
+	}
+	empty := func(req *provider.Request) (*provider.Response, error) {
+		if !req.NoReasoning {
+			t.Error("the summarize call must spend its budget on the summary, not on reasoning")
+		}
+		return &provider.Response{Content: "", FinishReason: "length"}, nil
+	}
+	h.chat.script = []func(*provider.Request) (*provider.Response, error){empty, empty}
+
+	if err := h.loop.compact(context.Background(), key); err == nil {
+		t.Fatal("want an error when the model returns no summary")
+	}
+	history, err := h.store.History(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 12 {
+		t.Errorf("history = %d messages, want the 12 that were never summarized", len(history))
+	}
+	if got := h.store.Summary(key); got != "what the session knew" {
+		t.Errorf("summary = %q, want the earlier one left standing", got)
+	}
+}

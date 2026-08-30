@@ -440,3 +440,39 @@ func TestToAnthropicDropsUnknownRoles(t *testing.T) {
 		t.Errorf("unknown roles must be dropped, got system=%q out=%+v", system, out)
 	}
 }
+
+// The leak this guards: OpenRouter lifts a Qwen <think> block into a reasoning
+// field of its own and leaves the closing tag in the content, which the loop
+// then sent to the chat as an interim note reading "</think>".
+func TestOpenAIChatStripsReasoningDelimiters(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"orphan closing tag", "\n</think>\n\n", ""},
+		{"orphan tag before an answer", "</think>\n\nHelium is in engine/.", "Helium is in engine/."},
+		{"whole block", "<think>where does it live?</think>\n\nIn engine/.", "In engine/."},
+		{"unterminated block", "<think>still reasoning when the budget ran out", ""},
+		{"a tag the model is writing about", "The reply ended in </think>, which is the bug.", "The reply ended in </think>, which is the bug."},
+		{"ordinary content is untouched", "  spaced out  ", "  spaced out  "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"choices": []any{map[string]any{"message": map[string]any{"content": tc.content}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := jsonServer(t, http.StatusOK, string(body))
+			resp, err := NewOpenAI(srv.URL, "k", "qwen").Chat(context.Background(), &Request{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.Content != tc.want {
+				t.Errorf("content = %q, want %q", resp.Content, tc.want)
+			}
+		})
+	}
+}

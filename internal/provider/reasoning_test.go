@@ -208,3 +208,83 @@ func TestEffortBudgetMatchesWhatAnthropicIsSent(t *testing.T) {
 		t.Errorf("an unknown effort must have no budget, got %d", got)
 	}
 }
+
+// A housekeeping call must not be charged for thinking it cannot afford:
+// max_tokens caps reasoning and content together on the OpenAI dialects, so a
+// summary asked for with effort xhigh came back as 1024 reasoning tokens and no
+// content at all.
+func TestNoReasoningSuppressesEveryDialect(t *testing.T) {
+	t.Run("openrouter is told to stop", func(t *testing.T) {
+		srv, got := captureBody(t, oaReply)
+		p, err := New(config.Candidate{
+			Type: "openrouter", APIBase: srv.URL, APIKey: "k", Model: "qwen/qwen3.7-plus",
+			Reasoning: &config.ReasoningConfig{Effort: "xhigh"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Chat(context.Background(), &Request{
+			Messages: []Message{{Role: "user", Content: "summarize"}}, MaxTokens: 1024, NoReasoning: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		reasoning, ok := (*got)["reasoning"].(map[string]any)
+		if !ok {
+			t.Fatalf("no reasoning object in %v", *got)
+		}
+		if reasoning["enabled"] != false {
+			t.Errorf("reasoning = %v, want enabled:false", reasoning)
+		}
+		if _, present := reasoning["effort"]; present {
+			t.Errorf("reasoning = %v, want no effort alongside the off switch", reasoning)
+		}
+	})
+
+	t.Run("first-party OpenAI gets no effort", func(t *testing.T) {
+		srv, got := captureBody(t, oaReply)
+		p, _ := New(config.Candidate{
+			Type: "openai", APIBase: srv.URL, APIKey: "k", Model: "gpt-x",
+			Reasoning: &config.ReasoningConfig{Effort: "high"},
+		})
+		if _, err := p.Chat(context.Background(), &Request{
+			Messages: []Message{{Role: "user", Content: "summarize"}}, NoReasoning: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, present := (*got)["reasoning_effort"]; present {
+			t.Errorf("reasoning_effort survived in %v", *got)
+		}
+	})
+
+	t.Run("anthropic gets no thinking block", func(t *testing.T) {
+		srv, got := captureBody(t, anthReply)
+		p, _ := New(config.Candidate{
+			Type: "anthropic", APIBase: srv.URL, APIKey: "k", Model: "claude-sonnet-5",
+			Reasoning: &config.ReasoningConfig{Effort: "xhigh"},
+		})
+		if _, err := p.Chat(context.Background(), &Request{
+			Messages: []Message{{Role: "user", Content: "summarize"}}, MaxTokens: 1024, NoReasoning: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, present := (*got)["thinking"]; present {
+			t.Errorf("thinking block survived in %v", *got)
+		}
+		if mt := (*got)["max_tokens"].(float64); mt != 1024 {
+			t.Errorf("max_tokens = %v, want the 1024 the caller asked for", mt)
+		}
+	})
+
+	t.Run("a gateway with no reasoning configured is left alone", func(t *testing.T) {
+		srv, got := captureBody(t, oaReply)
+		p, _ := New(config.Candidate{Type: "openrouter", APIBase: srv.URL, Model: "m"})
+		if _, err := p.Chat(context.Background(), &Request{
+			Messages: []Message{{Role: "user", Content: "summarize"}}, NoReasoning: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, present := (*got)["reasoning"]; present {
+			t.Errorf("reasoning field appeared in %v", *got)
+		}
+	})
+}

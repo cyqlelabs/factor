@@ -170,7 +170,9 @@ func (p *Anthropic) Chat(ctx context.Context, req *Request) (*Response, error) {
 	for _, t := range req.Tools {
 		body.Tools = append(body.Tools, anthTool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters})
 	}
-	p.applyThinking(&body)
+	if !req.NoReasoning {
+		p.applyThinking(&body)
+	}
 
 	raw, err := json.Marshal(body)
 	if err != nil {

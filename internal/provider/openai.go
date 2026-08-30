@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -117,12 +118,41 @@ type oaResponse struct {
 	} `json:"usage"`
 }
 
+// A model that reasons inside <think> writes those delimiters into its content,
+// and an endpoint that lifts the reasoning into a field of its own — OpenRouter
+// does, for Qwen — leaves the closing tag behind on its own. Either way the tag
+// is not the model addressing the user: unstripped, it reached a Telegram chat
+// as a message reading "</think>". Only the head of the content is examined,
+// because a tag further in is the model writing about tags.
+func stripReasoning(content string) string {
+	s := strings.TrimLeft(content, " \t\r\n")
+	switch {
+	case strings.HasPrefix(s, "<think>"):
+		_, answer, closed := strings.Cut(s, "</think>")
+		if !closed {
+			// The block never ended, so the answer never started.
+			return ""
+		}
+		return strings.TrimSpace(answer)
+	case strings.HasPrefix(s, "</think>"):
+		return strings.TrimSpace(strings.TrimPrefix(s, "</think>"))
+	}
+	return content
+}
+
 func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 	body := oaRequest{Model: p.model, MaxTokens: req.MaxTokens}
-	switch p.dialect {
-	case "object":
+	switch {
+	case req.NoReasoning:
+		// Silence is not enough for a gateway that was going to reason anyway,
+		// so an object-dialect one is told to stop outright. The effort dialect
+		// has no "off" to send, and leaving the field out is all it takes.
+		if p.dialect == "object" && p.reasoning != nil {
+			body.Reasoning = map[string]any{"enabled": false}
+		}
+	case p.dialect == "object":
 		body.Reasoning = p.reasoning.object()
-	case "effort":
+	case p.dialect == "effort":
 		if p.reasoning != nil {
 			body.ReasoningEffort = p.reasoning.Effort
 		}
@@ -189,7 +219,7 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 
 	choice := parsed.Choices[0]
 	out := &Response{
-		Content:      choice.Message.Content,
+		Content:      stripReasoning(choice.Message.Content),
 		FinishReason: choice.FinishReason,
 		Usage:        Usage{PromptTokens: parsed.Usage.PromptTokens, CompletionTokens: parsed.Usage.CompletionTokens},
 		Model:        p.model,

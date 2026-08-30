@@ -39,6 +39,14 @@ type Request struct {
 	Tools       []ToolDefinition
 	MaxTokens   int
 	Temperature float64 // 0 = provider default
+
+	// NoReasoning marks a housekeeping call — a summary, a classification —
+	// whose budget has to reach the answer. On the OpenAI dialects MaxTokens
+	// caps reasoning and content together, so a reasoning model handed a small
+	// cap spends all of it thinking and returns nothing: measured against
+	// qwen3.7-plus at effort xhigh, 1024 tokens bought 1024 reasoning tokens
+	// and a null summary, which then replaced a session's whole history.
+	NoReasoning bool
 }
 
 type Usage struct {
