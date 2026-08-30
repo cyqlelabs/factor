@@ -1016,3 +1016,43 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Qwen on the live box kept asking for the same exec twice in one batch, which
+// ran the command twice and spent two of the twenty iterations on one answer.
+func TestDuplicateToolCallsInOneBatchRunOnce(t *testing.T) {
+	h := newHarness(t,
+		func(*provider.Request) (*provider.Response, error) {
+			return &provider.Response{ToolCalls: []provider.ToolCall{
+				{ID: "a", Name: "probe", Args: map[string]any{"value": "ls"}},
+				{ID: "b", Name: "probe", Args: map[string]any{"value": "ls"}},
+				{ID: "c", Name: "probe", Args: map[string]any{"value": "ls -la"}},
+			}}, nil
+		},
+		final("done"))
+	if _, err := h.loop.ProcessDirect(context.Background(), "look", "cli:dup"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(h.tool.calls); got != 2 {
+		t.Errorf("tool ran %d times, want 2: the repeat of the same arguments is one call", got)
+	}
+	// Every id still needs its own result, or replaying the history breaks.
+	history, err := h.store.History("cli:dup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered := map[string]string{}
+	for _, m := range history {
+		if m.Role == "tool" {
+			answered[m.ToolCallID] = m.Content
+		}
+	}
+	if len(answered) != 3 {
+		t.Fatalf("tool results = %v, want one per call id", answered)
+	}
+	if answered["a"] != answered["b"] {
+		t.Errorf("the repeated call got %q, want the first answer %q", answered["b"], answered["a"])
+	}
+	if answered["c"] == answered["a"] {
+		t.Errorf("different arguments must still run: both got %q", answered["c"])
+	}
+}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -588,6 +589,12 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 			}
 		}
 
+		// A model that asks for the same tool with the same arguments twice in
+		// one batch is repeating itself, not asking for a second reading. Both
+		// ids still need a result beside them or the history stops replaying,
+		// so the first answer serves both — which spares the second run of
+		// whatever the call does, and the iteration it would have cost.
+		served := map[string]string{}
 		for _, call := range resp.ToolCalls {
 			if ctx.Err() != nil {
 				// The turn is over — on voice, because the user talked over
@@ -599,6 +606,15 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 				if err := record(provider.Message{Role: "tool", ToolCallID: call.ID, Content: interruptedTool}); err != nil {
 					return "", err
 				}
+				continue
+			}
+			sig := callSignature(call)
+			if content, repeat := served[sig]; repeat {
+				toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: content}
+				if err := record(toolMsg); err != nil {
+					return "", err
+				}
+				messages = append(messages, toolMsg)
 				continue
 			}
 			l.emit(in.sessionKey, PhaseTool, call.Name)
@@ -613,6 +629,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 				content = interruptedTool
 				result.Images = nil
 			}
+			served[sig] = content
 			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: content}
 			if err := record(toolMsg); err != nil {
 				return "", err
@@ -645,6 +662,16 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 	reply := l.wrapUp(ctx, in, messages)
 	l.maybeCompactAsync(in)
 	return reply, nil
+}
+
+// callSignature identifies a call by what it would do: the tool and the
+// arguments, rendered canonically (json.Marshal sorts map keys).
+func callSignature(call provider.ToolCall) string {
+	args, err := json.Marshal(call.Args)
+	if err != nil {
+		return ""
+	}
+	return call.Name + string(args)
 }
 
 // wrapUp buys back a turn that ran out of tool iterations. Those iterations
