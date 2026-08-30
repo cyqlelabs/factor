@@ -142,7 +142,7 @@ live in `internal/config` with the other tool knobs — defaults in
 3. **Policy move** — raise the exec cap (`internal/tools/exec.go:41`) to the
    256 KB transport ceiling; the MCP cap is already gone. While there: exec's
    slice is byte-indexed and can split a rune (`exec.go:112-114`) — cut on
-   runes as `internal/jobs/tools.go:122-131` already does.
+   runes as `internal/jobs/tools.go:125-135` already does.
 4. **Config** — `ToolsConfig` fields, `Defaults()`, first `normalize()`
    guard for the section, and config tests.
 5. **Verify** — `make check` and `make lint`; existing truncation tests

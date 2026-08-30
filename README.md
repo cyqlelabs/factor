@@ -44,6 +44,7 @@ than logging, so past failures become constraints it doesn't repeat.
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications on X11/Wayland/macOS/Windows — plus grid vision ([Desktop](#desktop)) |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed one ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills ([Extending](#extending-factor)) |
+| 📓 **Learns from its own work** | A turn that took four or more tool calls becomes a skill it writes for itself once the session goes quiet ([Extending](#extending-factor)) |
 | 🔧 **Self-managing** | Edits its own config, installs packages, upgrades and restarts itself, schedules cron jobs and one-off reminders, runs `HEARTBEAT.md` checks that cost nothing when idle |
 | 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, scrubbed secrets — rails, not a sandbox ([Security](#security-model)) |
 
@@ -144,7 +145,8 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "context_window_tokens": 0,              // 0 = ask the model catalog; a value only ever shrinks its answer
     "max_tool_iterations": 20,
     "summarize_at_percent": 75,              // how full the window gets before compaction
-    "keep_recent_messages": 8                // what survives it
+    "keep_recent_messages": 8,               // what survives it
+    "learn_skills": true                     // distill a finished multi-tool turn into a skill
   },
   "provider": {
     "type": "openrouter",                    // openrouter|openai|groq|ollama|lmstudio|llamacpp|anthropic|custom
@@ -541,6 +543,17 @@ OS build, CPU, memory and a persistent device id as it initializes, and its own
 | **MCP server** | `mcp_add` (or the `mcp.servers` config section) mounts its tools at runtime — no Go required |
 | **Skill** | Drop `workspace/skills/<name>/SKILL.md` — catalog in prompt, full text on demand, `skill_find` searches the public registry (skills.sh) and `skill_install` takes its slug, a git URL, or a directory |
 
+**It also writes its own.** Factor remembers a turn that took four or more tool
+calls; once that session sits quiet for ten minutes, it spends one metered call
+asking whether the trajectory holds a workflow worth keeping. Most of the time
+the answer is `SKIP`. A `LEARN` lands as a skill in the same catalog, marked
+`learned: true`, and the next turn lists it like any other. Induction rewrites
+its own output and never a skill you wrote or installed — `skill_write` drops the
+marker, which is how a learned skill graduates out of its reach. The learned
+library holds 40, so past that induction has to improve an entry rather than
+mint a near-duplicate. `agent.learn_skills: false`, or `FACTOR_LEARN_SKILLS=0`,
+turns it off.
+
 <details>
 <summary><b>Wiring in a connector</b></summary>
 
@@ -582,6 +595,9 @@ voice shell (both spawned by re-execing the test binary), a fake Telegram API, a
 fake carrier, a scripted microphone and speaker, a fake MCP server over real stdio
 JSON-RPC, a scripted desktop — plus live headless-Chrome and desktop round-trip
 tests that auto-skip where the machine can't host them.
+
+Decisions worth the argument, and the alternatives they beat, live in
+[`docs/decisions/`](docs/decisions).
 
 ## License
 
