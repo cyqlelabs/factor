@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,7 +44,7 @@ const defaultRunnerTimeout = 30 * time.Second
 // DefaultEnv wires Env to the real machine.
 func DefaultEnv() Env {
 	return Env{
-		Run:    execRunner(defaultRunnerTimeout),
+		Run:    screenRunner(execRunner(defaultRunnerTimeout)),
 		Has:    hasBinary,
 		Getenv: os.Getenv,
 		Glob:   filepath.Glob,
@@ -73,6 +74,16 @@ func (e Env) first(bins ...string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// screenRunner makes sure the process still points at a live display before
+// it spawns a helper that needs one. The display is adopted onto the process,
+// so healing it here heals every later helper, dialog and browser too.
+func screenRunner(next Runner) Runner {
+	return func(ctx context.Context, stdin string, argv ...string) (string, error) {
+		ScreenReady()
+		return next(ctx, stdin, argv...)
+	}
 }
 
 func hasBinary(bin string) bool {
@@ -255,6 +266,84 @@ func HasDisplay(env Env) bool {
 	}
 }
 
+// x11SocketDir is where an X server puts the socket clients connect to, and
+// where it removes it from when it exits.
+const x11SocketDir = "/tmp/.X11-unix"
+
+// HasLiveDisplay reports whether the display this process holds still has a
+// server behind it. An X server unlinks its socket when it exits, so the name
+// in the environment outlives the session it belonged to, and a process that
+// keeps it points at nothing for the rest of its life.
+func HasLiveDisplay(env Env) bool {
+	switch env.GOOS {
+	case "darwin", "windows":
+		return true
+	}
+	// Either name is enough, and a session that sets both is ordinary: a
+	// compositor that has gone must not hide the X server still running
+	// beside it, or every helper call would re-adopt the same screen.
+	if d := env.env("WAYLAND_DISPLAY"); d != "" && socketThere(env, waylandSocket(env, d)) {
+		return true
+	}
+	d := env.env("DISPLAY")
+	if d == "" {
+		return false
+	}
+	// A forwarded or networked display ("host:10.0") has no socket here to
+	// look for, so it is never the one to call dead.
+	sock, local := x11Socket(d)
+	return !local || socketThere(env, sock)
+}
+
+// x11Socket names the unix socket behind a local DISPLAY (":1", ":1.0"),
+// reporting false for anything that does not have one.
+func x11Socket(display string) (path string, local bool) {
+	if !strings.HasPrefix(display, ":") {
+		return "", false
+	}
+	num, _, _ := strings.Cut(strings.TrimPrefix(display, ":"), ".")
+	if num == "" {
+		return "", false
+	}
+	return filepath.Join(x11SocketDir, "X"+num), true
+}
+
+// waylandSocket resolves WAYLAND_DISPLAY the way a client does: a bare name
+// sits in XDG_RUNTIME_DIR, an absolute one stands on its own.
+func waylandSocket(env Env, name string) string {
+	if filepath.IsAbs(name) {
+		return name
+	}
+	dir := env.env("XDG_RUNTIME_DIR")
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, name)
+}
+
+// socketThere answers whether one socket is still on disk, and says yes when
+// it has no way to look: a display that cannot be checked must not be called
+// dead, or a working screen is thrown away on a guess.
+func socketThere(env Env, path string) bool {
+	if env.Glob == nil || path == "" {
+		return true
+	}
+	matches, err := env.Glob(path)
+	return err != nil || len(matches) > 0
+}
+
+// ScreenReady points this process at a live display when the one it holds has
+// gone, and reports whether it has one now. Everything that reaches for the
+// screen calls it first, since adoption at startup is a snapshot and a login
+// session outlives it.
+func ScreenReady() bool {
+	env := Env{Getenv: os.Getenv, Glob: filepath.Glob, GOOS: runtime.GOOS}
+	if adopted := AdoptDisplay(env, os.Setenv); adopted != "" {
+		slog.Info("re-adopted the machine's screen", "display", adopted)
+	}
+	return HasDisplay(env) && HasLiveDisplay(env)
+}
+
 // MachineHasDisplay reports whether this machine drives a screen, which is
 // not the same question as whether this process can reach it. A setup run
 // over ssh has no DISPLAY of its own while the box in front of the user is
@@ -280,8 +369,18 @@ func MachineHasDisplay(env Env) bool {
 // variable is set on the process rather than on each command so that
 // everything downstream inherits it: the dialogs, the desktop helpers, the
 // browser, and anything they spawn in turn.
+//
+// It also re-adopts over a display that has since gone away, because one
+// reading at startup is a guess with an expiry date: a gateway that starts
+// while the user is still logging in sees the greeter's server, which exits
+// seconds later and takes the whole desktop down with it — every helper then
+// failing to open a display, and ask_user reporting a question the user never
+// saw as one they dismissed.
 func AdoptDisplay(env Env, setenv func(key, value string) error) string {
-	if setenv == nil || HasDisplay(env) || env.GOOS == "darwin" || env.GOOS == "windows" {
+	if setenv == nil || env.GOOS == "darwin" || env.GOOS == "windows" {
+		return ""
+	}
+	if HasDisplay(env) && HasLiveDisplay(env) {
 		return ""
 	}
 	key, value := findDisplay(env)
@@ -298,7 +397,7 @@ func findDisplay(env Env) (key, value string) {
 	if env.Glob == nil {
 		return "", ""
 	}
-	if sock := firstSocket(env, "/tmp/.X11-unix/X*"); sock != "" {
+	if sock := firstSocket(env, filepath.Join(x11SocketDir, "X*")); sock != "" {
 		return "DISPLAY", ":" + strings.TrimPrefix(filepath.Base(sock), "X")
 	}
 	// With no XDG_RUNTIME_DIR the pattern would be a bare "wayland-*",

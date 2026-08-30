@@ -144,7 +144,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// A question needs somewhere to land: the chat whose turn is asking when
 	// there is one (wired below, once the loop exists), the machine's screen
 	// otherwise; a chat session swaps in its terminal instead (App.Ask).
-	dialogAsker := tools.NewDialogAsker(tools.DefaultAskEnv())
+	askEnv := tools.DefaultAskEnv()
+	// The screen is re-checked at the moment the question is asked, not at
+	// startup: the display adopted then dies with the session it belonged to,
+	// and a dialog spawned at a dead one exits with the code that means the
+	// user said no.
+	askEnv.Display = desktop.ScreenReady
+	dialogAsker := tools.NewDialogAsker(askEnv)
 	askTool := tools.NewAskTool(dialogAsker)
 	registry.Register(askTool)
 	restarter := &upgrade.Restarter{}

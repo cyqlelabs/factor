@@ -710,7 +710,7 @@ func TestAdoptDisplayLeavesAProcessThatAlreadyHasOneAlone(t *testing.T) {
 	env := Env{
 		GOOS:   "linux",
 		Getenv: func(key string) string { return map[string]string{"DISPLAY": ":3"}[key] },
-		Glob:   func(string) ([]string, error) { return []string{"/tmp/.X11-unix/X0"}, nil },
+		Glob:   func(pattern string) ([]string, error) { return globOf(pattern, "/tmp/.X11-unix/X3"), nil },
 	}
 	if got := AdoptDisplay(env, func(string, string) error {
 		t.Fatal("overwrote the display this process was given")
@@ -718,6 +718,115 @@ func TestAdoptDisplayLeavesAProcessThatAlreadyHasOneAlone(t *testing.T) {
 	}); got != "" {
 		t.Errorf("adopted = %q, want none", got)
 	}
+}
+
+// A gateway that starts while the user is still logging in sees the greeter's
+// X server, which exits seconds later. Latching that name for the life of the
+// process is how every desktop helper came to fail at a display that is not
+// there, ask_user among them.
+func TestAdoptDisplayReplacesAScreenThatHasGoneAway(t *testing.T) {
+	env := Env{
+		GOOS:   "linux",
+		Getenv: func(key string) string { return map[string]string{"DISPLAY": ":0"}[key] },
+		Glob:   func(pattern string) ([]string, error) { return globOf(pattern, "/tmp/.X11-unix/X1"), nil },
+	}
+	set := map[string]string{}
+	if got := AdoptDisplay(env, func(k, v string) error { set[k] = v; return nil }); got != "DISPLAY=:1" {
+		t.Errorf("adopted = %q, want the screen that is actually running", got)
+	}
+	if set["DISPLAY"] != ":1" {
+		t.Errorf("DISPLAY set to %q", set["DISPLAY"])
+	}
+}
+
+func TestHasLiveDisplayReadsTheSocketBehindTheName(t *testing.T) {
+	x11 := func(display string, sockets ...string) Env {
+		return Env{
+			GOOS:   "linux",
+			Getenv: func(key string) string { return map[string]string{"DISPLAY": display}[key] },
+			Glob:   func(pattern string) ([]string, error) { return globOf(pattern, sockets...), nil },
+		}
+	}
+	cases := []struct {
+		name string
+		env  Env
+		want bool
+	}{
+		{"live", x11(":1", "/tmp/.X11-unix/X1"), true},
+		{"gone", x11(":1"), false},
+		{"screen suffix", x11(":1.0", "/tmp/.X11-unix/X1"), true},
+		// A forwarded display has no socket here to look for, so it can
+		// never be called dead on the strength of a missing one.
+		{"forwarded", x11("localhost:10.0"), true},
+		{"none", x11(""), false},
+	}
+	for _, c := range cases {
+		if got := HasLiveDisplay(c.env); got != c.want {
+			t.Errorf("%s: HasLiveDisplay = %v, want %v", c.name, got, c.want)
+		}
+	}
+
+	wayland := Env{
+		GOOS: "linux",
+		Getenv: func(key string) string {
+			return map[string]string{"WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": "/run/user/1000"}[key]
+		},
+		Glob: func(pattern string) ([]string, error) { return globOf(pattern, "/run/user/1000/wayland-0"), nil },
+	}
+	if !HasLiveDisplay(wayland) {
+		t.Error("a running compositor was read as gone")
+	}
+	wayland.Glob = func(string) ([]string, error) { return nil, nil }
+	if HasLiveDisplay(wayland) {
+		t.Error("a compositor whose socket is gone was read as live")
+	}
+
+	// A session that names both keeps its screen while either one answers,
+	// or every helper call would re-adopt the server already in hand.
+	both := Env{
+		GOOS: "linux",
+		Getenv: func(key string) string {
+			return map[string]string{"WAYLAND_DISPLAY": "wayland-9", "DISPLAY": ":1", "XDG_RUNTIME_DIR": "/run/user/1000"}[key]
+		},
+		Glob: func(pattern string) ([]string, error) { return globOf(pattern, "/tmp/.X11-unix/X1"), nil },
+	}
+	if !HasLiveDisplay(both) {
+		t.Error("a dead compositor hid the X server running beside it")
+	}
+
+	for _, goos := range []string{"darwin", "windows"} {
+		if !HasLiveDisplay(Env{GOOS: goos, Getenv: func(string) string { return "" }}) {
+			t.Errorf("%s reported no live display", goos)
+		}
+	}
+	// Nothing to look with is not proof the screen is dead.
+	if !HasLiveDisplay(Env{GOOS: "linux", Getenv: func(string) string { return ":1" }}) {
+		t.Error("an unverifiable display was called dead")
+	}
+}
+
+// ScreenReady runs against this machine, so it must only agree with what the
+// environment it just settled says.
+func TestScreenReadyAgreesWithTheEnvironment(t *testing.T) {
+	// It adopts onto the process, so hand the rest of the suite back the
+	// screen it was running with.
+	t.Setenv("DISPLAY", os.Getenv("DISPLAY"))
+	t.Setenv("WAYLAND_DISPLAY", os.Getenv("WAYLAND_DISPLAY"))
+	if got, want := ScreenReady(), HasDisplay(DefaultEnv()) && HasLiveDisplay(DefaultEnv()); got != want {
+		t.Errorf("ScreenReady = %v, want %v", got, want)
+	}
+}
+
+// globOf answers a glob for a fixed set of paths, matching the literal
+// lookups HasLiveDisplay makes as well as the "X*" sweep findDisplay makes.
+func globOf(pattern string, paths ...string) []string {
+	var out []string
+	for _, p := range paths {
+		if ok, _ := filepath.Match(pattern, p); ok {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func TestAdoptDisplayReportsNothingWithoutAScreen(t *testing.T) {

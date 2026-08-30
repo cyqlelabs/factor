@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -278,6 +279,62 @@ func TestAskRunnerReportsExitCode(t *testing.T) {
 	cancel()
 	if _, _, err := askRunner(ctx, "sh", "-c", "sleep 5"); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want the context error", err)
+	}
+}
+
+// A dialog spawned at a display that is no longer there exits with the very
+// code its toolkit uses for "the user closed the window", so reading the exit
+// code alone had the agent telling a user who saw nothing that they dismissed
+// the question — and then refusing to ask again.
+func TestAskRunnerTellsANeverOpenedDialogFromADismissal(t *testing.T) {
+	_, _, err := askRunner(context.Background(), winArgv(
+		"echo 'Gtk-WARNING **: Failed to open display' >&2; exit 1",
+		"(echo Gtk-WARNING **: Failed to open display)1>&2& exit /b 1")...)
+	if !errors.Is(err, ErrAskUnavailable) {
+		t.Errorf("err = %v, want it unavailable", err)
+	}
+
+	// A toolkit warning that is not about the screen is still just noise.
+	out, code, err := askRunner(context.Background(), winArgv(
+		"echo picked >&2; echo answer; exit 1",
+		"(echo picked)1>&2& (echo answer)& exit /b 1")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != "answer" || code != 1 {
+		t.Errorf("out = %q, code = %d", out, code)
+	}
+}
+
+func TestNeverOpenedReadsEveryToolkitsWording(t *testing.T) {
+	for _, line := range []string{
+		"Gtk-WARNING **: Failed to open display",
+		"kdialog: cannot connect to X server\nError: cannot open display: :0",
+		"Gdk-ERROR **: Unable to init server: Could not connect: Connection refused",
+	} {
+		if !neverOpened(line) {
+			t.Errorf("%q was not read as a dialog that never opened", line)
+		}
+	}
+	if neverOpened("Gtk-Message: Failed to load module \"canberra-gtk-module\"") {
+		t.Error("an ordinary toolkit warning was read as a dead display")
+	}
+}
+
+// The tool result the model reads must say the screen was unreachable, never
+// that the user turned the question down.
+func TestAskToolSaysUnreachableRatherThanDismissed(t *testing.T) {
+	m := machineWith("linux", "zenity")
+	m.err = fmt.Errorf("%w: zenity could not open the screen", ErrAskUnavailable)
+	res := NewAskTool(NewDialogAsker(m.env())).Execute(context.Background(), map[string]any{"question": "which model?"})
+	if !res.IsError {
+		t.Fatalf("result = %+v, want an error", res)
+	}
+	if strings.Contains(res.ForLLM, "dismissed") {
+		t.Errorf("content = %q, want no talk of the user dismissing it", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "ask in the conversation instead") {
+		t.Errorf("content = %q, want the fallback route named", res.ForLLM)
 	}
 }
 

@@ -38,27 +38,42 @@ func DefaultAskEnv() AskEnv {
 	}
 }
 
-// askRunner runs one dialog program. Its stderr is dropped: toolkit warnings
-// on stderr are not an answer and not a failure.
+// askRunner runs one dialog program. Toolkit warnings on its stderr are
+// neither an answer nor a failure and are dropped — all but the one line that
+// says the window never opened, which every toolkit writes there and then
+// exits with the very code it uses for "the user said no". Read from the exit
+// code alone, a dead display becomes the agent telling a user who saw nothing
+// that they dismissed the question.
 func askRunner(ctx context.Context, argv ...string) (string, int, error) {
 	if len(argv) == 0 {
 		return "", -1, errors.New("no command")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	var out bytes.Buffer
+	var out, errOut bytes.Buffer
 	cmd.Stdout = &out
+	cmd.Stderr = &errOut
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		return out.String(), -1, ctx.Err()
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
+		if neverOpened(errOut.String()) {
+			return "", exitErr.ExitCode(), fmt.Errorf("%w: %s could not open the screen", ErrAskUnavailable, argv[0])
+		}
 		return out.String(), exitErr.ExitCode(), nil
 	}
 	if err != nil {
 		return out.String(), -1, err
 	}
 	return out.String(), 0, nil
+}
+
+// neverOpened spots the stderr line that means the dialog never reached a
+// screen: the display named in the environment is not there any more.
+func neverOpened(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "open display") || strings.Contains(s, "unable to init server")
 }
 
 // DialogAsker puts the question on the machine's own screen, in whatever
