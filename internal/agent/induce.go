@@ -153,8 +153,13 @@ func (l *Loop) dueInductions() map[string]induceCandidate {
 	}
 
 	l.induceMu.Lock()
-	for key := range candidates {
-		delete(l.pendingInduce, key)
+	for key, cand := range candidates {
+		// Claim only what was snapshotted: a turn that ended since may have
+		// registered a fresh candidate under this key, and that one has not
+		// had its idle wait yet.
+		if l.pendingInduce[key] == cand {
+			delete(l.pendingInduce, key)
+		}
 	}
 	for _, key := range gone {
 		delete(l.pendingInduce, key)
