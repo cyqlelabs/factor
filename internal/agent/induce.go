@@ -34,6 +34,15 @@ const (
 	// a catalog line that costs every future prompt something and teaches
 	// nothing.
 	induceMinToolCalls = 4
+
+	// induceCorrectedToolCalls is the floor for a turn the user had to steer
+	// mid-flight. Steering is the cheapest feedback this system gets and the
+	// only kind nobody has to be asked for: it says the first approach was
+	// wrong and names the right one, in the user's own words, while the work
+	// was still happening. A turn that needed it is a better thing to learn
+	// from than a long one that went smoothly — the smooth one already
+	// works — so it qualifies on fewer calls.
+	induceCorrectedToolCalls = 2
 	// induceMaxTokens caps the reply: a recipe that does not fit here is not
 	// a recipe.
 	induceMaxTokens = 2048
@@ -60,6 +69,10 @@ type induceCandidate struct {
 	toolCtx    tools.ToolContext
 	task       string
 	transcript string
+	// corrected marks a turn the user steered while it ran. The trajectory
+	// then holds both the approach that was wrong and the one that worked,
+	// which is most of what makes a workflow worth writing down.
+	corrected bool
 }
 
 // noteInduceCandidate remembers the turn that just ended as something the
@@ -67,7 +80,7 @@ type induceCandidate struct {
 // is kept: recurring work recurs, so a candidate displaced today comes back
 // the next time the task does, and one call per quiet session is the cost
 // ceiling this feature lives under.
-func (l *Loop) noteInduceCandidate(in turnInput, messages []provider.Message, thisTurn int, reply string) {
+func (l *Loop) noteInduceCandidate(in turnInput, messages []provider.Message, thisTurn int, reply string, corrected bool) {
 	if !l.cfg.Agent.LearnSkills || in.ephemeral || strings.TrimSpace(reply) == "" {
 		return
 	}
@@ -81,7 +94,11 @@ func (l *Loop) noteInduceCandidate(in turnInput, messages []provider.Message, th
 			calls += len(m.ToolCalls)
 		}
 	}
-	if calls < induceMinToolCalls {
+	floor := induceMinToolCalls
+	if corrected {
+		floor = induceCorrectedToolCalls
+	}
+	if calls < floor {
 		return
 	}
 	task := ""
@@ -97,6 +114,7 @@ func (l *Loop) noteInduceCandidate(in turnInput, messages []provider.Message, th
 		toolCtx:    in.toolCtx,
 		task:       task,
 		transcript: renderTurn(turn),
+		corrected:  corrected,
 	}
 }
 
@@ -306,6 +324,15 @@ func induceInput(cand induceCandidate, catalog, learned []skills.Skill, atCap bo
 	b.WriteString(strings.TrimSpace(cand.task))
 	b.WriteString("\n\n# Trajectory\n")
 	b.WriteString(cand.transcript)
+	if cand.corrected {
+		// Worth saying out loud, because it changes what the trajectory is
+		// evidence of: the user interrupted to redirect this work, so the
+		// transcript holds both the approach that was wrong and the one that
+		// was right. That contrast is the lesson.
+		b.WriteString("\nThe user corrected this turn while it was running. " +
+			"The trajectory therefore contains an approach that was wrong before the one that worked; " +
+			"the skill should capture what to do, not the detour.\n")
+	}
 	b.WriteString("\n# Learned skills (the only names you may reuse, to update)\n")
 	if len(learned) == 0 {
 		b.WriteString("(none yet)\n")

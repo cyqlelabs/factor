@@ -26,6 +26,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/session"
 	"github.com/cyqlelabs/factor/internal/skills"
 	"github.com/cyqlelabs/factor/internal/tools"
+	"github.com/cyqlelabs/factor/internal/trace"
 	"github.com/cyqlelabs/factor/internal/upgrade"
 	"github.com/cyqlelabs/factor/internal/version"
 )
@@ -60,6 +61,10 @@ type App struct {
 	// off — there is then no engine to keep current.
 	SmrtiUpgrade *upgrade.Smrti
 
+	// Tracer keeps the local record of what each turn did; the control bands
+	// read it. Nil when tracing is off.
+	Tracer *trace.Recorder
+
 	closeBrowser func()
 
 	// Background work this App owns, on a context of its own so Close can
@@ -69,6 +74,9 @@ type App struct {
 	bgCancel context.CancelFunc
 	bg       sync.WaitGroup
 }
+
+// Traces is where the turn records live, or "" when tracing is off.
+func (a *App) Traces() string { return a.Tracer.Dir() }
 
 // New assembles a fully wired Factor instance. The memory sidecar starts in
 // the background; health flips asynchronously.
@@ -119,8 +127,37 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// summary to a cheaper model makes it cheaper, not free, and it is still
 	// billed to the session that caused it.
 	var utilityMeter agent.ChatProvider
+	utilityCost := cost.NewMeter(utilityChain, catalog, ledger, cfg.Cost)
 	if utilityChain != nil {
-		utilityMeter = cost.NewMeter(utilityChain, catalog, ledger, cfg.Cost)
+		utilityMeter = utilityCost
+	}
+
+	// The trace is written next to everything else Factor keeps, and reads
+	// tool arguments through the same secret filter tool results pass.
+	tracer := trace.NewRecorder(filepath.Join(config.Home(), "traces"), trace.Config{
+		Enabled:    cfg.Trace.Enabled,
+		RecordArgs: cfg.Trace.RecordArgs,
+		KeepDays:   cfg.Trace.KeepDays,
+	}, cfg.FilterSecrets)
+	// Money reaches the trace through the meter, which is the only place that
+	// sees both the model that actually answered and the price it was billed
+	// at. Both chains report, so a summary routed elsewhere still shows up.
+	charge := func(sessionKey, model string, t cost.Totals, cacheWrite int) {
+		tracer.Charge(sessionKey, trace.ModelCall{
+			Model: model, Input: t.Input, Cached: t.Cached,
+			Written: cacheWrite, Output: t.Output, USD: t.USD,
+		})
+	}
+	meter.OnCharge(charge)
+	utilityCost.OnCharge(charge)
+	// A failover is invisible in aggregate today: the chain logs a line and
+	// nothing counts it, so "it got slower last week" has no answer.
+	failover := func(ctx context.Context, name, reason string) {
+		tracer.Event(tools.ToolContextFrom(ctx).SessionKey, trace.EventFailover, name+": "+reason)
+	}
+	chain.OnFailover(failover)
+	if utilityChain != nil {
+		utilityChain.OnFailover(failover)
 	}
 
 	extract := memory.DeriveExtract(cfg.Memory, cfg.Provider)
@@ -206,7 +243,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 
 	builder := agent.NewContextBuilder(cfg, skillLoader, ambient)
 	b := bus.New()
-	loop := agent.NewLoop(cfg, b, meter, registry, sessions, builder, ambient).WithUtility(utilityMeter)
+	loop := agent.NewLoop(cfg, b, meter, registry, sessions, builder, ambient).
+		WithUtility(utilityMeter).
+		WithTracer(tracer)
 	// A turn that arrived from a chat asks its questions there — the user the
 	// question is for is by definition looking at that chat, not necessarily
 	// at this machine's screen. The dialog stays for every turn without one.
@@ -272,6 +311,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Skills:   skillLoader,
 		Ask:      askTool,
 		Loop:     loop,
+		Tracer:   tracer,
 		Jobs:     jobEngine,
 		Cron:     cronService,
 		MCP:      mcpManager,
@@ -336,4 +376,6 @@ func (a *App) Close() {
 	if a.Memory != nil {
 		_ = a.Memory.Close()
 	}
+	// Last: a turn ending during shutdown still has a record to write.
+	_ = a.Tracer.Close()
 }

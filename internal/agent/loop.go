@@ -16,6 +16,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/session"
 	"github.com/cyqlelabs/factor/internal/tools"
+	"github.com/cyqlelabs/factor/internal/trace"
 )
 
 // ChatProvider is what the loop needs from the provider layer (satisfied by
@@ -98,6 +99,10 @@ type Loop struct {
 	pendingInduce map[string]induceCandidate
 
 	windowFor func() int // context length of the models in play; 0 = unknown
+
+	// tracer keeps the local record of what each turn did. Nil is tracing
+	// switched off, and every call on it is nil-safe.
+	tracer *trace.Recorder
 }
 
 func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry *tools.Registry,
@@ -122,6 +127,28 @@ func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry 
 // induction verdict — at their own chain. Nil leaves them on the main one.
 func (l *Loop) WithUtility(chat ChatProvider) *Loop {
 	l.utility = chat
+	return l
+}
+
+// NoteFeedback records a correction against whatever turn is running on a
+// session, for connectors that know something the loop cannot see.
+//
+// The loop already recognizes the two corrections that reach it directly: a
+// message steered into a live turn, and a turn the user cancelled — on voice,
+// by talking over the answer, which lands as an interrupted outcome. This is
+// for everything else a channel can tell that the loop cannot.
+//
+// It is deliberately a note and not a verdict. Nothing here changes an answer;
+// it only makes the moments the user pushed back findable afterwards, which is
+// the difference between a record of what Factor did and a record of how well
+// it did it.
+func (l *Loop) NoteFeedback(sessionKey, kind, detail string) {
+	l.tracer.Event(sessionKey, kind, detail)
+}
+
+// WithTracer installs the turn recorder. Nil leaves tracing off.
+func (l *Loop) WithTracer(r *trace.Recorder) *Loop {
+	l.tracer = r
 	return l
 }
 
@@ -418,6 +445,7 @@ func (l *Loop) ProcessEphemeral(ctx context.Context, content string) (string, er
 	return l.execute(ctx, turnInput{
 		sessionKey: "system:heartbeat",
 		content:    content,
+		trigger:    "heartbeat",
 		ephemeral:  true,
 		toolCtx:    tools.ToolContext{Channel: "system", ChatID: "heartbeat", SessionKey: "system:heartbeat"},
 	}, &turn{steering: make(chan bus.InboundMessage, 1)})
@@ -428,7 +456,11 @@ type turnInput struct {
 	content    string
 	// speaker names who said content, where the channel can tell. Blank is
 	// the ordinary case: the chat is one person.
-	speaker   string
+	speaker string
+	// trigger names what started this turn — a person, cron, a job, the
+	// heartbeat — because a trace has to tell an answer somebody is waiting
+	// for from work nobody asked for.
+	trigger   string
 	ephemeral bool
 	// notice hands the line the agent says on its way to an answer straight
 	// back to whoever is running this turn, while it is still true. Nil for
@@ -442,6 +474,7 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, not
 		sessionKey: msg.SessionKey(),
 		content:    msg.Content,
 		speaker:    msg.Speaker,
+		trigger:    triggerOf(msg),
 		notice:     notice,
 		toolCtx: tools.ToolContext{Channel: msg.Channel, ChatID: msg.ChatID,
 			SessionKey: msg.SessionKey(), Audience: msg.Audience},
@@ -502,13 +535,18 @@ func (l *Loop) WaitBackground(timeout time.Duration) {
 }
 
 // execute is the turn state machine: assemble → chat → tools → steer → repeat.
-func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, error) {
+func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string, err error) {
 	ctx = tools.WithToolContext(ctx, in.toolCtx)
 	l.emit(in.sessionKey, PhaseContext, "")
 	defer l.emit(in.sessionKey, PhaseDone, "")
 
+	// The record of what this turn did outlives the turn, which is the whole
+	// point: the phase watcher above is a live status line that nobody can
+	// read afterwards.
+	tr := l.tracer.Begin(in.sessionKey, in.trigger, in.speaker)
+	defer func() { tr.End(turnOutcome(ctx, err), err) }()
+
 	var history []provider.Message
-	var err error
 	if !in.ephemeral {
 		if history, err = l.sessions.History(in.sessionKey); err != nil {
 			return "", fmt.Errorf("load history: %w", err)
@@ -544,6 +582,10 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 	messages := l.assemble(systemPrompt, turnContext, in.sessionKey, in.ephemeral,
 		history, []provider.Message{userMsg})
 	overflowRecoveries := 0
+	// How often the user corrected this turn while it ran. It decides
+	// nothing about the answer and everything about whether the trajectory
+	// is worth learning from.
+	steered := 0
 
 	for iteration := 0; iteration < l.cfg.Agent.MaxToolIterations; iteration++ {
 		messages = l.trimInFlight(messages)
@@ -558,6 +600,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		if err != nil {
 			if provider.IsContextOverflow(err) && !in.ephemeral && overflowRecoveries < 2 {
 				overflowRecoveries++
+				tr.Event(trace.EventOverflow, "")
 				l.emit(in.sessionKey, PhaseCompacting, "")
 				slog.Warn("context overflow; compacting session", "session", in.sessionKey)
 				if cerr := l.compact(ctx, in.sessionKey); cerr != nil {
@@ -584,13 +627,15 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 
 		if len(resp.ToolCalls) == 0 {
 			// Final answer — unless steering arrived mid-turn; then keep going.
-			steered := l.drainSteering(in, t, record)
-			if len(steered) == 0 {
-				l.noteInduceCandidate(in, messages, thisTurn, resp.Content)
+			injected := l.drainSteering(in, t, record)
+			if len(injected) == 0 {
+				l.noteInduceCandidate(in, messages, thisTurn, resp.Content, steered > 0)
 				l.maybeCompactAsync(in)
 				return resp.Content, nil
 			}
-			messages = append(messages, steered...)
+			steered++
+			tr.Event(trace.EventSteering, "")
+			messages = append(messages, injected...)
 			continue
 		}
 
@@ -613,7 +658,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		// The batch is answered before any of it is written down, so the
 		// calls can run in whatever order suits them and still be recorded
 		// in the order the model asked for.
-		outcomes := l.runTools(ctx, in.sessionKey, resp.ToolCalls)
+		outcomes := l.runTools(ctx, in.sessionKey, tr, resp.ToolCalls)
 		for i, call := range resp.ToolCalls {
 			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: outcomes[i].content}
 			if err := record(toolMsg); err != nil {
@@ -641,12 +686,45 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		messages = append(messages, l.drainSteering(in, t, record)...)
+		if injected := l.drainSteering(in, t, record); len(injected) > 0 {
+			steered++
+			tr.Event(trace.EventSteering, "")
+			messages = append(messages, injected...)
+		}
 	}
 
-	reply := l.wrapUp(ctx, in, messages)
+	reply = l.wrapUp(ctx, in, messages)
 	l.maybeCompactAsync(in)
 	return reply, nil
+}
+
+// triggerOf names what started a turn.
+func triggerOf(msg bus.InboundMessage) string {
+	switch {
+	case msg.Channel == "cron":
+		return "cron"
+	case msg.Channel == "system":
+		return "system"
+	case msg.System:
+		return "job"
+	}
+	return "user"
+}
+
+// turnOutcome names how a turn ended, in the few words the control bands
+// count. A budget refusal is its own outcome rather than an error: it is a
+// decision the user made, and counting it as a failure would have the bands
+// reporting a cap doing its job as something going wrong.
+func turnOutcome(ctx context.Context, err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case cost.BudgetStop(err) != "":
+		return "budget"
+	case ctx.Err() != nil:
+		return "interrupted"
+	}
+	return "error"
 }
 
 // maxParallelTools bounds how much of one batch runs at once. A batch is
@@ -676,7 +754,7 @@ type toolOutcome struct {
 // batches are not eligible and run exactly as they always have: order is
 // load-bearing for a pointer, a browser and a file write, and a tool that has
 // not declared itself is assumed to be one of those.
-func (l *Loop) runTools(ctx context.Context, sessionKey string, calls []provider.ToolCall) []toolOutcome {
+func (l *Loop) runTools(ctx context.Context, sessionKey string, tr *trace.Turn, calls []provider.ToolCall) []toolOutcome {
 	outcomes := make([]toolOutcome, len(calls))
 
 	firstOf := map[string]int{}
@@ -705,11 +783,13 @@ func (l *Loop) runTools(ctx context.Context, sessionKey string, calls []provider
 			return
 		}
 		l.emit(sessionKey, PhaseTool, call.Name)
+		started := time.Now()
 		result := l.registry.Execute(ctx, call.Name, call.Args)
 		content := result.ForLLM
 		if result.IsError {
 			content = "ERROR: " + content
 		}
+		tr.Tool(call.Name, call.Args, time.Since(started), len(content), result.IsError)
 		if ctx.Err() != nil {
 			// Cancelled while the tool was running: whatever it returned is
 			// the cancellation, not a verdict on the tool.

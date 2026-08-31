@@ -20,6 +20,7 @@ import (
 
 	"github.com/cyqlelabs/factor/internal/agent"
 	"github.com/cyqlelabs/factor/internal/app"
+	"github.com/cyqlelabs/factor/internal/bands"
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/channel"
 	_ "github.com/cyqlelabs/factor/internal/channel/phone"    // register connector
@@ -217,6 +218,12 @@ func serve(configPath string) (bool, error) {
 				return a.Bus.PublishOutbound(bus.OutboundMessage{Channel: ch, ChatID: chat, Content: content})
 			},
 		)
+		// Detection is arithmetic over the traces this process already
+		// writes, so the heartbeat now has something to notice besides what
+		// the user wrote down — and still spends nothing when nothing moved.
+		if dir := a.Traces(); dir != "" {
+			hb = hb.WithBands(bands.New(dir).Check)
+		}
 		go hb.Run(ctx)
 	}
 

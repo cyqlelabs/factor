@@ -30,6 +30,8 @@ type Meter struct {
 	ledger  *Ledger
 	budget  config.BudgetConfig
 	active  bool
+
+	onCharge func(sessionKey, model string, t Totals, cacheWrite int)
 }
 
 // NewMeter wires a meter around inner. It stays a pass-through unless
@@ -43,6 +45,16 @@ func NewMeter(inner ChatProvider, catalog *Catalog, ledger *Ledger, cfg config.C
 		budget:  cfg.Budget,
 		active:  cfg.Track || !cfg.Budget.Off(),
 	}
+}
+
+// OnCharge is told what every priced call cost, so a trace can carry the
+// money beside the tools it was spent on. The meter is the only place that
+// sees the model that actually answered and the price it was billed at.
+func (m *Meter) OnCharge(fn func(sessionKey, model string, t Totals, cacheWrite int)) *Meter {
+	if m != nil {
+		m.onCharge = fn
+	}
+	return m
 }
 
 // Active reports whether anything is being counted.
@@ -95,6 +107,9 @@ func (m *Meter) record(sessionKey string, resp *provider.Response) {
 	slog.Debug("call priced", "model", resp.Model, "session", sessionKey,
 		"input", u.PromptTokens, "output", u.CompletionTokens,
 		"cache_read", u.CacheReadTokens, "cache_write", u.CacheWriteTokens, "usd", t.USD)
+	if m.onCharge != nil {
+		m.onCharge(sessionKey, resp.Model, t, u.CacheWriteTokens)
+	}
 	m.ledger.Record(sessionKey, resp.Model, t)
 }
 

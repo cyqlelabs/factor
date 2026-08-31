@@ -32,6 +32,7 @@ type Config struct {
 	Upgrade       UpgradeConfig              `json:"upgrade"`
 	Cost          CostConfig                 `json:"cost"`
 	Proxy         ProxyConfig                `json:"proxy"`
+	Trace         TraceConfig                `json:"trace"`
 
 	// LogLevel is the lowest severity that reaches the log: "debug", "info"
 	// (the default), "warn", or "error". Debug is where the per-decision
@@ -339,6 +340,22 @@ type BudgetConfig struct {
 // Off reports that neither cap is set.
 func (b BudgetConfig) Off() bool { return b.SessionUSD <= 0 && b.GlobalUSD <= 0 }
 
+// TraceConfig keeps a local record of what each turn did: the models that
+// answered, the tools that ran and for how long, and how it ended. It is on
+// by default because everything it records is already happening and thrown
+// away, and because the questions it answers — why was that slow, why did it
+// cost that, what has started failing — cannot be answered afterwards from a
+// log that was never written.
+//
+// It never leaves the machine. RecordArgs is the one part that is off by
+// default: the shape of a turn is what debugging needs, and the arguments are
+// the user's paths, searches and the things they asked to be remembered.
+type TraceConfig struct {
+	Enabled    bool `json:"enabled" env:"FACTOR_TRACE"`
+	RecordArgs bool `json:"record_args"`
+	KeepDays   int  `json:"keep_days"`
+}
+
 // CostConfig turns token counts into money. Tracking is on by default
 // because it costs nothing — every provider already reports the counts, and
 // a spend you cannot see is one you find out about on an invoice. Prices are
@@ -381,6 +398,7 @@ func Default() *Config {
 			KeepRecentMessages: 8,
 			LearnSkills:        true,
 		},
+		Trace: TraceConfig{Enabled: true, KeepDays: 14},
 		Provider: ProviderConfig{
 			Type:             "openrouter",
 			Model:            "google/gemini-3.1-pro-preview",

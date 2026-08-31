@@ -23,6 +23,18 @@ type Chain struct {
 
 	now   func() time.Time
 	sleep func(ctx context.Context, d time.Duration) error
+
+	// onFailover, when set, is told each time a candidate is given up on.
+	// The chain already logs it; a caller that keeps a trace needs it as an
+	// event it can count rather than a line it would have to parse back.
+	onFailover func(ctx context.Context, provider, reason string)
+}
+
+// OnFailover installs the failover callback. It is called from the calling
+// goroutine, so it must not block.
+func (c *Chain) OnFailover(fn func(ctx context.Context, provider, reason string)) *Chain {
+	c.onFailover = fn
+	return c
 }
 
 func NewChain(providers []Provider, maxRetries int, backoff time.Duration) *Chain {
@@ -143,6 +155,9 @@ func (c *Chain) tryAll(ctx context.Context, req *Request, ignoreCooldown bool) (
 			}
 			c.mu.Unlock()
 			slog.Warn("provider failed, trying next candidate", "provider", name, "reason", apiErr.Reason)
+			if c.onFailover != nil {
+				c.onFailover(ctx, name, string(apiErr.Reason))
+			}
 			continue
 		}
 		return nil, err, true // unclassified programming error: do not mask it
