@@ -181,7 +181,7 @@ func (l *Loop) induce(ctx context.Context, sessionKey string, cand induceCandida
 	if l.builder != nil {
 		catalog = l.builder.SkillsCatalog()
 	}
-	resp, err := l.chat.Chat(ctx, &provider.Request{
+	resp, err := l.utilityChat().Chat(ctx, &provider.Request{
 		Messages: []provider.Message{
 			{Role: "system", Content: inducePrompt},
 			{Role: "user", Content: induceInput(cand, catalog, learned, atCap)},

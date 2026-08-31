@@ -15,14 +15,17 @@ const maxReadBytes = 256 * 1024
 // NewFSTools returns the file tools bound to one path guard.
 func NewFSTools(guard *PathGuard) []Tool {
 	return []Tool{
-		&readFileTool{guard},
+		&readFileTool{guard: guard},
 		&writeFileTool{guard},
 		&editFileTool{guard},
-		&listDirTool{guard},
+		&listDirTool{guard: guard},
 	}
 }
 
-type readFileTool struct{ guard *PathGuard }
+type readFileTool struct {
+	ReadOnly
+	guard *PathGuard
+}
 
 func (t *readFileTool) Name() string { return "read_file" }
 func (t *readFileTool) Description() string {
@@ -161,7 +164,10 @@ func (t *editFileTool) Execute(_ context.Context, args map[string]any) *Result {
 	return Textf("Replaced %d occurrence(s) in %s", count, path)
 }
 
-type listDirTool struct{ guard *PathGuard }
+type listDirTool struct {
+	ReadOnly
+	guard *PathGuard
+}
 
 func (t *listDirTool) Name() string { return "list_dir" }
 func (t *listDirTool) Description() string {

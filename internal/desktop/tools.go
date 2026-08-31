@@ -30,7 +30,7 @@ func NewTools(env Env, guard *tools.PathGuard, screenshotDir string) []tools.Too
 		&clipboardTool{d},
 		&notifyTool{d},
 		&openTool{d},
-		&desktopInfoTool{d},
+		&desktopInfoTool{deps: d},
 	}
 }
 
@@ -538,7 +538,10 @@ func (t *openTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 
 // ---- desktop_info ----------------------------------------------------------
 
-type desktopInfoTool struct{ *deps }
+type desktopInfoTool struct {
+	tools.ReadOnly
+	*deps
+}
 
 func (t *desktopInfoTool) Name() string { return "desktop_info" }
 func (t *desktopInfoTool) Description() string {

@@ -37,6 +37,40 @@ func usd(p Price, in, out int) float64 {
 	return (float64(in)*p.Input + float64(out)*p.Output) / 1e6
 }
 
+// What a prompt cache does to the input rate. A hit is billed at a fraction of
+// the normal rate and the write that creates one at a premium, so a request
+// that repeats a cached prefix twice has already paid for the write. Neither
+// number is Factor's to choose — they are what the endpoints charge — and a
+// catalog that priced cached tokens at the full rate would report a turn as
+// costing several times what it did.
+const (
+	cacheReadRate  = 0.10
+	cacheWriteRate = 1.25
+)
+
+// usdUsage prices one call, discounting the input served from cache and
+// surcharging the input written to it. The two cache counts are subsets of
+// PromptTokens, so what is left after removing both is the part billed at the
+// plain rate; a provider reporting neither prices exactly as it always did.
+func usdUsage(p Price, u provider.Usage) float64 {
+	cached, written := u.CacheReadTokens, u.CacheWriteTokens
+	if cached < 0 {
+		cached = 0
+	}
+	if written < 0 {
+		written = 0
+	}
+	// A provider whose counters disagree with its own total is not worth
+	// trusting into a negative bill: fall back to pricing everything plainly.
+	if cached+written > u.PromptTokens {
+		return usd(p, u.PromptTokens, u.CompletionTokens)
+	}
+	in := float64(u.PromptTokens-cached-written) +
+		float64(cached)*cacheReadRate +
+		float64(written)*cacheWriteRate
+	return (in*p.Input + float64(u.CompletionTokens)*p.Output) / 1e6
+}
+
 // DefaultPricesURL is the public model catalog: ids with per-token rates for
 // every vendor OpenRouter fronts, which is most of them.
 const DefaultPricesURL = "https://openrouter.ai/api/v1/models"

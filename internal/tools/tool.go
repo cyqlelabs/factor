@@ -19,6 +19,31 @@ type Tool interface {
 	Execute(ctx context.Context, args map[string]any) *Result
 }
 
+// Parallel is the optional capability a tool declares when one of its calls
+// may run at the same time as the other calls in the same batch.
+//
+// It is opt-in because sequence is load-bearing for most of this arsenal: a
+// mouse move and the click after it mean something in order and nothing at
+// once, a browser navigation changes what the next read returns, and two
+// writes to one file race. The tools that gain from concurrency are the ones
+// that only read and spend their time waiting — a file, a page, the memory
+// sidecar — and a batch of those currently costs the sum of its round trips
+// rather than the longest of them.
+//
+// The arguments are passed because safety is often a property of the call
+// rather than of the tool: the same tool may read on one call and write on
+// the next.
+type Parallel interface {
+	ParallelSafe(args map[string]any) bool
+}
+
+// ReadOnly is embedded by tools whose every call is a read, which makes them
+// safe to run beside anything else in their batch.
+type ReadOnly struct{}
+
+// ParallelSafe implements Parallel.
+func (ReadOnly) ParallelSafe(map[string]any) bool { return true }
+
 // Result separates what the LLM sees from what the user sees.
 type Result struct {
 	ForLLM  string // fed back into the model (secret-filtered by the registry)

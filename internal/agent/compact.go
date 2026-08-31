@@ -281,7 +281,7 @@ func (l *Loop) compact(ctx context.Context, sessionKey string) error {
 		MaxTokens:   1024,
 		NoReasoning: true,
 	}
-	resp, err := l.chat.Chat(ctx, req)
+	resp, err := l.utilityChat().Chat(ctx, req)
 	if err != nil {
 		return fmt.Errorf("summarize: %w", err)
 	}
@@ -291,7 +291,7 @@ func (l *Loop) compact(ctx context.Context, sessionKey string) error {
 	// last complete line so no half-written fact is stored as truth.
 	if summaryTruncated(resp.FinishReason) {
 		req.Messages[0].Content = prompt + "\n\nYour summary was cut off by the length limit. Rewrite it at half the length: keep identifiers, decisions, and open tasks; drop everything else."
-		if retry, rerr := l.chat.Chat(ctx, req); rerr == nil && strings.TrimSpace(retry.Content) != "" && !summaryTruncated(retry.FinishReason) {
+		if retry, rerr := l.utilityChat().Chat(ctx, req); rerr == nil && strings.TrimSpace(retry.Content) != "" && !summaryTruncated(retry.FinishReason) {
 			resp = retry
 		} else if i := strings.LastIndexByte(strings.TrimRight(resp.Content, "\n"), '\n'); i > 0 {
 			resp.Content = resp.Content[:i]

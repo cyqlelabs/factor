@@ -13,10 +13,10 @@ import (
 func NewTools(engine Engine, spaces SpacePolicy) []tools.Tool {
 	return []tools.Tool{
 		&rememberTool{engine, spaces},
-		&recallTool{engine, spaces},
+		&recallTool{engine: engine, spaces: spaces},
 		&forgetTool{engine, spaces},
 		&reflectTool{engine},
-		&statusTool{engine},
+		&statusTool{engine: engine},
 	}
 }
 
@@ -152,6 +152,7 @@ func (t *rememberTool) Execute(ctx context.Context, args map[string]any) *tools.
 }
 
 type recallTool struct {
+	tools.ReadOnly
 	engine Engine
 	spaces SpacePolicy
 }
@@ -272,7 +273,10 @@ func (t *reflectTool) Execute(ctx context.Context, _ map[string]any) *tools.Resu
 	return tools.Text(compactJSON(report))
 }
 
-type statusTool struct{ engine Engine }
+type statusTool struct {
+	tools.ReadOnly
+	engine Engine
+}
 
 func (t *statusTool) Name() string { return "memory_status" }
 func (t *statusTool) Description() string {

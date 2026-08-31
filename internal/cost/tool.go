@@ -11,7 +11,10 @@ import (
 // Tool lets the agent answer "what has this cost?" — for the conversation it
 // is in, for today, for all time — and say how much room is left under a cap
 // before it runs into one.
-type Tool struct{ Meter *Meter }
+type Tool struct {
+	tools.ReadOnly
+	Meter *Meter
+}
 
 // NewTool builds the usage tool, or nothing at all when the meter is
 // inactive: a tool that can only ever answer "not counting" is prompt weight.

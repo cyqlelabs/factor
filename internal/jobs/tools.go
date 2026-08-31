@@ -14,7 +14,7 @@ func NewTools(engine *Engine) []tools.Tool {
 	return []tools.Tool{
 		&startTool{engine},
 		&listTool{engine},
-		&statusTool{engine},
+		&statusTool{engine: engine},
 		&cancelTool{engine},
 	}
 }
@@ -75,7 +75,10 @@ func (t *listTool) Execute(_ context.Context, _ map[string]any) *tools.Result {
 	return tools.Text(b.String())
 }
 
-type statusTool struct{ engine *Engine }
+type statusTool struct {
+	tools.ReadOnly
+	engine *Engine
+}
 
 func (t *statusTool) Name() string { return "job_status" }
 func (t *statusTool) Description() string {

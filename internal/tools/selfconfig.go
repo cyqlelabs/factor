@@ -22,6 +22,7 @@ func NewConfigTools(cfg *config.Config) []Tool {
 }
 
 type configGetTool struct {
+	ReadOnly
 	path string
 }
 

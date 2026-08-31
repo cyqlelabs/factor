@@ -14,6 +14,13 @@ type Message struct {
 	// vision-capable wire dialect accepts. They live in the in-flight turn,
 	// not in persisted history (the agent loop strips them before storage).
 	Images []ImagePart `json:"images,omitempty"`
+	// CacheMark says this message ends a stretch of the request the next one
+	// is likely to repeat byte for byte, so a dialect with an explicit prompt
+	// cache should put a breakpoint here. It is a hint about the caller's
+	// assembly order, which only the caller knows, and dialects that cache
+	// implicitly ignore it. Never persisted: it describes one request, not
+	// the conversation.
+	CacheMark bool `json:"-"`
 }
 
 // ImagePart is one attached image, wire-format neutral.
@@ -49,9 +56,21 @@ type Request struct {
 	NoReasoning bool
 }
 
+// Usage is one call's token traffic, normalized across dialects that disagree
+// about what "prompt tokens" means. PromptTokens is always the whole input —
+// the Anthropic API reports the uncached remainder there and counts the rest
+// separately, so the adapter adds them back. CacheReadTokens and
+// CacheWriteTokens are subsets of PromptTokens, never additions to it, which
+// is what lets the meter discount one and surcharge the other without
+// double-counting either.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
+	// CacheReadTokens is the part of the input served from a prompt cache.
+	CacheReadTokens int
+	// CacheWriteTokens is the part of the input written to the cache by this
+	// call. Zero on dialects that cache implicitly and charge nothing for it.
+	CacheWriteTokens int
 }
 
 type Response struct {

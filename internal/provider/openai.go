@@ -115,6 +115,12 @@ type oaResponse struct {
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
+		// Caching on these dialects is implicit — the endpoint decides, and
+		// PromptTokens already includes what it served from cache. There is
+		// no write counter because there is no write premium to report.
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -221,8 +227,12 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 	out := &Response{
 		Content:      stripReasoning(choice.Message.Content),
 		FinishReason: choice.FinishReason,
-		Usage:        Usage{PromptTokens: parsed.Usage.PromptTokens, CompletionTokens: parsed.Usage.CompletionTokens},
-		Model:        p.model,
+		Usage: Usage{
+			PromptTokens:     parsed.Usage.PromptTokens,
+			CompletionTokens: parsed.Usage.CompletionTokens,
+			CacheReadTokens:  parsed.Usage.PromptTokensDetails.CachedTokens,
+		},
+		Model: p.model,
 	}
 	for _, tc := range choice.Message.ToolCalls {
 		args := map[string]any{}

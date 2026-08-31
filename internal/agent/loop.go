@@ -59,9 +59,12 @@ type turn struct {
 }
 
 type Loop struct {
-	cfg      *config.Config
-	bus      *bus.MessageBus
-	chat     ChatProvider
+	cfg  *config.Config
+	bus  *bus.MessageBus
+	chat ChatProvider
+	// utility is the chain for calls the user never reads. Nil means they
+	// share the conversation's chain.
+	utility  ChatProvider
 	registry *tools.Registry
 	sessions *session.Store
 	builder  *ContextBuilder
@@ -113,6 +116,23 @@ func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry 
 		sem:           make(chan struct{}, cfg.Agent.MaxConcurrentTurns),
 		lastChannel:   loadLastChannel(),
 	}
+}
+
+// WithUtility points the housekeeping calls — the compaction summary and the
+// induction verdict — at their own chain. Nil leaves them on the main one.
+func (l *Loop) WithUtility(chat ChatProvider) *Loop {
+	l.utility = chat
+	return l
+}
+
+// utilityChat is the chain for work the user never reads. It falls back to the
+// conversation's own chain, so an unconfigured Factor behaves exactly as it
+// did before the split existed.
+func (l *Loop) utilityChat() ChatProvider {
+	if l.utility != nil {
+		return l.utility
+	}
+	return l.chat
 }
 
 // Run drains the inbound bus until ctx is cancelled. One live turn per
@@ -527,6 +547,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 
 	for iteration := 0; iteration < l.cfg.Agent.MaxToolIterations; iteration++ {
 		messages = l.trimInFlight(messages)
+		markTail(messages)
 		l.emit(in.sessionKey, PhaseThinking, "")
 		resp, err := l.chat.Chat(ctx, &provider.Request{
 			Messages:    messages,
@@ -589,48 +610,12 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 			}
 		}
 
-		// A model that asks for the same tool with the same arguments twice in
-		// one batch is repeating itself, not asking for a second reading. Both
-		// ids still need a result beside them or the history stops replaying,
-		// so the first answer serves both — which spares the second run of
-		// whatever the call does, and the iteration it would have cost.
-		served := map[string]string{}
-		for _, call := range resp.ToolCalls {
-			if ctx.Err() != nil {
-				// The turn is over — on voice, because the user talked over
-				// it. Every tool call still needs a result beside it or the
-				// history stops replaying, but that result must not read as
-				// the tool having failed: the next turn treats what it finds
-				// here as evidence, and a "context canceled" left by an
-				// interruption has been read back as a broken browser.
-				if err := record(provider.Message{Role: "tool", ToolCallID: call.ID, Content: interruptedTool}); err != nil {
-					return "", err
-				}
-				continue
-			}
-			sig := callSignature(call)
-			if content, repeat := served[sig]; repeat {
-				toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: content}
-				if err := record(toolMsg); err != nil {
-					return "", err
-				}
-				messages = append(messages, toolMsg)
-				continue
-			}
-			l.emit(in.sessionKey, PhaseTool, call.Name)
-			result := l.registry.Execute(ctx, call.Name, call.Args)
-			content := result.ForLLM
-			if result.IsError {
-				content = "ERROR: " + content
-			}
-			if ctx.Err() != nil {
-				// Cancelled while the tool was running: whatever it returned
-				// is the cancellation, not a verdict on the tool.
-				content = interruptedTool
-				result.Images = nil
-			}
-			served[sig] = content
-			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: content}
+		// The batch is answered before any of it is written down, so the
+		// calls can run in whatever order suits them and still be recorded
+		// in the order the model asked for.
+		outcomes := l.runTools(ctx, in.sessionKey, resp.ToolCalls)
+		for i, call := range resp.ToolCalls {
+			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: outcomes[i].content}
 			if err := record(toolMsg); err != nil {
 				return "", err
 			}
@@ -641,14 +626,14 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 			// every vision dialect accepts. Only the placeholder is persisted:
 			// session files stay small, replay stays valid on any model, and
 			// a stale frame is worthless next turn anyway.
-			if len(result.Images) > 0 {
+			if len(outcomes[i].images) > 0 {
 				if err := record(provider.Message{Role: "user", Content: imagePruned(call.Name)}); err != nil {
 					return "", err
 				}
 				messages = append(messages, provider.Message{
 					Role:    "user",
 					Content: fmt.Sprintf("[Attached: image output of the %s tool. This is tool output, not a message from the user.]", call.Name),
-					Images:  result.Images,
+					Images:  outcomes[i].images,
 				})
 				pruneImages(messages)
 			}
@@ -662,6 +647,121 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (string, erro
 	reply := l.wrapUp(ctx, in, messages)
 	l.maybeCompactAsync(in)
 	return reply, nil
+}
+
+// maxParallelTools bounds how much of one batch runs at once. A batch is
+// normally two or three calls, so the ceiling exists for the pathological one
+// — thirty fetches asked for in a single breath — where the limit protects the
+// hosts on the other end rather than this process.
+const maxParallelTools = 6
+
+// toolOutcome is one call's answer, resolved before anything is written down.
+type toolOutcome struct {
+	content string
+	images  []provider.ImagePart
+}
+
+// runTools answers one batch of tool calls, in the order they were asked.
+//
+// A model that asks for the same tool with the same arguments twice in one
+// batch is repeating itself, not asking for a second reading. Both ids still
+// need a result beside them or the history stops replaying, so the first
+// answer serves both — which spares the second run of whatever the call does,
+// and the iteration it would have cost.
+//
+// The distinct calls run at the same time when every one of them has declared
+// itself safe to (tools.Parallel). That is the difference between a batch
+// costing the sum of its round trips and costing the longest of them, and
+// nearly every tool here spends its time waiting on something else. Most
+// batches are not eligible and run exactly as they always have: order is
+// load-bearing for a pointer, a browser and a file write, and a tool that has
+// not declared itself is assumed to be one of those.
+func (l *Loop) runTools(ctx context.Context, sessionKey string, calls []provider.ToolCall) []toolOutcome {
+	outcomes := make([]toolOutcome, len(calls))
+
+	firstOf := map[string]int{}
+	sameAs := make([]int, len(calls))
+	var distinct []int
+	for i, call := range calls {
+		sig := callSignature(call)
+		if j, repeat := firstOf[sig]; repeat {
+			sameAs[i] = j
+			continue
+		}
+		firstOf[sig] = i
+		sameAs[i] = i
+		distinct = append(distinct, i)
+	}
+
+	run := func(i int) {
+		call := calls[i]
+		if ctx.Err() != nil {
+			// The turn is over — on voice, because the user talked over it.
+			// The result must not read as the tool having failed: the next
+			// turn treats what it finds here as evidence, and a "context
+			// canceled" left by an interruption has been read back as a
+			// broken browser.
+			outcomes[i] = toolOutcome{content: interruptedTool}
+			return
+		}
+		l.emit(sessionKey, PhaseTool, call.Name)
+		result := l.registry.Execute(ctx, call.Name, call.Args)
+		content := result.ForLLM
+		if result.IsError {
+			content = "ERROR: " + content
+		}
+		if ctx.Err() != nil {
+			// Cancelled while the tool was running: whatever it returned is
+			// the cancellation, not a verdict on the tool.
+			outcomes[i] = toolOutcome{content: interruptedTool}
+			return
+		}
+		outcomes[i] = toolOutcome{content: content, images: result.Images}
+	}
+
+	if l.batchRunsInParallel(calls, distinct) {
+		var wg sync.WaitGroup
+		gate := make(chan struct{}, maxParallelTools)
+		for _, i := range distinct {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				gate <- struct{}{}
+				defer func() { <-gate }()
+				run(i)
+			}(i)
+		}
+		wg.Wait()
+	} else {
+		for _, i := range distinct {
+			run(i)
+		}
+	}
+
+	for i := range calls {
+		if j := sameAs[i]; j != i {
+			// The repeat gets the answer but not a second copy of the
+			// picture: one frame of a screen is the frame.
+			outcomes[i] = toolOutcome{content: outcomes[j].content}
+		}
+	}
+	return outcomes
+}
+
+// batchRunsInParallel reports whether a whole batch may run at once. One
+// undeclared call makes the whole batch sequential, because the guarantee is
+// about the batch and not about a tool: a file read running beside a mouse
+// click is still a read racing a click.
+func (l *Loop) batchRunsInParallel(calls []provider.ToolCall, distinct []int) bool {
+	if len(distinct) < 2 {
+		return false
+	}
+	for _, i := range distinct {
+		if !l.registry.ParallelSafe(calls[i].Name, calls[i].Args) {
+			return false
+		}
+	}
+	return true
 }
 
 // callSignature identifies a call by what it would do: the tool and the
@@ -759,11 +859,51 @@ func (l *Loop) assemble(systemPrompt, turnContext, sessionKey string, ephemeral 
 			messages = append(messages, provider.Message{Role: "system", Content: "Summary of earlier conversation:\n" + summary})
 		}
 	}
+	// Each system message ends a stretch worth caching on its own. The prompt
+	// is invariant by construction; the summary under it is not, and is
+	// rewritten every time compaction runs. Marking both means a new summary
+	// costs its own entry and not the tool schemas and system prompt in front
+	// of it, which are the largest fixed block in the request.
+	for i := range messages {
+		if messages[i].Role == "system" {
+			messages[i].CacheMark = true
+		}
+	}
+
 	messages = append(messages, masked[:len(prior)]...)
+	// Everything to here is what the session's next turn repeats verbatim.
+	// turnContext is where two consecutive turns first differ, so the mark
+	// belongs in front of it rather than after.
+	if n := len(messages) - 1; n >= 0 {
+		messages[n].CacheMark = true
+	}
+
 	if turnContext != "" {
 		messages = append(messages, provider.Message{Role: "user", Content: turnContext})
 	}
 	return append(messages, masked[len(prior):]...)
+}
+
+// markTail puts a cache breakpoint at the end of the request as it stands.
+//
+// The marks assemble places are fixed for the whole turn, which leaves the
+// part that actually grows — up to twenty iterations of tool calls and the
+// results they return — reprocessed from scratch on every one of those
+// iterations. A mark at the tail before each call gives the next iteration
+// something to read instead.
+//
+// Marks accumulate rather than move, and the dialect thins them to the few it
+// may send: the fixed head every iteration re-reads, and the most recent
+// tails, which is where this request diverges from the last one. An older tail
+// mark is stale by then anyway. Marking has to keep pace with the appends
+// because a breakpoint searches back only a bounded number of content blocks
+// for an earlier entry — an iteration adds two or three, so one mark per
+// iteration stays well inside that window, and no mark at all falls out of it
+// within a few tool calls.
+func markTail(messages []provider.Message) {
+	if n := len(messages) - 1; n >= 0 {
+		messages[n].CacheMark = true
+	}
 }
 
 // gapSince reports how long the session has been untouched, for the notice

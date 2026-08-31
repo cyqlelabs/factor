@@ -97,6 +97,19 @@ func (r *Registry) Definitions() []provider.ToolDefinition {
 }
 
 // Execute runs a tool call end to end. It never panics and never returns nil.
+// ParallelSafe reports whether this call may run beside the others in its
+// batch. Anything that has not declared the capability is assumed unsafe: a
+// tool that does not say is a tool nobody has thought about, and the cost of
+// being wrong is a race rather than a slow turn.
+func (r *Registry) ParallelSafe(name string, args map[string]any) bool {
+	t, ok := r.Get(name)
+	if !ok {
+		return false
+	}
+	p, ok := t.(Parallel)
+	return ok && p.ParallelSafe(args)
+}
+
 func (r *Registry) Execute(ctx context.Context, name string, args map[string]any) (result *Result) {
 	defer func() {
 		if rec := recover(); rec != nil {

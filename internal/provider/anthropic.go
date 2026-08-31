@@ -48,15 +48,35 @@ func (p *Anthropic) Model() string { return p.model }
 func (p *Anthropic) Name() string  { return "anthropic:" + p.model }
 
 type anthContent struct {
-	Type      string           `json:"type"`
-	Text      string           `json:"text,omitempty"`
-	ID        string           `json:"id,omitempty"`
-	Name      string           `json:"name,omitempty"`
-	Input     map[string]any   `json:"input,omitempty"`
-	ToolUseID string           `json:"tool_use_id,omitempty"`
-	Content   string           `json:"content,omitempty"`
-	Source    *anthImageSource `json:"source,omitempty"`
+	Type         string            `json:"type"`
+	Text         string            `json:"text,omitempty"`
+	ID           string            `json:"id,omitempty"`
+	Name         string            `json:"name,omitempty"`
+	Input        map[string]any    `json:"input,omitempty"`
+	ToolUseID    string            `json:"tool_use_id,omitempty"`
+	Content      string            `json:"content,omitempty"`
+	Source       *anthImageSource  `json:"source,omitempty"`
+	CacheControl *anthCacheControl `json:"cache_control,omitempty"`
 }
+
+// anthCacheControl marks a prompt-cache breakpoint. Caching on this dialect is
+// opt-in per request: without a marker the API neither writes nor reads a
+// cache, however byte-stable the prefix is. The request renders as
+// tools → system → messages, so a marker on the last system block covers the
+// tool schemas in front of it as well.
+type anthCacheControl struct {
+	Type string `json:"type"` // "ephemeral"
+}
+
+func ephemeralCache() *anthCacheControl { return &anthCacheControl{Type: "ephemeral"} }
+
+// maxCacheBreakpoints is how many markers one request may carry. Past the
+// limit the API rejects the request, so the adapter thins them itself rather
+// than turning a caller's over-marking into a failed turn. What it keeps is
+// the first marker — the fixed tools-and-system prefix, the largest block and
+// the one every later request re-reads — and the most recent few, which are
+// where a growing conversation actually diverges.
+const maxCacheBreakpoints = 4
 
 // anthImageSource is the Messages API image block payload.
 type anthImageSource struct {
@@ -79,7 +99,7 @@ type anthTool struct {
 type anthRequest struct {
 	Model       string        `json:"model"`
 	MaxTokens   int           `json:"max_tokens"`
-	System      string        `json:"system,omitempty"`
+	System      []anthContent `json:"system,omitempty"`
 	Messages    []anthMessage `json:"messages"`
 	Tools       []anthTool    `json:"tools,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
@@ -107,19 +127,34 @@ type anthResponse struct {
 	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
+		// The cache counters sit beside InputTokens rather than inside it:
+		// this dialect reports only the uncached remainder as input.
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 }
 
-// toAnthropic converts the neutral message list: system messages merge into the
-// system field; consecutive tool results merge into one user message.
-func toAnthropic(messages []Message) (system string, out []anthMessage) {
+// cacheSite is where a breakpoint landed, kept as indices because the blocks
+// live in slices that are still being appended to while marks are collected.
+// A negative message index means the site is in the system blocks.
+type cacheSite struct{ msg, block int }
+
+// toAnthropic converts the neutral message list. System messages become one
+// text block each rather than one merged string: keeping them separate is what
+// lets a breakpoint sit between the invariant system prompt and a rolling
+// summary that changes under it, so compaction costs the summary's cache and
+// not the prompt's. Consecutive tool results still merge into one user message,
+// which is the shape the API requires.
+func toAnthropic(messages []Message) (system []anthContent, out []anthMessage) {
+	var marks []cacheSite
 	for _, m := range messages {
 		switch m.Role {
 		case "system":
-			if system != "" {
-				system += "\n\n"
+			system = append(system, anthContent{Type: "text", Text: m.Content})
+			if m.CacheMark {
+				marks = append(marks, cacheSite{msg: -1, block: len(system) - 1})
 			}
-			system += m.Content
+			continue
 		case "user":
 			blocks := []anthContent{{Type: "text", Text: m.Content}}
 			for _, img := range m.Images {
@@ -152,8 +187,42 @@ func toAnthropic(messages []Message) (system string, out []anthMessage) {
 				out = append(out, anthMessage{Role: "user", Content: []anthContent{block}})
 			}
 		}
+		// The mark rides the last block the message produced. Roles are
+		// named rather than inferred from len(out): an unrecognized role
+		// appends nothing, and marking then would pin the breakpoint to
+		// somebody else's message.
+		if m.CacheMark && len(out) > 0 && (m.Role == "user" || m.Role == "assistant" || m.Role == "tool") {
+			n := len(out) - 1
+			marks = append(marks, cacheSite{msg: n, block: len(out[n].Content) - 1})
+		}
 	}
+	applyCacheMarks(system, out, marks)
 	return system, out
+}
+
+// applyCacheMarks writes the collected breakpoints, thinned to the number the
+// API accepts. When there are too many it keeps the first — the tools and
+// system prefix, which every later request re-reads whole — and the most
+// recent, which is where a growing request diverges from the last one.
+func applyCacheMarks(system []anthContent, out []anthMessage, marks []cacheSite) {
+	if len(marks) > maxCacheBreakpoints {
+		kept := append([]cacheSite{marks[0]}, marks[len(marks)-(maxCacheBreakpoints-1):]...)
+		marks = kept
+	}
+	for _, s := range marks {
+		if s.block < 0 {
+			continue
+		}
+		if s.msg < 0 {
+			if s.block < len(system) {
+				system[s.block].CacheControl = ephemeralCache()
+			}
+			continue
+		}
+		if s.msg < len(out) && s.block < len(out[s.msg].Content) {
+			out[s.msg].Content[s.block].CacheControl = ephemeralCache()
+		}
+	}
 }
 
 func (p *Anthropic) Chat(ctx context.Context, req *Request) (*Response, error) {
@@ -204,10 +273,20 @@ func (p *Anthropic) Chat(ctx context.Context, req *Request) (*Response, error) {
 		return nil, &APIError{Provider: p.Name(), Reason: ReasonFormat, Err: fmt.Errorf("decode response: %w", err)}
 	}
 
+	// InputTokens here is only what was not served from or written to the
+	// cache, so the whole input is the three added together. Reporting it any
+	// other way would make a well-cached turn look like it read almost
+	// nothing, and the meter would price it that way too.
+	u := parsed.Usage
 	out := &Response{
 		FinishReason: parsed.StopReason,
-		Usage:        Usage{PromptTokens: parsed.Usage.InputTokens, CompletionTokens: parsed.Usage.OutputTokens},
-		Model:        p.model,
+		Usage: Usage{
+			PromptTokens:     u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
+			CompletionTokens: u.OutputTokens,
+			CacheReadTokens:  u.CacheReadInputTokens,
+			CacheWriteTokens: u.CacheCreationInputTokens,
+		},
+		Model: p.model,
 	}
 	for _, block := range parsed.Content {
 		switch block.Type {

@@ -65,6 +65,29 @@ func BuildChain(cfg config.ProviderConfig) (*Chain, error) {
 	return NewChain(providers, cfg.MaxRetries, backoff), nil
 }
 
+// BuildUtilityChain assembles the housekeeping chain, or returns nil when none
+// is configured — the caller then bills those calls to the main chain, which
+// is what Factor did before this existed.
+func BuildUtilityChain(cfg config.ProviderConfig) (*Chain, error) {
+	cands := cfg.UtilityCandidates()
+	if len(cands) == 0 {
+		return nil, nil
+	}
+	var providers []Provider
+	for _, cand := range cands {
+		p, err := New(cand)
+		if err != nil {
+			return nil, fmt.Errorf("utility provider: %w", err)
+		}
+		providers = append(providers, p)
+	}
+	backoff := time.Duration(cfg.RetryBackoffSecs) * time.Second
+	if backoff <= 0 {
+		backoff = 2 * time.Second
+	}
+	return NewChain(providers, cfg.MaxRetries, backoff), nil
+}
+
 // OpenAICompatibleEndpoint returns the chat-completions base URL and key of the
 // first OpenAI-compatible candidate, for services that need a raw endpoint
 // (e.g. smrti's entity extraction). ok is false when none qualifies.
