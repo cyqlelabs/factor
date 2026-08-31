@@ -507,3 +507,27 @@ and 9.
 Nothing here argues with a design decision the codebase has already made. Items 3
 and 5 are unclaimed returns on work that is already done; 4, 6 and 7 are harness
 components the papers name and Factor has not built yet.
+
+---
+
+## What was built
+
+All nine landed on this branch. Where the implementation taught something the
+review did not know, the detail is in the decision records rather than here.
+
+| # | Landed as | Notes |
+|---|---|---|
+| 3 | `provider.Message.CacheMark`, `cache_control` in `anthropic.go`, cache counts in `provider.Usage` and `internal/cost` | [ADR-002](decisions/002-prompt-cache-breakpoints.md). The 20-block lookback turned out to be the load-bearing part: `markTail` before every call is what stops a tool-heavy turn silently finding nothing |
+| 4 | `provider.utility`, `Loop.WithUtility` | Compaction and induction only; unset, both stay on the conversation's chain |
+| 5 | `tools.Parallel` / `tools.ReadOnly`, `Loop.runTools` | Eleven read-only tools opted in; one undeclared call still serializes its batch |
+| 6 | `internal/trace` | [ADR-003](decisions/003-turn-traces-and-control-bands.md). Local, retention-bounded, argument *values* off by default |
+| 7 | `internal/evals` | Ten cases over the real loop and registry with a scripted provider; CI reports the pass rate |
+| 8 | `internal/bands`, wired into the heartbeat | Detection is arithmetic with no model in it; a breach starts a check that `HEARTBEAT.md` alone never would |
+| 9 | Steering counted, induction floor lowered for corrected turns, `Loop.NoteFeedback` | The signal was already there and discarded |
+| 10 | `internal/vcs` | Opt-in (`agent.version_workspace`); `sessions/` excluded, `config.json` deliberately not versioned — it holds API keys |
+| 11 | `REVIEW.md`, ADR-002, ADR-003, the `evals` CI job | |
+
+One thing the review got wrong: it implied masking could be checked mid-turn.
+A turn inside its budget is never masked while it runs — reading five files to
+compare them needs all five — so what the eval actually pins is what the *next*
+turn inherits.

@@ -236,3 +236,69 @@ func cacheRecord(at time.Time, input, cached int) trace.Record {
 	return trace.Record{Started: at, Session: "cli:x", Outcome: "ok", Duration: 1,
 		InputTokens: input, CachedTokens: cached}
 }
+
+func TestFormatRendersEachUnit(t *testing.T) {
+	for _, tc := range []struct {
+		v          float64
+		unit, want string
+	}{
+		{0.5, "USD", "$0.5000"},
+		{0.42, "of calls", "42%"},
+		{0.42, "of turns", "42%"},
+		{0.42, "of input", "42%"},
+		{3.25, "s", "3.2s"},
+		{2, "per turn", "2.00 per turn"},
+	} {
+		if got := format(tc.v, tc.unit); got != tc.want {
+			t.Errorf("format(%v, %q) = %q, want %q", tc.v, tc.unit, got, tc.want)
+		}
+	}
+}
+
+func TestStatsOnNothing(t *testing.T) {
+	mean, sd := stats(nil)
+	if mean != 0 || sd != 0 {
+		t.Errorf("stats(nil) = %v, %v", mean, sd)
+	}
+}
+
+// A recent window with no readings of a metric says nothing about it.
+func TestNoRecentReadingsSaysNothing(t *testing.T) {
+	spec := Specs()[0]
+	base := make([]float64, 20)
+	for i := range base {
+		base[i] = float64(i % 3)
+	}
+	if _, ok := judge(spec, base, nil, 10); ok {
+		t.Error("judged a metric with nothing recent to judge")
+	}
+}
+
+// Cost is skipped on unpriced models: a zero there is "nobody knows", not
+// "it was free", and averaging it in would drag the baseline down.
+func TestUnpricedTurnsAreNotCountedAsFree(t *testing.T) {
+	var costSpec Spec
+	for _, s := range Specs() {
+		if s.Name == "cost per turn" {
+			costSpec = s
+		}
+	}
+	if _, ok := costSpec.Of(trace.Record{USD: 0}); ok {
+		t.Error("an unpriced turn was read as a zero-cost one")
+	}
+	if v, ok := costSpec.Of(trace.Record{USD: 0.5}); !ok || v != 0.5 {
+		t.Errorf("a priced turn read as %v, %v", v, ok)
+	}
+}
+
+// The seconds-per-turn spec skips a turn with no measured duration.
+func TestDurationSpecSkipsUnmeasuredTurns(t *testing.T) {
+	for _, s := range Specs() {
+		if s.Name != "seconds per turn" {
+			continue
+		}
+		if _, ok := s.Of(trace.Record{Duration: 0}); ok {
+			t.Error("a turn with no duration was read as instantaneous")
+		}
+	}
+}

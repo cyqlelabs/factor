@@ -163,6 +163,7 @@ var registrySlugRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/[a-zA-
 // InstallTool installs a skill from the public registry, a git URL, or a
 // local directory into the workspace skills root.
 type InstallTool struct {
+	ChangeHook
 	Root     string // workspace/skills
 	Registry *Registry
 }
@@ -222,6 +223,7 @@ func (t *InstallTool) Execute(ctx context.Context, args map[string]any) *tools.R
 		_ = os.RemoveAll(dest)
 		return tools.Errorf("source has no SKILL.md at its root; not a skill")
 	}
+	t.changed("installed " + name)
 	return tools.Textf("Installed skill %q to %s", name, dest)
 }
 
@@ -259,6 +261,7 @@ func (t *InstallTool) installFromRegistry(ctx context.Context, slug, dest string
 // into the skills root, which the directory+SKILL.md scan never indexes, so the
 // work vanishes from the catalog the moment the session ends.
 type WriteTool struct {
+	ChangeHook
 	Root string // workspace/skills
 }
 
@@ -275,6 +278,18 @@ func (t *WriteTool) Parameters() map[string]any {
 			"content":     map[string]any{"type": "string", "description": "Markdown body: what the skill does, how to run it, which files it uses"},
 		},
 		"required": []any{"name", "description", "content"},
+	}
+}
+
+// ChangeHook lets a caller learn that the skill library changed, so the
+// change can be recorded somewhere it can be read back. Embedded rather than
+// imported: this package knows what it wrote and nothing about version
+// control, and it stays that way.
+type ChangeHook struct{ OnChange func(what string) }
+
+func (c ChangeHook) changed(what string) {
+	if c.OnChange != nil {
+		c.OnChange(what)
 	}
 }
 
@@ -312,11 +327,13 @@ func (t *WriteTool) Execute(_ context.Context, args map[string]any) *tools.Resul
 	if existed {
 		verb = "Updated"
 	}
+	t.changed(strings.ToLower(verb) + " " + name)
 	return tools.Textf("%s skill %q (%s). Put helper scripts in %s and reference them from the body.", verb, name, path, dir)
 }
 
 // RemoveTool deletes a skill directory so retired work leaves the catalog.
 type RemoveTool struct {
+	ChangeHook
 	Root string // workspace/skills
 }
 
@@ -348,5 +365,6 @@ func (t *RemoveTool) Execute(_ context.Context, args map[string]any) *tools.Resu
 	if err := os.RemoveAll(dir); err != nil {
 		return tools.Errorf("remove skill: %v", err)
 	}
+	t.changed("removed " + name)
 	return tools.Textf("Removed skill %q", name)
 }
