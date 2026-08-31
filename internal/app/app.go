@@ -28,6 +28,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/tools"
 	"github.com/cyqlelabs/factor/internal/trace"
 	"github.com/cyqlelabs/factor/internal/upgrade"
+	"github.com/cyqlelabs/factor/internal/vcs"
 	"github.com/cyqlelabs/factor/internal/version"
 )
 
@@ -189,9 +190,17 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	skillsRoot := filepath.Join(ws, "skills")
 	skillLoader := skills.NewLoader(skillsRoot, filepath.Join(config.Home(), "skills"))
 	skillReg := skills.NewRegistry(cfg.Tools.SkillRegistryURL)
-	registry.Register(&skills.InstallTool{Root: skillsRoot, Registry: skillReg})
-	registry.Register(&skills.WriteTool{Root: skillsRoot})
-	registry.Register(&skills.RemoveTool{Root: skillsRoot})
+	// The workspace is the half of Factor's context the user owns and git
+	// never saw: the persona, the instructions, and the skills — including
+	// the ones induction writes without being asked.
+	repo := vcs.Open(ws, cfg.Agent.VersionWorkspace)
+	skillCommit := repo.Committer("skill")
+	registry.Register(&skills.InstallTool{Root: skillsRoot, Registry: skillReg,
+		ChangeHook: skills.ChangeHook{OnChange: skillCommit}})
+	registry.Register(&skills.WriteTool{Root: skillsRoot,
+		ChangeHook: skills.ChangeHook{OnChange: skillCommit}})
+	registry.Register(&skills.RemoveTool{Root: skillsRoot,
+		ChangeHook: skills.ChangeHook{OnChange: skillCommit}})
 	registry.Register(&skills.FindTool{Registry: skillReg, Installed: skillLoader})
 	registry.Register(tools.NewConfigTools(cfg)...)
 	registry.Register(cost.NewTool(meter)...)
@@ -245,7 +254,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	b := bus.New()
 	loop := agent.NewLoop(cfg, b, meter, registry, sessions, builder, ambient).
 		WithUtility(utilityMeter).
-		WithTracer(tracer)
+		WithTracer(tracer).
+		WithVersioner(repo.Committer("skill"))
 	// A turn that arrived from a chat asks its questions there — the user the
 	// question is for is by definition looking at that chat, not necessarily
 	// at this machine's screen. The dialog stays for every turn without one.

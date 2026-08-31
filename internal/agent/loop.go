@@ -103,6 +103,10 @@ type Loop struct {
 	// tracer keeps the local record of what each turn did. Nil is tracing
 	// switched off, and every call on it is nil-safe.
 	tracer *trace.Recorder
+
+	// versioner records a change the agent made to its own workspace. Nil
+	// when the workspace is not under version control.
+	versioner func(what string)
 }
 
 func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry *tools.Registry,
@@ -144,6 +148,19 @@ func (l *Loop) WithUtility(chat ChatProvider) *Loop {
 // it did it.
 func (l *Loop) NoteFeedback(sessionKey, kind, detail string) {
 	l.tracer.Event(sessionKey, kind, detail)
+}
+
+// WithVersioner installs the hook that records a workspace change somewhere
+// it can be read back. Nil leaves the workspace unversioned.
+func (l *Loop) WithVersioner(commit func(what string)) *Loop {
+	l.versioner = commit
+	return l
+}
+
+func (l *Loop) noteWorkspaceChange(what string) {
+	if l.versioner != nil {
+		l.versioner(what)
+	}
 }
 
 // WithTracer installs the turn recorder. Nil leaves tracing off.

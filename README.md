@@ -36,7 +36,8 @@ than logging, so past failures become constraints it doesn't repeat.
 | 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations, not queued |
 | ❓ **Asks when only you know** | `ask_user` puts the question where you are: the chat the turn came from, the terminal you're already in, or a dialog on your desktop — and times out rather than hanging the turn when you're away |
 | 🔁 **Provider failover** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with per-candidate cooldowns and overflow compaction |
-| 💸 **Counts what it spends** | Every call priced and billed to its session — status bar, tray, `usage` tool — with per-session and global caps |
+| 💸 **Counts what it spends** | Every call priced and billed to its session — status bar, tray, `usage` tool — with per-session and global caps, cached tokens priced at what they actually cost |
+| ⚡ **Caches the prompt prefix** | The request is ordered and marked so consecutive turns reuse the longest identical prefix; a tool-heavy turn stops reprocessing itself on every iteration |
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning`, `reasoning_effort`, or a `thinking` budget |
 | ☎️ **Answers the phone** | A real number to call, or it calls and texts you — barge-in, voicemail detection, optional fully local speech ([Phone](#phone-calls-and-sms)) |
 | 🎙️ **Listens in the room** | Mic in, speakers out, barge-in, optional wake word, push-to-talk via `factor talk` ([PC voice](#pc-voice-mic-and-speakers)) |
@@ -44,6 +45,7 @@ than logging, so past failures become constraints it doesn't repeat.
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications on X11/Wayland/macOS/Windows — plus grid vision ([Desktop](#desktop)) |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed one ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills ([Extending](#extending-factor)) |
+| 📊 **Watches its own numbers** | Every turn leaves a local trace — models, tools, timings, cache and cost — and deterministic control bands wake the heartbeat when one drifts, so nothing is spent noticing that nothing changed |
 | 📓 **Learns from its own work** | A turn that took four or more tool calls becomes a skill it writes for itself once the session goes quiet ([Extending](#extending-factor)) |
 | 🔧 **Self-managing** | Edits its own config, installs packages, upgrades and restarts itself, schedules cron jobs and one-off reminders, runs `HEARTBEAT.md` checks that cost nothing when idle |
 | 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, scrubbed secrets — rails, not a sandbox ([Security](#security-model)) |

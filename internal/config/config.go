@@ -65,6 +65,14 @@ type AgentConfig struct {
 	// a reusable skill in the workspace catalog, so work figured out once by
 	// trial and error is a recipe the next time it comes up.
 	LearnSkills bool `json:"learn_skills" env:"FACTOR_LEARN_SKILLS"`
+	// VersionWorkspace keeps a local git history of the workspace, so an
+	// edit to the persona or a skill the agent wrote for itself can be read
+	// back and undone. Off by default because it creates a repository in the
+	// user's home directory, which is not something to inherit from an
+	// upgrade. Session transcripts are excluded, and config.json is not in
+	// the workspace at all — it holds API keys, and a diff is not worth
+	// copying them into git objects for.
+	VersionWorkspace bool `json:"version_workspace" env:"FACTOR_VERSION_WORKSPACE"`
 }
 
 // Candidate identifies one provider+model combination in the failover chain.

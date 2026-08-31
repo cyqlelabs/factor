@@ -249,6 +249,8 @@ func (l *Loop) induce(ctx context.Context, sessionKey string, cand induceCandida
 		action = "updated"
 	}
 	slog.Info("skill learned", "name", name, "action", action, "path", path, "session", sessionKey)
+	// A skill nobody asked for is the one most worth being able to undo.
+	l.noteWorkspaceChange("induction " + action + " " + name)
 	return nil
 }
 

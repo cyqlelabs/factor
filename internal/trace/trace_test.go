@@ -109,7 +109,7 @@ func TestRecordArgsPassesThroughTheSecretFilter(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRecorder(dir, Config{Enabled: true, RecordArgs: true, KeepDays: 5},
 		func(s string) string { return strings.ReplaceAll(s, "hunter2", "***") })
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	turn := r.Begin("cli:x", "user", "")
 	turn.Tool("exec", map[string]any{"command": "login --password hunter2"}, time.Millisecond, 2, false)
@@ -124,7 +124,7 @@ func TestRecordArgsPassesThroughTheSecretFilter(t *testing.T) {
 func TestLongArgumentsAreBounded(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRecorder(dir, Config{Enabled: true, RecordArgs: true}, nil)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	turn := r.Begin("cli:x", "user", "")
 	turn.Tool("write_file", map[string]any{"content": strings.Repeat("x", 5000)}, time.Millisecond, 2, false)
 	turn.End("ok", nil)
@@ -217,7 +217,7 @@ func TestPruneDropsTheOldestDays(t *testing.T) {
 		}
 	}
 	r := NewRecorder(dir, Config{Enabled: true, KeepDays: 2}, nil)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	left, _ := os.ReadDir(dir)
 	if len(left) != 2 {
@@ -267,5 +267,105 @@ func TestSinceSkipsRecordsBeforeTheCutoff(t *testing.T) {
 
 	if recs, _ := Since(dir, time.Now().Add(time.Hour)); len(recs) != 0 {
 		t.Errorf("read %d records from the future", len(recs))
+	}
+}
+
+func TestDirNamesTheDirectory(t *testing.T) {
+	r, dir := newTestRecorder(t, Config{})
+	if r.Dir() != dir {
+		t.Errorf("Dir() = %q, want %q", r.Dir(), dir)
+	}
+}
+
+// A directory that cannot be created disables tracing rather than failing
+// startup: a missing record is never worth refusing to run over.
+func TestUnusableDirectoryDisablesTracing(t *testing.T) {
+	// A file where the directory should be: MkdirAll cannot win.
+	blocker := filepath.Join(t.TempDir(), "occupied")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := NewRecorder(filepath.Join(blocker, "traces"), Config{Enabled: true}, nil); r != nil {
+		t.Error("tracing should be off when the directory cannot be made")
+	}
+}
+
+func TestKeepDaysDefaultsWhenUnset(t *testing.T) {
+	r := NewRecorder(t.TempDir(), Config{Enabled: true, KeepDays: 0}, nil)
+	defer func() { _ = r.Close() }()
+	if r.cfg.KeepDays != 14 {
+		t.Errorf("KeepDays = %d, want the default", r.cfg.KeepDays)
+	}
+}
+
+func TestRenderArgsHandlesNothingToRender(t *testing.T) {
+	r := NewRecorder(t.TempDir(), Config{Enabled: true, RecordArgs: true}, nil)
+	defer func() { _ = r.Close() }()
+	if got := r.renderArgs(nil); got != "" {
+		t.Errorf("renderArgs(nil) = %q", got)
+	}
+	// A value json cannot encode must not take the record down with it.
+	if got := r.renderArgs(map[string]any{"fn": make(chan int)}); got != "" {
+		t.Errorf("renderArgs(unencodable) = %q", got)
+	}
+}
+
+func TestSanitizeKeepsIdsFilenameSafe(t *testing.T) {
+	for in, want := range map[string]string{
+		"telegram": "telegram", "voice:local": "voice-local", "": "none", "a/b": "a-b",
+	} {
+		if got := sanitize(in); got != want {
+			t.Errorf("sanitize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCacheHitRateWithoutInputIsZero(t *testing.T) {
+	if got := (Record{CachedTokens: 10}).CacheHitRate(); got != 0 {
+		t.Errorf("CacheHitRate() = %v with no input", got)
+	}
+}
+
+// A day that rolls over while the process runs opens the next file rather than
+// appending yesterday's.
+func TestRecordsRotateByDay(t *testing.T) {
+	r, dir := newTestRecorder(t, Config{})
+	yesterday := time.Now().Add(-24 * time.Hour)
+	r.write(Record{ID: "old", Started: yesterday, Session: "cli:x", Outcome: "ok"})
+	r.write(Record{ID: "new", Started: time.Now(), Session: "cli:x", Outcome: "ok"})
+
+	names, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 {
+		t.Errorf("wrote %d files, want one per day", len(names))
+	}
+}
+
+// Since only opens the days that can hold something recent.
+func TestSinceSkipsOlderDayFiles(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().Add(-72 * time.Hour)
+	if err := os.WriteFile(filepath.Join(dir, old.Format("2006-01-02")+".jsonl"),
+		[]byte(`{"id":"old","started":"`+old.Format(time.RFC3339Nano)+`","outcome":"ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := Since(dir, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 0 {
+		t.Errorf("read %d records from before the cutoff", len(recs))
+	}
+}
+
+func TestSinceOnAFileInsteadOfADirectory(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Since(f, time.Now().Add(-time.Hour)); err == nil {
+		t.Error("reading a file as a trace directory should report the problem")
 	}
 }

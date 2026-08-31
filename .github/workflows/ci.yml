@@ -78,6 +78,49 @@ jobs:
           minColorRange: 80
           maxColorRange: 100
 
+  # The prompt is the product, and it is the one part of it a diff cannot be
+  # read for. This job runs the behavioural evals and reports the pass rate,
+  # which is the number to watch across a prompt change: a drop says the edit
+  # changed something nobody meant to change. It runs on every PR — the suite
+  # is scripted, needs no API key and takes seconds — and the paths filter
+  # below is what makes a failure legible rather than what gates the run.
+  evals:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-evals-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: which agent-steering files changed
+        id: steering
+        run: |
+          # Informational: it names what to look at when the rate moves.
+          git fetch --depth=2 origin "${{ github.sha }}" 2>/dev/null || true
+          changed=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -E \
+            'internal/agent/context\.go|internal/agent/induce\.go|internal/agent/compact\.go|internal/skills/|internal/evals/' || true)
+          if [ -n "$changed" ]; then
+            echo "files that steer the agent changed in this push:"
+            echo "$changed"
+          fi
+      - name: run the eval suite
+        run: |
+          set -o pipefail
+          go test ./internal/evals/ -json | tee evals.json | \
+            grep -E '^\{"Time".*"Action":"(pass|fail)","Test"' > /dev/null || true
+          pass=$(grep -c '"Action":"pass","Test"' evals.json || true)
+          fail=$(grep -c '"Action":"fail","Test"' evals.json || true)
+          total=$((pass + fail))
+          if [ "$total" -eq 0 ]; then
+            echo "no evals ran; the suite is the gate, so an empty run is a failure"
+            exit 1
+          fi
+          echo "eval pass rate: $pass/$total"
+          echo "### Eval pass rate: $pass/$total" >> "$GITHUB_STEP_SUMMARY"
+          [ "$fail" -eq 0 ]
+
   lint:
     runs-on: ubuntu-latest
     concurrency:
