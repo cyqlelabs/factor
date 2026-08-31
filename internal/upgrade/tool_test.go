@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -109,18 +110,22 @@ func TestToolOnAnEngineItCannotUpgrade(t *testing.T) {
 func TestToolReportsFailures(t *testing.T) {
 	setPlatform(t, "linux", "amd64")
 
-	prev := releaseAPI
+	prev := releasesURL
 	t.Setenv("FACTOR_HOME", t.TempDir())
-	releaseAPI = "http://127.0.0.1:0/nothing-listening"
+	releasesURL = "http://127.0.0.1:0/nothing-listening"
 	res := (&Tool{Current: "v0.3.0"}).Execute(context.Background(), nil)
-	releaseAPI = prev
+	releasesURL = prev
 	if !res.IsError {
 		t.Fatalf("an unreachable API should be an error: %+v", res)
 	}
 
 	// A release whose checksums are missing must fail loudly rather than
-	// leave the agent believing it upgraded.
-	release{tag: "v0.4.0", binary: []byte("x"), assets: []string{AssetName()}}.start(t)
+	// leave the agent believing it upgraded: nothing unverified is installed.
+	base, mux := release{tag: "v0.4.0", binary: []byte("x")}.start(t)
+	mux.HandleFunc("/nosums/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, base+"/nosums/releases/tag/v0.4.0", http.StatusFound)
+	})
+	releasesURL = base + "/nosums/releases"
 	stageBinary(t, "the old build")
 	res = (&Tool{Current: "v0.3.0"}).Execute(context.Background(), map[string]any{"action": "install"})
 	if !res.IsError || !strings.Contains(res.ForLLM, "SHA256SUMS") {

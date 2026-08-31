@@ -68,54 +68,52 @@ func TestAssetName(t *testing.T) {
 type release struct {
 	tag    string
 	binary []byte
-	assets []string // asset names to publish; nil means the usual pair
-	sums   string   // SHA256SUMS body; empty means one generated for binary
+	assets []string // binaries to publish; nil means just this machine's
+	sums   string   // SHA256SUMS body; empty means one generated for assets
 }
 
-// start publishes the release and points releaseAPI at it, returning the
-// base URL and the mux so a test can add a misbehaving asset of its own.
+// start publishes the release the way GitHub's own pages do — /latest
+// redirects to the tag, the assets hang off /download/<tag>/ — and points
+// releasesURL at it, returning the base URL and the mux so a test can add a
+// misbehaving asset of its own.
 func (r release) start(t *testing.T) (string, *http.ServeMux) {
 	t.Helper()
 	mux := http.NewServeMux()
 	srv := httptest.NewUnstartedServer(mux)
-	// The listener exists before Start, so the download URLs the release
-	// index hands out can be built without racing the serving goroutine.
+	// The listener exists before Start, so the redirect target can be built
+	// without racing the serving goroutine.
 	base := "http://" + srv.Listener.Addr().String()
 
 	names := r.assets
 	if names == nil {
-		names = []string{AssetName(), "SHA256SUMS"}
+		names = []string{AssetName()}
 	}
 	sums := r.sums
 	if sums == "" {
-		sums = fmt.Sprintf("%s  %s\n", sha256hex(r.binary), AssetName())
+		for _, n := range names {
+			sums += fmt.Sprintf("%s  %s\n", sha256hex(r.binary), n)
+		}
 	}
 
-	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
-		var assets []string
-		for _, n := range names {
-			size := len(r.binary)
-			if n == "SHA256SUMS" {
-				size = len(sums)
-			}
-			assets = append(assets, fmt.Sprintf(`{"name":%q,"browser_download_url":"%s/dl/%s","size":%d}`, n, base, n, size))
-		}
-		fmt.Fprintf(w, `{"tag_name":%q,"html_url":"https://example.test/%s","assets":[%s]}`,
-			r.tag, r.tag, strings.Join(assets, ","))
+	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, base+"/releases/tag/"+r.tag, http.StatusFound)
 	})
-	mux.HandleFunc("/dl/SHA256SUMS", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/releases/download/"+r.tag+"/SHA256SUMS", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, sums)
 	})
-	mux.HandleFunc("/dl/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/releases/download/"+r.tag+"/", func(w http.ResponseWriter, _ *http.Request) {
+		// GitHub serves assets with a length, which is what the progress
+		// reporting now reads instead of a size out of the release index.
+		w.Header().Set("Content-Length", strconv.Itoa(len(r.binary)))
 		w.Write(r.binary)
 	})
 
 	srv.Start()
 	t.Cleanup(srv.Close)
-	t.Setenv("FACTOR_HOME", t.TempDir()) // the release check caches its ETag under it
-	prev := releaseAPI
-	releaseAPI = base + "/releases/latest"
-	t.Cleanup(func() { releaseAPI = prev })
+	t.Setenv("FACTOR_HOME", t.TempDir()) // the release check caches its answer under it
+	prev := releasesURL
+	releasesURL = base + "/releases"
+	t.Cleanup(func() { releasesURL = prev })
 	return base, mux
 }
 
@@ -156,17 +154,20 @@ func TestLatest(t *testing.T) {
 	if rel.Version != "v0.4.0" || rel.Asset != "factor-linux-amd64" {
 		t.Fatalf("got %+v", rel)
 	}
-	if rel.URL == "" || rel.SumsURL == "" || rel.Size != 6 {
+	if rel.Sum != sha256hex([]byte("binary")) {
 		t.Fatalf("release not fully resolved: %+v", rel)
 	}
-	if rel.Notes != "https://example.test/v0.4.0" {
+	if !strings.HasSuffix(rel.URL, "/releases/download/v0.4.0/factor-linux-amd64") {
+		t.Errorf("url = %q", rel.URL)
+	}
+	if !strings.HasSuffix(rel.Notes, "/releases/tag/v0.4.0") {
 		t.Errorf("notes = %q", rel.Notes)
 	}
 }
 
 func TestLatestNoBuildForPlatform(t *testing.T) {
 	setPlatform(t, "plan9", "mips")
-	release{tag: "v0.4.0", binary: []byte("binary"), assets: []string{"factor-linux-amd64", "SHA256SUMS"}}.start(t)
+	release{tag: "v0.4.0", binary: []byte("binary"), assets: []string{"factor-linux-amd64"}}.start(t)
 
 	_, err := Latest(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "factor-plan9-mips") {
@@ -176,38 +177,42 @@ func TestLatestNoBuildForPlatform(t *testing.T) {
 
 func TestLatestFailures(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
+	setPlatform(t, "linux", "amd64")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/notfound":
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/notfound"):
 			http.Error(w, "nope", http.StatusNotFound)
-		case "/garbage":
-			fmt.Fprint(w, "{{{")
-		default:
-			fmt.Fprint(w, `{"tag_name":"","assets":[]}`)
+		case strings.HasPrefix(r.URL.Path, "/untagged"):
+			// A repository that has published nothing lands on the index.
+			http.Redirect(w, r, "/untagged/releases", http.StatusFound)
+		case strings.HasSuffix(r.URL.Path, "/latest"):
+			http.Redirect(w, r, "/nosums/releases/tag/v0.4.0", http.StatusFound)
+		default: // the tag resolves, its checksums do not
+			http.Error(w, "nope", http.StatusNotFound)
 		}
 	}))
 	defer srv.Close()
 
 	for _, c := range []struct{ path, want string }{
 		{"/notfound", "404"},
-		{"/garbage", "reading the factor release index"},
 		{"/untagged", "no tag"},
+		{"/nosums", "fetching the SHA256SUMS"},
 	} {
-		prev := releaseAPI
-		releaseAPI = srv.URL + c.path
+		prev := releasesURL
+		releasesURL = srv.URL + c.path
 		_, err := Latest(context.Background())
-		releaseAPI = prev
+		releasesURL = prev
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err = %v, want it to mention %q", c.path, err, c.want)
 		}
 	}
 
-	prev := releaseAPI
-	releaseAPI = "http://127.0.0.1:0/nothing-listening"
+	prev := releasesURL
+	releasesURL = "http://127.0.0.1:0/nothing-listening"
 	_, err := Latest(context.Background())
-	releaseAPI = prev
+	releasesURL = prev
 	if err == nil {
-		t.Error("an unreachable API should be an error")
+		t.Error("an unreachable GitHub should be an error")
 	}
 }
 
@@ -280,35 +285,17 @@ func TestApplyRejectsAMismatchedChecksum(t *testing.T) {
 	}
 }
 
-func TestApplyChecksumFailures(t *testing.T) {
+// The checksum now travels with the release, so a release without one never
+// came from Latest — and an unverified binary is precisely what Apply must
+// never swap in.
+func TestApplyRefusesAReleaseWithoutAChecksum(t *testing.T) {
 	setPlatform(t, "linux", "amd64")
 	stageBinary(t, "the old build")
 
-	t.Run("no sums published", func(t *testing.T) {
-		_, err := Apply(context.Background(), Release{Version: "v0.4.0", Asset: AssetName()}, nil)
-		if err == nil || !strings.Contains(err.Error(), "SHA256SUMS") {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
-	t.Run("sums omit this asset", func(t *testing.T) {
-		release{tag: "v0.4.0", binary: []byte("x"), sums: "abc  factor-openbsd-riscv\n"}.start(t)
-		rel, err := Latest(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := Apply(context.Background(), rel, nil); err == nil || !strings.Contains(err.Error(), "does not cover") {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
-	t.Run("sums unreachable", func(t *testing.T) {
-		_, err := Apply(context.Background(), Release{Version: "v0.4.0", Asset: AssetName(),
-			SumsURL: "http://127.0.0.1:0/nothing"}, nil)
-		if err == nil || !strings.Contains(err.Error(), "fetching SHA256SUMS") {
-			t.Fatalf("err = %v", err)
-		}
-	})
+	_, err := Apply(context.Background(), Release{Version: "v0.4.0", Asset: AssetName()}, nil)
+	if err == nil || !strings.Contains(err.Error(), "no published checksum") {
+		t.Fatalf("err = %v", err)
+	}
 }
 
 func TestApplyDownloadFailure(t *testing.T) {
@@ -375,6 +362,39 @@ func TestApplyReportsDownloadProgress(t *testing.T) {
 	}
 }
 
+// GitHub sends a length with every asset, but a proxy or a mirror in between
+// may stream the body chunked instead. The install still has to work — the
+// checksum is what makes it safe, not the size — with the percentages simply
+// absent rather than reported against a length of -1.
+func TestApplyWithoutAContentLength(t *testing.T) {
+	setPlatform(t, "linux", "amd64")
+	base, mux := release{tag: "v0.4.0", binary: []byte("the new build")}.start(t)
+	exe := stageBinary(t, "the old build")
+
+	rel, err := Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux.HandleFunc("/chunked", func(w http.ResponseWriter, _ *http.Request) {
+		w.(http.Flusher).Flush() // commits the response with no length
+		w.Write([]byte("the new build"))
+	})
+	rel.URL = base + "/chunked"
+
+	var steps []string
+	if _, err := Apply(context.Background(), rel, func(f string, a ...any) {
+		steps = append(steps, fmt.Sprintf(f, a...))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(exe); string(got) != "the new build" {
+		t.Errorf("binary content = %q", got)
+	}
+	if len(steps) != 1 || !strings.Contains(steps[0], "v0.4.0") || strings.Contains(steps[0], "MB") {
+		t.Errorf("progress = %v, want the version alone", steps)
+	}
+}
+
 func TestWatchReportsEachVersionOnce(t *testing.T) {
 	setPlatform(t, "linux", "amd64")
 	release{tag: "v0.4.0", binary: []byte("x")}.start(t)
@@ -426,9 +446,9 @@ func TestWatchStaysQuietWhenCurrent(t *testing.T) {
 }
 
 func TestWatchSurvivesAFailedCheck(t *testing.T) {
-	prev := releaseAPI
-	releaseAPI = "http://127.0.0.1:0/nothing-listening"
-	t.Cleanup(func() { releaseAPI = prev })
+	prev := releasesURL
+	releasesURL = "http://127.0.0.1:0/nothing-listening"
+	t.Cleanup(func() { releasesURL = prev })
 
 	seen := watching(t, 10*time.Millisecond, "v0.3.0")
 	select {
@@ -491,9 +511,9 @@ func TestLatestGivesUpOnAServerThatNeverAnswers(t *testing.T) {
 		srv.Close()
 	})
 
-	prevAPI, prevTimeout := releaseAPI, lookupTimeout
-	releaseAPI, lookupTimeout = srv.URL+"/releases/latest", 100*time.Millisecond
-	t.Cleanup(func() { releaseAPI, lookupTimeout = prevAPI, prevTimeout })
+	prevURL, prevTimeout := releasesURL, lookupTimeout
+	releasesURL, lookupTimeout = srv.URL+"/releases", 100*time.Millisecond
+	t.Cleanup(func() { releasesURL, lookupTimeout = prevURL, prevTimeout })
 
 	done := make(chan error, 1)
 	go func() {
@@ -523,15 +543,15 @@ func TestTheUpgradeClientTrustsWhatTheProxyInstalled(t *testing.T) {
 	srv := httptest.NewUnstartedServer(mux)
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
-	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, `{"tag_name":"v9.9.9","html_url":"https://example.test/v9.9.9","assets":[`+
-			`{"name":%q,"browser_download_url":"%s/dl/binary","size":6},`+
-			`{"name":"SHA256SUMS","browser_download_url":"%s/dl/SHA256SUMS","size":6}]}`,
-			AssetName(), srv.URL, srv.URL)
+	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, srv.URL+"/releases/tag/v9.9.9", http.StatusFound)
 	})
-	prev := releaseAPI
-	releaseAPI = srv.URL + "/releases/latest"
-	t.Cleanup(func() { releaseAPI = prev })
+	mux.HandleFunc("/releases/download/v9.9.9/SHA256SUMS", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, "%s  %s\n", sha256hex([]byte("binary")), AssetName())
+	})
+	prev := releasesURL
+	releasesURL = srv.URL + "/releases"
+	t.Cleanup(func() { releasesURL = prev })
 
 	// Exactly what proxy.Use does to this process: the extra authority is
 	// added to the transport everything else clones.
@@ -552,26 +572,25 @@ func TestTheUpgradeClientTrustsWhatTheProxyInstalled(t *testing.T) {
 	}
 }
 
-// GitHub gives an unauthenticated caller 60 requests an hour per address and
-// counts every request against it — a conditional one answered 304 included,
-// measured against the live API. So a watcher that checks at every start, on a
-// box whose watchdog restarts the gateway, must answer from what it already
-// knows rather than ask again.
+// A watcher opens with a check, so on a box whose watchdog restarts the
+// gateway it would ask GitHub on every start. Inside the window it must answer
+// from what it already knows.
 func TestWatchSpendsOneRequestPerWindowAcrossRestarts(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
 	setPlatform(t, "linux", "amd64")
 	base, mux := release{tag: "v0.4.0", binary: []byte("binary")}.start(t)
 
 	var asked int
-	mux.HandleFunc("/counted/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/counted/releases/latest", func(w http.ResponseWriter, r *http.Request) {
 		asked++
-		fmt.Fprintf(w, `{"tag_name":"v0.4.0","html_url":"https://example.test/v0.4.0","assets":[
-			{"name":"factor-linux-amd64","browser_download_url":"%s/dl/factor-linux-amd64","size":6},
-			{"name":"SHA256SUMS","browser_download_url":"%s/dl/SHA256SUMS","size":9}]}`, base, base)
+		http.Redirect(w, r, base+"/counted/releases/tag/v0.4.0", http.StatusFound)
 	})
-	prev := releaseAPI
-	releaseAPI = base + "/counted/releases/latest"
-	t.Cleanup(func() { releaseAPI = prev })
+	mux.HandleFunc("/counted/releases/download/v0.4.0/SHA256SUMS", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, "%s  %s\n", sha256hex([]byte("binary")), AssetName())
+	})
+	prev := releasesURL
+	releasesURL = base + "/counted/releases"
+	t.Cleanup(func() { releasesURL = prev })
 
 	first, err := latestNoOlderThan(context.Background(), releaseCheckFloor)
 	if err != nil {
@@ -606,15 +625,16 @@ func TestLatestAlwaysAsks(t *testing.T) {
 	base, mux := release{tag: "v0.4.0", binary: []byte("binary")}.start(t)
 
 	var asked int
-	mux.HandleFunc("/direct/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/direct/releases/latest", func(w http.ResponseWriter, r *http.Request) {
 		asked++
-		fmt.Fprintf(w, `{"tag_name":"v0.4.0","html_url":"https://example.test/v0.4.0","assets":[
-			{"name":"factor-linux-amd64","browser_download_url":"%s/dl/factor-linux-amd64","size":6},
-			{"name":"SHA256SUMS","browser_download_url":"%s/dl/SHA256SUMS","size":9}]}`, base, base)
+		http.Redirect(w, r, base+"/direct/releases/tag/v0.4.0", http.StatusFound)
 	})
-	prev := releaseAPI
-	releaseAPI = base + "/direct/releases/latest"
-	t.Cleanup(func() { releaseAPI = prev })
+	mux.HandleFunc("/direct/releases/download/v0.4.0/SHA256SUMS", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, "%s  %s\n", sha256hex([]byte("binary")), AssetName())
+	})
+	prev := releasesURL
+	releasesURL = base + "/direct/releases"
+	t.Cleanup(func() { releasesURL = prev })
 
 	for range 3 {
 		if _, err := Latest(context.Background()); err != nil {
@@ -626,9 +646,8 @@ func TestLatestAlwaysAsks(t *testing.T) {
 	}
 }
 
-// A cache written for another machine's binary is no cache: asking
-// conditionally against it would answer 304 and hand back a release with a
-// download URL this platform cannot run.
+// A cache written for another machine's binary is no cache: trusting it would
+// hand back a release with a download URL this platform cannot run.
 func TestLatestIgnoresACacheFromAnotherPlatform(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
 	setPlatform(t, "linux", "amd64")
@@ -646,45 +665,37 @@ func TestLatestIgnoresACacheFromAnotherPlatform(t *testing.T) {
 }
 
 // "403 Forbidden" reads as a credential problem on a public repository. It is
-// the hourly budget, and what the reader needs is when it comes back.
+// GitHub throttling the address, and what the reader needs is when it comes
+// back.
 func TestLatestNamesTheRateLimit(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
-	reset := time.Now().Add(13 * time.Minute)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("X-RateLimit-Limit", "60")
-		w.Header().Set("X-RateLimit-Remaining", "0")
-		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
-		http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+		w.Header().Set("Retry-After", "780")
+		http.Error(w, "slow down", http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
-	prev := releaseAPI
-	releaseAPI = srv.URL + "/releases/latest"
-	t.Cleanup(func() { releaseAPI = prev })
+	prev := releasesURL
+	releasesURL = srv.URL + "/releases"
+	t.Cleanup(func() { releasesURL = prev })
 
 	_, err := Latest(context.Background())
 	if err == nil {
 		t.Fatal("want an error")
 	}
-	for _, want := range []string{"rate limit", "60 an hour", "clears at " + reset.Format("15:04")} {
+	for _, want := range []string{"rate-limiting this address", "clears at "} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %v, want it to mention %q", err, want)
 		}
 	}
 }
 
-// A 403 that is not the budget keeps its own words.
-func TestLatestKeepsAnOrdinaryForbidden(t *testing.T) {
+// A cache written before releases carried their checksum is no cache: Apply
+// refuses a release it cannot verify, so the check has to ask again.
+func TestLatestIgnoresACacheWithoutAChecksum(t *testing.T) {
 	t.Setenv("FACTOR_HOME", t.TempDir())
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "nope", http.StatusForbidden)
-	}))
-	defer srv.Close()
-	prev := releaseAPI
-	releaseAPI = srv.URL + "/releases/latest"
-	t.Cleanup(func() { releaseAPI = prev })
-
-	_, err := Latest(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "403") {
-		t.Fatalf("err = %v, want the status kept", err)
+	setPlatform(t, "linux", "amd64")
+	saveReleaseCache(releaseCache{Checked: time.Now(), Release: Release{Version: "v0.4.0", Asset: AssetName()}})
+	if _, ok := loadReleaseCache(); ok {
+		t.Error("a cache carrying no checksum was accepted")
 	}
 }
