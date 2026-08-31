@@ -92,7 +92,7 @@ func TestParallelSafeBatchRunsConcurrently(t *testing.T) {
 
 	calls := callsTo("reader", "1", "2", "3")
 	done := make(chan []toolOutcome, 1)
-	go func() { done <- h.loop.runTools(context.Background(), "cli:x", calls) }()
+	go func() { done <- h.loop.runTools(context.Background(), "cli:x", nil, calls) }()
 
 	tool.waitFor(t, 3)
 	outcomes := <-done
@@ -118,7 +118,7 @@ func TestOneUnsafeCallMakesTheBatchSequential(t *testing.T) {
 	h.loop.registry.Register(safe, unsafe)
 
 	calls := append(callsTo("reader", "1", "2"), callsTo("clicker", "3")...)
-	h.loop.runTools(context.Background(), "cli:x", calls)
+	h.loop.runTools(context.Background(), "cli:x", nil, calls)
 
 	if got := safe.highest.Load(); got > 1 {
 		t.Errorf("peak concurrency = %d, want 1: an unsafe call must serialize its batch", got)
@@ -131,7 +131,7 @@ func TestSingleCallIsNeverParallel(t *testing.T) {
 	close(tool.release)
 	h.loop.registry.Register(tool)
 
-	h.loop.runTools(context.Background(), "cli:x", callsTo("reader", "1"))
+	h.loop.runTools(context.Background(), "cli:x", nil, callsTo("reader", "1"))
 	if got := tool.highest.Load(); got != 1 {
 		t.Errorf("peak concurrency = %d, want 1", got)
 	}
@@ -149,7 +149,7 @@ func TestRunToolsAnswersRepeatedCallsOnce(t *testing.T) {
 		{ID: "a", Name: "reader", Args: map[string]any{"n": "same"}},
 		{ID: "b", Name: "reader", Args: map[string]any{"n": "same"}},
 	}
-	outcomes := h.loop.runTools(context.Background(), "cli:x", calls)
+	outcomes := h.loop.runTools(context.Background(), "cli:x", nil, calls)
 
 	if got := tool.runs.Load(); got != 1 {
 		t.Errorf("the tool ran %d times, want 1", got)
@@ -168,7 +168,7 @@ func TestRepeatedCallDoesNotDuplicateImages(t *testing.T) {
 		{ID: "a", Name: "shot", Args: map[string]any{}},
 		{ID: "b", Name: "shot", Args: map[string]any{}},
 	}
-	outcomes := h.loop.runTools(context.Background(), "cli:x", calls)
+	outcomes := h.loop.runTools(context.Background(), "cli:x", nil, calls)
 	if len(outcomes[0].images) != 1 {
 		t.Fatalf("first call lost its image: %+v", outcomes[0])
 	}
@@ -199,7 +199,7 @@ func TestCancelledBatchReportsInterruptionNotFailure(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	outcomes := h.loop.runTools(ctx, "cli:x", callsTo("reader", "1", "2"))
+	outcomes := h.loop.runTools(ctx, "cli:x", nil, callsTo("reader", "1", "2"))
 
 	for i, o := range outcomes {
 		if o.content != interruptedTool {

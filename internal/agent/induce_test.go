@@ -126,30 +126,30 @@ func TestNoteInduceCandidateFilters(t *testing.T) {
 	}
 
 	few, fewN := probeTurn(induceMinToolCalls - 1)
-	h.loop.noteInduceCandidate(in, few, fewN, "done")
+	h.loop.noteInduceCandidate(in, few, fewN, "done", false)
 	if pending() != 0 {
 		t.Fatal("registered a turn below the tool-call floor")
 	}
-	h.loop.noteInduceCandidate(turnInput{sessionKey: "cli:x", ephemeral: true}, msgs, n, "done")
+	h.loop.noteInduceCandidate(turnInput{sessionKey: "cli:x", ephemeral: true}, msgs, n, "done", false)
 	if pending() != 0 {
 		t.Fatal("registered an ephemeral turn")
 	}
-	h.loop.noteInduceCandidate(in, msgs, n, "   ")
+	h.loop.noteInduceCandidate(in, msgs, n, "   ", false)
 	if pending() != 0 {
 		t.Fatal("registered a turn with no reply")
 	}
-	h.loop.noteInduceCandidate(in, msgs, 0, "done")
+	h.loop.noteInduceCandidate(in, msgs, 0, "done", false)
 	if pending() != 0 {
 		t.Fatal("registered a turn with nothing recorded")
 	}
 	h.loop.cfg.Agent.LearnSkills = false
-	h.loop.noteInduceCandidate(in, msgs, n, "done")
+	h.loop.noteInduceCandidate(in, msgs, n, "done", false)
 	if pending() != 0 {
 		t.Fatal("registered with learning disabled")
 	}
 	h.loop.cfg.Agent.LearnSkills = true
 
-	h.loop.noteInduceCandidate(in, msgs, n, "done")
+	h.loop.noteInduceCandidate(in, msgs, n, "done", false)
 	if pending() != 1 {
 		t.Fatal("qualifying turn not registered")
 	}
