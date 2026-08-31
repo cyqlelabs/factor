@@ -36,8 +36,8 @@ than logging, so past failures become constraints it doesn't repeat.
 | 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations, not queued |
 | ❓ **Asks when only you know** | `ask_user` puts the question where you are: the chat the turn came from, the terminal you're already in, or a dialog on your desktop — and times out rather than hanging the turn when you're away |
 | 🔁 **Provider failover** | OpenAI-compatible (OpenRouter, Ollama, LM Studio, Groq, llama.cpp, …) and native Anthropic, with per-candidate cooldowns and overflow compaction |
-| 💸 **Counts what it spends** | Every call priced and billed to its session — status bar, tray, `usage` tool — with per-session and global caps, cached tokens priced at what they actually cost |
-| ⚡ **Caches the prompt prefix** | The request is ordered and marked so consecutive turns reuse the longest identical prefix; a tool-heavy turn stops reprocessing itself on every iteration |
+| 💸 **Counts what it spends** | Every call priced and billed to its session — status bar, tray, `usage` tool — with per-session and global caps; cache reads and writes priced at their own rates, not as fresh input |
+| ♻️ **Caches the prompt prefix** | The same assembly order every turn, with cache breakpoints where two turns first differ, so the provider reuses the longest prefix it can — and a turn twenty tool calls deep stops reprocessing its own history |
 | 🧭 **Reasoning, dialect-translated** | One `provider.reasoning` setting becomes `reasoning`, `reasoning_effort`, or a `thinking` budget |
 | ☎️ **Answers the phone** | A real number to call, or it calls and texts you — barge-in, voicemail detection, optional fully local speech ([Phone](#phone-calls-and-sms)) |
 | 🎙️ **Listens in the room** | Mic in, speakers out, barge-in, optional wake word, push-to-talk via `factor talk` ([PC voice](#pc-voice-mic-and-speakers)) |
@@ -45,7 +45,7 @@ than logging, so past failures become constraints it doesn't repeat.
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications on X11/Wayland/macOS/Windows — plus grid vision ([Desktop](#desktop)) |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed one ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills ([Extending](#extending-factor)) |
-| 📊 **Watches its own numbers** | Every turn leaves a local trace — models, tools, timings, cache and cost — and deterministic control bands wake the heartbeat when one drifts, so nothing is spent noticing that nothing changed |
+| 📊 **Watches its own numbers** | Every turn leaves a local trace — models, tools, timings, cache and cost — and control bands measure it against a rolling baseline, so the heartbeat wakes a model only once a number has drifted |
 | 📓 **Learns from its own work** | A turn that took four or more tool calls becomes a skill it writes for itself once the session goes quiet ([Extending](#extending-factor)) |
 | 🔧 **Self-managing** | Edits its own config, installs packages, upgrades and restarts itself, schedules cron jobs and one-off reminders, runs `HEARTBEAT.md` checks that cost nothing when idle |
 | 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, scrubbed secrets — rails, not a sandbox ([Security](#security-model)) |
@@ -140,14 +140,16 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "max_tool_iterations": 20,
     "summarize_at_percent": 75,              // how full the window gets before compaction
     "keep_recent_messages": 8,               // what survives it
-    "learn_skills": true                     // distill a finished multi-tool turn into a skill
+    "learn_skills": true,                    // distill a finished multi-tool turn into a skill
+    "version_workspace": false               // keep a local git history of the workspace, so an edit can be undone
   },
   "provider": {
     "type": "openrouter",                    // openrouter|openai|groq|ollama|lmstudio|llamacpp|anthropic|custom
     "api_key": "sk-or-...",
     "model": "google/gemini-3.1-pro-preview",
     "reasoning": { "effort": "xhigh" },      // or {"max_tokens": 12000}; "none" turns it off
-    "fallbacks": [{ "type": "ollama", "model": "qwen3:8b" }]
+    "fallbacks": [{ "type": "ollama", "model": "qwen3:8b" }],
+    "utility": [{ "type": "ollama", "model": "qwen3:8b" }]  // cheaper chain for compaction summaries and skill verdicts; omit = the main one
   },
   "memory": {
     "mode": "sidecar",                       // sidecar | external | off
@@ -204,6 +206,11 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "fast_path": false                       // opt in to the lightweight read-only engine
   },
   "heartbeat": { "enabled": true, "interval_minutes": 30 },
+  "trace": {
+    "enabled": true,                         // one JSON line per turn in ~/.factor/traces
+    "record_args": false,                    // the shape of a turn, not what was said to the tools
+    "keep_days": 14
+  },
   "upgrade": { "check": true, "check_interval_hours": 24 },  // report new releases; never install one unasked
   "cost": {
     "track": true,                           // price every call; models served locally cost nothing
