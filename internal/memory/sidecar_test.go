@@ -99,6 +99,9 @@ func freePort(t *testing.T) int {
 
 func sidecarConfig(t *testing.T, mode string) config.MemoryConfig {
 	t.Helper()
+	// A home of its own: the supervisor writes the engine's pid there, and a
+	// test must not overwrite the record of the engine really running here.
+	t.Setenv("FACTOR_HOME", t.TempDir())
 	cfg := config.Default().Memory
 	cfg.Host = "127.0.0.1"
 	cfg.Port = freePort(t)
@@ -168,6 +171,11 @@ func TestSidecarSpawnsAndPassesEnvironment(t *testing.T) {
 	// the sidecar's own log file is created next to the other logs
 	if _, err := os.Stat(filepath.Join(logDir, "smrti.log")); err != nil {
 		t.Errorf("sidecar log not created: %v", err)
+	}
+	// keep_alive hands the engine to whatever runs next, so where it is has to
+	// outlive this process: upgrading the package under it means stopping it.
+	if pid, alive := readEnginePid(); !alive || pid <= 0 {
+		t.Errorf("the spawned engine was not written down: pid %d, alive %v", pid, alive)
 	}
 }
 

@@ -356,14 +356,14 @@ func announceRelease(rel upgrade.Release, last func() (string, string, bool), pu
 // takes Factor down — the engine is swapped in place while the graph is idle —
 // but it is still the user's call, not the daemon's.
 func announceEngine(rel upgrade.SmrtiRelease, last func() (string, string, bool), publish func(bus.OutboundMessage) bool) {
-	slog.Info("a newer smrti image is available", "image", rel.Version, "running", rel.Running)
+	slog.Info("a newer smrti is available", "published", rel.Version, "running", rel.Running, "mode", rel.Mode)
 	ch, chat, ok := last()
 	if !ok {
 		return
 	}
 	publish(bus.OutboundMessage{Channel: ch, ChatID: chat, Content: fmt.Sprintf(
 		"smrti %s is out — the memory engine here runs %s. Ask me to upgrade it, or run `factor upgrade`.",
-		rel.Version, rel.Running)})
+		rel.Version, rel.RunningVersion())})
 }
 
 func startHealthServer(cfg *config.Config, a *app.App, manager *channel.Manager) (*http.Server, error) {

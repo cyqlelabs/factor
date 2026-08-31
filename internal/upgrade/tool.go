@@ -22,7 +22,7 @@ type Tool struct {
 func (t *Tool) Name() string { return "upgrade" }
 
 func (t *Tool) Description() string {
-	return "Check whether newer releases of Factor or smrti (the memory engine) exist and install them. action=check reports what is available; action=install downloads it — Factor's binary is verified against its published checksum, smrti's container is replaced with the newly published image once the memory graph is idle. component limits the work to one of them (default both). Read the install result before describing it: it says whether the new Factor is loading now or waits for the next start."
+	return "Check whether newer releases of Factor or smrti (the memory engine) exist and install them. action=check reports what is available; action=install downloads it — Factor's binary is verified against its published checksum, and smrti is upgraded however it runs here: a container is replaced with the newly published image, a package install is upgraded with the installer that made it and the engine restarted into it, both once the memory graph is idle. component limits the work to one of them (default both). Read the install result before describing it: it says whether the new code is loading now or waits for the next start."
 }
 
 func (t *Tool) Parameters() map[string]any {
@@ -100,9 +100,9 @@ func (t *Tool) factor(ctx context.Context, install bool) (string, bool) {
 		rel.Version, path, t.Current), true
 }
 
-// engine reports on — and optionally installs — the newest smrti image. An
-// empty line means there is nothing to say: memory is off, or the engine is
-// not a container and the caller did not ask about it specifically.
+// engine reports on — and optionally installs — the newest smrti. An empty line
+// means there is nothing to say: memory is off, or there is no engine here to
+// upgrade and the caller did not ask about it specifically.
 func (t *Tool) engine(ctx context.Context, install, asked bool) (string, bool) {
 	if t.Smrti == nil {
 		if asked {
@@ -112,20 +112,21 @@ func (t *Tool) engine(ctx context.Context, install, asked bool) (string, bool) {
 	}
 	rel, err := t.Smrti.Check(ctx)
 	if err != nil {
-		if errors.Is(err, ErrNotContainerised) && !asked {
-			return "", true // there is no image half here; only say so if asked
+		if errors.Is(err, ErrNotManaged) && !asked {
+			return "", true // there is no engine here to upgrade; only say so if asked
 		}
 		return err.Error(), false
 	}
 	if !rel.Newer() {
-		return fmt.Sprintf("smrti %s is the newest published image.", rel.Running), true
+		return fmt.Sprintf("smrti %s is the newest %s.", rel.RunningVersion(), rel.Source()), true
 	}
 	if !install {
-		return fmt.Sprintf("smrti %s is available (the engine runs %s).", rel.Version, rel.Running), true
+		return fmt.Sprintf("smrti %s is available (the engine runs %s).", rel.Version, rel.RunningVersion()), true
 	}
-	if err := t.Smrti.Apply(ctx, rel, nil); err != nil {
+	note, err := t.Smrti.Apply(ctx, rel, nil)
+	if err != nil {
 		return fmt.Sprintf("upgrading smrti to %s: %v", rel.Version, err), false
 	}
-	return fmt.Sprintf("Upgraded smrti from %s to %s; the engine is answering again and its memory is untouched.",
-		rel.Running, rel.Version), true
+	return fmt.Sprintf("Upgraded smrti from %s to %s — %s, and its memory is untouched.",
+		rel.RunningVersion(), rel.Version, note), true
 }

@@ -303,6 +303,10 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	// keep_alive hands this process on to whatever runs next, so where it is
+	// has to survive this process: an upgrade of the package underneath it can
+	// only take effect once this exact engine is stopped.
+	writeEnginePid(cmd.Process.Pid)
 	slog.Info("smrti sidecar started", "pid", cmd.Process.Pid, "port", s.cfg.Port, "keep_alive", s.cfg.KeepAlive)
 
 	waitCh := make(chan error, 1)
@@ -339,6 +343,7 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 
 	select {
 	case err := <-waitCh:
+		clearEnginePid(cmd.Process.Pid)
 		return err
 	case <-ctx.Done():
 		if s.cfg.KeepAlive {
@@ -347,6 +352,7 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 			return ctx.Err()
 		}
 		_ = cmd.Process.Signal(syscall.SIGTERM)
+		defer clearEnginePid(cmd.Process.Pid)
 		select {
 		case err := <-waitCh:
 			return err

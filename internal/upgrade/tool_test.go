@@ -84,19 +84,21 @@ func TestToolCoversTheMemoryEngine(t *testing.T) {
 func TestToolOnAnEngineItCannotUpgrade(t *testing.T) {
 	setPlatform(t, "linux", "amd64")
 	release{tag: "v0.4.0", binary: []byte("the new build")}.start(t)
-	// Docker is there, but smrti is not one of its containers.
+	// Docker is there, but smrti is not one of its containers, and nothing is
+	// installed here either: the engine belongs to another machine.
 	fakeDocker(t, func([]string) (string, error) { return "\n", nil })
+	noInstall(t)
 	tool := &Tool{Current: "v0.4.0", Smrti: NewSmrti(engineConfig(t, true), nil)}
 
 	// Asked about directly, it says why not.
 	res := tool.Execute(context.Background(), map[string]any{"component": "smrti"})
-	if !res.IsError || !strings.Contains(res.ForLLM, "does not run in a container here") {
+	if !res.IsError || !strings.Contains(res.ForLLM, "no smrti is installed on this machine") {
 		t.Fatalf("result = %+v", res)
 	}
 
-	// Asked in passing, a pip-installed engine is not news worth reporting.
+	// Asked in passing, an engine this machine does not own is not news.
 	res = tool.Execute(context.Background(), nil)
-	if res.IsError || strings.Contains(res.ForLLM, "container here") {
+	if res.IsError || strings.Contains(res.ForLLM, "smrti") {
 		t.Fatalf("result = %+v", res)
 	}
 

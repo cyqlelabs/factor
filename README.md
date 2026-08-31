@@ -117,6 +117,12 @@ running gateway restarts into it once the turn in flight is answered, keeping it
 pid so systemd never sees it stop. Factor checks daily and tells you, never
 installing unasked.
 
+The same command brings smrti up to date however it runs here: a container is
+recreated on the newly published image, and a uv, pipx, pip or venv install is
+upgraded by the installer that made it, then restarted into. Both wait for the
+memory graph to go quiet first, so nothing in flight is lost. An engine on
+another machine is left to whoever runs it.
+
 </details>
 
 ## Configuration

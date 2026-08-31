@@ -221,6 +221,11 @@ type installStrategy struct {
 	probe string // executable that must exist for this strategy
 	// build returns the commands to run in order; home is $FACTOR_HOME.
 	build func(home string) [][]string
+	// upgrade re-runs this installer against an install it already made, so
+	// it picks up the newest published release. It is a separate verb for the
+	// tool installers: `uv tool install smrti` on a tool that is already there
+	// does nothing at all, which would report an upgrade that never happened.
+	upgrade func(home string) [][]string
 	// retry, when non-nil, produces a second attempt for the given failure
 	// output (used for PEP 668 externally-managed environments).
 	retry func(home, output string) [][]string
@@ -249,6 +254,11 @@ func strategies() []installStrategy {
 				}
 				return [][]string{cmd}
 			},
+			// The tool keeps the constraints its install recorded, so the
+			// numpy pin above does not have to be repeated here.
+			upgrade: func(string) [][]string {
+				return [][]string{{"uv", "tool", "upgrade", PackageName}}
+			},
 		},
 		{
 			name:  "pipx",
@@ -262,17 +272,17 @@ func strategies() []installStrategy {
 				}
 				return cmds
 			},
+			// Whatever was injected stays in the venv pipx upgrades.
+			upgrade: func(string) [][]string {
+				return [][]string{{"pipx", "upgrade", PackageName}}
+			},
 		},
 		{
 			name:  "pip",
 			probe: "", // resolved dynamically: pip3, pip, or python -m pip
-			build: func(string) [][]string {
-				pip := pipCommand()
-				if pip == nil {
-					return nil
-				}
-				return [][]string{append(append(pip, "install", "--user", "--upgrade"), pinned(PackageName)...)}
-			},
+			build: pipInstall,
+			// pip installs and upgrades with the same command.
+			upgrade: pipInstall,
 			retry: func(_ string, output string) [][]string {
 				// Debian/Fedora/Arch mark the system Python externally managed
 				// (PEP 668). --break-system-packages only affects the user
@@ -296,17 +306,36 @@ func strategies() []installStrategy {
 				if py == "" {
 					return nil
 				}
-				venvPip := filepath.Join(venvBinDir(home), "pip")
-				if runtime.GOOS == "windows" {
-					venvPip += ".exe"
-				}
 				return [][]string{
 					{py, "-m", "venv", VenvDir(home)},
-					append([]string{venvPip, "install", "--upgrade"}, pinned(PackageName)...),
+					venvInstall(home),
 				}
+			},
+			// The venv is already there; only what is inside it changes.
+			upgrade: func(home string) [][]string {
+				return [][]string{venvInstall(home)}
 			},
 		},
 	}
+}
+
+// pipInstall is the pip line that both installs and upgrades: --upgrade makes
+// the two the same command.
+func pipInstall(string) [][]string {
+	pip := pipCommand()
+	if pip == nil {
+		return nil
+	}
+	return [][]string{append(append(pip, "install", "--user", "--upgrade"), pinned(PackageName)...)}
+}
+
+// venvInstall is the same install inside Factor's own virtualenv.
+func venvInstall(home string) []string {
+	venvPip := filepath.Join(venvBinDir(home), "pip")
+	if runtime.GOOS == "windows" {
+		venvPip += ".exe"
+	}
+	return append([]string{venvPip, "install", "--upgrade"}, pinned(PackageName)...)
 }
 
 func pipCommand() []string {

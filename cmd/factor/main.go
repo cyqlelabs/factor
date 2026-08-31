@@ -221,12 +221,12 @@ func runUpgrade(configPath string, checkOnly bool) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	// The memory engine first: it is swapped in place, so it neither needs nor
+	// The memory engine first: it is replaced in place, so it neither needs nor
 	// survives a Factor restart, and doing it before the binary keeps the
 	// restart below as the last thing that happens. Its failures are reported
-	// rather than fatal — a Factor that cannot reach the image registry, or
-	// whose engine is a pip install, still upgrades itself.
-	if err := updateEngine(ctx, configPath, checkOnly); err != nil && !errors.Is(err, upgrade.ErrNotContainerised) {
+	// rather than fatal — a Factor that cannot reach the registry it publishes
+	// to, or whose engine runs on another machine, still upgrades itself.
+	if err := updateEngine(ctx, configPath, checkOnly); err != nil && !errors.Is(err, upgrade.ErrNotManaged) {
 		fmt.Fprintf(os.Stderr, "smrti: %v\n", err)
 	}
 

@@ -1,15 +1,21 @@
 package upgrade
 
-// smrti ships as a container image rather than a binary, so keeping the memory
-// engine current is a registry lookup and a container swap: pull the published
-// image, wait for the graph to fall quiet, then recreate the container from the
-// spec the running one carries — same volumes, same environment, same ports —
-// so the memory on disk and the way it was configured both survive the swap.
+// smrti ships as a container image and as a Python package, and this file
+// keeps whichever one this machine runs current — a Factor that upgrades itself
+// and leaves its memory engine two versions behind is only half current.
 //
-// The engine is found by the port it answers on rather than by a name in the
-// config: the container publishing Factor's memory port is, by definition, the
-// engine Factor talks to. A smrti installed with pip has no container to
-// upgrade, and says so instead of pretending.
+// A container is a registry lookup and a swap: pull the published image, wait
+// for the graph to fall quiet, then recreate the container from the spec the
+// running one carries — same volumes, same environment, same ports — so the
+// memory on disk and the way it was configured both survive it. The engine is
+// found by the port it answers on rather than by a name in the config: the
+// container publishing Factor's memory port is, by definition, the engine
+// Factor talks to.
+//
+// Everything else is the package half, in smrti_pkg.go: PyPI says what is
+// published, the installer that made the install upgrades it, and the engine is
+// restarted so the new code is actually loaded. An engine on another machine
+// belongs to whoever runs it, and says so instead of pretending.
 
 import (
 	"context"
@@ -67,59 +73,104 @@ func NewSmrti(cfg config.MemoryConfig, idle func() bool) *Smrti {
 	return &Smrti{cfg: cfg, idle: idle}
 }
 
-// SmrtiRelease is the newest published image next to what is running.
+// How the engine runs here, which is what decides how it is upgraded.
+const (
+	ModeContainer = "container"
+	ModePackage   = "package"
+)
+
+// SmrtiRelease is the newest published smrti next to what is running.
 type SmrtiRelease struct {
-	Running   string // the tag the running container was started from
-	Version   string // the newest tag the registry publishes
-	Image     string // the image reference to run, e.g. ghcr.io/cyqlelabs/smrti:0.9.0
-	Container string // the container that would be replaced
+	Mode      string // container | package
+	Running   string // what is installed here; empty when nothing can say
+	Version   string // the newest version published for this mode
+	Image     string // container: the image reference to run
+	Container string // container: the container that would be replaced
+	Path      string // package: the executable that would be upgraded
 }
 
-// Newer reports whether the published image is ahead of the running one.
+// Newer reports whether the published smrti is ahead of the running one. An
+// install whose version nothing here can read counts as older: it may well be
+// current, but the only way to find out is to install and see.
 func (r SmrtiRelease) Newer() bool { return Newer(r.Running, r.Version) }
 
-// Check reports what the registry publishes against what is running here.
-func (s *Smrti) Check(ctx context.Context) (SmrtiRelease, error) {
-	c, err := s.container(ctx)
-	if err != nil {
-		return SmrtiRelease{}, err
+// RunningVersion is what to call the running engine in a sentence.
+func (r SmrtiRelease) RunningVersion() string {
+	if r.Running == "" {
+		return "an unreadable version"
 	}
-	latest, err := latestSmrtiTag(ctx)
-	if err != nil {
-		return SmrtiRelease{}, err
-	}
-	return SmrtiRelease{
-		Running:   imageTag(c.Config.Image),
-		Version:   latest,
-		Image:     smrtiImage(latest),
-		Container: c.name(),
-	}, nil
+	return r.Running
 }
 
-// Apply pulls rel and restarts the engine into it, in place: the image comes
-// down first so the only downtime is the swap, the swap waits for the graph to
-// be idle, and a container that does not come back healthy is rolled back to
-// the one it replaced.
-func (s *Smrti) Apply(ctx context.Context, rel SmrtiRelease, progress Progress) error {
+// Source names where the newest version was published, so a message says which
+// half of smrti it is talking about.
+func (r SmrtiRelease) Source() string {
+	if r.Mode == ModePackage {
+		return "published release"
+	}
+	return "published image"
+}
+
+// Check reports what is published against what is running here, in whichever
+// way the engine runs. The container is looked for first: a docker that is
+// broken rather than absent is reported rather than fallen past, since the
+// engine it holds is the one that answers and a package upgraded instead of it
+// would change nothing.
+func (s *Smrti) Check(ctx context.Context) (SmrtiRelease, error) {
+	c, err := s.container(ctx)
+	switch {
+	case err == nil:
+		latest, err := latestSmrtiTag(ctx)
+		if err != nil {
+			return SmrtiRelease{}, err
+		}
+		return SmrtiRelease{
+			Mode:      ModeContainer,
+			Running:   imageTag(c.Config.Image),
+			Version:   latest,
+			Image:     smrtiImage(latest),
+			Container: c.name(),
+		}, nil
+	case !errors.Is(err, errNoContainer):
+		return SmrtiRelease{}, err
+	}
+	return s.checkPackage(ctx, err)
+}
+
+// Apply installs rel and restarts the engine into it, in place. It returns one
+// clause saying what became of the engine, because that is the half of the
+// outcome the caller cannot infer: an image swap ends with the engine
+// answering, a package upgrade may end with code that only loads on the next
+// start.
+func (s *Smrti) Apply(ctx context.Context, rel SmrtiRelease, progress Progress) (string, error) {
 	if progress == nil {
 		progress = func(string, ...any) {}
 	}
+	if rel.Mode == ModePackage {
+		return s.applyPackage(ctx, rel, progress)
+	}
+	// The image comes down first so the only downtime is the swap, the swap
+	// waits for the graph to be idle, and a container that does not come back
+	// healthy is rolled back to the one it replaced.
 	c, err := s.container(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	spec, err := runArgs(ctx, c, rel.Image)
 	if err != nil {
-		return err
+		return "", err
 	}
 	progress("pulling %s", rel.Image)
 	if _, err := dockerCmd(ctx, "pull", rel.Image); err != nil {
-		return err
+		return "", err
 	}
 	if err := s.waitIdle(ctx, progress); err != nil {
-		return err
+		return "", err
 	}
-	return s.swap(ctx, c.name(), rel, spec, progress)
+	if err := s.swap(ctx, c.name(), rel, spec, progress); err != nil {
+		return "", err
+	}
+	return "the engine is answering again", nil
 }
 
 // swap replaces the running container with one built from spec. The old one is
@@ -243,14 +294,15 @@ func (s *Smrti) Update(ctx context.Context, checkOnly bool, out Progress) error 
 	}
 	switch {
 	case !rel.Newer():
-		out("smrti %s is the newest published image.", rel.Running)
+		out("smrti %s is the newest %s.", rel.RunningVersion(), rel.Source())
 	case checkOnly:
-		out("smrti %s is available — the engine here runs %s.", rel.Version, rel.Running)
+		out("smrti %s is available — the engine here runs %s.", rel.Version, rel.RunningVersion())
 	default:
-		if err := s.Apply(ctx, rel, out); err != nil {
+		note, err := s.Apply(ctx, rel, out)
+		if err != nil {
 			return err
 		}
-		out("upgraded smrti %s to %s", rel.Running, rel.Version)
+		out("upgraded smrti %s to %s — %s", rel.RunningVersion(), rel.Version, note)
 	}
 	return nil
 }
@@ -302,16 +354,20 @@ type portBinding struct {
 
 func (c container) name() string { return strings.TrimPrefix(c.Name, "/") }
 
-// ErrNotContainerised says the engine Factor talks to is not a container this
-// can replace — a pip install, or a smrti someone runs elsewhere. It is not a
-// failure: it is the answer, and callers that were not asked about the engine
-// specifically stay quiet about it.
-var ErrNotContainerised = errors.New("smrti does not run in a container here")
+// ErrNotManaged says there is no smrti here for Factor to upgrade — the engine
+// runs on another machine, or nothing runs at all. It is not a failure: it is
+// the answer, and callers that were not asked about the engine specifically
+// stay quiet about it.
+var ErrNotManaged = errors.New("no smrti here for factor to upgrade")
+
+// errNoContainer says only that the engine is not a container, which is where
+// the package half takes over.
+var errNoContainer = errors.New("smrti does not run in a container here")
 
 // container finds the running container that publishes the memory port.
 func (s *Smrti) container(ctx context.Context) (container, error) {
 	if err := dockerLook(); err != nil {
-		return container{}, fmt.Errorf("%w: docker is not installed", ErrNotContainerised)
+		return container{}, fmt.Errorf("%w (docker is not installed)", errNoContainer)
 	}
 	ids, err := dockerCmd(ctx, "ps", "--format", "{{.ID}}")
 	if err != nil {
@@ -319,7 +375,7 @@ func (s *Smrti) container(ctx context.Context) (container, error) {
 	}
 	running := strings.Fields(ids)
 	if len(running) == 0 {
-		return container{}, s.notContainerised()
+		return container{}, s.noContainer()
 	}
 	out, err := dockerCmd(ctx, append([]string{"inspect"}, running...)...)
 	if err != nil {
@@ -339,12 +395,11 @@ func (s *Smrti) container(ctx context.Context) (container, error) {
 			}
 		}
 	}
-	return container{}, s.notContainerised()
+	return container{}, s.noContainer()
 }
 
-func (s *Smrti) notContainerised() error {
-	return fmt.Errorf("%w: nothing docker runs publishes port %d (a pip install is upgraded with the installer that put it there)",
-		ErrNotContainerised, s.cfg.Port)
+func (s *Smrti) noContainer() error {
+	return fmt.Errorf("%w (nothing docker runs publishes port %d)", errNoContainer, s.cfg.Port)
 }
 
 // runArgs turns a running container into the `docker run` that recreates it on
@@ -485,7 +540,7 @@ func latestSmrtiTag(ctx context.Context) (string, error) {
 	var body struct {
 		Tags []string `json:"tags"`
 	}
-	if err := registryGet(ctx, registryBase+"/v2/"+smrtiRepo+"/tags/list", token, &body); err != nil {
+	if err := getJSON(ctx, registryBase+"/v2/"+smrtiRepo+"/tags/list", token, &body); err != nil {
 		return "", fmt.Errorf("looking up the published smrti images: %w", err)
 	}
 	best := ""
@@ -517,13 +572,13 @@ func registryToken(ctx context.Context) (string, error) {
 	}
 	url := registryBase + "/token?scope=repository:" + smrtiRepo + ":pull&service=" +
 		strings.TrimPrefix(strings.TrimPrefix(registryBase, "https://"), "http://")
-	if err := registryGet(ctx, url, "", &body); err != nil {
+	if err := getJSON(ctx, url, "", &body); err != nil {
 		return "", fmt.Errorf("authenticating to the smrti image registry: %w", err)
 	}
 	return body.Token, nil
 }
 
-func registryGet(ctx context.Context, url, token string, out any) error {
+func getJSON(ctx context.Context, url, token string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err

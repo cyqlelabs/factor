@@ -3,6 +3,7 @@ package upgrade
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -141,32 +142,48 @@ func TestSmrtiCheck(t *testing.T) {
 	}
 }
 
-func TestSmrtiCheckWithoutADockerContainer(t *testing.T) {
+func TestSmrtiCheckWithoutADockerContainerOrAnInstall(t *testing.T) {
+	noInstall(t)
+
 	// No docker at all.
 	prev := dockerLook
 	dockerLook = func() error { return fmt.Errorf("not found") }
 	_, err := NewSmrti(config.MemoryConfig{Port: 8420}, nil).Check(context.Background())
 	dockerLook = prev
-	if err == nil || !strings.Contains(err.Error(), "docker is not installed") {
+	if !errors.Is(err, ErrNotManaged) || !strings.Contains(err.Error(), "docker is not installed") {
 		t.Fatalf("error = %v", err)
 	}
 
-	// Docker, but nothing publishing the memory port: a pip-installed engine.
+	// Docker, but nothing publishing the memory port.
 	fakeDocker(t, func(args []string) (string, error) {
 		if args[0] == "ps" {
 			return "c0ffee\n", nil
 		}
 		return strings.Replace(engineInspect, `"HostPort": "8420"`, `"HostPort": "9999"`, 1), nil
 	})
-	if _, err := NewSmrti(config.MemoryConfig{Port: 8420}, nil).Check(context.Background()); err == nil ||
-		!strings.Contains(err.Error(), "does not run in a container here") {
+	if _, err := NewSmrti(config.MemoryConfig{Port: 8420}, nil).Check(context.Background()); !errors.Is(err, ErrNotManaged) ||
+		!strings.Contains(err.Error(), "publishes port 8420") {
 		t.Fatalf("error = %v", err)
 	}
 
 	// Docker, nothing running at all.
 	fakeDocker(t, func([]string) (string, error) { return "\n", nil })
-	if _, err := NewSmrti(config.MemoryConfig{Port: 8420}, nil).Check(context.Background()); err == nil {
-		t.Fatal("a docker with no containers has no engine to upgrade")
+	if _, err := NewSmrti(config.MemoryConfig{Port: 8420}, nil).Check(context.Background()); !errors.Is(err, ErrNotManaged) {
+		t.Fatalf("a machine running no smrti at all has none to upgrade: %v", err)
+	}
+
+	// A docker that answers with an error is not a machine without an engine:
+	// the container it holds may well be the engine, and upgrading a package
+	// instead of it would change nothing.
+	fakeDocker(t, func(args []string) (string, error) {
+		if args[0] == "ps" {
+			return "", fmt.Errorf("docker ps: permission denied")
+		}
+		return "", nil
+	})
+	if _, err := NewSmrti(config.MemoryConfig{Port: 8420}, nil).Check(context.Background()); err == nil ||
+		errors.Is(err, ErrNotManaged) {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -237,7 +254,7 @@ func TestSmrtiApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	var steps []string
-	if err := s.Apply(context.Background(), rel, func(f string, a ...any) {
+	if _, err := s.Apply(context.Background(), rel, func(f string, a ...any) {
 		steps = append(steps, fmt.Sprintf(f, a...))
 	}); err != nil {
 		t.Fatal(err)
@@ -290,7 +307,7 @@ func TestSmrtiApplyKeepsOneRollbackAndNoMore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Apply(context.Background(), rel, nil); err != nil {
+	if _, err := s.Apply(context.Background(), rel, nil); err != nil {
 		t.Fatal(err)
 	}
 	line := strings.Join(*calls, " | ")
@@ -318,7 +335,7 @@ func TestSmrtiApplyWaitsForAQuietGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.Apply(context.Background(), rel, nil)
+	_, err = s.Apply(context.Background(), rel, nil)
 	if err == nil || !strings.Contains(err.Error(), "busy") {
 		t.Fatalf("error = %v", err)
 	}
@@ -338,7 +355,7 @@ func TestSmrtiApplyRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.Apply(context.Background(), rel, nil)
+	_, err = s.Apply(context.Background(), rel, nil)
 	if err == nil || !strings.Contains(err.Error(), "rolled back") {
 		t.Fatalf("error = %v", err)
 	}
@@ -361,7 +378,7 @@ func TestSmrtiApplyRollsBackWhenTheNewEngineIsSilent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.Apply(context.Background(), rel, nil)
+	_, err = s.Apply(context.Background(), rel, nil)
 	if err == nil || !strings.Contains(err.Error(), "did not answer") {
 		t.Fatalf("error = %v", err)
 	}
@@ -381,7 +398,7 @@ func TestSmrtiApplyReportsAFailedRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.Apply(context.Background(), rel, nil)
+	_, err = s.Apply(context.Background(), rel, nil)
 	if err == nil || !strings.Contains(err.Error(), "docker rename") {
 		t.Fatalf("a rollback that cannot run must say how to finish it by hand: %v", err)
 	}
