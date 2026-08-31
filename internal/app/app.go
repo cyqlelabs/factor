@@ -102,8 +102,26 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// Everything the loop asks a provider goes through the meter, so
 	// compaction and wrap-up calls are billed alongside the ones the user
 	// can see, and a cap stops the turn before the next call is paid for.
-	catalog := cost.NewCatalog(cfg.Cost, cfg.Provider.Candidates(), filepath.Join(config.Home(), "pricing.json"))
-	meter := cost.NewMeter(chain, catalog, cost.NewLedger(filepath.Join(config.Home(), "usage.json")), cfg.Cost)
+	utilityChain, err := provider.BuildUtilityChain(cfg.Provider)
+	if err != nil {
+		return nil, fmt.Errorf("provider: %w", err)
+	}
+
+	// The catalog prices whatever answered, so it has to know the utility
+	// models too — an unpriced summary is reported in tokens rather than
+	// money, which is the one thing worse than pricing it wrong.
+	priced := append(cfg.Provider.Candidates(), cfg.Provider.UtilityCandidates()...)
+	catalog := cost.NewCatalog(cfg.Cost, priced, filepath.Join(config.Home(), "pricing.json"))
+	ledger := cost.NewLedger(filepath.Join(config.Home(), "usage.json"))
+	meter := cost.NewMeter(chain, catalog, ledger, cfg.Cost)
+
+	// The housekeeping chain shares the ledger and the caps: routing a
+	// summary to a cheaper model makes it cheaper, not free, and it is still
+	// billed to the session that caused it.
+	var utilityMeter agent.ChatProvider
+	if utilityChain != nil {
+		utilityMeter = cost.NewMeter(utilityChain, catalog, ledger, cfg.Cost)
+	}
 
 	extract := memory.DeriveExtract(cfg.Memory, cfg.Provider)
 	engine, err := memory.NewEngine(ctx, cfg.Memory, extract, filepath.Join(config.Home(), "logs"))
@@ -188,7 +206,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 
 	builder := agent.NewContextBuilder(cfg, skillLoader, ambient)
 	b := bus.New()
-	loop := agent.NewLoop(cfg, b, meter, registry, sessions, builder, ambient)
+	loop := agent.NewLoop(cfg, b, meter, registry, sessions, builder, ambient).WithUtility(utilityMeter)
 	// A turn that arrived from a chat asks its questions there — the user the
 	// question is for is by definition looking at that chat, not necessarily
 	// at this machine's screen. The dialog stays for every turn without one.

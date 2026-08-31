@@ -111,7 +111,8 @@ func TestAnthropicRoundTrip(t *testing.T) {
 		t.Errorf("args = %v", resp.ToolCalls[0].Args)
 	}
 
-	if captured["system"] != "sys" {
+	sys, ok := captured["system"].([]any)
+	if !ok || len(sys) != 1 || sys[0].(map[string]any)["text"] != "sys" {
 		t.Errorf("system = %v", captured["system"])
 	}
 	msgs := captured["messages"].([]any)

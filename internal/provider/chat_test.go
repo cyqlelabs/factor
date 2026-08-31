@@ -362,14 +362,22 @@ func TestAnthropicChatSendsTemperatureAndTools(t *testing.T) {
 	}
 }
 
-func TestToAnthropicMergesSystemMessages(t *testing.T) {
+// System messages stay one block each rather than merging into a string: the
+// separation is what lets a breakpoint sit between the invariant prompt and a
+// summary that is rewritten under it.
+func TestToAnthropicKeepsSystemMessagesSeparate(t *testing.T) {
 	system, out := toAnthropic([]Message{
 		{Role: "system", Content: "first"},
 		{Role: "system", Content: "second"},
 		{Role: "user", Content: "hi"},
 	})
-	if system != "first\n\nsecond" {
-		t.Errorf("system = %q", system)
+	if len(system) != 2 || system[0].Text != "first" || system[1].Text != "second" {
+		t.Errorf("system = %+v", system)
+	}
+	for i, b := range system {
+		if b.Type != "text" {
+			t.Errorf("system[%d].Type = %q, want text", i, b.Type)
+		}
 	}
 	if len(out) != 1 || out[0].Role != "user" {
 		t.Fatalf("messages = %+v", out)
@@ -436,8 +444,8 @@ func TestToAnthropicAssistantToolCallsWithNilArgs(t *testing.T) {
 
 func TestToAnthropicDropsUnknownRoles(t *testing.T) {
 	system, out := toAnthropic([]Message{{Role: "function", Content: "legacy"}})
-	if system != "" || len(out) != 0 {
-		t.Errorf("unknown roles must be dropped, got system=%q out=%+v", system, out)
+	if len(system) != 0 || len(out) != 0 {
+		t.Errorf("unknown roles must be dropped, got system=%+v out=%+v", system, out)
 	}
 }
 

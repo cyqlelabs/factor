@@ -13,19 +13,35 @@ import (
 // cost. USD stays at zero for tokens nothing priced, so a report can say
 // "unpriced" instead of implying "free".
 type Totals struct {
-	Input  int     `json:"input_tokens"`
-	Output int     `json:"output_tokens"`
+	Input  int `json:"input_tokens"`
+	Output int `json:"output_tokens"`
+	// Cached is the part of Input a prompt cache served rather than
+	// reprocessed — a subset of Input, never an addition to it. It is
+	// recorded because the ratio is the only alarm Factor has for a prefix
+	// that stopped being byte-stable: everything upstream of it fails
+	// silently and only this number moves.
+	Cached int     `json:"cached_input_tokens,omitempty"`
 	USD    float64 `json:"usd"`
 	Calls  int     `json:"calls"`
 }
 
 // Tokens is the whole traffic of a bucket, which is what a status line has
-// room for.
+// room for. Cached is left out because it is already inside Input.
 func (t Totals) Tokens() int { return t.Input + t.Output }
+
+// CacheHitRate is the share of input served from cache, 0 when nothing was
+// read at all.
+func (t Totals) CacheHitRate() float64 {
+	if t.Input <= 0 {
+		return 0
+	}
+	return float64(t.Cached) / float64(t.Input)
+}
 
 func (t *Totals) add(o Totals) {
 	t.Input += o.Input
 	t.Output += o.Output
+	t.Cached += o.Cached
 	t.USD += o.USD
 	t.Calls += o.Calls
 }

@@ -108,6 +108,47 @@ type ProviderConfig struct {
 	Fallbacks        []Candidate     `json:"fallbacks,omitempty"`
 	MaxRetries       int             `json:"max_retries"`
 	RetryBackoffSecs int             `json:"retry_backoff_secs"`
+	// Utility is the chain for the calls the user never sees: the compaction
+	// summary and the skill-induction verdict. Both are work the top of a
+	// model range is not for — one summarizes text the model has already
+	// read, the other answers SKIP or LEARN — and both are billed to the
+	// user's session at whatever the conversation costs.
+	//
+	// Empty means they run on the main chain, which is the safe default: a
+	// summary is what replaces a session's history, so a model too weak to
+	// write a good one damages the conversation rather than just the bill.
+	// Candidates inherit type, key and base from the main provider, so
+	// naming a cheaper model of the same vendor is one line.
+	Utility []Candidate `json:"utility,omitempty"`
+}
+
+// UtilityCandidates resolves the housekeeping chain, filling each candidate's
+// blanks from the main provider. Nil when nothing is configured, which the
+// caller reads as "use the main chain".
+func (p ProviderConfig) UtilityCandidates() []Candidate {
+	var out []Candidate
+	for _, c := range p.Utility {
+		if c.Type == "" {
+			c.Type = p.Type
+		}
+		if c.APIKey == "" && c.Type == p.Type {
+			c.APIKey = p.APIKey
+		}
+		if c.APIBase == "" && c.Type == p.Type {
+			c.APIBase = p.APIBase
+		}
+		if c.Model == "" {
+			continue // a candidate with no model names nothing to call
+		}
+		// Reasoning stays off unless asked for: a summary spent thinking is
+		// a summary that never arrives, which is what NoReasoning already
+		// guards against on the main chain.
+		if c.Reasoning == nil {
+			c.Reasoning = &ReasoningConfig{}
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // Candidates returns the primary candidate followed by the fallbacks, each

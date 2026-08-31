@@ -23,7 +23,10 @@ func NewWebTools() []Tool {
 	}
 }
 
-type webFetchTool struct{ client *http.Client }
+type webFetchTool struct {
+	ReadOnly
+	client *http.Client
+}
 
 func (t *webFetchTool) Name() string { return "web_fetch" }
 func (t *webFetchTool) Description() string {
@@ -124,6 +127,7 @@ func extractReadableText(src string) (title, text string) {
 }
 
 type webSearchTool struct {
+	ReadOnly
 	client    *http.Client
 	searchURL string
 }

@@ -88,10 +88,13 @@ func (m *Meter) record(sessionKey string, resp *provider.Response) {
 	if u.PromptTokens == 0 && u.CompletionTokens == 0 {
 		return // a provider that reports nothing leaves nothing to bill
 	}
-	t := Totals{Input: u.PromptTokens, Output: u.CompletionTokens, Calls: 1}
+	t := Totals{Input: u.PromptTokens, Output: u.CompletionTokens, Cached: u.CacheReadTokens, Calls: 1}
 	if p, ok := m.catalog.Price(resp.Model); ok {
-		t.USD = usd(p, u.PromptTokens, u.CompletionTokens)
+		t.USD = usdUsage(p, u)
 	}
+	slog.Debug("call priced", "model", resp.Model, "session", sessionKey,
+		"input", u.PromptTokens, "output", u.CompletionTokens,
+		"cache_read", u.CacheReadTokens, "cache_write", u.CacheWriteTokens, "usd", t.USD)
 	m.ledger.Record(sessionKey, resp.Model, t)
 }
 
@@ -283,8 +286,15 @@ func bucketWords(t Totals) string {
 	if t.Calls == 1 {
 		calls = "1 call"
 	}
-	return fmt.Sprintf("%s · %s in / %s out · %s",
-		FormatUSD(t.USD), FormatTokens(t.Input), FormatTokens(t.Output), calls)
+	// The cache share is worth a few characters because it is the only place
+	// a broken prompt prefix shows up as a number. Everything that keeps the
+	// prefix byte-stable fails silently; this ratio is what falls when it does.
+	cached := ""
+	if t.Cached > 0 {
+		cached = fmt.Sprintf(" (%.0f%% cached)", t.CacheHitRate()*100)
+	}
+	return fmt.Sprintf("%s · %s in%s / %s out · %s",
+		FormatUSD(t.USD), FormatTokens(t.Input), cached, FormatTokens(t.Output), calls)
 }
 
 // bySpend orders models by what they cost, falling back to traffic so the

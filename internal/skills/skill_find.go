@@ -18,6 +18,7 @@ const (
 // without this the answer to "is there a skill for this?" is always no and the
 // agent rebuilds from scratch what thousands of repositories already carry.
 type FindTool struct {
+	tools.ReadOnly
 	Registry  *Registry
 	Installed *Loader // optional: marks hits that are already on disk
 }
