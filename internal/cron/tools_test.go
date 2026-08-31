@@ -194,3 +194,33 @@ func TestAddOnceRejectsAMomentThatIsMissing(t *testing.T) {
 		t.Error("AddOnce accepted an empty message")
 	}
 }
+
+// Only the gateway runs a schedule. A reminder written in a terminal with no
+// daemon behind it is a promise nobody keeps, and the moment to say so is as
+// it is written down — not when it fails to arrive.
+func TestAddSaysWhenNothingIsRunningTheSchedule(t *testing.T) {
+	s := newService(t, nil, nil)
+	tool := &Tool{Service: s}
+	ctx := withOrigin(context.Background())
+	add := map[string]any{"action": "add", "message": "the kettle",
+		"at": time.Now().Add(time.Hour).Format("2006-01-02 15:04")}
+
+	res := tool.Execute(ctx, add)
+	if res.IsError || !strings.Contains(res.ForLLM, "Nothing is running the schedule") {
+		t.Fatalf("a store nobody watches was reported as scheduled: %+v", res)
+	}
+
+	// A daemon elsewhere is enough; so is this process running its own loop.
+	s.SetSchedulerCheck(func() bool { return true })
+	if res := tool.Execute(ctx, add); res.IsError || strings.Contains(res.ForLLM, "Nothing is running") {
+		t.Errorf("the caveat outlived the scheduler it was about: %+v", res)
+	}
+	s.SetSchedulerCheck(nil)
+
+	stop := runInBackground(t, s)
+	defer stop()
+	waitFor(t, s.Scheduling, "the scheduler to report itself running")
+	if res := tool.Execute(ctx, add); res.IsError || strings.Contains(res.ForLLM, "Nothing is running") {
+		t.Errorf("a running scheduler still warned about itself: %+v", res)
+	}
+}

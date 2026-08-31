@@ -299,8 +299,18 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			return loop.ProcessDirect(ctx, job.Message, "cron:"+job.ID)
 		},
 		func(channelName, chatID, content string) {
-			channelName, chatID = cronTarget(channelName, chatID, loop.LastChannel)
-			b.PublishOutbound(bus.OutboundMessage{Channel: channelName, ChatID: chatID, Content: content})
+			channelName, chatID, ok := cronTarget(channelName, chatID, loop.Reachable, loop.LastChannel)
+			if !ok {
+				// Nowhere to send it. The turn ran and was paid for, so the
+				// answer goes to the log rather than nowhere at all: a
+				// reminder nobody can be told about is still worth reading
+				// afterwards.
+				slog.Error("a scheduled task has no reachable chat to report to", "content", content)
+				return
+			}
+			if !b.PublishOutbound(bus.OutboundMessage{Channel: channelName, ChatID: chatID, Content: content}) {
+				slog.Error("a scheduled task's answer was dropped by a full queue", "content", content)
+			}
 		})
 	if err != nil {
 		return nil, fmt.Errorf("cron: %w", err)
@@ -361,14 +371,21 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 // created outside a real conversation — from the CLI, from a heartbeat, from
 // another cron job — has no chat of its own under the gateway, so it follows
 // the user to the last external chat they used.
-func cronTarget(channelName, chatID string, last func() (string, string, bool)) (string, string) {
-	if bus.External(channelName) {
-		return channelName, chatID
+// cronTarget resolves where a scheduled task reports to. The chat it was
+// created in wins while something is still serving that channel; a job made in
+// the terminal — or in a chat whose connector has since been switched off —
+// falls back to wherever the user last spoke. Nothing reachable is reported as
+// such rather than handed to a pump that will drop it with a warning nobody
+// connects to a missing reminder.
+func cronTarget(channelName, chatID string, reachable func(string) bool,
+	last func() (string, string, bool)) (string, string, bool) {
+	if bus.External(channelName) && reachable(channelName) {
+		return channelName, chatID, true
 	}
 	if ch, chat, ok := last(); ok {
-		return ch, chat
+		return ch, chat, true
 	}
-	return channelName, chatID
+	return "", "", false
 }
 
 func (a *App) Close() {

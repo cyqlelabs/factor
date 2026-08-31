@@ -319,25 +319,34 @@ func TestCronJobsCaptureTheirOrigin(t *testing.T) {
 func TestCronTargetFallback(t *testing.T) {
 	noExternal := func() (string, string, bool) { return "", "", false }
 	telegram := func() (string, string, bool) { return "telegram", "77", true }
+	serving := func(string) bool { return true }
+	servingNothing := func(string) bool { return false }
 
-	// external origins are always honored as-is
-	if ch, chat := cronTarget("telegram", "42", noExternal); ch != "telegram" || chat != "42" {
-		t.Errorf("external origin rewritten: %s:%s", ch, chat)
-	}
-	// a cli-origin job with no external channel seen keeps its target
-	if ch, chat := cronTarget("cli", "main", noExternal); ch != "cli" || chat != "main" {
-		t.Errorf("cli origin without a fallback = %s:%s", ch, chat)
+	// external origins are honored as-is while something serves them
+	if ch, chat, ok := cronTarget("telegram", "42", serving, noExternal); !ok || ch != "telegram" || chat != "42" {
+		t.Errorf("external origin rewritten: %s:%s (%v)", ch, chat, ok)
 	}
 	// once the user has chatted elsewhere, cli-origin results follow them
-	if ch, chat := cronTarget("cli", "main", telegram); ch != "telegram" || chat != "77" {
-		t.Errorf("cli origin not rerouted: %s:%s", ch, chat)
+	if ch, chat, ok := cronTarget("cli", "main", serving, telegram); !ok || ch != "telegram" || chat != "77" {
+		t.Errorf("cli origin not rerouted: %s:%s (%v)", ch, chat, ok)
 	}
 	// a job scheduled during a heartbeat, or by another cron job, belongs to
 	// no chat either: it follows the user the same way
 	for _, origin := range []string{"system", "cron"} {
-		if ch, chat := cronTarget(origin, "heartbeat", telegram); ch != "telegram" || chat != "77" {
-			t.Errorf("%s origin not rerouted: %s:%s", origin, ch, chat)
+		if ch, chat, ok := cronTarget(origin, "heartbeat", serving, telegram); !ok || ch != "telegram" || chat != "77" {
+			t.Errorf("%s origin not rerouted: %s:%s (%v)", origin, ch, chat, ok)
 		}
+	}
+	// The chat a job was made in has since been switched off: it follows the
+	// user rather than being handed to a connector that is not running.
+	if ch, _, ok := cronTarget("telegram", "42", servingNothing, telegram); !ok || ch != "telegram" {
+		t.Errorf("an unserved origin was not rerouted: %s (%v)", ch, ok)
+	}
+	// And with nowhere at all to send it, the caller is told so — handing back
+	// a channel nothing serves is how a reminder became a log line about an
+	// unknown channel.
+	if _, _, ok := cronTarget("cli", "main", servingNothing, noExternal); ok {
+		t.Error("a target nothing can deliver to was reported as usable")
 	}
 }
 

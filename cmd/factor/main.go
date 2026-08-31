@@ -440,6 +440,10 @@ func runChat(configPath, sessionName, message string) error {
 		return err
 	}
 	defer a.Close()
+	// This process schedules nothing: the daemon does. A reminder written here
+	// with no daemon running is a promise nobody keeps, and the tool says so
+	// only if it can see whether one is there.
+	a.Cron.SetSchedulerCheck(func() bool { _, alive := gateway.ReadPidFile(); return alive })
 
 	baseName, sessionKey := sessionName, "cli:"+sessionName
 

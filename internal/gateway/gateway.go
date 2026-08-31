@@ -261,7 +261,7 @@ func serve(configPath string) (bool, error) {
 		cancel()
 	case req := <-restart:
 		slog.Info("restart requested", "reason", req.reason)
-		settle(ctx, a.Loop.Idle, a.Bus.PendingOutbound)
+		settle(ctx, func() bool { return a.Loop.Idle() && a.Cron.Idle() }, a.Bus.PendingOutbound)
 		// A stop that lands while the answer is still going out wins: the
 		// user asked for this process to end, not to come back.
 		reloading = ctx.Err() == nil
@@ -271,6 +271,9 @@ func serve(configPath string) (bool, error) {
 		cancel()
 	}
 	slog.Info("shutting down")
+	// Before the channels go: a scheduled turn cut off here has an answer to
+	// publish, and the pump that carries it stops with them.
+	a.Cron.Wait(cronDrain)
 	manager.Stop()
 	a.Jobs.Wait()
 	a.Loop.WaitBackground(30 * time.Second) // in-flight turns, memory stores, compaction
@@ -281,8 +284,12 @@ func serve(configPath string) (bool, error) {
 // conversation.
 var (
 	settleTimeout = 60 * time.Second
-	settlePoll    = 200 * time.Millisecond
-	settleGrace   = 2 * time.Second
+	// How long the way out waits for a scheduled turn that is already
+	// running. It has been cancelled by then, so this is the time it needs to
+	// notice, not the time it needs to finish.
+	cronDrain   = 10 * time.Second
+	settlePoll  = 200 * time.Millisecond
+	settleGrace = 2 * time.Second
 
 	// configPoll is how often the config file is checked for changes — the
 	// ceiling on how long a saved edit waits to take effect.

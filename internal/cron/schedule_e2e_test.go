@@ -225,6 +225,9 @@ type rig struct {
 	tool      *Tool
 	delivered chan delivery
 	failWith  error // when set, every scheduled turn fails instead of running
+
+	cancel  context.CancelFunc // stops this rig's scheduler
+	stopped chan struct{}
 }
 
 func newRig(t *testing.T, store string) *rig {
@@ -286,20 +289,30 @@ func (r *rig) ask(t *testing.T, sentence string) string {
 	return out
 }
 
-// schedule runs the scheduler until the test ends.
+// schedule runs the scheduler until the test stops it, or the test ends.
 func (r *rig) schedule(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); r.svc.Run(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("the scheduler did not stop when its context was cancelled")
-		}
-	})
+	r.cancel, r.stopped = cancel, make(chan struct{})
+	go func() { defer close(r.stopped); r.svc.Run(ctx) }()
+	t.Cleanup(func() { r.stop(t) })
+}
+
+// stop ends this rig's scheduler and waits for it to be gone, which is what a
+// restart does to the process it replaces. Tests that hand a store from one
+// process to the next need it: two schedulers left running over one jobs.json
+// are two gateways, which is not the thing being tested.
+func (r *rig) stop(t *testing.T) {
+	t.Helper()
+	if r.cancel == nil {
+		return
+	}
+	r.cancel()
+	select {
+	case <-r.stopped:
+	case <-time.After(5 * time.Second):
+		t.Error("the scheduler did not stop when its context was cancelled")
+	}
 }
 
 // waits for one delivery, or says what never arrived.
@@ -403,6 +416,91 @@ func TestRestartDoesNotReplayATickThatAlreadyRan(t *testing.T) {
 	second.clock.jump(askAhead + 2*time.Minute) // same day, after the tick
 	second.schedule(t)
 	second.nothingFor(t, 200*time.Millisecond)
+}
+
+// An upgrade is two restarts more often than one — the binary swap, then the
+// config the new version rewrote — and the tick caught up by the first must not
+// be delivered again by the second.
+func TestATickCaughtUpAfterARestartIsNotDeliveredAgainByTheNext(t *testing.T) {
+	impatient(t)
+	store := t.TempDir()
+
+	before := newRig(t, store)
+	before.schedule(t)
+	before.ask(t, reminderAsk)
+	before.stop(t) // the process is replaced before the reminder is due
+
+	during := newRig(t, store)
+	during.clock.jump(askAhead + time.Minute)
+	during.schedule(t)
+	if got := during.await(t, "the reminder missed during the restart"); got.content != reminderSaid {
+		t.Errorf("delivered %q, want %q", got.content, reminderSaid)
+	}
+	during.stop(t)
+
+	after := newRig(t, store)
+	after.clock.jump(askAhead + 2*time.Minute)
+	after.schedule(t)
+	after.nothingFor(t, 300*time.Millisecond)
+}
+
+// Two reminders owed by the time the process comes back both arrive, and
+// neither arrives twice: a catch-up is the missed ticks, not the backlog of
+// every job that shares the minute.
+func TestTwoRemindersOverdueAcrossARestartBothArriveOnce(t *testing.T) {
+	impatient(t)
+	store := t.TempDir()
+
+	// Written by a process that went down before either could run.
+	before := newRig(t, store)
+	at := time.Now().Add(askAhead)
+	schedule := fmt.Sprintf("%d %d * * *", at.Minute(), at.Hour())
+	for _, message := range []string{"first", "second"} {
+		if _, err := before.svc.Add(schedule, message, "telegram", "77"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	after := newRig(t, store)
+	after.clock.jump(askAhead + time.Minute)
+	after.schedule(t)
+
+	got := map[string]bool{}
+	for range 2 {
+		got[after.await(t, "one of two overdue reminders").content] = true
+	}
+	if len(got) != 2 {
+		t.Errorf("the two overdue reminders produced %d distinct deliveries: %v", len(got), got)
+	}
+	after.nothingFor(t, 200*time.Millisecond)
+}
+
+// A one-off whose moment passed during the restart arrives late and leaves
+// nothing behind: the process that delivers it is also the one that has to
+// delete it, or every later restart repeats a reminder that already landed.
+func TestAOneOffDueDuringARestartLeavesNothingBehind(t *testing.T) {
+	impatient(t)
+	store := t.TempDir()
+
+	before := newRig(t, store)
+	before.model.oneOff()
+	before.ask(t, reminderAsk)
+
+	after := newRig(t, store)
+	after.clock.jump(askAhead + time.Minute)
+	after.schedule(t)
+	if got := after.await(t, "the one-off missed during the restart"); got.content != reminderSaid {
+		t.Errorf("delivered %q, want %q", got.content, reminderSaid)
+	}
+	if left := after.svc.List(); len(left) != 0 {
+		t.Errorf("the one-off is still scheduled after its catch-up: %+v", left)
+	}
+	after.stop(t)
+
+	last := newRig(t, store)
+	last.clock.jump(askAhead + 10*time.Minute)
+	last.schedule(t)
+	last.nothingFor(t, 300*time.Millisecond)
 }
 
 // jobs.json is one file shared by every factor process on the machine. A

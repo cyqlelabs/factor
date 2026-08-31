@@ -88,17 +88,28 @@ func (t *Tool) add(args map[string]any, tc tools.ToolContext) *tools.Result {
 		if err != nil {
 			return tools.Errorf("%v", err)
 		}
-		return tools.Textf("Scheduled %s: %q — runs once at %s, %s, then deletes itself.",
-			job.ID, job.Message, job.At.Format(stamp), untilText(time.Until(job.At)))
+		return tools.Textf("Scheduled %s: %q — runs once at %s, %s, then deletes itself.%s",
+			job.ID, job.Message, job.At.Format(stamp), untilText(time.Until(job.At)), t.schedulerCaveat())
 	case schedule != "":
 		job, err := t.Service.Add(schedule, message, tc.Channel, tc.ChatID)
 		if err != nil {
 			return tools.Errorf("%v", err)
 		}
-		return tools.Textf("Scheduled %s: %q (%s) — %s, and again every time the schedule comes round.",
-			job.ID, job.Message, job.Schedule, t.nextRunText(job))
+		return tools.Textf("Scheduled %s: %q (%s) — %s, and again every time the schedule comes round.%s",
+			job.ID, job.Message, job.Schedule, t.nextRunText(job), t.schedulerCaveat())
 	}
 	return tools.Errorf("add needs at (a one-off, e.g. '2026-09-05 10:00') or schedule (recurring, e.g. '0 9 * * *')")
+}
+
+// schedulerCaveat is the difference between a job being written down and a job
+// being run. Only the gateway has a scheduler, so a reminder created in a
+// terminal with no daemon running waits in the store instead of arriving —
+// which the user has to hear now, not when it fails to turn up.
+func (t *Tool) schedulerCaveat() string {
+	if t.Service.Scheduling() {
+		return ""
+	}
+	return " Nothing is running the schedule here, though: it will fire when the gateway next starts (`factor gateway -d`)."
 }
 
 // atLayouts are what a model writes when asked for a moment. Everything

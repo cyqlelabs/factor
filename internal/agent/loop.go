@@ -1096,6 +1096,15 @@ func (l *Loop) SetConversational(fn func(channel string) bool) {
 // chat's connector is not running: an address whose channel was switched off
 // is not somewhere Factor can reach anyone, and a caller that treats it as
 // one reports a delivery that never happened.
+// Reachable reports whether a connector is running for this channel right
+// now. Unset — the CLI, tests — every channel counts as reachable, which is
+// what LastChannel assumes too.
+func (l *Loop) Reachable(channel string) bool {
+	l.lastMu.Lock()
+	defer l.lastMu.Unlock()
+	return l.reachable == nil || l.reachable(channel)
+}
+
 func (l *Loop) LastChannel() (channel, chatID string, ok bool) {
 	l.lastMu.Lock()
 	defer l.lastMu.Unlock()

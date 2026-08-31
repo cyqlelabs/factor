@@ -1,5 +1,19 @@
 // Package cron schedules recurring agent tasks. The loop sleeps until the
 // next due job (no fixed tick) and wakes on job changes.
+//
+// Delivery is at-most-once, deliberately. A job's message is a prompt, not a
+// text: it can send mail, run a command, or spend money, so a run repeated
+// because nobody could tell whether the first one finished is worse than a run
+// missed. A tick is therefore marked before its turn starts, and a process
+// killed mid-turn leaves it marked. The one place that degrades to at-least-
+// once is a one-off whose deletion could not be written to disk: the store
+// still holds it, and the next process runs it again.
+//
+// jobs.json is shared by every factor process on the machine, so each
+// read-modify-write cycle takes a lock file as well as this process's mutex.
+// Without it two processes both write the whole store from what each read a
+// moment earlier, and the loser's reminder is gone after its user was told it
+// was scheduled.
 package cron
 
 import (
@@ -9,8 +23,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/adhocore/gronx"
@@ -56,6 +72,15 @@ type Service struct {
 	notify chan struct{}
 	now    func() time.Time
 	wg     sync.WaitGroup
+
+	// inflight counts the jobs dispatched and not yet finished, which is what
+	// a shutdown has to wait out.
+	inflight atomic.Int64
+	// running says this process is the one turning due jobs into turns.
+	running atomic.Bool
+	// elsewhere reports a scheduler in another process — the gateway, seen
+	// from a `factor chat` that only writes to the store.
+	elsewhere func() bool
 }
 
 func NewService(dir string, handler Handler, deliver Deliver) (*Service, error) {
@@ -192,6 +217,8 @@ func (s *Service) insert(job *Job) (Job, error) {
 		return Job{}, fmt.Errorf("message is required")
 	}
 	s.mu.Lock()
+	unlock := s.lockStore()
+	defer unlock()
 	// Another process may have added jobs since this one last looked; adding
 	// on top of a stale map reuses their ids and saves them away.
 	s.reload()
@@ -224,6 +251,8 @@ func (s *Service) insert(job *Job) (Job, error) {
 func (s *Service) Remove(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock := s.lockStore()
+	defer unlock()
 	s.reload()
 	job, ok := s.jobs[id]
 	if !ok {
@@ -242,6 +271,8 @@ func (s *Service) Remove(id string) error {
 func (s *Service) SetEnabled(id string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock := s.lockStore()
+	defer unlock()
 	s.reload()
 	j, ok := s.jobs[id]
 	if !ok {
@@ -327,6 +358,13 @@ func (s *Service) nextTick(job Job) (time.Time, bool) {
 func (s *Service) dueJobs() []Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Read and write inside one lock, this process's and the machine's. The
+	// save below writes the whole store from this map, so anything read
+	// earlier and changed by another process in between would be erased —
+	// which is a reminder its user has already been told is scheduled.
+	unlock := s.lockStore()
+	defer unlock()
+	s.reload()
 	now := s.now()
 	var due []Job
 	for _, j := range s.jobs {
@@ -358,9 +396,15 @@ func (s *Service) dueJobs() []Job {
 			// covers a next tick less than a minute out; an on-time run —
 			// tick within the last minute — never does, which is what keeps
 			// an every-minute schedule firing every minute.
+			//
+			// It is a collapse, not a catch-up: the run at that next tick does
+			// not happen, so it is said out loud rather than left for someone
+			// to find in a schedule that skipped a slot.
 			if now.Sub(tick) >= time.Minute {
 				if next, err := gronx.NextTickAfter(j.Schedule, now, false); err == nil && next.Sub(now) < time.Minute {
 					j.LastRun = next
+					slog.Info("cron catch-up covers the tick a moment away; that run is not repeated",
+						"id", j.ID, "caught_up", tick.Format(stamp), "covered", next.Format(stamp))
 				}
 			}
 			due = append(due, *j)
@@ -368,10 +412,57 @@ func (s *Service) dueJobs() []Job {
 	}
 	if len(due) > 0 {
 		if err := s.save(); err != nil {
-			slog.Warn("cron save failed", "error", err)
+			// The jobs are on their way regardless; what is lost is the record
+			// that they ran. A one-off is still in the store, so the next
+			// process runs it a second time — the one place this scheduler
+			// gives up at-most-once, and it says so rather than being found
+			// out later.
+			slog.Warn("cron store could not be marked; these runs may repeat after a restart",
+				"jobs", len(due), "error", err)
 		}
 	}
 	return due
+}
+
+// jobTimeout bounds one scheduled turn. Long enough for a turn that reads a
+// dozen pages, short enough that a wedged one is not still holding a slot when
+// the schedule next comes round.
+const jobTimeout = 10 * time.Minute
+
+// Scheduling reports whether due jobs will actually be run — by this process,
+// or by one this service was told to look for. A `factor chat` that schedules
+// a reminder into a store nobody is watching has promised something it cannot
+// keep, and the only honest thing is to say so as it is written down.
+func (s *Service) Scheduling() bool {
+	if s.running.Load() {
+		return true
+	}
+	return s.elsewhere != nil && s.elsewhere()
+}
+
+// SetSchedulerCheck teaches this service how to see a scheduler in another
+// process — the gateway, from a terminal that only writes to the store.
+func (s *Service) SetSchedulerCheck(fn func() bool) { s.elsewhere = fn }
+
+// Idle reports that no job this scheduler dispatched is still running.
+func (s *Service) Idle() bool { return s.inflight.Load() == 0 }
+
+// Wait blocks until the jobs already dispatched have finished, or timeout
+// passes. The gateway calls it on the way down: a scheduled turn is a real
+// turn, and a process that exits through the middle of one leaves nothing
+// where an answer was owed — the more so for a one-off, which is no longer in
+// the store to be run again.
+func (s *Service) Wait(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		slog.Warn("scheduled jobs are still running; leaving them behind", "waited", timeout)
+	}
 }
 
 // maxSleep bounds how long the scheduler parks between checks. Two things
@@ -384,18 +475,23 @@ var maxSleep = 30 * time.Second
 // Run is the scheduler loop; it blocks until ctx is done.
 func (s *Service) Run(ctx context.Context) {
 	defer s.wg.Wait()
+	s.running.Store(true)
+	defer s.running.Store(false)
 	for ctx.Err() == nil {
 		// Overdue jobs run before this loop parks again, which is what makes
 		// a reminder survive its process. A tick that fell while the gateway
 		// was restarting — for a config change, an upgrade, a reboot — is
 		// otherwise skipped until the schedule next comes round: a day later
 		// for a daily job, and for the dated expression a model writes for
-		// "remind me on the 5th", a year.
-		s.reloadStore()
+		// "remind me on the 5th", a year. dueJobs re-reads the store itself,
+		// inside the lock it writes under, so what it decides from is what it
+		// saves over.
 		for _, job := range s.dueJobs() {
 			s.wg.Add(1)
+			s.inflight.Add(1)
 			go func(job Job) {
 				defer s.wg.Done()
+				defer s.inflight.Add(-1)
 				s.runJob(ctx, job)
 			}(job)
 		}
@@ -421,24 +517,54 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
-// reloadStore re-reads jobs.json under the lock, so the scheduling decisions
-// that follow see what every other factor process has written.
-func (s *Service) reloadStore() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.reload()
-}
-
 func (s *Service) runJob(ctx context.Context, job Job) {
 	slog.Info("cron job firing", "id", job.ID)
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, jobTimeout)
 	defer cancel()
-	result, err := s.handler(ctx, job)
+	result, err := s.call(ctx, job)
 	if err != nil {
 		slog.Error("cron job failed", "id", job.ID, "error", err)
-		result = fmt.Sprintf("Scheduled task %s failed: %v", job.ID, err)
+		result = failureText(job, err)
 	}
 	if result != "" && job.Channel != "" && s.deliver != nil {
 		s.deliver(job.Channel, job.ChatID, result)
 	}
+}
+
+// call runs the handler, turning a panic into an error. The turn runs on a
+// goroutine of the scheduler's own, so a panic anywhere in it takes the whole
+// gateway down — every channel, every other job — and a one-off is already
+// deleted from the store by the time it fires, so the reminder would go with
+// the process.
+func (s *Service) call(ctx context.Context, job Job) (result string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("it crashed: %v", r)
+			slog.Error("cron job panicked", "id", job.ID, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	if s.handler == nil {
+		return "", fmt.Errorf("nothing here runs scheduled tasks")
+	}
+	return s.handler(ctx, job)
+}
+
+// failureText says what failed in the words its user chose for it. The id on
+// its own is unreadable, and for a one-off it is unrecoverable: the job was
+// deleted from the store the moment it was dispatched, so this sentence is the
+// last copy of what the reminder said.
+func failureText(job Job, err error) string {
+	text := fmt.Sprintf("Scheduled task %s (%q) failed: %v", job.ID, shorten(job.Message), err)
+	if job.Once() {
+		text += ". It was a one-off, so nothing will try it again."
+	}
+	return text
+}
+
+func shorten(message string) string {
+	const limit = 200
+	if len(message) <= limit {
+		return message
+	}
+	return message[:limit] + "…"
 }
