@@ -107,19 +107,26 @@ jobs:
           fi
       - name: run the eval suite
         run: |
-          set -o pipefail
-          go test ./internal/evals/ -json | tee evals.json | \
-            grep -E '^\{"Time".*"Action":"(pass|fail)","Test"' > /dev/null || true
-          pass=$(grep -c '"Action":"pass","Test"' evals.json || true)
-          fail=$(grep -c '"Action":"fail","Test"' evals.json || true)
+          # Not piped into the tally: a failing suite must still be counted,
+          # and pipefail would end the step before the rate was computed.
+          go test ./internal/evals/ -json > evals.json || true
+          # test2json puts Package between Action and Test, so the two fields
+          # cannot be matched adjacently.
+          pass=$(grep -c '"Action":"pass".*"Test":' evals.json || true)
+          fail=$(grep -c '"Action":"fail".*"Test":' evals.json || true)
           total=$((pass + fail))
           if [ "$total" -eq 0 ]; then
             echo "no evals ran; the suite is the gate, so an empty run is a failure"
+            tail -20 evals.json
             exit 1
           fi
           echo "eval pass rate: $pass/$total"
           echo "### Eval pass rate: $pass/$total" >> "$GITHUB_STEP_SUMMARY"
-          [ "$fail" -eq 0 ]
+          if [ "$fail" -ne 0 ]; then
+            echo "failing evals:"
+            grep '"Action":"fail".*"Test":' evals.json | sed -E 's/.*"Test":"([^"]+)".*/  \1/'
+            exit 1
+          fi
 
   lint:
     runs-on: ubuntu-latest
