@@ -897,10 +897,24 @@ func (l *Loop) wrapUp(ctx context.Context, in turnInput, messages []provider.Mes
 	if strings.TrimSpace(resp.Content) == "" {
 		return stalled
 	}
-	if err := l.persist(in, provider.Message{Role: "assistant", Content: resp.Content}); err != nil {
+	answer := resp.Content
+	if prose, tool, leaked := leakedToolCall(answer); leaked {
+		slog.Warn("wrap-up answer wrote a tool call as text; stripped it", "session", in.sessionKey, "tool", tool)
+		step := "the last step"
+		if tool != "" {
+			step = tool
+		}
+		note := "I ran out of tool iterations before I could run " + step + ", so that has not happened. Ask me to continue and I'll pick it up from there."
+		if prose == "" {
+			answer = note
+		} else {
+			answer = prose + "\n\n" + note
+		}
+	}
+	if err := l.persist(in, provider.Message{Role: "assistant", Content: answer}); err != nil {
 		slog.Error("persist wrap-up answer", "session", in.sessionKey, "error", err)
 	}
-	return resp.Content
+	return answer
 }
 
 // maxImagesInContext bounds how many attached images ride one in-flight turn.

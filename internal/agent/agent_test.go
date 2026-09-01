@@ -301,6 +301,38 @@ func TestIterationLimitWrapsUp(t *testing.T) {
 	}
 }
 
+func TestWrapUpStripsLeakedToolCall(t *testing.T) {
+	h := newHarness(t)
+	h.chat.script = nil
+	for range 5 {
+		h.chat.script = append(h.chat.script, spinner)
+	}
+	const leaked = "Tengo suficiente información. Preparo el email.<tool_call>\n" +
+		"<function=exec>\n<parameter=command>cat cuerpo.txt</parameter>\n</function>\n</tool_call>"
+	h.chat.script = append(h.chat.script, func(*provider.Request) (*provider.Response, error) {
+		return &provider.Response{Content: leaked}, nil
+	})
+
+	reply, err := h.loop.ProcessDirect(context.Background(), "loop forever", "cli:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(reply, "<tool_call>") || strings.Contains(reply, "<function=") {
+		t.Errorf("leaked tool markup shipped to the channel: %q", reply)
+	}
+	if !strings.Contains(reply, "Preparo el email.") {
+		t.Errorf("prose before the leak was lost: %q", reply)
+	}
+	if !strings.Contains(reply, "exec") {
+		t.Errorf("reply does not name the tool that never ran: %q", reply)
+	}
+	history, _ := h.store.History("cli:test")
+	last := history[len(history)-1]
+	if last.Role != "assistant" || last.Content != reply {
+		t.Errorf("persisted %q, want the cleaned reply", last.Content)
+	}
+}
+
 func TestIterationLimitFallsBackWhenWrapUpFails(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
