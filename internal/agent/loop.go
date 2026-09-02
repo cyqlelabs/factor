@@ -84,6 +84,7 @@ type Loop struct {
 	lastChannel    bus.InboundMessage
 	reachable      func(channel string) bool
 	conversational func(channel string) bool
+	languageOf     func(channel string) string
 
 	// seen is every session this process has run a turn for, with the tool
 	// context it ran under. Idle compaction works from it rather than from
@@ -372,7 +373,7 @@ func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 			return
 		}
 
-		reply, err := l.runTurn(ctx, msg, t, nil)
+		reply, err := l.runTurn(ctx, msg, t, "", nil)
 		if err != nil {
 			slog.Error("turn failed", "session", key, "error", err)
 			reply = fmt.Sprintf("Something went wrong: %v", err)
@@ -384,9 +385,18 @@ func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 }
 
 // ProcessDirect runs a synchronous turn outside the bus (CLI one-shot,
-// cron, delegated jobs) with nobody listening for progress.
+// delegated jobs) with nobody listening for progress.
 func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (string, error) {
-	return l.ProcessDirectNotice(ctx, content, sessionKey, "", "", nil)
+	return l.processDirect(ctx, false, content, sessionKey, "", "", "", nil)
+}
+
+// ProcessScheduled is ProcessDirect for a turn nobody asked for whose reply
+// is delivered somewhere other than the session it runs in — a cron job
+// reporting to the chat the user last used. outlet names that chat's
+// channel, so the reply is composed for where it comes out: spoken where it
+// is spoken, in the language the voice there speaks.
+func (l *Loop) ProcessScheduled(ctx context.Context, content, sessionKey, outlet string) (string, error) {
+	return l.processDirect(ctx, false, content, sessionKey, "", "", outlet, nil)
 }
 
 // ProcessDirectNotice runs a synchronous turn outside the bus and reports
@@ -403,7 +413,7 @@ func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (s
 // the entry point that does not make the user wait in silence.
 func (l *Loop) ProcessDirectNotice(ctx context.Context, content, sessionKey, speaker, audience string,
 	notice func(string)) (string, error) {
-	return l.processDirect(ctx, false, content, sessionKey, speaker, audience, notice)
+	return l.processDirect(ctx, false, content, sessionKey, speaker, audience, "", notice)
 }
 
 // ProcessDirectSteering is ProcessDirectNotice for a connector whose replies
@@ -420,10 +430,10 @@ func (l *Loop) ProcessDirectNotice(ctx context.Context, content, sessionKey, spe
 // model while they are still what the conversation is about.
 func (l *Loop) ProcessDirectSteering(ctx context.Context, content, sessionKey, speaker, audience string,
 	notice func(string)) (string, error) {
-	return l.processDirect(ctx, true, content, sessionKey, speaker, audience, notice)
+	return l.processDirect(ctx, true, content, sessionKey, speaker, audience, "", notice)
 }
 
-func (l *Loop) processDirect(ctx context.Context, steer bool, content, sessionKey, speaker, audience string,
+func (l *Loop) processDirect(ctx context.Context, steer bool, content, sessionKey, speaker, audience, outlet string,
 	notice func(string)) (string, error) {
 	msg := bus.InboundMessage{Channel: "cli", ChatID: strings.TrimPrefix(sessionKey, "cli:"),
 		Content: content, Speaker: speaker, Audience: audience}
@@ -454,17 +464,30 @@ func (l *Loop) processDirect(ctx context.Context, steer bool, content, sessionKe
 			l.bus.PublishInbound(missed)
 		}
 	}()
-	return l.runTurn(ctx, msg, t, notice)
+	// A spoken conversation is the user's last chat as much as a written
+	// one: the heartbeat and the cron results follow them here, and
+	// voice_write already knows to look past it for a written chat.
+	l.recordLastChannel(msg)
+	return l.runTurn(ctx, msg, t, outlet, notice)
 }
 
-// ProcessEphemeral runs a history-less, memory-less turn (heartbeat).
+// ProcessEphemeral runs a history-less, memory-less turn (heartbeat). Its
+// reply goes to the last chat the user used, so the turn is briefed for that
+// chat: with no user message to take the medium or the language from, a
+// check composed for nowhere comes out as a written page in English, read by
+// a Spanish voice.
 func (l *Loop) ProcessEphemeral(ctx context.Context, content string) (string, error) {
+	tc := tools.ToolContext{Channel: "system", ChatID: "heartbeat", SessionKey: "system:heartbeat"}
+	if ch, _, ok := l.LastChannel(); ok {
+		tc.Outlet = ch
+		tc.Language = l.language(ch)
+	}
 	return l.execute(ctx, turnInput{
 		sessionKey: "system:heartbeat",
 		content:    content,
 		trigger:    "heartbeat",
 		ephemeral:  true,
-		toolCtx:    tools.ToolContext{Channel: "system", ChatID: "heartbeat", SessionKey: "system:heartbeat"},
+		toolCtx:    tc,
 	}, &turn{steering: make(chan bus.InboundMessage, 1)})
 }
 
@@ -486,7 +509,11 @@ type turnInput struct {
 	toolCtx tools.ToolContext
 }
 
-func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, notice func(string)) (string, error) {
+func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, outlet string, notice func(string)) (string, error) {
+	heardOn := msg.Channel
+	if outlet != "" {
+		heardOn = outlet
+	}
 	reply, err := l.execute(ctx, turnInput{
 		sessionKey: msg.SessionKey(),
 		content:    msg.Content,
@@ -494,7 +521,8 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, not
 		trigger:    triggerOf(msg),
 		notice:     notice,
 		toolCtx: tools.ToolContext{Channel: msg.Channel, ChatID: msg.ChatID,
-			SessionKey: msg.SessionKey(), Audience: msg.Audience},
+			SessionKey: msg.SessionKey(), Audience: msg.Audience,
+			Outlet: outlet, Language: l.language(heardOn)},
 	}, t)
 	// A budget cap is a decision the user made, so it is answered rather
 	// than reported as a breakage — and left out of memory, since "you ran
@@ -1090,6 +1118,25 @@ func (l *Loop) SetReachable(fn func(channel string) bool) {
 	l.lastMu.Lock()
 	defer l.lastMu.Unlock()
 	l.reachable = fn
+}
+
+// SetLanguage teaches the loop which language a channel's replies are heard
+// in, where the channel fixes one — a synthesized voice speaks the language
+// it was built for, whatever it is handed. Unset — a terminal without voice,
+// tests — no channel fixes one, and the user's own language is matched.
+func (l *Loop) SetLanguage(fn func(channel string) string) {
+	l.lastMu.Lock()
+	defer l.lastMu.Unlock()
+	l.languageOf = fn
+}
+
+func (l *Loop) language(channel string) string {
+	l.lastMu.Lock()
+	defer l.lastMu.Unlock()
+	if l.languageOf == nil {
+		return ""
+	}
+	return l.languageOf(channel)
 }
 
 // SetConversational teaches the loop which channels are running chats whose

@@ -296,7 +296,11 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 
 	cronService, err := cron.NewService(filepath.Join(ws, "cron"),
 		func(ctx context.Context, job cron.Job) (string, error) {
-			return loop.ProcessDirect(ctx, job.Message, "cron:"+job.ID)
+			// Resolved before the turn as well as after it: the reply is
+			// composed for the chat it lands in, which the turn has to be
+			// told, since a cron session is nowhere the user reads.
+			outlet, _, _ := cronTarget(job.Channel, job.ChatID, loop.Reachable, loop.LastChannel)
+			return loop.ProcessScheduled(ctx, job.Message, "cron:"+job.ID, outlet)
 		},
 		func(channelName, chatID, content string) {
 			channelName, chatID, ok := cronTarget(channelName, chatID, loop.Reachable, loop.LastChannel)

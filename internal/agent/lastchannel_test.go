@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cyqlelabs/factor/internal/bus"
@@ -85,5 +87,77 @@ func TestLastChannelWithholdsAChannelNothingServes(t *testing.T) {
 	running["telegram"] = true
 	if ch, chat, ok := h.loop.LastChannel(); !ok || ch != "telegram" || chat != "42" {
 		t.Errorf("LastChannel = %q %q %v once its connector is up", ch, chat, ok)
+	}
+}
+
+// A spoken conversation is the user's last chat as much as a written one:
+// the heartbeat and the cron results follow them there. The terminal is not,
+// since nothing proactive can be delivered to a one-shot that has exited.
+func TestDirectTurnsMoveTheLastChat(t *testing.T) {
+	h := newHarness(t, final("hola"), final("hola"))
+	h.loop.recordLastChannel(bus.InboundMessage{Channel: "telegram", ChatID: "42"})
+
+	if _, err := h.loop.ProcessDirectNotice(context.Background(), "hola", "voice:local", "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if ch, chat, ok := h.loop.LastChannel(); !ok || ch != "voice" || chat != "local" {
+		t.Errorf("LastChannel after a spoken turn = %q %q %v, want voice local", ch, chat, ok)
+	}
+	if _, err := h.loop.ProcessDirect(context.Background(), "hola", "cli:main"); err != nil {
+		t.Fatal(err)
+	}
+	if ch, chat, ok := h.loop.LastChannel(); !ok || ch != "voice" || chat != "local" {
+		t.Errorf("LastChannel after a terminal turn = %q %q %v, want voice local still", ch, chat, ok)
+	}
+}
+
+// The heartbeat has no user message to take the medium or the language from,
+// so it is briefed for the chat its reply is delivered to: the last one the
+// user used, in the language the voice there speaks. With no such chat there
+// is nothing to brief for.
+func TestEphemeralTurnIsBriefedForTheChatItLandsIn(t *testing.T) {
+	spanish := func(name string) string {
+		if name == "voice" {
+			return "es"
+		}
+		return ""
+	}
+
+	h := newHarness(t, final("HEARTBEAT_OK"))
+	h.loop.SetLanguage(spanish)
+	if _, err := h.loop.ProcessEphemeral(context.Background(), "# Heartbeat\ncheck"); err != nil {
+		t.Fatal(err)
+	}
+	if block := turnBlock(t, h.chat.requests[0].Messages); strings.Contains(block, "spoken aloud") {
+		t.Errorf("a heartbeat with nowhere to go was briefed for the speakers: %q", block)
+	}
+
+	h = newHarness(t, final("HEARTBEAT_OK"))
+	h.loop.SetLanguage(spanish)
+	h.loop.recordLastChannel(bus.InboundMessage{Channel: "voice", ChatID: "local"})
+	if _, err := h.loop.ProcessEphemeral(context.Background(), "# Heartbeat\ncheck"); err != nil {
+		t.Fatal(err)
+	}
+	block := turnBlock(t, h.chat.requests[0].Messages)
+	for _, want := range []string{"spoken aloud on the user's speakers", `code "es"`} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the heartbeat headed for the speakers was not told %q: %q", want, block)
+		}
+	}
+}
+
+// A scheduled task runs under its own cron session and reports to a chat the
+// user reads; the reply is composed for that chat.
+func TestScheduledTurnIsBriefedForItsOutlet(t *testing.T) {
+	h := newHarness(t, final("listo"))
+	h.loop.SetLanguage(func(name string) string { return map[string]string{"voice": "es"}[name] })
+	if _, err := h.loop.ProcessScheduled(context.Background(), "recordame la pastilla", "cron:j1", "voice"); err != nil {
+		t.Fatal(err)
+	}
+	block := turnBlock(t, h.chat.requests[0].Messages)
+	for _, want := range []string{"nobody watching", "spoken aloud", `code "es"`} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the scheduled turn headed for the speakers was not told %q: %q", want, block)
+		}
 	}
 }

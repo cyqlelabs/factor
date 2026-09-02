@@ -424,3 +424,32 @@ func (c counterTool) Execute(context.Context, map[string]any) *tools.Result {
 	*c.n++
 	return tools.Text("counted")
 }
+
+// A heartbeat has no user message to take the medium or the language from —
+// its prompt is English machinery — so the turn is told where its reply comes
+// out and what language the voice there speaks. Without that a Spanish voice
+// reads an English diagnosis in a Spanish accent, and the user makes out none
+// of it.
+func TestHeartbeatIsBriefedForTheChatItIsDeliveredTo(t *testing.T) {
+	e := newEnv(t, answer("HEARTBEAT_OK"))
+	// The spoken conversation is now the last chat the user used.
+	if _, err := e.say("voice:local", "hola"); err != nil {
+		t.Fatal(err)
+	}
+	e.loop.SetLanguage(func(name string) string {
+		if name == "voice" {
+			return "es"
+		}
+		return ""
+	})
+	if _, err := e.loop.ProcessEphemeral(context.Background(),
+		"# Heartbeat check\n\n- tool error rate is 53% (was 5%), 3.6σ from the baseline"); err != nil {
+		t.Fatal(err)
+	}
+	got := userText(e.lastRequest())
+	for _, want := range []string{"spoken aloud on the user's speakers", `code "es"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the heartbeat was not told %q:\n%s", want, got)
+		}
+	}
+}

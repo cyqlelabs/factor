@@ -178,6 +178,10 @@ func serve(configPath string) (bool, error) {
 	// turn from a bus-riding chat is asked in that chat, and only a turn with
 	// no such chat behind it falls back to the desktop dialog.
 	a.Loop.SetConversational(manager.Conversational)
+	// And a reply headed for a synthesized voice is composed in the language
+	// that voice speaks — the one thing a heartbeat, with no user message to
+	// match, cannot work out for itself.
+	a.Loop.SetLanguage(manager.Language)
 	manager.Start(ctx)
 
 	// The tray's overview reads from here for as long as serve runs; the

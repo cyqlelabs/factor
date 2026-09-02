@@ -417,3 +417,29 @@ func TestConversationalIsTheBusRidingChats(t *testing.T) {
 		t.Error("a channel nothing serves counted as conversational")
 	}
 }
+
+// localizedChannel is a connector whose replies are heard in one language,
+// the way a synthesized voice's are.
+type localizedChannel struct {
+	scriptedChannel
+	language string
+}
+
+func (l *localizedChannel) Language() string { return l.language }
+
+func TestManagerLanguageIsTheConnectorsWhereItFixesOne(t *testing.T) {
+	m := NewManager(bus.New(), []Channel{
+		&localizedChannel{scriptedChannel: scriptedChannel{name: "voice"}, language: "es"},
+		&scriptedChannel{name: "telegram"},
+	})
+	if got := m.Language("voice"); got != "es" {
+		t.Errorf("Language(voice) = %q, want es", got)
+	}
+	// A written chat has no fixed language, and neither does a channel
+	// nothing serves: both mean "match the user's own".
+	for _, name := range []string{"telegram", "cron", ""} {
+		if got := m.Language(name); got != "" {
+			t.Errorf("Language(%q) = %q, want blank", name, got)
+		}
+	}
+}

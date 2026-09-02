@@ -187,6 +187,10 @@ func newToken() string {
 func (v *Voice) Name() string          { return "voice" }
 func (v *Voice) MaxMessageLength() int { return 0 }
 
+// Language is the language the synthesized voice speaks (channel.Localized):
+// a reply in any other one is read in its accent and cannot be understood.
+func (v *Voice) Language() string { return v.cfg.Language }
+
 // AcceptsSteering marks this channel as one whose replies also arrive through
 // Send, so a spoken turn that lands on a busy session is folded into the turn
 // already running rather than queued behind it. See channel.Steerable: on a

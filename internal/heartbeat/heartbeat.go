@@ -1,7 +1,10 @@
 // Package heartbeat periodically checks HEARTBEAT.md for user-defined tasks,
 // and Factor's own numbers for ones that have drifted. Nothing to look at →
-// no LLM call. A reply of exactly HEARTBEAT_OK is suppressed; anything else is
-// delivered to the last active channel.
+// no LLM call. A reply carrying HEARTBEAT_OK is suppressed; anything else is
+// delivered to the last active channel. Carrying, not equal to: the model is
+// asked for exactly the token and answers with a paragraph of diagnosis and
+// the token after it, which is still its verdict that nothing needs the user,
+// and was being read out to them as a finding.
 //
 // The two triggers are deliberately different in kind. HEARTBEAT.md is what
 // the user thought to write down in advance; the control bands are what
@@ -103,7 +106,7 @@ or user notification right now, reply exactly %s.
 		return
 	}
 	reply = strings.TrimSpace(reply)
-	if reply == "" || reply == OKToken || strings.HasPrefix(reply, OKToken) {
+	if reply == "" || strings.Contains(reply, OKToken) {
 		return
 	}
 	if s.deliver != nil && !s.deliver(reply) {

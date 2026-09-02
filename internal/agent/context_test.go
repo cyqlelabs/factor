@@ -14,8 +14,8 @@ import (
 // private recall out of the turn, but it cannot govern discretion in general:
 // the model still holds the conversation's own history.
 func TestChannelBriefingWarnsAboutCompany(t *testing.T) {
-	private := channelBriefing("voice", "")
-	shared := channelBriefing("voice", tools.AudienceShared)
+	private := channelBriefing(tools.ToolContext{Channel: "voice"})
+	shared := channelBriefing(tools.ToolContext{Channel: "voice", Audience: tools.AudienceShared})
 	if !strings.HasPrefix(shared, private) {
 		t.Errorf("the shared briefing dropped the spoken-reply guidance: %q", shared)
 	}
@@ -34,7 +34,7 @@ func TestChannelBriefingWarnsAboutCompany(t *testing.T) {
 
 	// A channel with no briefing of its own gains none: a cron job has no
 	// room, and the audience it reports would be meaningless.
-	if got := channelBriefing("telegram", tools.AudienceShared); got != "" {
+	if got := channelBriefing(tools.ToolContext{Channel: "telegram", Audience: tools.AudienceShared}); got != "" {
 		t.Errorf("a written channel gained a room warning: %q", got)
 	}
 }
@@ -107,5 +107,39 @@ func TestOnVoiceTheToolRulesComeAfterTheBrevityBriefing(t *testing.T) {
 	}
 	if rules < brief {
 		t.Errorf("the brevity briefing got the last word over the tool rules: %q", block)
+	}
+}
+
+// A turn whose reply is delivered somewhere other than where it runs is
+// briefed for that place too. The heartbeat's "system" session is nowhere the
+// user reads, and the voice its reply comes out on speaks one language — the
+// one thing a turn with no user message cannot work out for itself.
+func TestBriefingCoversTheOutletAndItsLanguage(t *testing.T) {
+	heartbeat := channelBriefing(tools.ToolContext{Channel: "system", Outlet: "voice", Language: "es"})
+	for _, want := range []string{"spoken aloud on the user's speakers", `code "es"`} {
+		if !strings.Contains(heartbeat, want) {
+			t.Errorf("a heartbeat headed for the speakers was not told %q: %q", want, heartbeat)
+		}
+	}
+
+	// A scheduled task keeps its own briefing and gains the outlet's.
+	cron := channelBriefing(tools.ToolContext{Channel: "cron", Outlet: "voice", Language: "es"})
+	for _, want := range []string{"nobody watching", "spoken aloud"} {
+		if !strings.Contains(cron, want) {
+			t.Errorf("a cron job headed for the speakers lost %q: %q", want, cron)
+		}
+	}
+
+	// An outlet that is the channel itself is not briefed twice, and a
+	// written outlet has nothing to add.
+	if same := channelBriefing(tools.ToolContext{Channel: "voice", Outlet: "voice"}); strings.Count(same, "spoken aloud") != 1 {
+		t.Errorf("a voice turn delivered to voice was briefed twice: %q", same)
+	}
+	if got := channelBriefing(tools.ToolContext{Channel: "system", Outlet: "telegram"}); got != "" {
+		t.Errorf("a heartbeat headed for a written chat was briefed: %q", got)
+	}
+	// No fixed language, no sentence about one: the user's own is matched.
+	if got := channelBriefing(tools.ToolContext{Channel: "voice"}); strings.Contains(got, "one language") {
+		t.Errorf("a voice with no configured language was told it had one: %q", got)
 	}
 }

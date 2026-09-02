@@ -79,3 +79,23 @@ func TestTickDeliversFindings(t *testing.T) {
 		t.Errorf("delivered = %v", delivered)
 	}
 }
+
+// The model is asked for exactly the token and routinely writes its diagnosis
+// first and the token after. That is still its verdict that nothing needs the
+// user, and it was being read out to them as a finding.
+func TestTickSuppressesAVerdictThatEndsWithOK(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "- check things\n")
+	var delivered []string
+	s := NewService(ws,
+		time.Minute,
+		func(_ context.Context, prompt string) (string, error) {
+			return "The tool error rate spike is real but transient — nothing systemic.\n\nHEARTBEAT_OK", nil
+		},
+		func(content string) bool { delivered = append(delivered, content); return true },
+	)
+	s.Tick(context.Background())
+	if len(delivered) != 0 {
+		t.Errorf("a verdict of HEARTBEAT_OK was delivered: %v", delivered)
+	}
+}

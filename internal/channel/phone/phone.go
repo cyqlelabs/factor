@@ -97,6 +97,9 @@ func newBridgeToken() string {
 func (p *Phone) Name() string          { return "phone" }
 func (p *Phone) MaxMessageLength() int { return maxMessageLength }
 
+// Language is the language the call is spoken in (channel.Localized).
+func (p *Phone) Language() string { return p.cfg.Language }
+
 // BindTurnRunner attaches the agent loop. The gateway calls this after
 // building channels; without it the bridge answers 503 and calls are refused
 // rather than silently dropped.

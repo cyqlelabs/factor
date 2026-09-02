@@ -69,6 +69,16 @@ type ToolContext struct {
 	// Audience is who can hear this turn's reply. Blank means the ordinary
 	// private conversation; AudienceShared means somebody else is present.
 	Audience string
+	// Outlet is the channel the reply comes out on, where that is not the
+	// one the turn runs under: a heartbeat runs as "system" and a scheduled
+	// task as "cron" — which is what the tools and the memory scope key on —
+	// and both are delivered to a chat the user used. Blank means Channel.
+	Outlet string
+	// Language is the language the reply is heard in, where the outlet fixes
+	// one: a synthesized voice speaks the language it was built for and
+	// reads anything else as noise. Blank where the reply is read, and the
+	// user's own language is the one to match.
+	Language string
 }
 
 // AudienceShared marks a turn that more than the user can hear — a second

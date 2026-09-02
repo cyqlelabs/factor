@@ -59,6 +59,16 @@ func (m *Manager) Conversational(name string) bool {
 	return !runsOwnTurns
 }
 
+// Language reports the language a connector's replies are heard in, where
+// it fixes one (see Localized). Blank for a written chat and for a channel
+// nothing serves.
+func (m *Manager) Language(name string) string {
+	if localized, ok := m.channels[name].(Localized); ok {
+		return localized.Language()
+	}
+	return ""
+}
+
 func (m *Manager) Names() []string {
 	names := make([]string, 0, len(m.channels))
 	for n := range m.channels {

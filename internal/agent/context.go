@@ -91,8 +91,7 @@ func (cb *ContextBuilder) TurnContext(ctx context.Context, history []provider.Me
 	if line := gapNotice(gap); line != "" {
 		parts = append(parts, line)
 	}
-	tc := tools.ToolContextFrom(ctx)
-	if brief := channelBriefing(tc.Channel, tc.Audience); brief != "" {
+	if brief := channelBriefing(tools.ToolContextFrom(ctx)); brief != "" {
 		parts = append(parts, brief)
 	}
 	// Last of all, so it is the last thing read before the user's own
@@ -182,15 +181,23 @@ func gapNotice(gap time.Duration) string {
 // bridge cuts a reply that runs long. That is a seatbelt, not a substitute:
 // a reply composed to be read and then stripped is still a list of bullet
 // points with the punctuation missing.
-func channelBriefing(channel, audience string) string {
-	var brief string
-	switch channel {
-	case "voice":
-		brief = "This reply is spoken aloud on the user's speakers, not read. Compose it to be said: no markdown, no lists, no code, no bare URLs, and a couple of sentences rather than a page. Anything long or written goes through voice_write instead."
-	case "phone":
-		brief = "This reply is spoken aloud on a live phone call, not read. Compose it to be said — no markdown, no lists, no code — lead with the answer, and keep it short: the user is holding a phone and can hang up mid-sentence."
-	case "cron":
-		brief = "This is a scheduled job running with nobody watching. Its reply is delivered to whichever chat the user last used, so it has to stand on its own: say what ran and what came of it, without leaning on a conversation the reader was not part of."
+//
+// Where the reply comes out is not always where the turn runs. A heartbeat
+// runs under "system" and a scheduled task under "cron", and both are
+// delivered to a chat the user used — so the outlet is briefed on top of the
+// channel, or a check nobody asked for is composed as a written page and
+// then read out on the speakers. A spoken outlet also names its language: a
+// history-less turn has no user message to match the language of, and the
+// English it falls back to is noise in a Spanish voice.
+func channelBriefing(tc tools.ToolContext) string {
+	brief := mediumBriefing(tc.Channel)
+	if tc.Outlet != "" && tc.Outlet != tc.Channel {
+		brief = joinBriefs(brief, mediumBriefing(tc.Outlet))
+	}
+	if tc.Language != "" {
+		brief = joinBriefs(brief, fmt.Sprintf("The voice reading it speaks one language, code %q, and nothing else: "+
+			"write the reply in that language whatever language this request is in, "+
+			"or it comes out in the wrong accent and cannot be understood.", tc.Language))
 	}
 	// The memory scope already keeps what was said in private out of this
 	// turn's recall, but it cannot govern discretion in general: the model
@@ -204,10 +211,34 @@ func channelBriefing(channel, audience string) string {
 	// at the faded head — so a long session sides with the notice against
 	// the user, refusing the one correction the sensor cannot make itself.
 	// The escape hatch has to travel with the claim it corrects.
-	if audience == tools.AudienceShared && brief != "" {
+	if tc.Audience == tools.AudienceShared && brief != "" {
 		brief += " Somebody besides the user is in the room and hears everything you say. Treat what you know about the user as theirs to share, not yours: answer what is asked without volunteering private details, and if a question can only be answered with something private, say you would rather go into it later. This presence came from the microphone, which hears arrivals but never departures and can read a noise as a voice: if the user says everyone has left, or that the sound was not a person, their word outranks this notice — record it with the room tool (action=alone, or action=left naming who went) right away instead of doubting them."
 	}
 	return brief
+}
+
+// mediumBriefing is what a channel's medium asks of a reply, for the three
+// where it asks anything.
+func mediumBriefing(channel string) string {
+	switch channel {
+	case "voice":
+		return "This reply is spoken aloud on the user's speakers, not read. Compose it to be said: no markdown, no lists, no code, no bare URLs, and a couple of sentences rather than a page. Anything long or written goes through voice_write instead."
+	case "phone":
+		return "This reply is spoken aloud on a live phone call, not read. Compose it to be said — no markdown, no lists, no code — lead with the answer, and keep it short: the user is holding a phone and can hang up mid-sentence."
+	case "cron":
+		return "This is a scheduled job running with nobody watching. Its reply is delivered to whichever chat the user last used, so it has to stand on its own: say what ran and what came of it, without leaning on a conversation the reader was not part of."
+	}
+	return ""
+}
+
+func joinBriefs(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + " " + b
 }
 
 // sourcePaths returns every file whose mtime invalidates the static cache.

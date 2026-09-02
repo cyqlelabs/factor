@@ -103,6 +103,15 @@ type Addresser interface {
 	BindLastExternal(func() (channel, chatID string, ok bool))
 }
 
+// Localized is the optional capability of a connector whose replies are heard
+// in one fixed language: a synthesized voice speaks the language it was built
+// for and reads anything else in the wrong accent. A written chat has no such
+// fix — its language is whatever the user writes in — and omits it. The
+// answer is the language code the connector is configured with ("es").
+type Localized interface {
+	Language() string
+}
+
 // Factory builds a channel from its raw config section.
 type Factory func(raw json.RawMessage, b *bus.MessageBus) (Channel, error)
 

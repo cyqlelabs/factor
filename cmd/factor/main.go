@@ -406,6 +406,14 @@ func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sess
 	}
 	ch := channels[0]
 	channel.BindTurns(ch, a.Loop.ProcessDirectNotice, a.Loop.ProcessDirectSteering)
+	if localized, ok := ch.(channel.Localized); ok {
+		a.Loop.SetLanguage(func(name string) string {
+			if name == ch.Name() {
+				return localized.Language()
+			}
+			return ""
+		})
+	}
 	if addresser, ok := ch.(channel.Addresser); ok {
 		// A written reply lands in this terminal: the drain below prints
 		// every outbound cli message.
