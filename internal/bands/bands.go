@@ -49,7 +49,61 @@ type Spec struct {
 	// the tool error rate, and averaging a zero in would drag the baseline
 	// toward whatever the quiet turns did.
 	Of func(trace.Record) (float64, bool)
+	// Evidence gathers what stood behind a breach, from every record in the
+	// baseline and the recent window (cut is where the two meet). Nil for a
+	// metric that is only a number.
+	Evidence func(records []trace.Record, cut time.Time) Evidence
 }
+
+// Evidence is what a breach can be diagnosed from. A rate names no tool and
+// no cause: the model handed one on its own went looking in the journal,
+// which holds no tool outcomes, and called a feature that had never once
+// worked "transient". So a breach carries the calls that failed, with what
+// they said, and each failing tool's record across the whole baseline —
+// which is what tells an hour's bad luck from a fault that is always there.
+type Evidence struct {
+	// Since is where the baseline starts, so the history can be dated.
+	Since time.Time
+	// Failures are the tool calls that failed in the recent window, newest
+	// last, bounded.
+	Failures []Failure
+	// History is the baseline-wide record of every tool in Failures, the
+	// worst first.
+	History []ToolRecord
+	// Turns are the turns that ended in error in the recent window.
+	Turns []TurnFailure
+}
+
+// Failure is one tool call that failed.
+type Failure struct {
+	At      time.Time
+	Session string
+	Tool    string
+	Fault   string
+}
+
+// ToolRecord is one tool's history: how often it ran, how often it failed,
+// and when it first and last did.
+type ToolRecord struct {
+	Tool        string
+	Calls       int
+	Fails       int
+	First, Last time.Time
+}
+
+// TurnFailure is one turn that ended in error.
+type TurnFailure struct {
+	At      time.Time
+	Session string
+	Error   string
+}
+
+// Bounds on the evidence a breach carries. The point is the cause, and eight
+// failures name it or nothing will.
+const (
+	maxFailures = 8
+	maxTurns    = 5
+)
 
 // Specs is what Factor watches about itself. Every one of these is already
 // recorded and, until now, read by nobody.
@@ -63,6 +117,7 @@ func Specs() []Spec {
 				}
 				return float64(r.ToolErrors()) / float64(len(r.Tools)), true
 			},
+			Evidence: toolEvidence,
 		},
 		{
 			Name: "turn failures", Unit: "of turns", Dir: Above,
@@ -72,6 +127,7 @@ func Specs() []Spec {
 				}
 				return 0, true
 			},
+			Evidence: turnEvidence,
 		},
 		{
 			Name: "cost per turn", Unit: "USD", Dir: Above,
@@ -125,6 +181,7 @@ type Breach struct {
 	Baseline float64
 	Sigma    float64
 	Samples  int
+	Evidence Evidence
 }
 
 // Tier is how far out the reading is, in whole standard deviations, capped at
@@ -143,6 +200,101 @@ func (b Breach) Tier() int {
 func (b Breach) Line() string {
 	return fmt.Sprintf("%s is %s (was %s), %.1fσ from the baseline over %d turns",
 		b.Metric, format(b.Recent, b.Unit), format(b.Baseline, b.Unit), b.Sigma, b.Samples)
+}
+
+// Details renders the evidence, one line each: the failures as they
+// happened, then each failing tool's record over the baseline.
+func (b Breach) Details() []string {
+	e := b.Evidence
+	out := make([]string, 0, len(e.Failures)+len(e.History)+len(e.Turns))
+	for _, f := range e.Failures {
+		line := fmt.Sprintf("%s %s %s failed", f.At.Format("2006-01-02 15:04"), f.Session, f.Tool)
+		if f.Fault != "" {
+			line += ": " + f.Fault
+		}
+		out = append(out, line)
+	}
+	for _, h := range e.History {
+		out = append(out, fmt.Sprintf("%s has failed %d of %d calls since %s (first %s, last %s)",
+			h.Tool, h.Fails, h.Calls, e.Since.Format("2006-01-02"),
+			h.First.Format("2006-01-02 15:04"), h.Last.Format("2006-01-02 15:04")))
+	}
+	for _, t := range e.Turns {
+		line := fmt.Sprintf("%s %s turn failed", t.At.Format("2006-01-02 15:04"), t.Session)
+		if t.Error != "" {
+			line += ": " + t.Error
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// toolEvidence lists the recent failed calls and the baseline-wide record of
+// every tool among them.
+func toolEvidence(records []trace.Record, cut time.Time) Evidence {
+	var e Evidence
+	failing := map[string]bool{}
+	for _, r := range records {
+		if r.Started.Before(cut) {
+			continue
+		}
+		for _, t := range r.Tools {
+			if t.Error {
+				e.Failures = append(e.Failures, Failure{At: r.Started, Session: r.Session, Tool: t.Name, Fault: t.Fault})
+				failing[t.Name] = true
+			}
+		}
+	}
+	if len(e.Failures) > maxFailures {
+		e.Failures = e.Failures[len(e.Failures)-maxFailures:]
+	}
+	history := map[string]*ToolRecord{}
+	for _, r := range records {
+		for _, t := range r.Tools {
+			if !failing[t.Name] {
+				continue
+			}
+			h := history[t.Name]
+			if h == nil {
+				h = &ToolRecord{Tool: t.Name}
+				history[t.Name] = h
+			}
+			h.Calls++
+			if t.Error {
+				h.Fails++
+				if h.First.IsZero() {
+					h.First = r.Started
+				}
+				h.Last = r.Started
+			}
+		}
+	}
+	for _, h := range history {
+		e.History = append(e.History, *h)
+	}
+	sort.Slice(e.History, func(i, j int) bool {
+		if e.History[i].Fails != e.History[j].Fails {
+			return e.History[i].Fails > e.History[j].Fails
+		}
+		return e.History[i].Tool < e.History[j].Tool
+	})
+	return e
+}
+
+// turnEvidence lists the recent turns that ended in error, with what they
+// died of.
+func turnEvidence(records []trace.Record, cut time.Time) Evidence {
+	var e Evidence
+	for _, r := range records {
+		if r.Started.Before(cut) || !r.Failed() {
+			continue
+		}
+		e.Turns = append(e.Turns, TurnFailure{At: r.Started, Session: r.Session, Error: r.Error})
+	}
+	if len(e.Turns) > maxTurns {
+		e.Turns = e.Turns[len(e.Turns)-maxTurns:]
+	}
+	return e
 }
 
 func format(v float64, unit string) string {
@@ -212,6 +364,10 @@ func (w *Watcher) Check() []Breach {
 			}
 		}
 		if b, ok := judge(spec, base, recent, w.minSamples); ok {
+			if spec.Evidence != nil {
+				b.Evidence = spec.Evidence(records, cut)
+				b.Evidence.Since = now.Add(-w.baseline)
+			}
 			out = append(out, b)
 		}
 	}

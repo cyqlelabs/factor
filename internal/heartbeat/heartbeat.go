@@ -11,10 +11,22 @@
 // actually changed. Detection for the second stays entirely deterministic —
 // the model is spent on diagnosing a breach, never on confirming that nothing
 // happened.
+//
+// Diagnosing needs three things a bare number does not give, and the first
+// breach this ever fired on showed all three missing. Handed "tool error rate
+// is 53%", the model grepped the journal, which holds no tool outcomes, and
+// called transient a tool that had failed every time it ran; it could have
+// switched the feature off with a tool it already had; and the next breach
+// would have got the same shrug, because nothing remembered this one. So a
+// breach arrives with its evidence, the check is told to repair before it
+// reports, and what it concluded is kept and shown to the next check on the
+// same metric.
 package heartbeat
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -43,6 +55,7 @@ type Service struct {
 	run       Runner
 	deliver   Deliver
 	bands     Bands
+	verdicts  string // where each breach's verdict is kept; blank keeps none
 }
 
 func NewService(workspace string, interval time.Duration, run Runner, deliver Deliver) *Service {
@@ -56,6 +69,14 @@ func NewService(workspace string, interval time.Duration, run Runner, deliver De
 // wrote down.
 func (s *Service) WithBands(b Bands) *Service {
 	s.bands = b
+	return s
+}
+
+// WithVerdicts keeps what each check concluded about a breach in the file at
+// path, so the next check on the same metric reads what was said last time
+// and a fault that keeps coming back is seen to keep coming back.
+func (s *Service) WithVerdicts(path string) *Service {
+	s.verdicts = path
 	return s
 }
 
@@ -98,7 +119,7 @@ This is an automated periodic check, not a user message. Work through the
 tasks in your HEARTBEAT.md below using your tools. If nothing needs attention
 or user notification right now, reply exactly %s.
 
-%s%s`, OKToken, content, bandSection(breached))
+%s%s%s`, OKToken, content, bandSection(breached), s.earlierVerdicts(breached))
 
 	reply, err := s.run(ctx, prompt)
 	if err != nil {
@@ -106,6 +127,9 @@ or user notification right now, reply exactly %s.
 		return
 	}
 	reply = strings.TrimSpace(reply)
+	if len(breached) > 0 {
+		s.recordVerdict(breached, reply)
+	}
 	if reply == "" || strings.Contains(reply, OKToken) {
 		return
 	}
@@ -118,6 +142,9 @@ or user notification right now, reply exactly %s.
 // at them. The numbers are stated and the conclusion is not: the detection is
 // arithmetic over Factor's own traces and says only that something moved, and
 // whether that matters is exactly the judgement the model is being spent on.
+// What it is judged from rides along — the calls that failed, what they said,
+// and each failing tool's record over the baseline — because a number alone
+// sent the model to the journal, which holds no tool outcomes.
 //
 // Tier 3 is called out because it is the one worth interrupting the user for;
 // below that the reading is unusual but not yet a story.
@@ -127,13 +154,144 @@ func bandSection(breached []bands.Breach) string {
 	}
 	var b strings.Builder
 	b.WriteString("\n\n# Drifted metrics (measured, not diagnosed)\n")
-	b.WriteString("These are Factor's own numbers over the last hour against a rolling baseline. ")
-	b.WriteString("Work out whether any of them matters. Say something only if it does; ")
+	b.WriteString("These are Factor's own numbers over the last hour against a rolling baseline, ")
+	b.WriteString("with the evidence behind each: the calls that failed and what they said, and each failing tool's record over the whole baseline. ")
+	b.WriteString("That is the entire record — the traces hold nothing more and the journal holds no tool outcomes — so judge from it rather than going looking. ")
+	b.WriteString("Work out whether any of it matters. Say something only if it does; ")
 	b.WriteString("an unusual number with a dull explanation is not worth the user's attention.\n")
 	for _, x := range breached {
 		fmt.Fprintf(&b, "- %s%s\n", x.Line(), tierNote(x))
+		for _, d := range x.Details() {
+			fmt.Fprintf(&b, "  - %s\n", d)
+		}
 	}
+	b.WriteString(repairGuidance)
 	return b.String()
+}
+
+// repairGuidance is what the check is expected to do with a breach that
+// matters: fix it with the levers it owns, then report. The levers are named
+// because the ones it must not reach for are the obvious ones — an exec that
+// kills a supervised sidecar leaves an orphan behind, which has happened.
+const repairGuidance = `
+Then act before you report. A tool that has failed every time it ran on this machine is a broken feature, not a transient: switch it off with config_set (read the key with config_get first) or repair what it needs, rather than judging it again next time. A version that is behind is upgraded with the upgrade tool; a missing helper is installed with pkg_install. Never kill or restart processes with exec — the sidecars are supervised, and one you start by hand outlives your turn as an orphan. What you could not fix, or what only the user can decide, goes to them in a line or two with the cause named. Do not write HEARTBEAT_OK in a reply that reports a change or a finding, since it silences the whole reply; HEARTBEAT_OK alone is for when nothing was worth changing and nothing needs the user.
+`
+
+// verdict is what one check concluded about the metrics that had drifted.
+type verdict struct {
+	At      time.Time `json:"at"`
+	Metrics []string  `json:"metrics"`
+	Reply   string    `json:"reply"`
+}
+
+// Bounds on the verdict log: what is kept on disk, how far back a check is
+// shown, and how many. Five verdicts on one metric is a pattern; fifty on
+// disk is a fortnight of a badly behaved box.
+const (
+	keepVerdicts    = 50
+	showVerdicts    = 5
+	verdictAge      = 14 * 24 * time.Hour
+	maxVerdictChars = 600
+)
+
+// recordVerdict appends what the check said about this breach.
+func (s *Service) recordVerdict(breached []bands.Breach, reply string) {
+	if s.verdicts == "" {
+		return
+	}
+	// One line per verdict: it is read back as a bullet in a prompt.
+	reply = strings.Join(strings.Fields(reply), " ")
+	if r := []rune(reply); len(r) > maxVerdictChars {
+		reply = string(r[:maxVerdictChars]) + "…"
+	}
+	all := append(s.loadVerdicts(), verdict{At: time.Now(), Metrics: metricsOf(breached), Reply: reply})
+	if len(all) > keepVerdicts {
+		all = all[len(all)-keepVerdicts:]
+	}
+	var b strings.Builder
+	for _, v := range all {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			continue
+		}
+		b.Write(raw)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(s.verdicts, []byte(b.String()), 0o600); err != nil {
+		slog.Warn("could not keep the heartbeat's verdict", "path", s.verdicts, "error", err)
+	}
+}
+
+// earlierVerdicts is what was concluded the last few times any of these
+// metrics drifted, for the check about to judge them again.
+func (s *Service) earlierVerdicts(breached []bands.Breach) string {
+	if s.verdicts == "" || len(breached) == 0 {
+		return ""
+	}
+	past := s.verdictsOn(metricsOf(breached))
+	if len(past) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n# What you concluded the last times these metrics drifted\n")
+	for _, v := range past {
+		fmt.Fprintf(&b, "- %s (%s): %s\n", v.At.Format("2006-01-02 15:04"), strings.Join(v.Metrics, ", "), v.Reply)
+	}
+	b.WriteString("A reading that keeps coming back is not transient, whatever was said before: name the cause and deal with it.\n")
+	return b.String()
+}
+
+// verdictsOn is the newest few recent verdicts that touched any of metrics.
+func (s *Service) verdictsOn(metrics []string) []verdict {
+	current := map[string]bool{}
+	for _, m := range metrics {
+		current[m] = true
+	}
+	now := time.Now()
+	var past []verdict
+	for _, v := range s.loadVerdicts() {
+		if now.Sub(v.At) > verdictAge {
+			continue
+		}
+		for _, m := range v.Metrics {
+			if current[m] {
+				past = append(past, v)
+				break
+			}
+		}
+	}
+	if len(past) > showVerdicts {
+		past = past[len(past)-showVerdicts:]
+	}
+	return past
+}
+
+// loadVerdicts reads the log, forgiving a torn line the way the trace reader
+// does: a verdict that cannot be read is one fewer to show, not a reason to
+// show none.
+func (s *Service) loadVerdicts() []verdict {
+	f, err := os.Open(s.verdicts)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var out []verdict
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var v verdict
+		if json.Unmarshal(sc.Bytes(), &v) == nil && !v.At.IsZero() {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func metricsOf(breached []bands.Breach) []string {
+	out := make([]string, 0, len(breached))
+	for _, b := range breached {
+		out = append(out, b.Metric)
+	}
+	return out
 }
 
 func tierNote(b bands.Breach) string {

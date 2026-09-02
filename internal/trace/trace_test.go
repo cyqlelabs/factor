@@ -33,7 +33,7 @@ func TestDisabledRecorderIsNilAndSafe(t *testing.T) {
 		t.Fatal("tracing off should produce no recorder")
 	}
 	turn := r.Begin("cli:x", "user", "")
-	turn.Tool("read_file", map[string]any{"path": "/tmp/x"}, time.Second, 10, false)
+	turn.Tool("read_file", map[string]any{"path": "/tmp/x"}, time.Second, 10, false, "")
 	turn.Event(EventSteering, "")
 	turn.End("ok", nil)
 	r.Charge("cli:x", ModelCall{Model: "m", Input: 1})
@@ -50,8 +50,8 @@ func TestTurnRecordsTheTrajectory(t *testing.T) {
 	r, dir := newTestRecorder(t, Config{})
 
 	turn := r.Begin("telegram:42", "user", "roxana")
-	turn.Tool("read_file", map[string]any{"path": "/etc/hosts"}, 20*time.Millisecond, 120, false)
-	turn.Tool("web_fetch", map[string]any{"url": "https://example.test"}, 90*time.Millisecond, 0, true)
+	turn.Tool("read_file", map[string]any{"path": "/etc/hosts"}, 20*time.Millisecond, 120, false, "127.0.0.1 localhost")
+	turn.Tool("web_fetch", map[string]any{"url": "https://example.test"}, 90*time.Millisecond, 0, true, "fetch https://example.test: 503 Service Unavailable\n<html>…")
 	turn.Event(EventSteering, "")
 	r.Charge("telegram:42", ModelCall{Model: "big", Input: 1000, Cached: 800, Output: 50, USD: 0.02})
 	turn.End("ok", nil)
@@ -92,7 +92,7 @@ func TestTurnRecordsTheTrajectory(t *testing.T) {
 func TestArgumentValuesAreOmittedByDefault(t *testing.T) {
 	r, dir := newTestRecorder(t, Config{})
 	turn := r.Begin("cli:x", "user", "")
-	turn.Tool("remember", map[string]any{"content": "the alarm code is 1234"}, time.Millisecond, 2, false)
+	turn.Tool("remember", map[string]any{"content": "the alarm code is 1234"}, time.Millisecond, 2, false, "ok")
 	turn.End("ok", nil)
 
 	recs, _ := Since(dir, time.Now().Add(-time.Minute))
@@ -112,7 +112,7 @@ func TestRecordArgsPassesThroughTheSecretFilter(t *testing.T) {
 	defer func() { _ = r.Close() }()
 
 	turn := r.Begin("cli:x", "user", "")
-	turn.Tool("exec", map[string]any{"command": "login --password hunter2"}, time.Millisecond, 2, false)
+	turn.Tool("exec", map[string]any{"command": "login --password hunter2"}, time.Millisecond, 2, false, "ok")
 	turn.End("ok", nil)
 
 	recs, _ := Since(dir, time.Now().Add(-time.Minute))
@@ -126,7 +126,7 @@ func TestLongArgumentsAreBounded(t *testing.T) {
 	r := NewRecorder(dir, Config{Enabled: true, RecordArgs: true}, nil)
 	defer func() { _ = r.Close() }()
 	turn := r.Begin("cli:x", "user", "")
-	turn.Tool("write_file", map[string]any{"content": strings.Repeat("x", 5000)}, time.Millisecond, 2, false)
+	turn.Tool("write_file", map[string]any{"content": strings.Repeat("x", 5000)}, time.Millisecond, 2, false, "ok")
 	turn.End("ok", nil)
 
 	recs, _ := Since(dir, time.Now().Add(-time.Minute))
@@ -239,7 +239,7 @@ func TestConcurrentTurnsEachGetARecord(t *testing.T) {
 			defer wg.Done()
 			key := "cli:" + string(rune('a'+i))
 			turn := r.Begin(key, "user", "")
-			turn.Tool("read_file", nil, time.Millisecond, 1, false)
+			turn.Tool("read_file", nil, time.Millisecond, 1, false, "")
 			r.Charge(key, ModelCall{Model: "m", Input: 10, Output: 1})
 			turn.End("ok", nil)
 		}(i)
@@ -367,5 +367,36 @@ func TestSinceOnAFileInsteadOfADirectory(t *testing.T) {
 	}
 	if _, err := Since(f, time.Now().Add(-time.Hour)); err == nil {
 		t.Error("reading a file as a trace directory should report the problem")
+	}
+}
+
+// A failed call keeps the first line of what it said, and nothing else does:
+// a rate names no tool and no cause, and the line is the tool's text rather
+// than the user's. It goes through the same secret filter as everything
+// else and is bounded, since the page behind it is the result the turn
+// already had.
+func TestFailedCallsKeepTheirFirstLineScrubbedAndBounded(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRecorder(dir, Config{Enabled: true, KeepDays: 5},
+		func(s string) string { return strings.ReplaceAll(s, "hunter2", "***") })
+	defer func() { _ = r.Close() }()
+
+	turn := r.Begin("cli:x", "user", "")
+	turn.Tool("web_search", nil, time.Millisecond, 2, true,
+		"search failed: 401 for token hunter2\nresponse body follows\n"+strings.Repeat("x", 1000))
+	turn.Tool("read_file", nil, time.Millisecond, 2, false, "secret hunter2 in a successful read")
+	turn.Tool("exec", nil, time.Millisecond, 2, true, strings.Repeat("y", 1000))
+	turn.End("ok", nil)
+
+	recs, _ := Since(dir, time.Now().Add(-time.Minute))
+	calls := recs[0].Tools
+	if got := calls[0].Fault; got != "search failed: 401 for token ***" {
+		t.Errorf("fault = %q, want the first line with the secret scrubbed", got)
+	}
+	if calls[1].Fault != "" {
+		t.Errorf("a successful call recorded what it said: %q", calls[1].Fault)
+	}
+	if got := len(calls[2].Fault); got > maxFaultChars+4 {
+		t.Errorf("recorded %d chars of a failure, want it bounded near %d", got, maxFaultChars)
 	}
 }

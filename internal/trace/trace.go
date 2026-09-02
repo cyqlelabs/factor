@@ -70,11 +70,16 @@ type ModelCall struct {
 // ToolCall is one tool execution: what ran, for how long, how much it
 // returned, and whether it failed.
 type ToolCall struct {
-	Name     string   `json:"name"`
-	Duration float64  `json:"duration_s"`
-	Bytes    int      `json:"bytes"`
-	Error    bool     `json:"error,omitempty"`
-	ArgKeys  []string `json:"arg_keys,omitempty"`
+	Name     string  `json:"name"`
+	Duration float64 `json:"duration_s"`
+	Bytes    int     `json:"bytes"`
+	Error    bool    `json:"error,omitempty"`
+	// Fault is the first line of what a failed call said back, bounded and
+	// through the secret filter. It is the tool's text rather than the
+	// user's, and it is the one thing a breach in the error rate cannot be
+	// diagnosed without: a rate names no tool and no cause.
+	Fault   string   `json:"fault,omitempty"`
+	ArgKeys []string `json:"arg_keys,omitempty"`
 	// Args is present only when trace.record_args is on. It holds the
 	// arguments after the same secret filter tool results pass through,
 	// bounded, because a browser call can carry a page of them.
@@ -106,6 +111,10 @@ const (
 // maxArgChars bounds a recorded argument blob. Enough to tell one call from
 // another, far short of a page.
 const maxArgChars = 400
+
+// maxFaultChars bounds what a failed call is remembered as saying: a line
+// names the cause, and the page behind it is the result the turn already had.
+const maxFaultChars = 200
 
 // Config is what the user gets to decide.
 type Config struct {
@@ -187,8 +196,9 @@ func (r *Recorder) Begin(sessionKey, trigger, speaker string) *Turn {
 	return t
 }
 
-// Tool records one execution.
-func (t *Turn) Tool(name string, args map[string]any, d time.Duration, bytes int, isErr bool) {
+// Tool records one execution. said is what the tool returned; it is kept, as
+// a bounded first line, only when the call failed.
+func (t *Turn) Tool(name string, args map[string]any, d time.Duration, bytes int, isErr bool, said string) {
 	if t == nil {
 		return
 	}
@@ -198,6 +208,9 @@ func (t *Turn) Tool(name string, args map[string]any, d time.Duration, bytes int
 		Bytes:    bytes,
 		Error:    isErr,
 		ArgKeys:  argKeys(args),
+	}
+	if isErr {
+		call.Fault = t.rec.fault(said)
 	}
 	if t.rec.cfg.RecordArgs {
 		call.Args = t.rec.renderArgs(args)
@@ -371,6 +384,15 @@ func (r *Recorder) renderArgs(args map[string]any) string {
 		s = s[:maxArgChars] + "…"
 	}
 	return s
+}
+
+// fault keeps the first line of a failure, scrubbed and bounded.
+func (r *Recorder) fault(said string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(r.filter(said)), "\n")
+	if len(line) > maxFaultChars {
+		line = line[:maxFaultChars] + "…"
+	}
+	return line
 }
 
 // argKeys names what a call was given without saying what it said, which is

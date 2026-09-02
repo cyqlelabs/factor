@@ -834,7 +834,7 @@ func (l *Loop) runTools(ctx context.Context, sessionKey string, tr *trace.Turn, 
 		if result.IsError {
 			content = "ERROR: " + content
 		}
-		tr.Tool(call.Name, call.Args, time.Since(started), len(content), result.IsError)
+		tr.Tool(call.Name, call.Args, time.Since(started), len(content), result.IsError, result.ForLLM)
 		if ctx.Err() != nil {
 			// Cancelled while the tool was running: whatever it returned is
 			// the cancellation, not a verdict on the tool.

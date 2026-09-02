@@ -2,8 +2,10 @@ package bands
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -300,5 +302,116 @@ func TestDurationSpecSkipsUnmeasuredTurns(t *testing.T) {
 		if _, ok := s.Of(trace.Record{Duration: 0}); ok {
 			t.Error("a turn with no duration was read as instantaneous")
 		}
+	}
+}
+
+// A breach in the tool error rate carries the calls that failed, with what
+// they said, and each failing tool's record across the whole baseline. The
+// second is what tells an hour's bad luck from a feature that has never
+// worked on this machine.
+func TestToolBreachCarriesItsEvidence(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	var recs []trace.Record
+	for i := 0; i < 40; i++ {
+		recs = append(recs, record(now.Add(-time.Duration(24+i)*time.Hour), 4, 0))
+	}
+	// The fast path has failed every time it ran, three days running.
+	for i := 1; i <= 3; i++ {
+		recs = append(recs, trace.Record{Started: now.Add(-time.Duration(i*24) * time.Hour), Session: "voice:local", Outcome: "ok",
+			Tools: []trace.ToolCall{{Name: "browser_fetch", Error: true, Fault: "lightpanda exited"}}})
+	}
+	// This hour: a search and the fast path both failed, and the loop ran
+	// on with Chrome.
+	recs = append(recs, trace.Record{Started: now.Add(-10 * time.Minute), Session: "voice:local", Outcome: "ok",
+		Tools: []trace.ToolCall{
+			{Name: "web_search", Error: true, Fault: "search failed: 403 from the engine"},
+			{Name: "browser_fetch", Error: true, Fault: "lightpanda exited"},
+			{Name: "browser_navigate"},
+		}})
+	writeTraces(t, dir, recs)
+
+	b, ok := breachFor(testWatcher(dir, now).Check(), "tool error rate")
+	if !ok {
+		t.Fatal("no breach")
+	}
+	e := b.Evidence
+	if len(e.Failures) != 2 || e.Failures[0].Tool != "web_search" || e.Failures[0].Fault != "search failed: 403 from the engine" {
+		t.Errorf("failures = %+v, want this hour's two with what they said", e.Failures)
+	}
+	if len(e.History) != 2 || e.History[0].Tool != "browser_fetch" {
+		t.Fatalf("history = %+v, want browser_fetch first as the worst", e.History)
+	}
+	if h := e.History[0]; h.Calls != 4 || h.Fails != 4 || !h.First.Before(now.Add(-48*time.Hour)) {
+		t.Errorf("browser_fetch record = %+v, want every call a failure, the first days ago", h)
+	}
+	if h := e.History[1]; h.Tool != "web_search" || h.Calls != 1 || h.Fails != 1 {
+		t.Errorf("web_search record = %+v", h)
+	}
+	if e.Since.IsZero() || !e.Since.Before(now.Add(-6*24*time.Hour)) {
+		t.Errorf("evidence is not dated from the baseline: %v", e.Since)
+	}
+
+	lines := b.Details()
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"web_search failed: search failed: 403", "browser_fetch has failed 4 of 4 calls since"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("details lack %q:\n%s", want, joined)
+		}
+	}
+}
+
+// A turn that died is named with what it died of; a metric that is only a
+// number carries nothing.
+func TestTurnFailuresCarryTheirErrors(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	var recs []trace.Record
+	for i := 0; i < 40; i++ {
+		r := record(now.Add(-time.Duration(24+i)*time.Hour), 4, 0)
+		if i%10 == 0 {
+			r.Outcome = "error"
+		}
+		recs = append(recs, r)
+	}
+	for i := 0; i < 3; i++ {
+		r := record(now.Add(-time.Duration(i)*time.Minute), 1, 0)
+		r.Outcome, r.Error = "error", "provider: 529 overloaded"
+		r.USD = 1 // spend spikes with them, and spend is only a number
+		recs = append(recs, r)
+	}
+	writeTraces(t, dir, recs)
+	got := testWatcher(dir, now).Check()
+
+	b, ok := breachFor(got, "turn failures")
+	if !ok {
+		t.Fatal("no breach")
+	}
+	if len(b.Evidence.Turns) != 3 || b.Evidence.Turns[0].Error != "provider: 529 overloaded" {
+		t.Errorf("turns = %+v", b.Evidence.Turns)
+	}
+	if !strings.Contains(strings.Join(b.Details(), "\n"), "turn failed: provider: 529 overloaded") {
+		t.Errorf("details = %v", b.Details())
+	}
+	if cost, ok := breachFor(got, "cost per turn"); ok && len(cost.Details()) != 0 {
+		t.Errorf("a number-only metric carried evidence: %v", cost.Details())
+	}
+}
+
+// More failures than a prompt should carry keep the newest, which are the
+// ones still true.
+func TestEvidenceIsBounded(t *testing.T) {
+	now := time.Now()
+	var recs []trace.Record
+	for i := 20; i > 0; i-- {
+		recs = append(recs, trace.Record{Started: now.Add(-time.Duration(i) * time.Minute), Session: "cli:x", Outcome: "error", Error: "e",
+			Tools: []trace.ToolCall{{Name: "exec", Error: true, Fault: fmt.Sprintf("fault %d", i)}}})
+	}
+	e := toolEvidence(recs, now.Add(-time.Hour))
+	if len(e.Failures) != maxFailures || e.Failures[len(e.Failures)-1].Fault != "fault 1" {
+		t.Errorf("failures = %d ending %q, want the newest %d", len(e.Failures), e.Failures[len(e.Failures)-1].Fault, maxFailures)
+	}
+	if turns := turnEvidence(recs, now.Add(-time.Hour)).Turns; len(turns) != maxTurns {
+		t.Errorf("turns = %d, want %d", len(turns), maxTurns)
 	}
 }

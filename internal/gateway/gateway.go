@@ -226,7 +226,8 @@ func serve(configPath string) (bool, error) {
 		// writes, so the heartbeat now has something to notice besides what
 		// the user wrote down — and still spends nothing when nothing moved.
 		if dir := a.Traces(); dir != "" {
-			hb = hb.WithBands(bands.New(dir).Check)
+			hb = hb.WithBands(bands.New(dir).Check).
+				WithVerdicts(filepath.Join(config.Home(), "heartbeat-verdicts.jsonl"))
 		}
 		go hb.Run(ctx)
 	}

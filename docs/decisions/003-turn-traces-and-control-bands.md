@@ -54,7 +54,11 @@ box. It records what a tool was *called* rather than what was *said to it*:
 arguments hold the user's file paths, their searches, and the things they asked
 to be remembered, and the questions a trace exists to answer need the shape of
 a turn rather than its contents. `trace.record_args` opts in and scrubs through
-the same secret filter tool results pass. There is no OpenTelemetry export by
+the same secret filter tool results pass. The one exception is a call that
+failed: it keeps the first line of what the tool said back, bounded and through
+the same filter. That is the tool's text rather than the user's, and it is the
+one thing a breach in the error rate cannot be diagnosed without, since a rate
+names no tool and no cause. There is no OpenTelemetry export by
 default; exporting a personal agent's trajectory off-box would be a privacy
 regression, not an observability win.
 
@@ -74,6 +78,22 @@ The model is spent on judging whether an unusual reading matters — which is
 exactly the judgement it is good for — instead of on confirming that nothing
 happened.
 
+A number alone turned out not to be enough to judge from. The first breach
+this fired on was a tool error rate of 53%: handed the rate, the model grepped
+the journal, which holds no tool outcomes, found a systray warning, and called
+"transient" a fast path that had failed every one of its calls since it was
+enabled — then said so in English, on a Spanish voice, and the next check would
+have done the same, because nothing remembered this one. So a breach carries
+its evidence (`bands.Evidence`): the calls that failed in the window and what
+they said, and each failing tool's record across the whole baseline, which is
+what tells an hour's bad luck from a feature that has never worked on this
+machine. The check is told to repair before it reports, with the levers it
+already owns — `config_set` to switch off what never works, `upgrade`,
+`pkg_install` — and told the one not to pull, an `exec` that kills a
+supervised sidecar and leaves an orphan. And what it concluded is kept in
+`~/.factor/heartbeat-verdicts.jsonl` and shown to the next check on the same
+metric, so a fault that keeps coming back is seen to keep coming back.
+
 ## Consequences
 
 The trace is also the corpus for two things that had none. Skill induction now
@@ -89,7 +109,9 @@ cannot see. The loop already recognizes the two that reach it directly — a
 message steered into a live turn, and a turn the user cancelled, which on voice
 is a barge-in and lands as an interrupted outcome.
 
-What this deliberately does not do: act. Every tier ends in a log line, a
+What detection deliberately does not do: act. Every tier ends in a log line, a
 sentence in the heartbeat's prompt, or the user's attention. A single-user
 agent that rolled itself back on a statistical reading would be a worse
-outcome than one that said something.
+outcome than one that said something. The check a breach starts may act, but
+it is a model turn with the same tools as any other, judging from the evidence
+in hand and reporting what it changed — not a threshold pulling a lever.
