@@ -557,7 +557,7 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		heard = v.presenceOf(ctx, utterance)
 	}
 	who := heard.speaker
-	v.room.heard(heard.present, v.speakerProfilesExist(), utterance.started)
+	pending := v.room.heard(heard.present, v.speakerProfilesExist(), utterance.started)
 	st := v.room.snapshot(utterance.started)
 	if dec.accept {
 		// Only a turn consumes the flip: the announcement is owed to somebody
@@ -595,6 +595,11 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 	}
 	if v.room != nil {
 		fields = append(fields, "room", st.label(), "present", strings.Join(st.Present, ", "))
+		// Unmatched speech still short of declaring anybody, so a guest the
+		// room has not yet noticed reads as a count climbing, not as silence.
+		if pending > 0 && !st.Shared {
+			fields = append(fields, "stranger", round2(pending))
+		}
 	}
 	slog.Info("voice heard", fields...)
 	switch {

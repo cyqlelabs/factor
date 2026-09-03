@@ -454,16 +454,20 @@ session of their own and is named to the agent as the person speaking, and
 **And it knows who is listening.** That, not who asked, is the question
 confidentiality turns on. A second voice in a recording makes the room shared — at
 most one of them is the owner, so the rest are company — which holds before anyone is
-enrolled and even when nobody could be named.
+enrolled and even when nobody could be named, so long as the voice holds a second of
+speech of its own.
 
 | Room | Session | Recalls from | Remembers into |
 |---|---|---|---|
 | private | `voice:local`, or the guest's own | `space` + `shared_space` | `space` |
 | shared | `voice:local:room` — everyone in one thread | `shared_space` | `shared_space` |
 
-One utterance declares company; `room_timeout_minutes` of silence or the `room` tool
-takes it back. The asymmetry is deliberate: a room wrongly called shared costs you a
-coy answer, one wrongly called private says something private to a guest.
+Three seconds of a voice that is not yours, added up over a couple of minutes,
+declares company — a cough, a shout or the "Gracias." Whisper hears in noise never
+gets there, and a guest does within their first few remarks; `room_timeout_minutes`
+of silence or the `room` tool takes it back. The asymmetry is deliberate: a room
+wrongly called shared costs you a coy answer, one wrongly called private says
+something private to a guest.
 
 <details>
 <summary><b>Microphone, meter and barge-in</b></summary>

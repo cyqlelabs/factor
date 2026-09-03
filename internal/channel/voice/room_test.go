@@ -56,16 +56,88 @@ func TestRecognizedGuestSharesTheRoom(t *testing.T) {
 // permanently discreet with itself.
 func TestUnknownVoiceNeedsAProfileToCount(t *testing.T) {
 	withProfiles := newRoom("", time.Hour)
-	withProfiles.heardOne(speakerIdentity{via: viaUnknown}, true, t0)
+	withProfiles.heardOne(stranger(3.5), true, t0)
 	if st := withProfiles.snapshot(t0); !st.Shared ||
 		!reflect.DeepEqual(st.Present, []string{roomUnknownOccupant}) {
 		t.Errorf("unmatched voice with profiles enrolled = %+v, want shared", st)
 	}
 
 	bare := newRoom("", time.Hour)
-	bare.heardOne(speakerIdentity{via: viaUnknown}, false, t0)
+	bare.heardOne(stranger(3.5), false, t0)
 	if st := bare.snapshot(t0); st.Shared {
 		t.Errorf("unmatched voice with nobody enrolled = %+v, want private", st)
+	}
+}
+
+// stranger is a voice that matched no profile, read over this much speech.
+func stranger(seconds float64) speakerIdentity {
+	return speakerIdentity{via: viaUnknown, similarity: 0.2, seconds: seconds}
+}
+
+// "Not the owner's voice" is not "another person". Every lone unknown voice
+// that flipped the room in three weeks of logs was a cough, a shout, or the
+// "Gracias." the transcriber hears in noise — one short sound each — while
+// every real guest produced a few seconds of speech within a minute or two.
+// So a stranger is declared on seconds of speech that add up, not on a sound.
+func TestAStrangerIsSecondsOfSpeechNotOneSound(t *testing.T) {
+	cough := newRoom("", time.Hour)
+	cough.heardOne(stranger(1.3), true, t0)
+	if st := cough.snapshot(t0); st.Shared {
+		t.Errorf("one short unknown sound declared company: %+v", st)
+	}
+
+	sentence := newRoom("", time.Hour)
+	sentence.heardOne(stranger(roomStrangerSeconds+0.2), true, t0)
+	if st := sentence.snapshot(t0); !st.Shared {
+		t.Errorf("a whole sentence in an unknown voice was not company: %+v", st)
+	}
+
+	remarks := newRoom("", time.Hour)
+	remarks.heardOne(stranger(1.1), true, t0)
+	// The log line shows the count climbing, so a guest not yet noticed is
+	// not mistaken for silence.
+	if pending := remarks.heard([]speakerIdentity{stranger(1.1)}, true, t0.Add(40*time.Second)); pending < 2.1 || pending > 2.3 {
+		t.Errorf("pending stranger speech = %v, want the two remarks added up", pending)
+	}
+	if st := remarks.snapshot(t0.Add(40 * time.Second)); st.Shared {
+		t.Errorf("two short remarks declared company early: %+v", st)
+	}
+	if pending := remarks.heard([]speakerIdentity{stranger(1.1)}, true, t0.Add(80*time.Second)); pending != 0 {
+		t.Errorf("pending stranger speech = %v after the bar was reached, want it spent", pending)
+	}
+	if st := remarks.snapshot(t0.Add(80 * time.Second)); !st.Shared {
+		t.Errorf("three short remarks inside the window were not company: %+v", st)
+	}
+
+	// Two sounds minutes apart are two sounds, not a conversation.
+	apart := newRoom("", time.Hour)
+	apart.heardOne(stranger(1.6), true, t0)
+	apart.heardOne(stranger(1.6), true, t0.Add(roomStrangerWindow+time.Minute))
+	if st := apart.snapshot(t0.Add(roomStrangerWindow + time.Minute)); st.Shared {
+		t.Errorf("unknown speech outside the window added up anyway: %+v", st)
+	}
+}
+
+// Once a stranger is here, any remark of theirs keeps them here: the bar is
+// for declaring somebody, not for every "sí" they say afterwards.
+func TestAStrangerAlreadyHereIsKeptByAnyRemark(t *testing.T) {
+	r := newRoom("", 30*time.Minute)
+	r.heardOne(stranger(3.5), true, t0)
+	r.heardOne(stranger(1.1), true, t0.Add(25*time.Minute))
+	if st := r.snapshot(t0.Add(40 * time.Minute)); !st.Shared {
+		t.Errorf("a guest who kept talking aged out anyway: %+v", st)
+	}
+}
+
+// The user saying the room is empty also says what the last few sounds were:
+// not a person. They must not count toward the next stranger.
+func TestDeclaringTheRoomEmptyDropsAStrangersEvidence(t *testing.T) {
+	r := newRoom("", time.Hour)
+	r.heardOne(stranger(2.0), true, t0)
+	r.declare(false, nil, t0.Add(10*time.Second))
+	r.heardOne(stranger(1.5), true, t0.Add(20*time.Second))
+	if st := r.snapshot(t0.Add(20 * time.Second)); st.Shared {
+		t.Errorf("sounds the user had explained away still added up: %+v", st)
 	}
 }
 
@@ -272,10 +344,10 @@ func TestSeveralVoicesInOneRecordingAreCompany(t *testing.T) {
 		voices []speakerIdentity
 	}{
 		{"the owner and a voice nobody could name", []speakerIdentity{
-			heard("nicolas", true, viaMatch), {via: viaShort},
+			heard("nicolas", true, viaMatch), {via: viaUnsure, seconds: 1.2},
 		}},
-		{"two voices, neither of them readable", []speakerIdentity{
-			{via: viaShort}, {via: viaShort},
+		{"two voices, neither of them named", []speakerIdentity{
+			{via: viaUnknown, seconds: 1.1}, {via: viaAmbiguous, seconds: 1.4},
 		}},
 		{"the owner and a named guest", []speakerIdentity{
 			heard("nicolas", true, viaMatch), heard("roxana", false, viaMatch),
@@ -286,6 +358,30 @@ func TestSeveralVoicesInOneRecordingAreCompany(t *testing.T) {
 		r.heard(tc.voices, true, t0)
 		if st := r.snapshot(t0); !st.Shared {
 			t.Errorf("%s: room = %+v, want shared", tc.name, st)
+		}
+	}
+}
+
+// A track is a person only past speakerMatchMinSeconds of speech of its own.
+// The diarizer splits a sub-second cough into two tracks readily enough, and
+// a third of the two-voice flips in three weeks of logs were exactly that.
+func TestASubSecondSecondTrackIsNotAPerson(t *testing.T) {
+	cases := []struct {
+		name   string
+		voices []speakerIdentity
+	}{
+		{"the owner and a scrap of a track", []speakerIdentity{
+			heard("nicolas", true, viaMatch), {via: viaShort, seconds: 0.4},
+		}},
+		{"a cough split in two", []speakerIdentity{
+			{via: viaShort, seconds: 0.3}, {via: viaShort, seconds: 0.5},
+		}},
+	}
+	for _, tc := range cases {
+		r := newRoom("", time.Hour)
+		r.heard(tc.voices, true, t0)
+		if st := r.snapshot(t0); st.Shared {
+			t.Errorf("%s: room = %+v, want private", tc.name, st)
 		}
 	}
 }

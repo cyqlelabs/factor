@@ -1363,7 +1363,8 @@ func TestVoiceWillNotChooseBetweenTwoProfilesTooCloseTogether(t *testing.T) {
 }
 
 // The reading confidentiality can least afford to get wrong: the owner and a
-// guest in one recording, the guest too brief to put a name to. One recording
+// guest in one recording, the guest matching nobody and saying too little to
+// be enrolled. One recording
 // holds at most one owner, so somebody else is here — arithmetic says so even
 // where acoustics cannot, and without it a private answer is spoken over both
 // of them.
@@ -1383,7 +1384,7 @@ func TestVoiceSharesTheRoomForASecondVoiceItCannotName(t *testing.T) {
 
 	h.setVoices(
 		voiceReading{Embedding: []float64{1, 0, 0}, Seconds: 3},
-		voiceReading{Embedding: nil, Seconds: 0.4}) // a "mhm" nobody can name
+		voiceReading{Embedding: []float64{0, 1, 0}, Seconds: 1.2}) // a remark nobody can name
 	h.say()
 	if call := h.turn(10 * time.Second); call.audience != tools.AudienceShared {
 		t.Errorf("audience = %q, want shared: a voice that is not the owner's was in the room",

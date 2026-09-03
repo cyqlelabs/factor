@@ -24,11 +24,20 @@ import (
 // into a room with another person in it.
 //
 // Presence is inferred from sound, which is what makes this tracker
-// deliberately asymmetric. One utterance in a voice that is not the owner's
+// deliberately asymmetric. A few seconds of a voice that is not the owner's
 // declares company; only a long silence, or the user saying so, takes it
 // back. The costs are not symmetric either: a room wrongly called shared
 // costs a coy answer the user corrects in one sentence, and a room wrongly
 // called private says a secret to a guest, which nothing corrects.
+//
+// A few seconds rather than one sound, because "not the owner's voice" is
+// not "another person". Over three weeks on this machine every lone unknown
+// voice that flipped the room — thirteen of them — was a cough the
+// transcriber wrote down as "Ahem.", the "Gracias." Whisper hears in noise,
+// or the owner shouting or calling the dog, and none held three seconds of
+// speech. Every real guest did within a minute or two, or was heard beside
+// the owner in one recording. So a stranger's speech adds up over a short
+// window and the room flips when it reaches the bar a new profile needs.
 //
 // The blind spot is honest and irreducible here: somebody who walks in and
 // never makes a sound is invisible to every acoustic signal. That is what
@@ -39,6 +48,19 @@ const (
 	// company only because the owner's voice *would* have matched: somebody
 	// is here who is not the person this machine belongs to.
 	roomUnknownOccupant = "someone"
+
+	// roomStrangerSeconds is how much speech an unmatched voice has to
+	// produce before it is company — the bar minting a profile takes, since
+	// the two mistakes are about the same size: a wrong occupant governs
+	// every turn for the whole timeout. Measured, not guessed: none of the
+	// coughs, shouts and hallucinated thanks that used to flip the room
+	// reached it, and every real guest did.
+	roomStrangerSeconds = speakerEnrollMinSeconds
+
+	// roomStrangerWindow is how long that speech keeps adding up. A guest
+	// talks in short remarks a few seconds apart; a cough is one event with
+	// nothing behind it.
+	roomStrangerWindow = 2 * time.Minute
 
 	// roomSessionSlug is the session a shared room talks in. It is reserved
 	// against speaker names, since a guest renamed "Room" would otherwise
@@ -80,8 +102,19 @@ type room struct {
 	timeout   time.Duration
 	path      string
 	occupants map[string]time.Time
+	// stranger is the unmatched speech heard lately, still short of
+	// declaring anybody. It lives only in memory: a restart inside the
+	// window loses at most two minutes of a guest who is still talking.
+	stranger []strangerEvidence
 	// wasShared is what the last assessment reported.
 	wasShared bool
+}
+
+// strangerEvidence is one reading of an unmatched voice: when, and how much
+// speech it held.
+type strangerEvidence struct {
+	at      time.Time
+	seconds float64
 }
 
 // roomOnDisk is the file's shape. Shared is what was last said out loud, not
@@ -175,9 +208,11 @@ func occupantFor(who speakerIdentity, hasProfiles bool) (name string, refreshOnl
 		// A voice that matched nothing is company only where the owner's
 		// voice would have matched. With nobody enrolled there is no
 		// baseline, so an unmatched voice says nothing about who is here —
-		// it is the machine's first voice, not its second.
+		// it is the machine's first voice, not its second. Even with one it
+		// only keeps a stranger already here present: creating one takes
+		// roomStrangerSeconds of such speech, which heard adds up.
 		if hasProfiles {
-			return roomUnknownOccupant, false
+			return roomUnknownOccupant, true
 		}
 	}
 	// viaOverlap, viaShort, viaAmbiguous and viaUnsure arrive here only when
@@ -189,15 +224,21 @@ func occupantFor(who speakerIdentity, hasProfiles bool) (name string, refreshOnl
 	return "", false
 }
 
-// heard folds one utterance's voices into the room.
-func (r *room) heard(voices []speakerIdentity, hasProfiles bool, now time.Time) {
+// heard folds one utterance's voices into the room. It reports the unmatched
+// speech still adding up toward a stranger, for the log line: "why did it not
+// notice my guest" is answerable only if the line shows how far along it was.
+func (r *room) heard(voices []speakerIdentity, hasProfiles bool, now time.Time) (pending float64) {
 	if r == nil || len(voices) == 0 {
-		return
+		return 0
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	recorded, changed := 0, false
+	recorded := map[string]bool{}
+	var unmatchedSeconds float64
 	for _, who := range voices {
+		if who.via == viaUnknown && hasProfiles {
+			unmatchedSeconds += who.seconds
+		}
 		name, refreshOnly := occupantFor(who, hasProfiles)
 		if name == "" {
 			continue
@@ -206,8 +247,16 @@ func (r *room) heard(voices []speakerIdentity, hasProfiles bool, now time.Time) 
 			continue
 		}
 		r.occupants[name] = now
-		recorded++
-		changed = true
+		recorded[name] = true
+	}
+	if unmatchedSeconds > 0 {
+		total, person := r.strangerLocked(unmatchedSeconds, now)
+		if person {
+			r.occupants[roomUnknownOccupant] = now
+			recorded[roomUnknownOccupant] = true
+		} else {
+			pending = total
+		}
 	}
 	// Arithmetic, not acoustics. One recording holding several distinct
 	// voices has at most one owner in it, so everybody past the first is
@@ -215,17 +264,55 @@ func (r *room) heard(voices []speakerIdentity, hasProfiles bool, now time.Time) 
 	// even before anyone is enrolled at all. Without this the case that
 	// matters most reads as an empty room: the owner and a guest talking, the
 	// guest too brief to identify, and a private answer spoken over them
-	// both.
-	if len(voices) > 1 && recorded < len(voices)-1 {
+	// both. A track is a person only past speakerMatchMinSeconds of speech of
+	// its own, though: the diarizer splits a sub-second cough into two tracks
+	// readily enough, and a third of the two-voice flips in three weeks of
+	// logs were exactly that.
+	if people := peopleIn(voices); people > 1 && len(recorded) < people-1 {
 		r.occupants[roomUnknownOccupant] = now
-		changed = true
+		recorded[roomUnknownOccupant] = true
 	}
 	// Only when somebody was actually recorded: an empty room hearing its
 	// owner is most of the utterances on this machine, and none of them are
 	// news worth a write.
-	if changed {
+	if len(recorded) > 0 {
 		r.saveLocked()
 	}
+	return pending
+}
+
+// peopleIn counts the voices in one recording that stand for a person: a
+// named one, or one with speakerMatchMinSeconds of speech of its own.
+func peopleIn(voices []speakerIdentity) int {
+	people := 0
+	for _, who := range voices {
+		if who.name != "" || who.seconds >= speakerMatchMinSeconds {
+			people++
+		}
+	}
+	return people
+}
+
+// strangerLocked adds one reading of unmatched speech to the window and
+// reports what the window now holds and whether that is enough to call it a
+// person. Reaching the bar spends the evidence, so the next stranger starts
+// from nothing.
+func (r *room) strangerLocked(seconds float64, now time.Time) (total float64, person bool) {
+	kept := r.stranger[:0]
+	for _, e := range r.stranger {
+		if now.Sub(e.at) <= roomStrangerWindow {
+			kept = append(kept, e)
+		}
+	}
+	r.stranger = append(kept, strangerEvidence{at: now, seconds: seconds})
+	for _, e := range r.stranger {
+		total += e.seconds
+	}
+	if total < roomStrangerSeconds {
+		return total, false
+	}
+	r.stranger = nil
+	return total, true
 }
 
 // declare is the user's own word on the room, which outranks the microphone.
@@ -240,7 +327,10 @@ func (r *room) declare(shared bool, names []string, now time.Time) {
 	defer r.mu.Unlock()
 	defer r.saveLocked()
 	if !shared {
+		// The user's word also settles what the last few sounds were: not a
+		// person, so they must not count toward the next one.
 		clear(r.occupants)
+		r.stranger = nil
 		return
 	}
 	named := false
