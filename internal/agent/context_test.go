@@ -28,6 +28,11 @@ func TestChannelBriefingWarnsAboutCompany(t *testing.T) {
 	if !strings.Contains(shared, "action=alone") || !strings.Contains(shared, "outranks") {
 		t.Errorf("the shared briefing never grants the user's word the override: %q", shared)
 	}
+	// The scope withholds private memory without telling the model, which
+	// once had it explain an empty recall as a store that never happened.
+	if !strings.Contains(shared, "only shared memory is consulted") || !strings.Contains(shared, "not that it was never saved") {
+		t.Errorf("the shared briefing never explains the recall scope: %q", shared)
+	}
 	if strings.Contains(private, "in the room") {
 		t.Errorf("a private turn was warned about company: %q", private)
 	}
