@@ -30,6 +30,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/heartbeat"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/provider"
+	"github.com/cyqlelabs/factor/internal/proxy"
 	"github.com/cyqlelabs/factor/internal/upgrade"
 	"github.com/cyqlelabs/factor/internal/version"
 )
@@ -303,15 +304,23 @@ var (
 
 // preflight rejects a config edit the reload would not survive, or would
 // silently degrade under: a provider chain that cannot be built, a channel
-// section its connector refuses, a health address nothing can listen on.
-// Cheap static checks only — what they cannot see (a wrong credential, a bad
-// memory endpoint) fails exactly as it would after a hand restart.
+// section its connector refuses, a health address nothing can listen on, a
+// proxy that will not carry a request. Cheap static checks, and that one
+// probe — a proxy nothing answers at fails every provider call, which is the
+// outage the reload exists not to cause. What they cannot see (a wrong
+// credential, a bad memory endpoint) fails exactly as it would after a hand
+// restart.
 func preflight(current, next *config.Config) error {
 	if _, err := provider.BuildChain(next.Provider); err != nil {
 		return fmt.Errorf("provider: %w", err)
 	}
 	if err := channel.Validate(next.Channels); err != nil {
 		return err
+	}
+	if next.Proxy != current.Proxy && next.Proxy.Address != "" {
+		if err := proxy.Check(next.Proxy.Address, next.Proxy.CA); err != nil {
+			return fmt.Errorf("proxy: %w", err)
+		}
 	}
 	nextAddr := net.JoinHostPort(next.Gateway.Host, strconv.Itoa(next.Gateway.Port))
 	if nextAddr != net.JoinHostPort(current.Gateway.Host, strconv.Itoa(current.Gateway.Port)) {

@@ -367,6 +367,13 @@ func TestPreflightRefusesAConfigTheReloadWouldNotSurvive(t *testing.T) {
 		t.Error("an occupied gateway address passed preflight")
 	}
 
+	// A proxy nothing answers at, which every provider call would go through.
+	bad = config.Default()
+	bad.Proxy.Address = "127.0.0.1:" + strconv.Itoa(freePort(t))
+	if err := preflight(current, bad); err == nil || !strings.Contains(err.Error(), "proxy") {
+		t.Errorf("a proxy nothing answers at passed preflight: %v", err)
+	}
+
 	// The address it already serves on is not re-probed: the old process
 	// still holds it, and it is released before the exec.
 	if err := preflight(current, current); err != nil {

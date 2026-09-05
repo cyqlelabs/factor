@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -58,16 +59,72 @@ func TestNormalizeAcceptsWhatAPersonTypes(t *testing.T) {
 		"http://proxy.corp:3128":  "http://proxy.corp:3128",
 		"https://proxy.corp":      "https://proxy.corp",
 		"socks5://127.0.0.1:9050": "socks5://127.0.0.1:9050",
+		"my_proxy:3128":           "http://my_proxy:3128",
 	} {
 		got, err := normalize(in)
 		if err != nil || got != want {
 			t.Errorf("normalize(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, bad := range []string{"", "   ", "ftp://proxy:21", "http://", "://nope"} {
+	for _, bad := range []string{"", "   ", "ftp://proxy:21", "http://", "://nope", `"none"`, `http://"none":8080`, "my host:8080"} {
 		if got, err := normalize(bad); err == nil {
 			t.Errorf("normalize(%q) = %q, want an error", bad, got)
 		}
+	}
+}
+
+// closedPort is a loopback port nothing listens on.
+func closedPort(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	return addr
+}
+
+// An address about to be stored is asked to carry a request first.
+func TestCheckRefusesAProxyThatWillNotCarryARequest(t *testing.T) {
+	keepTransport(t)
+	clearProxyEnv(t)
+	if err := Check(`"none"`, ""); err == nil {
+		t.Error("a quoted word was accepted as a proxy address")
+	}
+	err := Check(closedPort(t), "")
+	if err == nil || !strings.Contains(err.Error(), "nothing answered") {
+		t.Errorf("a port nothing listens on produced %v", err)
+	}
+	if err := Check("127.0.0.1:9", filepath.Join(t.TempDir(), "absent.pem")); err == nil {
+		t.Error("a missing certificate was accepted")
+	}
+	// The question leaves the process as it was: the probe rides its own
+	// transport, and the proxy in use — if any — is not the one asked about.
+	for _, key := range proxyEnv {
+		if os.Getenv(key) != "" {
+			t.Errorf("%s was set by a check", key)
+		}
+	}
+}
+
+func TestCheckAcceptsAProxyThatCarriesARequest(t *testing.T) {
+	keepTransport(t)
+	clearProxyEnv(t)
+	carried := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		carried = r.URL.Host == "probe.invalid"
+	}))
+	defer srv.Close()
+	original := probeURL
+	probeURL = "http://probe.invalid/"
+	defer func() { probeURL = original }()
+
+	if err := Check(srv.Listener.Addr().String(), ""); err != nil {
+		t.Fatalf("a proxy that answers was refused: %v", err)
+	}
+	if !carried {
+		t.Error("the probe did not go through the proxy")
 	}
 }
 

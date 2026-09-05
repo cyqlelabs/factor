@@ -16,6 +16,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -202,7 +203,53 @@ func hintFor(target string, err error) string {
 	return ""
 }
 
+// checkTimeout bounds the one request Check sends through a candidate proxy.
+const checkTimeout = 8 * time.Second
+
+// Check answers whether the proxy at raw will carry a request, by sending one
+// through it. The transport is built for the question, so the process's own
+// routing is left as it is and a proxy already in use is not the one being
+// asked about. Use verifies after the fact and merely warns, because the
+// person who typed -p is there to read it; Check is for an address about to
+// be stored, where nobody may be: a heartbeat once wrote `"none"` into the
+// config, the reload applied it, and every provider call went looking for a
+// host by that name until someone read the log.
+func Check(raw, caPath string) error {
+	target, err := normalize(raw)
+	if err != nil {
+		return err
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return err
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if _, err := trust(roots, caPath); err != nil {
+		return err
+	}
+	transport := &http.Transport{Proxy: http.ProxyURL(u)}
+	withRootCAs(transport, roots)
+	resp, err := (&http.Client{Transport: transport, Timeout: checkTimeout}).Get(probeURL)
+	if err == nil {
+		_ = resp.Body.Close()
+		return nil
+	}
+	var unknown x509.UnknownAuthorityError
+	switch {
+	case errors.As(err, &unknown):
+		return fmt.Errorf("the proxy at %s signs with an authority this process does not trust; name its certificate (proxy.ca, or --proxy-ca)", target)
+	case strings.Contains(err.Error(), "proxyconnect"):
+		return fmt.Errorf("nothing answered at %s", target)
+	}
+	return fmt.Errorf("the proxy at %s did not carry a request: %w", target, err)
+}
+
 // normalize accepts what a person types: a bare host:port, or a full URL.
+// The host is held to what a name can be, because url.Parse is not: it
+// accepted `"none"`, quotes and all, and the gateway then asked DNS for it.
 func normalize(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -215,7 +262,7 @@ func normalize(raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("proxy address %q: %w", raw, err)
 	}
-	if u.Host == "" {
+	if !validHost(u.Hostname()) {
 		return "", fmt.Errorf("proxy address %q names no host", raw)
 	}
 	switch u.Scheme {
@@ -224,4 +271,23 @@ func normalize(raw string) (string, error) {
 		return "", fmt.Errorf("proxy scheme %q is not one of http, https, socks5", u.Scheme)
 	}
 	return u.String(), nil
+}
+
+// validHost is an IP address, or a name made of letters, digits, dots,
+// hyphens and underscores — what DNS can be asked for.
+func validHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '.', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }

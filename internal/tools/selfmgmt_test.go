@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,6 +45,50 @@ func TestConfigGetRedactsSecrets(t *testing.T) {
 	res = get.Execute(context.Background(), map[string]any{"key": "no.such.key"})
 	if !res.IsError {
 		t.Error("missing key accepted")
+	}
+}
+
+// The proxy carries every provider call, so config_set will not point it at
+// an address nothing answers at, and will not move it at all for a heartbeat.
+func TestConfigSetRefusesAProxyThatWillNotCarryTraffic(t *testing.T) {
+	cfg := testConfig(t)
+	set := NewConfigTools(cfg)[1]
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := ln.Addr().String()
+	_ = ln.Close()
+
+	res := set.Execute(context.Background(), map[string]any{"key": "proxy.address", "value": closed})
+	if !res.IsError || !strings.Contains(res.ForLLM, "nothing answered") {
+		t.Errorf("a port nothing listens on was accepted: %+v", res)
+	}
+	res = set.Execute(context.Background(), map[string]any{"key": "proxy.address", "value": `"none"`})
+	if !res.IsError {
+		t.Error("a quoted word was accepted as a proxy address")
+	}
+	res = set.Execute(context.Background(), map[string]any{"key": "proxy", "value": map[string]any{"address": closed}})
+	if !res.IsError {
+		t.Error("the whole section was a way around the check")
+	}
+	reloaded, err := config.Load(cfg.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Proxy.Address != "" {
+		t.Errorf("a refused address was saved: %q", reloaded.Proxy.Address)
+	}
+
+	heartbeat := WithToolContext(context.Background(), ToolContext{Channel: "system", ChatID: "heartbeat", SessionKey: "system:heartbeat"})
+	res = set.Execute(heartbeat, map[string]any{"key": "proxy.address", "value": "127.0.0.1:8080"})
+	if !res.IsError || !strings.Contains(res.ForLLM, "heartbeat") {
+		t.Errorf("a heartbeat moved the proxy: %+v", res)
+	}
+	// Turning the proxy off is never refused: there is nothing to probe.
+	res = set.Execute(context.Background(), map[string]any{"key": "proxy.address", "value": ""})
+	if res.IsError {
+		t.Errorf("clearing the proxy was refused: %+v", res)
 	}
 }
 

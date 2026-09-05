@@ -3,8 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/cyqlelabs/factor/internal/config"
+	"github.com/cyqlelabs/factor/internal/proxy"
 )
 
 // NewConfigTools lets the agent inspect and modify its own configuration.
@@ -58,7 +60,7 @@ type configSetTool struct {
 
 func (t *configSetTool) Name() string { return "config_set" }
 func (t *configSetTool) Description() string {
-	return "Set one configuration value by dotted key (e.g. key='heartbeat.interval_minutes', value=15) and persist it to the config file. Under the gateway it applies within seconds — the daemon reloads itself between turns; a plain chat session applies it on the next start. Confirm with the user before changing provider credentials."
+	return "Set one configuration value by dotted key (e.g. key='heartbeat.interval_minutes', value=15) and persist it to the config file. Under the gateway it applies within seconds — the daemon reloads itself between turns; a plain chat session applies it on the next start. Confirm with the user before changing provider credentials. A proxy address is probed before it is saved, and is never changed from a heartbeat."
 }
 func (t *configSetTool) Parameters() map[string]any {
 	return map[string]any{
@@ -70,10 +72,23 @@ func (t *configSetTool) Parameters() map[string]any {
 		"required": []any{"key", "value"},
 	}
 }
-func (t *configSetTool) Execute(_ context.Context, args map[string]any) *Result {
+func (t *configSetTool) Execute(ctx context.Context, args map[string]any) *Result {
 	key := StringArg(args, "key")
+	// Every provider call goes through the proxy, so a turn nobody is
+	// watching may not move it, and no turn may point it at an address that
+	// will not carry a request (proxy.Check has the incident).
+	touchesProxy := key == "proxy" || strings.HasPrefix(key, "proxy.")
+	if touchesProxy && ToolContextFrom(ctx).Channel == "system" {
+		return Errorf("the proxy is not changed from a heartbeat; ask for it in a conversation")
+	}
 	err := config.Update(t.path, func(cfg *config.Config) error {
-		return cfg.Set(key, args["value"])
+		if err := cfg.Set(key, args["value"]); err != nil {
+			return err
+		}
+		if touchesProxy && cfg.Proxy.Address != "" {
+			return proxy.Check(cfg.Proxy.Address, cfg.Proxy.CA)
+		}
+		return nil
 	})
 	if err != nil {
 		return Errorf("%v", err)
