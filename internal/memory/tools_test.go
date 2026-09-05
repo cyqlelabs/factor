@@ -262,15 +262,25 @@ func TestForgetReflectStatusTools(t *testing.T) {
 		t.Fatalf("status = %+v", res)
 	}
 
-	// an unhealthy engine reports plainly instead of erroring out obscurely
+	// A stale health flag is not the answer: the flag is whatever the last
+	// call left behind, and the status call is the probe that refreshes it.
+	// An engine marked unhealthy by a timed-out write still answers.
 	engine.healthy = false
+	if res := toolByName(t, set, "memory_status").Execute(ctx, nil); res.IsError ||
+		!strings.Contains(res.ForLLM, "total_atoms") {
+		t.Errorf("status with stale unhealthy flag = %+v", res)
+	}
+
+	// An engine that does not answer reports plainly, and carries what it
+	// said, instead of erroring out obscurely.
+	engine.err = errors.New("connection refused")
 	if res := toolByName(t, set, "memory_status").Execute(ctx, nil); !res.IsError ||
-		!strings.Contains(res.ForLLM, "not reachable") {
-		t.Errorf("unhealthy status = %+v", res)
+		!strings.Contains(res.ForLLM, "not reachable") ||
+		!strings.Contains(res.ForLLM, "connection refused") {
+		t.Errorf("unreachable status = %+v", res)
 	}
 
 	engine.healthy = true
-	engine.err = errors.New("nope")
 	for _, name := range []string{"forget", "reflect", "memory_status"} {
 		if res := toolByName(t, set, name).Execute(ctx, map[string]any{"query": "x"}); !res.IsError {
 			t.Errorf("%s did not report the engine failure", name)
