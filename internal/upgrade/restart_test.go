@@ -3,11 +3,13 @@ package upgrade
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/cyqlelabs/factor/internal/proxy"
 	"github.com/cyqlelabs/factor/internal/tools"
 )
 
@@ -64,6 +66,35 @@ func TestSelfPathIsWhereTheProcessStarted(t *testing.T) {
 	startFrom(t, "", errors.New("no /proc"))
 	if _, err := selfPath(); err == nil {
 		t.Error("selfPath ignored an unreadable executable path")
+	}
+}
+
+// The successor decides its own proxy from the flags and the config it reads;
+// the one this process applied must not reach it through the environment.
+func TestRelaunchDoesNotHandDownTheProxyItApplied(t *testing.T) {
+	exe := stageBinary(t, "the new build")
+	startFrom(t, exe, nil)
+	original := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = original })
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
+		"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"} {
+		t.Setenv(key, "")
+	}
+	if _, err := proxy.Use("127.0.0.1:9", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotEnv []string
+	prev := execSelf
+	execSelf = func(_ string, _, env []string) error { gotEnv = env; return nil }
+	t.Cleanup(func() { execSelf = prev })
+	if err := Relaunch(); err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range gotEnv {
+		if strings.Contains(kv, "127.0.0.1:9") {
+			t.Errorf("the successor was handed %q", kv)
+		}
 	}
 }
 

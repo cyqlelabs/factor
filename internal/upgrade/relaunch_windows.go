@@ -5,6 +5,8 @@ package upgrade
 import (
 	"os"
 	"os/exec"
+
+	"github.com/cyqlelabs/factor/internal/proxy"
 )
 
 // A seam: a test cannot spawn a replacement for the process running it.
@@ -25,5 +27,5 @@ func Relaunch() error {
 	if err != nil {
 		return err
 	}
-	return execSelf(exe, os.Args, os.Environ())
+	return execSelf(exe, os.Args, proxy.Environ())
 }

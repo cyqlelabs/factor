@@ -21,11 +21,53 @@ func keepTransport(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = original })
 }
 
-// clearProxyEnv detaches a test from whatever the developer's shell exports.
+// clearProxyEnv detaches a test from whatever the developer's shell exports,
+// and from what an earlier test's Use remembered.
 func clearProxyEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range append(append([]string{}, proxyEnv...), caEnv...) {
 		t.Setenv(key, "")
+	}
+	inherited = map[string]*string{}
+	t.Cleanup(func() { inherited = map[string]*string{} })
+}
+
+// The process that replaces this one gets the environment as it was before
+// Use: a proxy taken out of the config must not reach it through the
+// variables the old process set, and one the shell exported must.
+func TestEnvironHandsBackWhatUseOverwrote(t *testing.T) {
+	keepTransport(t)
+	clearProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "http://corp:3128") // the shell's own
+	if err := os.Unsetenv("HTTP_PROXY"); err != nil {
+		t.Fatal(err)
+	}
+	ca := writeCA(t, caPEM)
+	if _, err := Use("127.0.0.1:9", ca); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("HTTPS_PROXY") != "http://127.0.0.1:9" {
+		t.Fatal("Use did not route this process")
+	}
+
+	env := map[string]string{}
+	for _, kv := range Environ() {
+		name, value, _ := strings.Cut(kv, "=")
+		env[name] = value
+	}
+	if got := env["HTTPS_PROXY"]; got != "http://corp:3128" {
+		t.Errorf("HTTPS_PROXY = %q, want the shell's own back", got)
+	}
+	if _, set := env["HTTP_PROXY"]; set {
+		t.Error("HTTP_PROXY was not set before Use and is set after Environ")
+	}
+	for _, key := range append(append([]string{}, proxyEnv...), caEnv...) {
+		if strings.Contains(env[key], "127.0.0.1:9") || env[key] == ca {
+			t.Errorf("%s=%q still carries what Use set", key, env[key])
+		}
+	}
+	if got := env["PATH"]; got != os.Getenv("PATH") {
+		t.Errorf("PATH = %q; the rest of the environment must pass through", got)
 	}
 }
 

@@ -41,6 +41,50 @@ var proxyEnv = []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", 
 // through the same proxy without complaint.
 var caEnv = []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"}
 
+// inherited is what each variable Use writes held before it did — nil for one
+// that was not set. Environ hands that back to the process that replaces
+// this one, so the proxy is a decision each process makes from its own flags
+// and config rather than a setting that rides the environment for ever: the
+// gateway once kept asking DNS for `"none"` two reloads after the address had
+// left the file, because every exec passed the variables the first process
+// had set.
+var inherited = map[string]*string{}
+
+// snapshot records what names hold now, once — before Use writes them.
+func snapshot(names []string) {
+	for _, name := range names {
+		if _, done := inherited[name]; done {
+			continue
+		}
+		if prior, ok := os.LookupEnv(name); ok {
+			inherited[name] = &prior
+		} else {
+			inherited[name] = nil
+		}
+	}
+}
+
+// Environ is the process environment as it was before Use wrote to it: the
+// variables Use set are dropped and whatever they held before is restored.
+// Untouched by Use, it is os.Environ.
+func Environ() []string {
+	env := os.Environ()
+	kept := make([]string, 0, len(env)+len(inherited))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, touched := inherited[name]; touched {
+			continue
+		}
+		kept = append(kept, kv)
+	}
+	for name, prior := range inherited {
+		if prior != nil {
+			kept = append(kept, name+"="+*prior)
+		}
+	}
+	return kept
+}
+
 // wellKnownCAs are the paths intercepting proxies conventionally write their
 // certificate authority to. Nothing but a convenience: --proxy-ca names one
 // directly, and a proxy whose CA is already in the system store needs
@@ -85,6 +129,8 @@ func Use(raw, caPath string) (string, error) {
 	if err := install(roots, trusted != ""); err != nil {
 		return "", err
 	}
+	snapshot(proxyEnv)
+	snapshot(caEnv)
 	for _, key := range proxyEnv {
 		if err := os.Setenv(key, target); err != nil {
 			return "", err
