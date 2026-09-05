@@ -286,12 +286,18 @@ func (t *statusTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
 func (t *statusTool) Execute(ctx context.Context, _ map[string]any) *tools.Result {
-	if !t.engine.Healthy() {
-		return tools.Errorf("memory engine is not reachable right now")
-	}
+	// The status call is the health probe, so ask the engine rather than read
+	// Healthy(): that flag is whatever the last call left behind. One recall
+	// that timed out on a cold model, one 5xx from a write, and it reads false
+	// until the supervisor's next probe up to thirty seconds later — while the
+	// engine answers /status the whole time. Gated on it, this tool reported
+	// an engine nobody could reach on a machine where a curl to the same URL
+	// succeeded, and the model went looking for an endpoint that had moved.
+	// Asking repairs the flag on success and, on failure, says what the
+	// engine actually answered instead of a diagnosis that had already aged.
 	status, err := t.engine.Status(ctx)
 	if err != nil {
-		return tools.Errorf("status failed: %v", err)
+		return tools.Errorf("memory engine is not reachable right now: %v", err)
 	}
 	return tools.Text(compactJSON(status))
 }
