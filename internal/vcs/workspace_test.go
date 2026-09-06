@@ -115,7 +115,7 @@ func TestSessionsAreNotVersioned(t *testing.T) {
 func TestCommitterPrefixesTheMessage(t *testing.T) {
 	r, dir := newRepo(t)
 	commit := r.Committer("skill")
-	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("x\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	commit("created deploy-notes")

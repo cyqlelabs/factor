@@ -1,7 +1,7 @@
 // Package vcs keeps a local git history of the agent's workspace.
 //
 // Factor's own prompt is compiled into the binary and versioned with it. The
-// user's half is not: AGENTS.md, SOUL.md, USER.md, HEARTBEAT.md, the
+// user's half is not: AGENT.md, SOUL.md, USER.md, HEARTBEAT.md, the
 // instructions and the skill library all live in ~/.factor/workspace with no
 // history at all. Somebody who tunes their agent's persona over six months
 // has no diff, no blame and no way back — and skill induction writes into

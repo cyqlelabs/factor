@@ -46,7 +46,7 @@ than logging, so past failures become constraints it doesn't repeat.
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed one ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills ([Extending](#extending-factor)) |
 | 📊 **Watches its own numbers** | Every turn leaves a local trace — models, tools, timings, cache and cost — and control bands measure it against a rolling baseline, so the heartbeat wakes a model only once a number has drifted |
-| 📓 **Learns from its own work** | A turn that took four or more tool calls becomes a skill it writes for itself once the session goes quiet ([Extending](#extending-factor)) |
+| 📓 **Learns from its own work** | A turn that took four or more tool calls, or one you had to steer, becomes a skill it writes for itself once the session goes quiet ([Extending](#extending-factor)) |
 | 🔧 **Self-managing** | Edits its own config, installs packages, upgrades and restarts itself, schedules cron jobs and one-off reminders, runs `HEARTBEAT.md` checks that cost nothing when idle |
 | 🛡️ **Safety rails** | Workspace-restricted files, exec deny-patterns, sender allowlists, scrubbed secrets — rails, not a sandbox ([Security](#security-model)) |
 
@@ -103,9 +103,14 @@ uptime, memory health, connected channels, and a clean quit.
 
 Loopback stays direct and child processes inherit the proxy setting, so smrti's calls
 show up but the local sidecars aren't caught. `--proxy-ca` trusts an intercepting
-proxy's CA, probed once at startup. The browser isn't routed; it has its own trust
-store. The tray is absent on a headless box and on macOS, whose tray would cost the
-build its CGO-free binaries.
+proxy's CA, probed once at startup. A flag only reaches the process you typed it at,
+and the gateway that systemd or your login starts gets none, so `proxy.address` and
+`proxy.ca` in the config (`FACTOR_PROXY`, `FACTOR_PROXY_CA`) carry the setting to
+every start; a typed `-p` still wins. An address is tried with one request before it is
+saved or applied on reload, so a proxy nothing answers at is refused instead of
+failing every call, and the agent cannot move it from a heartbeat. The browser isn't
+routed; it has its own trust store. The tray is absent on a headless box and on
+macOS, whose tray would cost the build its CGO-free binaries.
 
 Factor supervises the smrti sidecar, restarts it with backoff, and degrades
 gracefully (empty recalls, dropped writes) when it's down. Point
@@ -218,6 +223,7 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "keep_days": 14
   },
   "upgrade": { "check": true, "check_interval_hours": 24 },  // report new releases; never install one unasked
+  "proxy": { "address": "", "ca": "" },      // "" = direct; host:port or a URL routes every call, sidecars included
   "cost": {
     "track": true,                           // price every call; models served locally cost nothing
     "budget": {
@@ -545,8 +551,10 @@ OS build, CPU, memory and a persistent device id as it initializes, and its own
 | **Skill** | Drop `workspace/skills/<name>/SKILL.md` — catalog in prompt, full text on demand, `skill_find` searches the public registry (skills.sh) and `skill_install` takes its slug, a git URL, or a directory |
 
 **It also writes its own.** Factor remembers a turn that took four or more tool
-calls; once that session sits quiet for ten minutes, it spends one metered call
-asking whether the trajectory holds a workflow worth keeping. Most of the time
+calls, or two if you steered it while it ran, since a correction names both the
+approach that was wrong and the one that worked; once that session sits quiet for
+ten minutes, it spends one metered call asking whether the trajectory holds a
+workflow worth keeping. Most of the time
 the answer is `SKIP`. A `LEARN` lands as a skill in the same catalog, marked
 `learned: true`, and the next turn lists it like any other. Induction rewrites
 its own output and never a skill you wrote or installed — `skill_write` drops the
@@ -589,6 +597,7 @@ make hooks        # point git at .githooks: every commit lints first
 make build        # local binary
 make build-all    # release cross-compile (incl. GOAMD64=v1 for old x86-64)
 make build-tiny   # -tags nobrowser: smallest binary
+make diagrams     # re-render docs/assets/*.mmd into the PNGs the docs embed (needs node)
 ```
 
 The suite runs against fakes — scripted providers, a fake smrti sidecar and a fake
@@ -596,9 +605,6 @@ voice shell (both spawned by re-execing the test binary), a fake Telegram API, a
 fake carrier, a scripted microphone and speaker, a fake MCP server over real stdio
 JSON-RPC, a scripted desktop — plus live headless-Chrome and desktop round-trip
 tests that auto-skip where the machine can't host them.
-
-Decisions worth the argument, and the alternatives they beat, live in
-[`docs/decisions/`](docs/decisions).
 
 ## License
 
