@@ -371,3 +371,19 @@ func TestBrowserToolsDeclareUsableSchemas(t *testing.T) {
 		}
 	}
 }
+
+// A failed launch must say a browser is installed and where: told only that
+// a socket could not be dialled, the model went looking for chromium, found
+// none, and installed one.
+func TestStartFailureNamesTheEngineAndRefusesAnInstall(t *testing.T) {
+	err := startFailure("/home/u/.factor/engine/helium/helium", errors.New(`could not dial "ws://127.0.0.1:1/devtools/browser/x": context deadline exceeded`))
+	for _, want := range []string{"/home/u/.factor/engine/helium/helium", "nothing needs installing", "did not answer", "retry", "could not dial"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("dial failure %q does not mention %q", err, want)
+		}
+	}
+	err = startFailure("/opt/chrome", errors.New("exec: exit status 127"))
+	if !strings.Contains(err.Error(), "did not come up") || !strings.Contains(err.Error(), "nothing needs installing") || !strings.Contains(err.Error(), "/opt/chrome") {
+		t.Errorf("crash failure = %q", err)
+	}
+}

@@ -355,7 +355,18 @@ func (s *Session) connectLocked(attach, binary string) error {
 	}
 
 	s.allocCtx = allocCtx
-	s.browserCtx, s.browserStop = chromedp.NewContext(allocCtx, logThroughSlog...)
+	ctxOpts := logThroughSlog
+	if attach == "" {
+		// Printing the socket is not the same as answering on it: a browser
+		// started on a machine that is swapping writes DevToolsActivePort
+		// and then takes longer than chromedp's 10s default to accept the
+		// websocket, which is how a 3.5 GB box with the memory engine bloated
+		// reported "could not dial" on every navigate while the browser was
+		// still coming up. The dial gets the same patience as the socket.
+		ctxOpts = append(append([]chromedp.ContextOption{}, logThroughSlog...),
+			chromedp.WithBrowserOption(chromedp.WithDialTimeout(40*time.Second)))
+	}
+	s.browserCtx, s.browserStop = chromedp.NewContext(allocCtx, ctxOpts...)
 	// Materialize the browser now so failures surface here, not mid-action.
 	// The first call must receive the browser context itself: the browser's
 	// lifetime binds to the context of that first call, so a timeout wrapper
@@ -369,14 +380,36 @@ func (s *Session) connectLocked(attach, binary string) error {
 	case err := <-done:
 		if err != nil {
 			s.teardownLocked()
-			return fmt.Errorf("browser start failed: %w", err)
+			if attach != "" {
+				return fmt.Errorf("browser start failed: %w", err)
+			}
+			return startFailure(binary, err)
 		}
 	case <-time.After(45 * time.Second):
 		s.teardownLocked()
-		return fmt.Errorf("browser start timed out")
+		if attach != "" {
+			return fmt.Errorf("browser start timed out")
+		}
+		return startFailure(binary, errors.New("browser start timed out"))
 	}
 	s.watchClosedTabsLocked()
 	return nil
+}
+
+// startFailure explains a launch that did not come up, naming the engine.
+//
+// This line is all the model learns about the browser when it fails, and
+// told only that a websocket could not be dialled it went looking for the
+// browser itself: `which chromium` found nothing, because the engine lives
+// under ~/.factor/engine, so it concluded no browser was installed and put
+// a second one on the machine through pip. A failure therefore says that a
+// browser is installed and where, and that the recovery is to try again.
+func startFailure(binary string, err error) error {
+	why := "did not come up"
+	if strings.Contains(err.Error(), "could not dial") || strings.Contains(err.Error(), "timed out") {
+		why = "started but did not answer on its DevTools port in time, which on a machine short of memory means it was still loading"
+	}
+	return fmt.Errorf("browser start failed: Factor's own browser at %s %s — nothing needs installing; retry once the machine has settled: %w", binary, why, err)
 }
 
 // watchClosedTabsLocked asks the browser to announce tabs coming and going.
@@ -993,7 +1026,7 @@ type navigateTool struct{ s *Session }
 
 func (t *navigateTool) Name() string { return "browser_navigate" }
 func (t *navigateTool) Description() string {
-	return "Open a URL in the browser and read the page. This is a real browser carrying the user's own session and cookies, so it sees what a plain fetch cannot: JavaScript-rendered pages, listings, logged-in areas, and anything that has to be scrolled, filled or clicked. Reach for it as soon as a fetch comes back thin rather than describing the empty shell."
+	return "Open a URL in the browser and read the page. This is a real browser carrying the user's own session and cookies, so it sees what a plain fetch cannot: JavaScript-rendered pages, listings, logged-in areas, and anything that has to be scrolled, filled or clicked. Reach for it as soon as a fetch comes back thin rather than describing the empty shell. Factor runs its own browser engine, so there is never a browser to install: if a start fails, retry it."
 }
 func (t *navigateTool) Parameters() map[string]any {
 	return map[string]any{
