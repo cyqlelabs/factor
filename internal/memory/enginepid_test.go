@@ -1,12 +1,14 @@
 package memory
 
 import (
+	"bufio"
 	"context"
 	"net"
 	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -134,9 +136,12 @@ func TestStopEngineStopsAnEngineNobodyRecorded(t *testing.T) {
 	engineStopWait = 5 * time.Second
 	t.Cleanup(func() { engineStopWait = prev })
 
-	port := freePort(t)
 	cmd := exec.Command(os.Args[0])
-	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=listen", "FACTOR_TEST_SMRTI_PORT="+strconv.Itoa(port))
+	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=listen")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -149,15 +154,13 @@ func TestStopEngineStopsAnEngineNobodyRecorded(t *testing.T) {
 		case <-time.After(5 * time.Second):
 		}
 	})
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, ok := ListenerPid(port); ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the child never took the port")
-		}
-		time.Sleep(20 * time.Millisecond)
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		t.Fatalf("the child never reported its port: %v", err)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		t.Fatalf("port line %q: %v", line, err)
 	}
 
 	stopped, err := StopEngine(context.Background(), port)

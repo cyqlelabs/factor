@@ -37,11 +37,21 @@ func TestMain(m *testing.M) {
 	case "hang":
 		select {} // never becomes healthy: exercises the startup-timeout warning
 	case "listen":
-		// Holds a port the way an engine nobody recorded does.
-		if _, err := net.Listen("tcp", "127.0.0.1:"+os.Getenv("FACTOR_TEST_SMRTI_PORT")); err != nil {
+		// Holds a port the way an engine nobody recorded does, and says
+		// which: a port picked before the bind is one another test can take
+		// first.
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
 			os.Exit(4)
 		}
-		select {}
+		fmt.Println(l.Addr().(*net.TCPAddr).Port)
+		for {
+			c, err := l.Accept() // a bare select{} here is a deadlock to the runtime
+			if err != nil {
+				os.Exit(0)
+			}
+			_ = c.Close()
+		}
 	}
 	os.Exit(m.Run())
 }
