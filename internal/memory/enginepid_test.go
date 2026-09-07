@@ -2,9 +2,11 @@ package memory
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -39,13 +41,13 @@ func TestStopEngineStopsTheEngineFactorSpawned(t *testing.T) {
 
 	// Nothing recorded: nothing to stop, and that is an answer rather than a
 	// failure — the next start is what loads the new code.
-	stopped, err := StopEngine(context.Background())
+	stopped, err := StopEngine(context.Background(), 0)
 	if stopped != 0 || err != nil {
 		t.Fatalf("stopped = %v, err = %v", stopped, err)
 	}
 
 	pid := hangingEngine(t)
-	stopped, err = StopEngine(context.Background())
+	stopped, err = StopEngine(context.Background(), 0)
 	if stopped != pid || err != nil {
 		t.Fatalf("stopped = %v, want %d, err = %v", stopped, pid, err)
 	}
@@ -72,7 +74,7 @@ func TestStopEngineIgnoresAPidThatIsGone(t *testing.T) {
 	_ = cmd.Wait()
 	writeEnginePid(pid)
 
-	stopped, err := StopEngine(context.Background())
+	stopped, err := StopEngine(context.Background(), 0)
 	if stopped != 0 || err != nil {
 		t.Fatalf("a pid file left by an engine that died stops nothing: %v, %v", stopped, err)
 	}
@@ -83,7 +85,7 @@ func TestStopEngineIgnoresAnUnreadablePidFile(t *testing.T) {
 	if err := os.WriteFile(enginePidPath(), []byte("not a pid"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if stopped, err := StopEngine(context.Background()); stopped != 0 || err != nil {
+	if stopped, err := StopEngine(context.Background(), 0); stopped != 0 || err != nil {
 		t.Fatalf("stopped = %v, err = %v", stopped, err)
 	}
 }
@@ -100,5 +102,71 @@ func TestClearEnginePidOnlyForgetsTheEngineItNames(t *testing.T) {
 	clearEnginePid(pid)
 	if _, err := os.Stat(enginePidPath()); !os.IsNotExist(err) {
 		t.Errorf("the pid file survived the engine it named: %v", err)
+	}
+}
+
+func TestListenerPidNamesTheProcessOnThePort(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	port := l.Addr().(*net.TCPAddr).Port
+
+	pid, ok := ListenerPid(port)
+	if !ok || pid != os.Getpid() {
+		t.Fatalf("ListenerPid(%d) = %d, %v; want this process (%d)", port, pid, ok, os.Getpid())
+	}
+	if _, ok := ListenerPid(freePort(t)); ok {
+		t.Error("a port nothing listens on named a process")
+	}
+	if _, ok := ListenerPid(0); ok {
+		t.Error("port 0 named a process")
+	}
+}
+
+// The engine that matters is the one on the port, whoever started it: an
+// engine restarted by hand after an upgrade is in no pid file, and leaving it
+// alone is how a machine ran two versions behind with the new one installed.
+func TestStopEngineStopsAnEngineNobodyRecorded(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	prev := engineStopWait
+	engineStopWait = 5 * time.Second
+	t.Cleanup(func() { engineStopWait = prev })
+
+	port := freePort(t)
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=listen", "FACTOR_TEST_SMRTI_PORT="+strconv.Itoa(port))
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := ListenerPid(port); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the child never took the port")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	stopped, err := StopEngine(context.Background(), port)
+	if err != nil || stopped != cmd.Process.Pid {
+		t.Fatalf("stopped = %d, err = %v; want %d", stopped, err, cmd.Process.Pid)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the engine on the port is still running")
 	}
 }

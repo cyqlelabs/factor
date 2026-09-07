@@ -36,6 +36,12 @@ func TestMain(m *testing.M) {
 		os.Exit(3) // dies immediately: exercises the restart path
 	case "hang":
 		select {} // never becomes healthy: exercises the startup-timeout warning
+	case "listen":
+		// Holds a port the way an engine nobody recorded does.
+		if _, err := net.Listen("tcp", "127.0.0.1:"+os.Getenv("FACTOR_TEST_SMRTI_PORT")); err != nil {
+			os.Exit(4)
+		}
+		select {}
 	}
 	os.Exit(m.Run())
 }

@@ -68,7 +68,7 @@ func fakeInstaller(t *testing.T, stopped int, supervised bool, err error) *[]str
 		calls = append(calls, "upgrade "+exe)
 		return "pipx", err
 	}
-	stopEngine = func(context.Context) (int, error) {
+	stopEngine = func(context.Context, int) (int, error) {
 		calls = append(calls, "stop")
 		return stopped, nil
 	}
@@ -180,7 +180,7 @@ func TestSmrtiApplyUpgradesThePackageAndRestartsTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if note != "the engine restarted on it" {
+	if note != "the engine restarted" {
 		t.Errorf("note = %q", note)
 	}
 	line := strings.Join(*calls, " | ")
@@ -197,7 +197,7 @@ func TestSmrtiApplyLeavesNewCodeForTheNextStart(t *testing.T) {
 	noDocker(t)
 	installed(t, "/home/u/.local/bin/smrti", "0.11.3")
 	fakePyPI(t, "0.13.0")
-	// Nothing to stop: the engine is one Factor never spawned, or is down.
+	// Nothing to stop: no engine holds the port.
 	fakeInstaller(t, 0, false, nil)
 
 	s := NewSmrti(engineConfig(t, false), nil)
@@ -209,7 +209,7 @@ func TestSmrtiApplyLeavesNewCodeForTheNextStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if note != "it loads the next time the engine starts" {
+	if note != "no engine is running here, so it loads the next time the engine starts" {
 		t.Errorf("note = %q", note)
 	}
 }
@@ -316,7 +316,7 @@ func TestSmrtiUpdateReportsThePackageHalf(t *testing.T) {
 	line := strings.Join(said, " | ")
 	for _, want := range []string{
 		"smrti 0.13.0 is available — the engine here runs 0.11.3.",
-		"upgraded smrti 0.11.3 to 0.13.0 — the engine restarted on it",
+		"upgraded smrti 0.11.3 to 0.13.0 — the engine restarted",
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("said %q, missing %q", line, want)
@@ -382,7 +382,7 @@ func TestSmrtiApplyPackageReportsAnEngineItCannotStop(t *testing.T) {
 	fakePyPI(t, "0.13.0")
 	fakeInstaller(t, 4242, true, nil)
 	prev := stopEngine
-	stopEngine = func(context.Context) (int, error) { return 0, fmt.Errorf("operation not permitted") }
+	stopEngine = func(context.Context, int) (int, error) { return 0, fmt.Errorf("operation not permitted") }
 	defer func() { stopEngine = prev }()
 
 	s := NewSmrti(engineConfig(t, true), nil)
@@ -407,5 +407,50 @@ func TestSmrtiCheckReportsAPyPIItCannotReach(t *testing.T) {
 	_, err := NewSmrti(engineConfig(t, true), nil).Check(context.Background())
 	if err == nil || errors.Is(err, ErrNotManaged) {
 		t.Fatalf("a lookup that failed is not an engine that cannot be upgraded: %v", err)
+	}
+}
+
+func TestSmrtiRestartRestartsThePackageEngine(t *testing.T) {
+	quickPacing(t)
+	noDocker(t)
+	installed(t, "/home/u/.local/bin/smrti", "0.13.0")
+	calls := fakeInstaller(t, 4242, true, nil)
+
+	note, err := NewSmrti(engineConfig(t, true), nil).Restart(context.Background(), nil)
+	if err != nil || note != "the engine restarted" {
+		t.Fatalf("note = %q, err = %v", note, err)
+	}
+	if strings.Join(*calls, " ") != "stop" {
+		t.Errorf("a restart installs nothing: %v", *calls)
+	}
+}
+
+func TestSmrtiRestartRestartsTheContainer(t *testing.T) {
+	quickPacing(t)
+	engineDocker(t)
+	var restarted []string
+	prev := dockerCmd
+	dockerCmd = func(ctx context.Context, args ...string) (string, error) {
+		if args[0] == "restart" {
+			restarted = append(restarted, strings.Join(args, " "))
+			return "", nil
+		}
+		return prev(ctx, args...)
+	}
+	t.Cleanup(func() { dockerCmd = prev })
+
+	note, err := NewSmrti(engineConfig(t, true), nil).Restart(context.Background(), nil)
+	if err != nil || !strings.Contains(note, "container restarted") {
+		t.Fatalf("note = %q, err = %v", note, err)
+	}
+	if len(restarted) != 1 || !strings.HasPrefix(restarted[0], "restart -t "+smrtiStopTimeout+" ") {
+		t.Errorf("docker calls = %v", restarted)
+	}
+}
+
+func TestSmrtiRestartLeavesAnEngineElsewhereAlone(t *testing.T) {
+	cfg := config.MemoryConfig{Mode: "external", URL: "http://memory.example.net:8420"}
+	if _, err := NewSmrti(cfg, nil).Restart(context.Background(), nil); !errors.Is(err, ErrNotManaged) {
+		t.Fatalf("error = %v", err)
 	}
 }

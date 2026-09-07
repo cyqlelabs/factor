@@ -9,9 +9,11 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,10 +32,12 @@ var (
 	enginePid        = memory.EnginePid
 
 	// How long a supervisor gets to put a new engine in place of the one that
-	// was stopped. The sidecar waits five seconds before respawning, and
-	// longer when the engine has been failing, so this is that backoff with
-	// room to spare — after it, nothing here supervises the engine.
-	smrtiRespawnWait = 45 * time.Second
+	// was stopped. The sidecar re-probes a healthy engine every 30 seconds,
+	// so that long can pass before it notices the stop at all, and it then
+	// waits its backoff before spawning; a slow box was measured at 45
+	// seconds between the stop and the new pid. After this, nothing here
+	// supervises the engine.
+	smrtiRespawnWait = 90 * time.Second
 )
 
 // checkPackage reports what PyPI publishes against the smrti installed here.
@@ -86,39 +90,90 @@ func (s *Smrti) applyPackage(ctx context.Context, rel SmrtiRelease, progress Pro
 	}
 	progress("installed smrti %s with %s", rel.Version, method)
 
+	note, err := s.restartEngine(ctx, progress)
+	if err != nil {
+		return "", fmt.Errorf("smrti %s is installed, but %w", rel.Version, err)
+	}
+	return note, nil
+}
+
+// Restart stops the engine serving here and waits for it to come back on the
+// code already installed. It is the whole of what "restart your memory" needs,
+// and the reason it exists is what happened without it: told an upgrade would
+// load "the next time the engine starts", the agent stopped and started the
+// engine by hand through exec, and the engine it started ran outside the
+// supervisor, without the environment the supervisor sets — the wrong memory
+// space and no cap on its allocator — until it had eaten the machine.
+func (s *Smrti) Restart(ctx context.Context, progress Progress) (string, error) {
+	if progress == nil {
+		progress = func(string, ...any) {}
+	}
+	if !s.localEngine() {
+		return "", fmt.Errorf("%w: the engine answers at %s, so it belongs to whoever runs it there",
+			ErrNotManaged, s.cfg.BaseURL())
+	}
+	c, err := s.container(ctx)
+	switch {
+	case errors.Is(err, errNoContainer):
+		return s.restartEngine(ctx, progress)
+	case err != nil:
+		return "", err
+	}
+	if err := s.waitIdle(ctx, progress); err != nil {
+		return "", err
+	}
+	progress("restarting %s", c.name())
+	if _, err := dockerCmd(ctx, "restart", "-t", smrtiStopTimeout, c.name()); err != nil {
+		return "", err
+	}
+	if err := s.waitHealthy(ctx); err != nil {
+		return "", err
+	}
+	return "the container restarted and is answering again", nil
+}
+
+// restartEngine stops the engine on the memory port once the graph is quiet
+// and waits for its supervisor to bring it back, reporting in one clause what
+// became of it.
+func (s *Smrti) restartEngine(ctx context.Context, progress Progress) (string, error) {
 	if err := s.waitIdle(ctx, progress); err != nil {
 		return "", err
 	}
 	progress("restarting the memory engine")
-	stopped, err := stopEngine(ctx)
+	stopped, err := stopEngine(ctx, s.port())
 	if err != nil {
-		return "", fmt.Errorf("smrti %s is installed, but the engine running here could not be stopped: %w",
-			rel.Version, err)
+		return "", fmt.Errorf("the engine running here could not be stopped: %w", err)
 	}
 	if stopped == 0 {
-		// Either nothing is running, or the engine is one Factor did not
-		// spawn. Both mean the same thing for the user: the code is in place
-		// and whatever starts it next will load it.
-		return "it loads the next time the engine starts", nil
+		return "no engine is running here, so it loads the next time the engine starts", nil
 	}
 	respawned := s.waitRespawn(ctx, stopped)
 	if ctx.Err() != nil {
-		return "", fmt.Errorf("smrti %s is installed and the old engine was stopped, but the restart was interrupted: %w",
-			rel.Version, ctx.Err())
+		return "", fmt.Errorf("the old engine was stopped, but the restart was interrupted: %w", ctx.Err())
 	}
 	if !respawned {
 		// `factor upgrade` in a terminal on a machine with no daemon running:
 		// the engine that was warm from an earlier session is now stopped and
 		// nobody is going to restart it, which is not a failure — the next
-		// Factor to want memory spawns the version just installed.
+		// Factor to want memory spawns what is installed.
 		return "the engine was stopped and nothing here supervises it, so it starts with the next factor run", nil
 	}
 	progress("waiting for the memory engine to answer")
 	if err := s.waitHealthy(ctx); err != nil {
-		return "", fmt.Errorf("smrti %s is installed and the engine was restarted, but it is not answering: %w",
-			rel.Version, err)
+		return "", fmt.Errorf("the engine was restarted, but it is not answering: %w", err)
 	}
-	return "the engine restarted on it", nil
+	return "the engine restarted", nil
+}
+
+// port is the one the engine serves on, read off the same URL every request
+// goes to.
+func (s *Smrti) port() int {
+	if u, err := url.Parse(s.cfg.BaseURL()); err == nil {
+		if p, err := strconv.Atoi(u.Port()); err == nil {
+			return p
+		}
+	}
+	return s.cfg.Port
 }
 
 // waitRespawn reports whether something put a new engine in place of the one

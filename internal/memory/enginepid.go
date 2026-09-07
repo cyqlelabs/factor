@@ -63,14 +63,19 @@ func clearEnginePid(pid int) {
 	}
 }
 
-// StopEngine stops the smrti Factor spawned and reports which process it was.
-// A zero pid is an answer rather than a failure: the engine may be one somebody
-// runs by hand, or nothing may be running at all — in both cases the newly
-// installed code is what the next start will load.
-func StopEngine(ctx context.Context) (int, error) {
+// StopEngine stops the smrti serving on port and reports which process it was.
+// The pid file names the engine Factor spawned; when it names nothing alive,
+// the process holding the port is the engine — one started by hand, or one
+// adopted warm across a reload — and it is stopped all the same, because the
+// supervisor that then respawns it is the only thing that starts an engine
+// with the environment it needs. A zero pid is an answer rather than a
+// failure: nothing is running, and the next start loads what is installed.
+func StopEngine(ctx context.Context, port int) (int, error) {
 	pid, ok := readEnginePid()
 	if !ok {
-		return 0, nil
+		if pid, ok = ListenerPid(port); !ok {
+			return 0, nil
+		}
 	}
 	if err := terminateProcess(pid); err != nil {
 		return 0, fmt.Errorf("stopping the memory engine (pid %d): %w", pid, err)

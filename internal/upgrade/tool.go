@@ -22,7 +22,7 @@ type Tool struct {
 func (t *Tool) Name() string { return "upgrade" }
 
 func (t *Tool) Description() string {
-	return "Check whether newer releases of Factor or smrti (the memory engine) exist and install them. action=check reports what is available; action=install downloads it — Factor's binary is verified against its published checksum, and smrti is upgraded however it runs here: a container is replaced with the newly published image, a package install is upgraded with the installer that made it and the engine restarted into it, both once the memory graph is idle. component limits the work to one of them (default both). Read the install result before describing it: it says whether the new code is loading now or waits for the next start."
+	return "Check whether newer releases of Factor or smrti (the memory engine) exist, install them, and restart either. action=check reports what is available; action=install downloads it — Factor's binary is verified against its published checksum, and smrti is upgraded however it runs here: a container is replaced with the newly published image, a package install is upgraded with the installer that made it and the engine restarted into it, both once the memory graph is idle; action=restart reloads Factor in place and restarts the memory engine under its supervisor without changing either. component limits the work to one of them (default both). Everything here is self-contained and needs nothing from the user: never stop, start or restart Factor or the engine with exec, since an engine started by hand runs outside the supervisor and without the environment it needs. Read the install result before describing it: it says whether the new code is loading now or waits for the next start."
 }
 
 func (t *Tool) Parameters() map[string]any {
@@ -31,8 +31,8 @@ func (t *Tool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"action": map[string]any{
 				"type":        "string",
-				"enum":        []any{"check", "install"},
-				"description": "check (default) reports what is available; install applies it",
+				"enum":        []any{"check", "install", "restart"},
+				"description": "check (default) reports what is available; install applies it; restart reloads Factor and/or restarts the memory engine on the code already installed",
 			},
 			"component": map[string]any{
 				"type":        "string",
@@ -44,12 +44,16 @@ func (t *Tool) Parameters() map[string]any {
 }
 
 func (t *Tool) Execute(ctx context.Context, args map[string]any) *tools.Result {
-	install := tools.StringArg(args, "action") == "install"
+	action := tools.StringArg(args, "action")
+	install := action == "install"
 	// Anything but one of the two halves means both of them: a component the
 	// model invented must not silently answer about nothing at all.
 	component := tools.StringArg(args, "component")
 	if component != "factor" && component != "smrti" {
 		component = "all"
+	}
+	if action == "restart" {
+		return t.restart(ctx, component)
 	}
 
 	var lines []string
@@ -129,4 +133,54 @@ func (t *Tool) engine(ctx context.Context, install, asked bool) (string, bool) {
 	}
 	return fmt.Sprintf("Upgraded smrti from %s to %s — %s, and its memory is untouched.",
 		rel.RunningVersion(), rel.Version, note), true
+}
+
+// restart reloads Factor in place and restarts the memory engine under its
+// supervisor. Both are things the agent used to do with exec when asked, and
+// both went wrong that way: a Factor killed mid-turn loses the turn and the
+// graceful reload, and an engine started by hand runs unsupervised with the
+// wrong environment. This is the one door for either.
+func (t *Tool) restart(ctx context.Context, component string) *tools.Result {
+	var lines []string
+	failed := false
+	if component == "all" || component == "smrti" {
+		line, ok := t.restartEngine(ctx, component == "smrti")
+		if line != "" {
+			lines = append(lines, line)
+			failed = failed || !ok
+		}
+	}
+	if component == "all" || component == "factor" {
+		tc := tools.ToolContextFrom(ctx)
+		if t.Restart.Request("restart requested", Target{Channel: tc.Channel, ChatID: tc.ChatID}) {
+			lines = append(lines, "Restarting factor as soon as this answer reaches you — say goodbye briefly; you will be back in a few seconds.")
+		} else {
+			lines = append(lines, "nothing here can restart this factor: it is a one-shot run rather than the gateway, and ends with this conversation.")
+			failed = true
+		}
+	}
+	if failed {
+		return tools.Errorf("%s", strings.Join(lines, "\n"))
+	}
+	return tools.Text(strings.Join(lines, "\n"))
+}
+
+// restartEngine restarts smrti and reports what became of it. An empty line
+// means there is nothing to say: memory is off, or there is no engine here to
+// restart and the caller did not ask about it specifically.
+func (t *Tool) restartEngine(ctx context.Context, asked bool) (string, bool) {
+	if t.Smrti == nil {
+		if asked {
+			return "memory is off, so there is no smrti to restart.", true
+		}
+		return "", true
+	}
+	note, err := t.Smrti.Restart(ctx, nil)
+	if err != nil {
+		if errors.Is(err, ErrNotManaged) && !asked {
+			return "", true
+		}
+		return "restarting smrti: " + err.Error(), false
+	}
+	return fmt.Sprintf("Restarted smrti: %s, and its memory is untouched.", note), true
 }

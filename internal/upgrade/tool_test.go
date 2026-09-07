@@ -134,3 +134,41 @@ func TestToolReportsFailures(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 }
+
+// A restart is the tool's job, not exec's: the gateway reloads in place and
+// the engine comes back under its supervisor.
+func TestToolRestarts(t *testing.T) {
+	quickPacing(t)
+	noDocker(t)
+	installed(t, "/home/u/.local/bin/smrti", "0.13.0")
+	calls := fakeInstaller(t, 4242, true, nil)
+
+	var asked []string
+	restarter := &Restarter{}
+	restarter.Set(func(reason string, _ Target) { asked = append(asked, reason) })
+	tool := &Tool{Current: "v0.4.0", Restart: restarter, Smrti: NewSmrti(engineConfig(t, true), nil)}
+
+	res := tool.Execute(context.Background(), map[string]any{"action": "restart"})
+	if res.IsError || !strings.Contains(res.ForLLM, "Restarted smrti: the engine restarted") ||
+		!strings.Contains(res.ForLLM, "Restarting factor") {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(asked) != 1 || strings.Contains(strings.Join(*calls, " "), "upgrade") {
+		t.Fatalf("asked = %v, calls = %v", asked, *calls)
+	}
+
+	res = tool.Execute(context.Background(), map[string]any{"action": "restart", "component": "smrti"})
+	if res.IsError || strings.Contains(res.ForLLM, "factor") || len(asked) != 1 {
+		t.Fatalf("component=smrti must leave factor alone: %+v", res)
+	}
+
+	// A one-shot run has nothing to reload, and says so instead of pretending.
+	res = (&Tool{Current: "v0.4.0"}).Execute(context.Background(), map[string]any{"action": "restart", "component": "factor"})
+	if !res.IsError || !strings.Contains(res.ForLLM, "one-shot") {
+		t.Fatalf("result = %+v", res)
+	}
+	res = (&Tool{Current: "v0.4.0", Restart: restarter}).Execute(context.Background(), map[string]any{"action": "restart", "component": "smrti"})
+	if res.IsError || !strings.Contains(res.ForLLM, "memory is off") {
+		t.Fatalf("result = %+v", res)
+	}
+}
