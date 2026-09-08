@@ -107,16 +107,20 @@ func (r ReasoningConfig) IsZero() bool {
 func (r ReasoningConfig) Off() bool { return r.Effort == "none" && r.MaxTokens == 0 }
 
 type ProviderConfig struct {
-	Type             string          `json:"type" env:"FACTOR_PROVIDER_TYPE"`
-	APIKey           string          `json:"api_key,omitempty" env:"FACTOR_PROVIDER_API_KEY"`
-	APIBase          string          `json:"api_base,omitempty" env:"FACTOR_PROVIDER_API_BASE"`
-	Model            string          `json:"model" env:"FACTOR_PROVIDER_MODEL"`
-	Reasoning        ReasoningConfig `json:"reasoning"`
-	MaxTokens        int             `json:"max_tokens"`
-	Temperature      float64         `json:"temperature,omitempty"`
-	Fallbacks        []Candidate     `json:"fallbacks,omitempty"`
-	MaxRetries       int             `json:"max_retries"`
-	RetryBackoffSecs int             `json:"retry_backoff_secs"`
+	Type      string          `json:"type" env:"FACTOR_PROVIDER_TYPE"`
+	APIKey    string          `json:"api_key,omitempty" env:"FACTOR_PROVIDER_API_KEY"`
+	APIBase   string          `json:"api_base,omitempty" env:"FACTOR_PROVIDER_API_BASE"`
+	Model     string          `json:"model" env:"FACTOR_PROVIDER_MODEL"`
+	Reasoning ReasoningConfig `json:"reasoning"`
+	// MaxTokens caps one reply, reasoning included on the OpenAI dialects. A
+	// tool call is emitted inside that cap, and a file written in one call
+	// that runs past it arrives with its arguments cut off, so the ceiling
+	// sits well above what a turn normally says.
+	MaxTokens        int         `json:"max_tokens"`
+	Temperature      float64     `json:"temperature,omitempty"`
+	Fallbacks        []Candidate `json:"fallbacks,omitempty"`
+	MaxRetries       int         `json:"max_retries"`
+	RetryBackoffSecs int         `json:"retry_backoff_secs"`
 	// Utility is the chain for the calls the user never sees: the compaction
 	// summary and the skill-induction verdict. Both are work the top of a
 	// model range is not for — one summarizes text the model has already
@@ -411,7 +415,7 @@ func Default() *Config {
 			Type:             "openrouter",
 			Model:            "google/gemini-3.1-pro-preview",
 			Reasoning:        ReasoningConfig{Effort: "xhigh"},
-			MaxTokens:        4096,
+			MaxTokens:        16384,
 			MaxRetries:       2,
 			RetryBackoffSecs: 2,
 		},
@@ -592,7 +596,7 @@ func (c *Config) normalize() {
 		c.Agent.MaxConcurrentTurns = 4
 	}
 	if c.Provider.MaxTokens <= 0 {
-		c.Provider.MaxTokens = 4096
+		c.Provider.MaxTokens = 16384
 	}
 	if c.Cost.RefreshHours <= 0 {
 		c.Cost.RefreshHours = 24

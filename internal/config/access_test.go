@@ -324,7 +324,7 @@ func TestNormalizeFloors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Agent.MaxToolIterations != 20 || cfg.Agent.MaxConcurrentTurns != 4 || cfg.Provider.MaxTokens != 4096 {
+	if cfg.Agent.MaxToolIterations != 20 || cfg.Agent.MaxConcurrentTurns != 4 || cfg.Provider.MaxTokens != 16384 {
 		t.Errorf("floors not applied: %+v", cfg.Agent)
 	}
 }
