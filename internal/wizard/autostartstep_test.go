@@ -18,7 +18,7 @@ import (
 func autostartAnswers(answer string) []string {
 	base := []string{"5", "llama3", "3", "3", "n", "n", ""}
 	if browser.Available() {
-		base = append(base, "", "")
+		base = append(base, "")
 	}
 	return append(base, answer)
 }

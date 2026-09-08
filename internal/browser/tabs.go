@@ -310,6 +310,9 @@ func (t *tabsTool) Parameters() map[string]any {
 }
 
 func (t *tabsTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	if c := t.s.engine(ctx); c != nil {
+		return c.tabs(ctx, tools.StringArg(args, "action"), tools.StringArg(args, "target"), tools.StringArg(args, "url"))
+	}
 	switch action := tools.StringArg(args, "action"); action {
 	case "", "list":
 		return t.list(ctx)

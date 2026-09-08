@@ -62,6 +62,13 @@ type Session struct {
 	refs        map[string]string // eN -> CSS selector from the last read
 	refsURL     string            // fragment-stripped URL of the page those refs were read from
 	refSeq      int               // refs already handed out; the next read numbers from here
+
+	// cam is the headless engine, and chosen says whether this session
+	// drives it: decided once, on the first call, so a browser attached
+	// later does not pull a conversation out of the engine it started in.
+	cam    *camofox
+	chosen bool
+	useCam bool
 }
 
 func NewSession(cfg config.BrowserConfig, workspace string, guard *tools.PathGuard) *Session {
@@ -69,6 +76,7 @@ func NewSession(cfg config.BrowserConfig, workspace string, guard *tools.PathGua
 		cfg:       cfg,
 		workspace: workspace,
 		guard:     guard,
+		cam:       newCamofox(cfg, config.Home(), workspace, guard),
 		tabs:      map[target.ID]*tabHandle{},
 		tabRefs:   map[int]target.ID{},
 		refs:      map[string]string{},
@@ -626,6 +634,53 @@ func (s *Session) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.teardownLocked()
+	s.cam.Close()
+}
+
+// engine returns the headless engine when this session drives it, and nil
+// when the Chromium path answers. Under browser.engine "auto" a browser the
+// user already has open wins, since it is logged in where a managed profile
+// is not; otherwise a machine with nowhere to open a window runs Camofox,
+// and one with a display gets a visible Chromium, because watching the
+// agent work is half the point of a desktop.
+//
+// Under "auto" an engine that cannot be brought up — no Node, no network to
+// install it over — hands the session to a headless Chromium rather than to
+// nothing, and says so once; forced by name, the failure is reported as it
+// is.
+func (s *Session) engine(ctx context.Context) *camofox {
+	s.mu.Lock()
+	if !s.chosen {
+		s.chosen = true
+		switch s.cfg.Engine {
+		case "camofox":
+			s.useCam = true
+		case "chromium":
+			s.useCam = false
+		default:
+			if s.cfg.Engine != "" && s.cfg.Engine != "auto" {
+				slog.Warn("browser: unknown browser.engine, treating it as auto", "engine", s.cfg.Engine)
+			}
+			attached := s.cfg.AttachURL != "" || devtoolsAlive(devtoolsProbe)
+			s.useCam = !attached && (s.cfg.Headless || !displayAvailable())
+		}
+		if s.useCam {
+			slog.Info("browser: driving Camofox, the headless engine")
+		}
+	}
+	useCam := s.useCam
+	s.mu.Unlock()
+	if !useCam {
+		return nil
+	}
+	if err := s.cam.ensure(ctx); err != nil && s.cfg.Engine != "camofox" {
+		slog.Warn("browser: Camofox is not available, browsing headless on the Chromium engine instead", "error", err)
+		s.mu.Lock()
+		s.useCam = false
+		s.mu.Unlock()
+		return nil
+	}
+	return s.cam
 }
 
 // run executes chromedp actions with a per-call timeout.
@@ -1012,14 +1067,7 @@ func NewTools(cfg config.BrowserConfig, workspace string, guard *tools.PathGuard
 		&screenshotTool{s}, &evalTool{s}, &backTool{s},
 		&tabsTool{s}, &uploadTool{s}, &keysTool{s},
 	}
-	if !cfg.FastPath {
-		return suite, s.Close
-	}
-	f := newFastSession(cfg)
-	return append(suite, &fetchTool{f}), func() {
-		s.Close()
-		f.Close()
-	}
+	return suite, s.Close
 }
 
 type navigateTool struct{ s *Session }
@@ -1088,6 +1136,9 @@ func (t *navigateTool) Execute(ctx context.Context, args map[string]any) *tools.
 	if err != nil {
 		return tools.Errorf("%v", err)
 	}
+	if c := t.s.engine(ctx); c != nil {
+		return c.navigate(ctx, url)
+	}
 	// chromedp's Navigate refuses to return before the page's load event, and
 	// that event waits on every script and image: a heavy page on a slow
 	// machine spends tens of seconds past DOM-ready in assets, and one with a
@@ -1138,10 +1189,14 @@ func (t *readTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"filter": map[string]any{"type": "string", "description": "Only list elements whose label or link contains this text (case-insensitive)"},
 			"limit":  map[string]any{"type": "integer", "description": "How many elements to list (default 100, max 300)"},
+			"offset": map[string]any{"type": "integer", "description": "Continue a page the last read cut for length, from the character it stopped at"},
 		},
 	}
 }
 func (t *readTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	if c := t.s.engine(ctx); c != nil {
+		return c.snapshot(ctx, tools.StringArg(args, "filter"), tools.IntArg(args, "limit", 0), tools.IntArg(args, "offset", 0))
+	}
 	r, err := t.s.readPage(ctx, tools.StringArg(args, "filter"), tools.IntArg(args, "limit", defaultElementLimit))
 	if err != nil {
 		return tools.Errorf("read failed: %v", err)
@@ -1163,6 +1218,9 @@ func (t *clickTool) Parameters() map[string]any {
 	}
 }
 func (t *clickTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	if c := t.s.engine(ctx); c != nil {
+		return c.click(ctx, tools.StringArg(args, "target"))
+	}
 	target := tools.StringArg(args, "target")
 	if why := t.s.staleRef(ctx, target); why != "" {
 		return tools.Errorf("click refused: %s", why)
@@ -1273,6 +1331,9 @@ type fillOutcome struct {
 }
 
 func (t *fillTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	if c := t.s.engine(ctx); c != nil {
+		return c.fill(ctx, tools.StringArg(args, "target"), tools.StringArg(args, "text"), tools.BoolArg(args, "submit", false))
+	}
 	target := tools.StringArg(args, "target")
 	if why := t.s.staleRef(ctx, target); why != "" {
 		return tools.Errorf("fill refused: %s", why)
@@ -1349,6 +1410,9 @@ func (t *screenshotTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
 func (t *screenshotTool) Execute(ctx context.Context, _ map[string]any) *tools.Result {
+	if c := t.s.engine(ctx); c != nil {
+		return c.screenshot(ctx)
+	}
 	var buf []byte
 	if err := t.s.run(ctx, 30*time.Second, chromedp.FullScreenshot(&buf, 80)); err != nil {
 		return tools.Errorf("screenshot failed: %v", err)
@@ -1380,6 +1444,9 @@ func (t *evalTool) Parameters() map[string]any {
 	}
 }
 func (t *evalTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	if c := t.s.engine(ctx); c != nil {
+		return c.eval(ctx, tools.StringArg(args, "expression"))
+	}
 	var result any
 	if err := t.s.run(ctx, 20*time.Second, chromedp.Evaluate(tools.StringArg(args, "expression"), &result)); err != nil {
 		return tools.Errorf("eval failed: %v", err)
@@ -1406,6 +1473,9 @@ func (t *scrollTool) Parameters() map[string]any {
 	}
 }
 func (t *scrollTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	if c := t.s.engine(ctx); c != nil {
+		return c.scroll(ctx, tools.StringArg(args, "to"), tools.StringArg(args, "filter"))
+	}
 	to := tools.StringArg(args, "to")
 	var move string
 	switch to {
@@ -1449,6 +1519,9 @@ func (t *backTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
 func (t *backTool) Execute(ctx context.Context, _ map[string]any) *tools.Result {
+	if c := t.s.engine(ctx); c != nil {
+		return c.back(ctx)
+	}
 	// history.back() rather than chromedp.NavigateBack(): the latter waits
 	// for a lifecycle event that a back/forward-cache restore never fires,
 	// so it stalls until timeout on most real pages.

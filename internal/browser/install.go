@@ -5,14 +5,12 @@ package browser
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -37,9 +35,8 @@ import (
 // nothing outside that family offers both.
 
 const (
-	heliumRepo     = "imputnet/helium-linux"
-	heliumHome     = "https://helium.computer"
-	lightpandaRepo = "lightpanda-io/browser"
+	heliumRepo = "imputnet/helium-linux"
+	heliumHome = "https://helium.computer"
 
 	// InstallTimeout bounds one provisioning attempt. The tarball is ~125MB
 	// and the machines that need it most are the ones on slow links.
@@ -202,114 +199,6 @@ func heliumAsset(ctx context.Context) (ghAsset, string, error) {
 	}
 	return latestAsset(ctx, heliumRepo, "Helium", arch+"_linux.tar.xz")
 }
-
-// FastEngineBinary is the provisioned lightweight engine.
-func FastEngineBinary(home string) string {
-	return filepath.Join(home, "engine", "lightpanda")
-}
-
-// EnsureFastEngine installs Lightpanda: a browser written from scratch for
-// automation, with a CDP server and no renderer at all. It reads pages for a
-// fraction of Chromium's memory, which is worth a second engine on a small
-// box — but only reads them, so it supplements the real browser instead of
-// replacing it. Its builds need glibc 2.34, which older distributions do not
-// have; the version check below is what turns that into a clear answer.
-func EnsureFastEngine(ctx context.Context, home string, progress Progress) (string, bool, error) {
-	if progress == nil {
-		progress = func(string, ...any) {}
-	}
-	binary := FastEngineBinary(home)
-	if executable(binary) {
-		return binary, false, nil
-	}
-	arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
-	osName := map[string]string{"linux": "linux", "darwin": "macos"}[runtime.GOOS]
-	if arch == "" || osName == "" {
-		return "", false, fmt.Errorf("no Lightpanda build for %s/%s", runtime.GOOS, runtime.GOARCH)
-	}
-	// Ask before downloading. Finding out from the dynamic linker costs
-	// 150MB and several minutes on exactly the slow machines least able to
-	// spare either.
-	if ok, why := FastEngineSupported(); !ok {
-		return "", false, errors.New(why)
-	}
-	asset, version, err := latestAsset(ctx, lightpandaRepo, "Lightpanda", "lightpanda-"+arch+"-"+osName)
-	if err != nil {
-		return "", false, err
-	}
-
-	staging := filepath.Join(home, "engine", ".staging-fast")
-	if err := os.MkdirAll(staging, 0o755); err != nil {
-		return "", false, err
-	}
-	defer func() { _ = os.RemoveAll(staging) }()
-
-	tmp := filepath.Join(staging, asset.Name)
-	progress("downloading Lightpanda %s (%d MB)", version, asset.Size>>20)
-	if err := download(ctx, asset.URL, tmp, asset.Size, progress); err != nil {
-		return "", false, err
-	}
-	if err := os.Chmod(tmp, 0o755); err != nil {
-		return "", false, err
-	}
-	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
-		return "", false, err
-	}
-	if err := os.Rename(tmp, binary); err != nil {
-		return "", false, fmt.Errorf("installing Lightpanda into %s: %w", binary, err)
-	}
-	out, err := runCmd(ctx, []string{binary, "version"})
-	if err != nil {
-		_ = os.Remove(binary)
-		return "", false, fmt.Errorf("the Lightpanda build for this machine will not run: %v: %s", err, firstLine(out))
-	}
-	progress("installed Lightpanda %s", strings.TrimSpace(out))
-	return binary, true, nil
-}
-
-// lightpandaMinGlibc is the floor its official builds link against. Anything
-// older cannot load them, whatever the architecture says.
-const lightpandaMinGlibc = "2.34"
-
-// FastEngineSupported reports whether this machine can run the lightweight
-// engine, and why not when it cannot.
-func FastEngineSupported() (bool, string) {
-	if runtime.GOOS != "linux" {
-		return true, ""
-	}
-	have := glibcVersion()
-	switch {
-	case have == "musl":
-		return false, "the lightweight engine is built against glibc and this system uses musl"
-	case have == "":
-		return true, "" // undetermined: let the install try and report for itself
-	case !versionAtLeast(have, lightpandaMinGlibc):
-		return false, fmt.Sprintf("the lightweight engine needs glibc %s and this system has %s", lightpandaMinGlibc, have)
-	}
-	return true, ""
-}
-
-// glibcVersion reads the C library version from ldd, returning "musl" for
-// musl systems and "" when it cannot tell.
-func glibcVersion() string {
-	out, err := runCmd(context.Background(), []string{"ldd", "--version"})
-	if err != nil && out == "" {
-		return ""
-	}
-	line := firstLine(out)
-	if strings.Contains(strings.ToLower(line), "musl") {
-		return "musl"
-	}
-	// "ldd (Ubuntu GLIBC 2.31-0ubuntu9) 2.31" — the trailing field is the
-	// plain version, so the last match is the one to take.
-	matches := versionPattern.FindAllString(line, -1)
-	if len(matches) == 0 {
-		return ""
-	}
-	return matches[len(matches)-1]
-}
-
-var versionPattern = regexp.MustCompile(`\d+\.\d+`)
 
 // versionAtLeast compares dotted major.minor versions.
 func versionAtLeast(have, want string) bool {

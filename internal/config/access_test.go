@@ -324,6 +324,9 @@ func TestNormalizeFloors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cfg.Browser.Engine != "auto" || cfg.Browser.Camofox.Port != 9377 {
+		t.Errorf("browser defaults = %+v", cfg.Browser)
+	}
 	if cfg.Agent.MaxToolIterations != 20 || cfg.Agent.MaxConcurrentTurns != 4 || cfg.Provider.MaxTokens != 16384 {
 		t.Errorf("floors not applied: %+v", cfg.Agent)
 	}

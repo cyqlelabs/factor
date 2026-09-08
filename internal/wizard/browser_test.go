@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,7 +87,7 @@ func TestWizardKeepsBrowserToolsWhenInstallDeclined(t *testing.T) {
 }
 
 func TestWizardUsesTheBrowserAlreadyInstalled(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
 	h.opts.EnsureBrowser = func(context.Context, browser.Progress) (string, bool, error) {
 		t.Error("EnsureBrowser called with a browser already on PATH")
 		return "", false, nil
@@ -114,7 +113,7 @@ func TestWizardUsesTheBrowserAlreadyInstalled(t *testing.T) {
 // installed browser still refuses to start; the other, no display, is decided
 // at launch instead of here.
 func TestWizardConfiguresBrowserForRoot(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
 	old := geteuid
 	geteuid = func() int { return 0 }
 	t.Cleanup(func() { geteuid = old })
@@ -131,7 +130,7 @@ func TestWizardConfiguresBrowserForRoot(t *testing.T) {
 }
 
 func TestWizardReportsABrowserThatWillNotDrive(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n")
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
 	h.opts.VerifyBrowser = func(context.Context, config.BrowserConfig) error {
 		return errors.New("chrome exited before the socket appeared")
 	}
@@ -174,91 +173,33 @@ func TestQuietRunProvisionsBrowser(t *testing.T) {
 	}
 }
 
-func TestWizardAddsTheLightweightEngineWhenAskedTo(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y")
+// The headless engine is installed without a question: it is the browser
+// every gateway without a display runs.
+func TestWizardInstallsCamofox(t *testing.T) {
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
-	cfg := h.saved()
-	want := filepath.Join(h.home, "engine", "lightpanda")
-	if !cfg.Browser.FastPath || cfg.Browser.FastCommand != want {
-		t.Errorf("browser = %+v, want the fast path on and pointed at %s", cfg.Browser, want)
+	if !strings.Contains(h.out.String(), "camofox:") {
+		t.Errorf("Camofox was not installed:\n%s", h.out.String())
 	}
 }
 
-// The second engine is a convenience; failing to install it must not cost the
-// user the browser they already have.
-func TestWizardKeepsTheBrowserWhenTheLightweightEngineWillNotInstall(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y")
-	h.opts.EnsureFastBrowser = func(context.Context, browser.Progress) (string, bool, error) {
-		return "", false, errors.New("Lightpanda will not run here: GLIBC_2.34 not found")
+// A headless engine that will not install must not cost the user the
+// browser they already have, and the reason is shown.
+func TestWizardKeepsTheBrowserWhenCamofoxWillNotInstall(t *testing.T) {
+	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
+	h.opts.EnsureCamofox = func(context.Context, browser.Progress) (string, bool, error) {
+		return "", false, errors.New("no Node 22 or newer on this machine")
 	}
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
 	cfg := h.saved()
-	if cfg.Browser.FastPath || cfg.Browser.FastCommand != "" {
-		t.Errorf("browser = %+v, want the fast path left off", cfg.Browser)
-	}
 	if !cfg.Browser.Enabled || cfg.Browser.Command == "" {
 		t.Errorf("browser = %+v, want the real browser untouched", cfg.Browser)
 	}
-	if !strings.Contains(h.out.String(), "GLIBC_2.34") {
+	if !strings.Contains(h.out.String(), "no Node 22") {
 		t.Errorf("the reason was not shown:\n%s", h.out.String())
-	}
-}
-
-// Offering an engine the machine cannot load costs a 150MB download to say
-// no, on exactly the machines least able to spare it.
-func TestWizardDoesNotOfferAnEngineThisMachineCannotRun(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
-	h.opts.FastBrowserSupported = func() (bool, string) {
-		return false, "the lightweight engine needs glibc 2.34 and this system has 2.31"
-	}
-	h.opts.EnsureFastBrowser = func(context.Context, browser.Progress) (string, bool, error) {
-		t.Error("downloaded an engine this machine cannot run")
-		return "", false, nil
-	}
-	if err := h.run(); err != nil {
-		t.Fatalf("wizard: %v\n%s", err, h.out.String())
-	}
-	if h.saved().Browser.FastPath {
-		t.Error("fast path left on for an engine that cannot load")
-	}
-	if !strings.Contains(h.out.String(), "glibc 2.34") {
-		t.Errorf("the reason was not given:\n%s", h.out.String())
-	}
-}
-
-// A configured browser is a browser: the scriptable path must not pull down
-// a second one over it.
-func TestQuietRunKeepsTheConfiguredBrowser(t *testing.T) {
-	home := tempHome(t)
-	existing := fakeBrowserOnPath(t, home)
-	path := filepath.Join(home, "config.json")
-	cfg := fmt.Sprintf(`{"memory":{"mode":"off"},"browser":{"enabled":true,"command":%q}}`, existing)
-	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	err := Run(context.Background(), path, Options{
-		UI:             NewPlain(strings.NewReader(""), &out),
-		NonInteractive: true,
-		Home:           home,
-		EnsureBrowser: func(context.Context, browser.Progress) (string, bool, error) {
-			t.Error("downloaded a browser over the configured one")
-			return "", false, nil
-		},
-		MemoryAnswering: func(context.Context, config.MemoryConfig) bool { return false },
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	saved, err := config.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if saved.Browser.Command != existing {
-		t.Errorf("command = %q, want the configured %q", saved.Browser.Command, existing)
 	}
 }

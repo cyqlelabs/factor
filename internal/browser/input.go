@@ -72,6 +72,9 @@ func (t *uploadTool) Parameters() map[string]any {
 }
 
 func (t *uploadTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	if c := t.s.engine(ctx); c != nil {
+		return c.upload(ctx, tools.StringArg(args, "path"), tools.StringArg(args, "target"))
+	}
 	path := tools.StringArg(args, "path")
 	if t.s.guard != nil {
 		resolved, err := t.s.guard.CheckRead(path)
@@ -226,6 +229,9 @@ func (t *keysTool) Parameters() map[string]any {
 }
 
 func (t *keysTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	if c := t.s.engine(ctx); c != nil {
+		return c.keys(ctx, tools.StringArg(args, "keys"))
+	}
 	chord := strings.TrimSpace(tools.StringArg(args, "keys"))
 	mods, key, code, vk, err := parseChord(chord)
 	if err != nil {

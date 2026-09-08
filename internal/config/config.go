@@ -273,22 +273,34 @@ func (d DesktopConfig) Register(hasDisplay bool) bool {
 	return hasDisplay
 }
 
-// BrowserConfig controls the CDP browser integration. With AttachURL empty,
-// Factor probes the standard DevTools port and falls back to launching a
-// managed instance (visible unless Headless).
+// BrowserConfig controls the browser suite. Two engines answer the same
+// tools: a Chromium driven over DevTools, and Camofox, a Firefox build with
+// its fingerprint spoofed in C++ that sites blocking automation still serve.
+// Engine picks between them: "auto" attaches to a browser already running on
+// the DevTools port when there is one, runs Camofox when there is no display
+// to open a window on (or Headless asks for none), and otherwise launches a
+// visible Chromium; "camofox" and "chromium" force one engine.
 type BrowserConfig struct {
 	Enabled     bool   `json:"enabled"`
+	Engine      string `json:"engine"`
 	AttachURL   string `json:"attach_url,omitempty" env:"FACTOR_BROWSER_ATTACH_URL"`
 	Command     string `json:"command,omitempty"`
 	Headless    bool   `json:"headless"`
 	NoSandbox   bool   `json:"no_sandbox"` // needed as root, in containers, and where user namespaces are restricted
 	UserDataDir string `json:"user_data_dir,omitempty"`
 
-	// FastPath adds a second, much lighter engine that only reads pages.
-	// Off unless asked for: it is a whole extra browser to install, and the
-	// full suite already reads pages perfectly well.
-	FastPath    bool   `json:"fast_path"`
-	FastCommand string `json:"fast_command,omitempty"`
+	Camofox CamofoxConfig `json:"camofox"`
+}
+
+// CamofoxConfig is the headless engine's sidecar. It is a Node server Factor
+// installs under its engine directory and spawns on first use; one already
+// answering on Port is adopted instead, so a Camofox the user runs is the
+// one Factor drives.
+type CamofoxConfig struct {
+	Port int `json:"port"`
+	// Dir is where the package is installed; empty means Factor's own
+	// engine directory.
+	Dir string `json:"dir,omitempty"`
 }
 
 type HeartbeatConfig struct {
@@ -459,7 +471,9 @@ func Default() *Config {
 		},
 		Browser: BrowserConfig{
 			Enabled:     true,
+			Engine:      "auto",
 			UserDataDir: filepath.Join(home, "browser"),
+			Camofox:     CamofoxConfig{Port: 9377},
 		},
 		Heartbeat: HeartbeatConfig{Enabled: true, IntervalMinutes: 30},
 		Gateway:   GatewayConfig{Host: "127.0.0.1", Port: 8720},
@@ -597,6 +611,12 @@ func (c *Config) normalize() {
 	}
 	if c.Provider.MaxTokens <= 0 {
 		c.Provider.MaxTokens = 16384
+	}
+	if c.Browser.Engine == "" {
+		c.Browser.Engine = "auto"
+	}
+	if c.Browser.Camofox.Port <= 0 {
+		c.Browser.Camofox.Port = 9377
 	}
 	if c.Cost.RefreshHours <= 0 {
 		c.Cost.RefreshHours = 24

@@ -126,10 +126,9 @@ func newHarness(t *testing.T, answers ...string) *harness {
 			return filepath.Join(home, "engine", "helium", "helium"), true, nil
 		},
 		VerifyBrowser: func(context.Context, config.BrowserConfig) error { return nil },
-		EnsureFastBrowser: func(context.Context, browser.Progress) (string, bool, error) {
-			return filepath.Join(home, "engine", "lightpanda"), true, nil
+		EnsureCamofox: func(context.Context, browser.Progress) (string, bool, error) {
+			return filepath.Join(home, "engine", "camofox", "node_modules", "@askjo", "camofox-browser", "server.js"), true, nil
 		},
-		FastBrowserSupported: func() (bool, string) { return true, "" },
 		// Never touch this box's login sequence from a test.
 		AutostartInstalled: func() (string, bool) { return "", false },
 		InstallAutostart: func(context.Context, string) (string, error) {

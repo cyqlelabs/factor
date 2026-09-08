@@ -70,10 +70,10 @@ type Options struct {
 	EnsureBrowser func(ctx context.Context, progress browser.Progress) (path string, installed bool, err error)
 	VerifyBrowser func(ctx context.Context, cfg config.BrowserConfig) error
 
-	// EnsureFastBrowser installs the optional read-only engine, and
-	// FastBrowserSupported reports whether this machine could run it at all.
-	EnsureFastBrowser    func(ctx context.Context, progress browser.Progress) (path string, installed bool, err error)
-	FastBrowserSupported func() (bool, string)
+	// EnsureCamofox installs the headless engine, which every machine gets:
+	// it is the browser Factor runs wherever there is no window to open one
+	// in, and the one that sites blocking automation still serve.
+	EnsureCamofox func(ctx context.Context, progress browser.Progress) (path string, installed bool, err error)
 
 	// The autostart trio: saying yes to "start Factor at login" is a request
 	// for a login entry, not for homework, so the wizard installs and removes
@@ -122,12 +122,9 @@ func (o *Options) defaults() {
 	if o.VerifyBrowser == nil {
 		o.VerifyBrowser = browser.Verify
 	}
-	if o.FastBrowserSupported == nil {
-		o.FastBrowserSupported = browser.FastEngineSupported
-	}
-	if o.EnsureFastBrowser == nil {
-		o.EnsureFastBrowser = func(ctx context.Context, progress browser.Progress) (string, bool, error) {
-			return browser.EnsureFastEngine(ctx, o.Home, progress)
+	if o.EnsureCamofox == nil {
+		o.EnsureCamofox = func(ctx context.Context, progress browser.Progress) (string, bool, error) {
+			return browser.EnsureCamofox(ctx, o.Home, progress)
 		}
 	}
 	if o.AutostartInstalled == nil {
@@ -2067,44 +2064,28 @@ func (w *wiz) setupBrowser(ctx context.Context, env desktop.Env) error {
 	}); err != nil {
 		w.ui.Note("the browser is configured but did not finish a page here; the tools will try again on their first call")
 	}
-	return w.setupFastBrowser(ctx)
+	return w.setupCamofox(ctx)
 }
 
-// setupFastBrowser offers the second engine. It stays off unless asked for:
-// it is another browser to download, it cannot click or screenshot, and the
-// real one already reads pages — it just costs far more memory to do it.
-func (w *wiz) setupFastBrowser(ctx context.Context) error {
+// setupCamofox installs the headless engine without asking: it is the
+// browser every gateway without a display runs, so a machine set up over
+// ssh that skipped it would browse with nothing. A failed install is
+// reported and the Chromium engine runs headless in its place.
+func (w *wiz) setupCamofox(ctx context.Context) error {
 	if w.opts.NoInstall {
-		return nil
-	}
-	// Do not offer what this machine cannot run: the answer would cost a
-	// 150MB download to reach.
-	if ok, why := w.opts.FastBrowserSupported(); !ok {
-		w.cfg.Browser.FastPath = false
-		w.ui.Note("%s — skipping it; the full browser reads pages fine", why)
-		return nil
-	}
-	add, err := w.ui.Confirm("Also add a lightweight read-only engine for cheap page reads (Lightpanda, ~150 MB)?", w.cfg.Browser.FastPath)
-	if err != nil {
-		return err
-	}
-	if !add {
-		w.cfg.Browser.FastPath = false
 		return nil
 	}
 	progress := w.ui.Progress()
 	var path string
-	if err := w.ui.Task("installing Lightpanda", func() error {
-		p, _, err := w.opts.EnsureFastBrowser(ctx, progress)
+	if err := w.ui.Task("installing Camofox, the headless engine (Node 22 and a 300 MB Firefox build)", func() error {
+		p, _, err := w.opts.EnsureCamofox(ctx, progress)
 		path = p
 		return err
 	}); err != nil {
-		w.cfg.Browser.FastPath = false
-		w.ui.Note("the full browser handles page reads on its own; nothing else changes")
+		w.ui.Note("Camofox did not install (%v); headless browsing runs on the Chromium engine until it does", err)
 		return nil
 	}
-	w.cfg.Browser.FastPath = true
-	w.cfg.Browser.FastCommand = path
+	w.ui.Success("camofox: %s", path)
 	return nil
 }
 

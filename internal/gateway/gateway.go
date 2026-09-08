@@ -21,6 +21,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/agent"
 	"github.com/cyqlelabs/factor/internal/app"
 	"github.com/cyqlelabs/factor/internal/bands"
+	"github.com/cyqlelabs/factor/internal/browser"
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/channel"
 	_ "github.com/cyqlelabs/factor/internal/channel/phone"    // register connector
@@ -259,6 +260,11 @@ func serve(configPath string) (bool, error) {
 		"version", version.Version,
 		"channels", manager.Names(),
 		"health", fmt.Sprintf("http://%s:%d/health", cfg.Gateway.Host, cfg.Gateway.Port))
+
+	// The daemon is where a gigabyte of engine is worth fetching unasked: it
+	// stays up to finish, and it is what an upgraded install runs first. A
+	// terminal session leaves that to the first page it is asked for.
+	browser.ProvisionInBackground(ctx, cfg.Browser, config.Home())
 
 	reloading := false
 	select {

@@ -212,9 +212,10 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
   "desktop": { "enabled": null },            // null = on when a display exists
   "browser": {
     "enabled": true,
+    "engine": "auto",                        // auto | camofox | chromium
     "command": "",                           // "" = find one; init records what it installed
     "headless": false,
-    "fast_path": false                       // opt in to the lightweight read-only engine
+    "camofox": { "port": 9377 }              // the headless engine's sidecar; one already answering here is adopted
   },
   "heartbeat": { "enabled": true, "interval_minutes": 30 },
   "trace": {
@@ -252,30 +253,38 @@ it works, `HEARTBEAT.md` lists proactive tasks, and `instructions/`, `skills/`,
 
 ## Browser
 
-Factor drives a real browser over DevTools: it attaches to your running
-Chrome/Chromium/Brave, or launches a managed instance that stays visible so you can
-watch it work. A machine with none gets [Helium](https://helium.computer) installed
-under `~/.factor/engine` — ungoogled-chromium with uBlock Origin bundled, from a
-portable tarball that needs no package manager and no root.
+Two engines answer the same eleven tools — `browser_navigate` · `_read` · `_scroll`
+· `_click` · `_fill` · `_keys` · `_upload` · `_tabs` · `_screenshot` · `_eval` ·
+`_back` — and `browser.engine` picks between them:
 
-Reading a page and driving a page cost wildly different amounts, so you can add a
-second engine for the cheap half:
+| Engine | What it is | Runs when |
+|---|---|---|
+| **Chromium** — Helium, or the browser you already run | a real browser driven over DevTools, visible on the desktop | a display exists, or a browser of yours is attached on port 9222 |
+| **Camofox** — [camofox-browser](https://github.com/jo-inc/camofox-browser) over [Camoufox](https://camoufox.com) | a Firefox build whose fingerprint is spoofed in C++ before any page script runs, so Cloudflare and the sites that turn a headless Chromium away serve it | there is no display to open a window on, or `browser.headless` is set |
 
-| Engine | Tools | Renders | Good for |
-|---|---|---|---|
-| **Chromium** — Helium, or the browser you already run | `browser_navigate` · `_read` · `_scroll` · `_click` · `_fill` · `_keys` · `_upload` · `_tabs` · `_screenshot` · `_eval` · `_back` | yes | anything interactive |
-| **Lightpanda** — opt-in, `browser.fast_path` | `browser_fetch` — title, text, links | never | reading a page for a fraction of the memory |
+`auto` is that table; `camofox` and `chromium` force one engine. **Browse as
+yourself.** Start your everyday browser with `--remote-debugging-port=9222` (or point
+`browser.attach_url` at it) and Factor uses that session instead of launching one —
+your logins, your cart, your cookies — and it wins over both engines.
 
-**Browse as yourself.** Start your everyday browser with
-`--remote-debugging-port=9222` (or point `browser.attach_url` at it) and Factor uses
-that session instead of launching one — your logins, your cart, your cookies — so
-sites that turn away a fresh automated profile serve it normally.
+Nothing here is installed by hand. `factor init` puts both engines down — Helium for a
+machine with no browser, Camofox on every machine — and a gateway that finds Camofox
+missing installs it in the background as it starts, so an install upgraded from a Factor
+without it has the engine before the first page is asked for. The Camofox install is an
+npm package and a 300 MB Firefox build kept under `~/.factor/engine/camofox`, run on the
+machine's Node 22.13 or newer, or on a Node Factor downloads for Linux, macOS or Windows
+and checks against its published checksum. Two of the package's native bindings want a
+glibc newer than the distributions Factor is most often put on; where they will not
+load, Factor stands pure-JavaScript stand-ins in for them (the browser itself needs
+nothing newer than glibc 2.18), so no compiler is ever needed. It runs as a sidecar on
+port 9377 — one you run yourself is adopted — and idles at a sleeping Node process,
+launching Firefox on the first page and shutting it down when nothing has asked for a
+while. Its crash telemetry is switched off.
 
-`browser_read` puts main content first and site furniture last, says how much it
-withheld, and takes `filter`/`limit`; `browser_scroll` reaches what only loads on
-the way down. Lightpanda keeps no session and can't click, fill or screenshot, so it
-supplements the real browser rather than replacing it; its builds need glibc 2.34,
-which the wizard checks before the 150 MB download.
+`browser_read` says how much it withheld and takes `filter`/`limit`; on Camofox a page
+comes back as an accessibility snapshot with element refs, a tenth the size of the HTML,
+and `offset` reads on past a cut. `browser_scroll` reaches what only loads on the way
+down.
 
 ## Desktop
 

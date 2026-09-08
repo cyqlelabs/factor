@@ -31,8 +31,8 @@ func EnsureEngine(context.Context, string, Progress) (string, bool, error) {
 	return "", false, errStripped
 }
 
-func EnsureFastEngine(context.Context, string, Progress) (string, bool, error) {
+func EnsureCamofox(context.Context, string, Progress) (string, bool, error) {
 	return "", false, errStripped
 }
 
-func FastEngineSupported() (bool, string) { return false, errStripped.Error() }
+func ProvisionInBackground(context.Context, config.BrowserConfig, string) {}
