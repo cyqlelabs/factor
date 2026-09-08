@@ -703,7 +703,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 		// The batch is answered before any of it is written down, so the
 		// calls can run in whatever order suits them and still be recorded
 		// in the order the model asked for.
-		outcomes := l.runTools(ctx, in.sessionKey, tr, resp.ToolCalls)
+		outcomes := l.runTools(ctx, in.sessionKey, tr, resp.ToolCalls, summaryTruncated(resp.FinishReason))
 		for i, call := range resp.ToolCalls {
 			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: outcomes[i].content}
 			if err := record(toolMsg); err != nil {
@@ -799,7 +799,11 @@ type toolOutcome struct {
 // batches are not eligible and run exactly as they always have: order is
 // load-bearing for a pointer, a browser and a file write, and a tool that has
 // not declared itself is assumed to be one of those.
-func (l *Loop) runTools(ctx context.Context, sessionKey string, tr *trace.Turn, calls []provider.ToolCall) []toolOutcome {
+//
+// cutOff says the reply these calls came in hit the output cap, which is what
+// a call whose arguments never decoded (provider.ToolCall.Malformed) is
+// answered with instead of being run.
+func (l *Loop) runTools(ctx context.Context, sessionKey string, tr *trace.Turn, calls []provider.ToolCall, cutOff bool) []toolOutcome {
 	outcomes := make([]toolOutcome, len(calls))
 
 	firstOf := map[string]int{}
@@ -825,6 +829,12 @@ func (l *Loop) runTools(ctx context.Context, sessionKey string, tr *trace.Turn, 
 			// canceled" left by an interruption has been read back as a
 			// broken browser.
 			outcomes[i] = toolOutcome{content: interruptedTool}
+			return
+		}
+		if call.Malformed {
+			content := "ERROR: " + undecodedCall(call.Name, cutOff, l.cfg.Provider.MaxTokens)
+			tr.Tool(call.Name, nil, 0, len(content), true, content)
+			outcomes[i] = toolOutcome{content: content}
 			return
 		}
 		l.emit(sessionKey, PhaseTool, call.Name)
@@ -871,6 +881,22 @@ func (l *Loop) runTools(ctx context.Context, sessionKey string, tr *trace.Turn, 
 		}
 	}
 	return outcomes
+}
+
+// undecodedCall says why a call did not run when its arguments never decoded.
+// Cut off at the output cap, the JSON is incomplete and the remedy is to ask
+// for less in one call; otherwise the model wrote something that is not JSON.
+func undecodedCall(name string, cutOff bool, maxTokens int) string {
+	if !cutOff {
+		return fmt.Sprintf("%s did not run: its arguments were not valid JSON.", name)
+	}
+	limit := "the output limit"
+	if maxTokens > 0 {
+		limit = fmt.Sprintf("the output limit of %d tokens", maxTokens)
+	}
+	return fmt.Sprintf("%s did not run: the reply hit %s while its arguments were still being written, "+
+		"so they arrived cut off. Ask for less in one call, such as writing a file in smaller pieces "+
+		"or passing a shorter command, and try again.", name, limit)
 }
 
 // batchRunsInParallel reports whether a whole batch may run at once. One

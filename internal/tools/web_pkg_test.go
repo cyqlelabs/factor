@@ -745,3 +745,37 @@ func TestPkgInstallWingetStopsAtTheFirstFailure(t *testing.T) {
 		t.Errorf("the failure does not name the package that failed: %s", res.ForLLM)
 	}
 }
+
+// A manager that lives in a directory the process's PATH does not hold is
+// still found, and it runs from where it was found: Puppy's pkg is in
+// /usr/sbin, which a gateway started from cron or an rc script does not have
+// on PATH, and pkg_install on that box reported that it had no manager.
+func TestPkgInstallFindsAManagerOffPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable bits")
+	}
+	sbin := t.TempDir()
+	bin := filepath.Join(sbin, "pkg")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	saved := sbinDirs
+	sbinDirs = []string{sbin}
+	t.Cleanup(func() { sbinDirs = saved })
+
+	if got := DetectSystemManager(); got != "pkg" {
+		t.Fatalf("DetectSystemManager() = %q, want pkg found off PATH", got)
+	}
+	var argv []string
+	tool := NewPkgInstallTool()
+	tool.euid = func() int { return 0 }
+	tool.runner = func(_ context.Context, a []string) (string, error) { argv = a; return "ok", nil }
+	res := tool.Execute(context.Background(), map[string]any{"packages": []any{"xdotool"}})
+	if res.IsError {
+		t.Fatalf("install refused: %s", res.ForLLM)
+	}
+	if len(argv) == 0 || argv[0] != bin {
+		t.Errorf("argv = %v, want the manager run from %s", argv, bin)
+	}
+}

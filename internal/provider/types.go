@@ -33,6 +33,14 @@ type ToolCall struct {
 	ID   string         `json:"id"`
 	Name string         `json:"name"`
 	Args map[string]any `json:"args"`
+	// Malformed says the arguments arrived but did not decode, so Args holds
+	// none of what the model asked for. The loop answers such a call instead
+	// of running it: validated as an empty argument set it reads as "missing
+	// required argument", which tells a model that just hit the output cap
+	// mid-call that it forgot a field — so it sends the same call again.
+	// Never persisted: the tool result recorded beside the call says what
+	// happened.
+	Malformed bool `json:"-"`
 }
 
 type ToolDefinition struct {

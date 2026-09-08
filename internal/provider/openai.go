@@ -236,11 +236,18 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 	}
 	for _, tc := range choice.Message.ToolCalls {
 		args := map[string]any{}
+		malformed := false
 		if tc.Function.Arguments != "" {
-			// Tolerate malformed arguments; the tool layer reports validation errors.
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			// Arguments that do not decode are kept as a call, not dropped:
+			// a tool_call with no result beside it is a request the next
+			// turn rejects. Decoding may have filled part of the map before
+			// it failed, and a half-read call is worse than an empty one.
+			if json.Unmarshal([]byte(tc.Function.Arguments), &args) != nil {
+				args = map[string]any{}
+				malformed = true
+			}
 		}
-		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: args})
+		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: args, Malformed: malformed})
 	}
 	return out, nil
 }

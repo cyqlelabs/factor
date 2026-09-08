@@ -1088,3 +1088,68 @@ func TestDuplicateToolCallsInOneBatchRunOnce(t *testing.T) {
 		t.Errorf("different arguments must still run: both got %q", answered["c"])
 	}
 }
+
+// A tool call whose arguments were cut off at the output cap is answered,
+// not run: the tool never sees it, and the result names the cap and the
+// remedy. Validated as an empty argument set it read as "missing required
+// argument", which sent one measured turn back to the same oversized write
+// fifteen times.
+func TestCutOffToolCallIsAnsweredNotRun(t *testing.T) {
+	cutOff := func(*provider.Request) (*provider.Response, error) {
+		return &provider.Response{
+			FinishReason: "length",
+			ToolCalls:    []provider.ToolCall{{ID: "tc1", Name: "probe", Malformed: true}},
+		}, nil
+	}
+	h := newHarness(t, cutOff, final("done"))
+	h.loop.cfg.Provider.MaxTokens = 4096
+	if _, err := h.loop.ProcessDirect(context.Background(), "write it", "cli:test"); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.tool.calls) != 0 {
+		t.Fatalf("the tool ran on cut-off arguments: %v", h.tool.calls)
+	}
+	history, _ := h.store.History("cli:test")
+	var result string
+	for _, m := range history {
+		if m.Role == "tool" && m.ToolCallID == "tc1" {
+			result = m.Content
+		}
+	}
+	for _, want := range []string{"ERROR", "probe did not run", "4096 tokens", "cut off", "less in one call"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("result %q does not say %q", result, want)
+		}
+	}
+	if strings.Contains(result, "missing required") {
+		t.Errorf("result still blames a missing field: %q", result)
+	}
+}
+
+// The same call in a reply that was not cut off is the model writing
+// something that is not JSON, and the result says that instead.
+func TestUndecodableToolCallNamesTheJSON(t *testing.T) {
+	broken := func(*provider.Request) (*provider.Response, error) {
+		return &provider.Response{
+			FinishReason: "tool_calls",
+			ToolCalls:    []provider.ToolCall{{ID: "tc1", Name: "probe", Malformed: true}},
+		}, nil
+	}
+	h := newHarness(t, broken, final("done"))
+	if _, err := h.loop.ProcessDirect(context.Background(), "go", "cli:test"); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.tool.calls) != 0 {
+		t.Fatalf("the tool ran on undecodable arguments: %v", h.tool.calls)
+	}
+	history, _ := h.store.History("cli:test")
+	var result string
+	for _, m := range history {
+		if m.Role == "tool" {
+			result = m.Content
+		}
+	}
+	if !strings.Contains(result, "not valid JSON") || strings.Contains(result, "output limit") {
+		t.Errorf("result = %q", result)
+	}
+}

@@ -263,3 +263,37 @@ func TestChainUnclassifiedErrorAborts(t *testing.T) {
 		t.Error("unclassified error should abort, not fail over")
 	}
 }
+
+// A reply cut off at max_tokens mid-call delivers its arguments as
+// incomplete JSON. That call has to survive as a call — a tool_call with no
+// result beside it is a request the next turn rejects — but flagged, so the
+// loop can say what happened instead of validating an empty argument set.
+func TestOpenAIMarksUndecodableArguments(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"role":"assistant","content":"","tool_calls":[
+				{"id":"c1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.txt\"}"}},
+				{"id":"c2","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"b.txt\",\"content\":\"line one\\nline tw"}}
+			]},"finish_reason":"length"}],
+			"usage":{"prompt_tokens":10,"completion_tokens":4096}}`))
+	}))
+	defer srv.Close()
+
+	resp, err := NewOpenAI(srv.URL, "k", "m").Chat(context.Background(), &Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.FinishReason != "length" {
+		t.Errorf("finish reason = %q", resp.FinishReason)
+	}
+	if len(resp.ToolCalls) != 2 {
+		t.Fatalf("tool calls = %+v, want both kept", resp.ToolCalls)
+	}
+	if whole := resp.ToolCalls[0]; whole.Malformed || whole.Args["path"] != "a.txt" {
+		t.Errorf("the complete call = %+v", whole)
+	}
+	if cut := resp.ToolCalls[1]; !cut.Malformed || cut.ID != "c2" || len(cut.Args) != 0 {
+		t.Errorf("the cut-off call = %+v, want flagged with no arguments", cut)
+	}
+}
