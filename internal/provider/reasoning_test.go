@@ -288,3 +288,19 @@ func TestNoReasoningSuppressesEveryDialect(t *testing.T) {
 		}
 	})
 }
+
+// The wizard asks about reasoning only where Factor can send it. A local
+// server handed an unknown field usually rejects the whole request, so the
+// question would offer a setting that breaks the provider it was asked for.
+func TestSupportsReasoning(t *testing.T) {
+	for _, kind := range []string{"openrouter", "openai", "anthropic", "groq", "", "something-new"} {
+		if !SupportsReasoning(kind) {
+			t.Errorf("%q was told it cannot reason", kind)
+		}
+	}
+	for _, kind := range []string{"ollama", "lmstudio", "llamacpp"} {
+		if SupportsReasoning(kind) {
+			t.Errorf("%q was offered reasoning", kind)
+		}
+	}
+}

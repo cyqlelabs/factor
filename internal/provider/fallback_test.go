@@ -184,3 +184,35 @@ func TestSleepCtxWaitsAndHonoursCancellation(t *testing.T) {
 		t.Errorf("sleepCtx = %v, want context.Canceled without waiting", err)
 	}
 }
+
+// A failover only exists in aggregate: the chain logs each one, and a caller
+// keeping a trace needs it as an event it can count rather than a log line
+// it would have to parse back.
+func TestChainReportsEveryFailoverToTheHook(t *testing.T) {
+	type event struct{ provider, reason string }
+	var events []event
+	chain := fastChain(
+		&scriptedProvider{name: "openai:first", fn: func(int) (*Response, error) {
+			return nil, &APIError{Provider: "openai:first", Reason: ReasonBilling, Err: errors.New("no credit")}
+		}},
+		&scriptedProvider{name: "openai:second", fn: func(int) (*Response, error) {
+			return &Response{Content: "answered"}, nil
+		}},
+	)
+	if got := chain.OnFailover(func(_ context.Context, provider, reason string) {
+		events = append(events, event{provider, reason})
+	}); got != chain {
+		t.Error("OnFailover did not return the chain for chaining")
+	}
+
+	resp, err := chain.Chat(context.Background(), &Request{})
+	if err != nil || resp.Content != "answered" {
+		t.Fatalf("resp = %+v, err = %v", resp, err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want the one failover", events)
+	}
+	if events[0].provider != "openai:first" || !strings.Contains(events[0].reason, "billing") {
+		t.Errorf("event = %+v, want the candidate that failed and why", events[0])
+	}
+}

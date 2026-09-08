@@ -263,3 +263,41 @@ func TestDefaultAPIBaseMatchesWhatNewBuilds(t *testing.T) {
 		}
 	}
 }
+
+// The housekeeping chain is what a compaction summary and an induction
+// verdict run on. Unset it must be nil rather than empty, because nil is
+// what tells the loop to bill those calls to the conversation's own chain.
+func TestBuildUtilityChain(t *testing.T) {
+	base := config.ProviderConfig{Type: "openrouter", APIKey: "k", Model: "big/model", MaxRetries: 1}
+	if chain, err := BuildUtilityChain(base); err != nil || chain != nil {
+		t.Fatalf("with no utility configured: chain = %v, err = %v", chain, err)
+	}
+
+	cfg := base
+	cfg.Utility = []config.Candidate{{Model: "small/model"}, {Type: "anthropic", APIKey: "ak", Model: "claude"}}
+	chain, err := BuildUtilityChain(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chain == nil || len(chain.providers) != 2 {
+		t.Fatalf("chain = %+v, want both candidates", chain)
+	}
+	// The first inherits the type and key it did not state; the second
+	// states its own.
+	if got := chain.providers[0].Model(); got != "small/model" {
+		t.Errorf("first model = %q", got)
+	}
+	if got := chain.providers[1].Name(); !strings.Contains(got, "anthropic") {
+		t.Errorf("second provider = %q", got)
+	}
+	// A backoff nobody set still has to be a wait, or a failing candidate is
+	// retried as fast as the loop can ask.
+	if chain.backoff <= 0 {
+		t.Errorf("backoff = %v", chain.backoff)
+	}
+
+	cfg.Utility = []config.Candidate{{Type: "nonsense", Model: "m"}}
+	if _, err := BuildUtilityChain(cfg); err == nil {
+		t.Error("an unknown provider type was accepted")
+	}
+}

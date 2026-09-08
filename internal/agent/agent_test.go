@@ -1153,3 +1153,67 @@ func TestUndecodableToolCallNamesTheJSON(t *testing.T) {
 		t.Errorf("result = %q", result)
 	}
 }
+
+// Where a proactive message may be sent is decided by whether a connector is
+// running for that chat. Unset, everything counts as reachable — the CLI and
+// the tests have no manager to ask — and a chat whose channel is switched
+// off is withheld rather than reported delivered and then dropped.
+func TestReachableDefaultsToEverythingUntilTaught(t *testing.T) {
+	h := newHarness(t, final("ok"))
+	if !h.loop.Reachable("telegram") || !h.loop.Reachable("anything") {
+		t.Error("an untaught loop withheld a channel")
+	}
+	h.loop.SetReachable(func(channel string) bool { return channel == "telegram" })
+	if !h.loop.Reachable("telegram") {
+		t.Error("a running channel was withheld")
+	}
+	if h.loop.Reachable("voice") {
+		t.Error("a channel with no connector was reported reachable")
+	}
+	// Teaching it nothing at all goes back to the open default rather than
+	// muting every channel.
+	h.loop.SetReachable(nil)
+	if !h.loop.Reachable("voice") {
+		t.Error("clearing the hook left the loop mute")
+	}
+}
+
+// A workspace change is recorded through a hook the app installs; without
+// one the workspace is simply unversioned, which is the default.
+func TestWithVersionerRecordsWorkspaceChanges(t *testing.T) {
+	h := newHarness(t, final("ok"))
+	if h.loop.versioner != nil {
+		t.Error("a loop was versioned before anyone asked")
+	}
+	var recorded []string
+	if got := h.loop.WithVersioner(func(what string) { recorded = append(recorded, what) }); got != h.loop {
+		t.Error("WithVersioner did not return the loop for chaining")
+	}
+	h.loop.versioner("skill_write foo")
+	if len(recorded) != 1 || recorded[0] != "skill_write foo" {
+		t.Errorf("recorded = %v", recorded)
+	}
+}
+
+// What started a turn is what the control bands and the trace group by, and
+// the four kinds are not interchangeable: a scheduled job failing is not a
+// user's turn failing, and a job completion re-entering a session is neither.
+func TestTriggerOfNamesWhatStartedTheTurn(t *testing.T) {
+	for _, c := range []struct {
+		msg  bus.InboundMessage
+		want string
+	}{
+		{bus.InboundMessage{Channel: "cron", ChatID: "cron-1"}, "cron"},
+		{bus.InboundMessage{Channel: "system", ChatID: "heartbeat"}, "system"},
+		{bus.InboundMessage{Channel: "telegram", ChatID: "1", System: true}, "job"},
+		{bus.InboundMessage{Channel: "telegram", ChatID: "1"}, "user"},
+		{bus.InboundMessage{Channel: "voice", ChatID: "local"}, "user"},
+		// A machine-authored message on cron is still cron: the channel
+		// decides before the flag does.
+		{bus.InboundMessage{Channel: "cron", ChatID: "cron-1", System: true}, "cron"},
+	} {
+		if got := triggerOf(c.msg); got != c.want {
+			t.Errorf("%+v → %q, want %q", c.msg, got, c.want)
+		}
+	}
+}

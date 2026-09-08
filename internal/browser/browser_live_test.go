@@ -57,7 +57,15 @@ func servePage(t *testing.T) *httptest.Server {
 // A developer running these tests usually has their own browser open with a
 // DevTools port, and without this the live tests would attach to it and drive
 // their real tabs instead of a fixture.
+//
+// It also lets the binary stand in for the Camofox server: the spawn tests
+// hand the session this executable as its Node, so what is exercised is a
+// real process started, health-checked and killed rather than a mock of one.
 func TestMain(m *testing.M) {
+	if os.Getenv("FACTOR_TEST_CAMOFOX_SERVE") != "" {
+		fakeCamofoxServe()
+		return
+	}
 	devtoolsProbe = "http://127.0.0.1:1"
 	os.Exit(m.Run())
 }

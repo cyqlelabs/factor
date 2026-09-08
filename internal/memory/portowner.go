@@ -106,16 +106,29 @@ func procListeners(port int) []int {
 	return pids
 }
 
-// lsofListeners asks lsof, which macOS ships, for the pids listening on port.
-func lsofListeners(port int) []int {
+// helperOutput runs one of the platform helpers. A var so the parsers below
+// can be tested against real captured output on a machine that has neither
+// helper — which is every machine, since no one box ships both.
+var helperOutput = func(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), listenerLookup)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "lsof", "-nP", "-iTCP:"+strconv.Itoa(port), "-sTCP:LISTEN", "-t").Output()
+	out, err := exec.CommandContext(ctx, name, args...).Output()
+	return string(out), err
+}
+
+// lsofListeners asks lsof, which macOS ships, for the pids listening on port.
+func lsofListeners(port int) []int {
+	out, err := helperOutput("lsof", "-nP", "-iTCP:"+strconv.Itoa(port), "-sTCP:LISTEN", "-t")
 	if err != nil {
 		return nil
 	}
+	return parseLsof(out)
+}
+
+// parseLsof reads `lsof -t`, which prints one pid a line and nothing else.
+func parseLsof(out string) []int {
 	var pids []int
-	for _, line := range strings.Fields(string(out)) {
+	for _, line := range strings.Fields(out) {
 		if pid, err := strconv.Atoi(line); err == nil {
 			pids = append(pids, pid)
 		}
@@ -126,15 +139,21 @@ func lsofListeners(port int) []int {
 // netstatListeners reads Windows' netstat, whose LISTENING rows end in the
 // owning pid.
 func netstatListeners(port int) []int {
-	ctx, cancel := context.WithTimeout(context.Background(), listenerLookup)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "netstat", "-ano", "-p", "tcp").Output()
+	out, err := helperOutput("netstat", "-ano", "-p", "tcp")
 	if err != nil {
 		return nil
 	}
+	return parseNetstat(out, port)
+}
+
+// parseNetstat picks the pids from netstat -ano. The local address is the
+// second column and the pid the fifth, and the port has to match the whole
+// last field: :8420 must not be read out of :84200, nor out of a foreign
+// address that merely ends the same way.
+func parseNetstat(out string, port int) []int {
 	suffix := ":" + strconv.Itoa(port)
 	var pids []int
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 5 || fields[3] != "LISTENING" || !strings.HasSuffix(fields[1], suffix) {
 			continue

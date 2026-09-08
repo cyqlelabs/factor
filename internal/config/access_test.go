@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -405,5 +406,33 @@ func TestSecretValuesSkipsAnyShortCredential(t *testing.T) {
 	}
 	if got := cfg.FilterSecrets("using sk-long-enough here"); strings.Contains(got, "sk-long-enough") {
 		t.Errorf("a real key survived filtering: %q", got)
+	}
+}
+
+// log_level moves the threshold rather than replacing the handler, so the
+// names it accepts are the whole interface. An unknown one is refused with
+// the choices spelled out, since a typo that silently meant info is how a
+// debug session produces no debug lines.
+func TestParseLogLevel(t *testing.T) {
+	for name, want := range map[string]slog.Level{
+		"":        slog.LevelInfo,
+		"info":    slog.LevelInfo,
+		"INFO":    slog.LevelInfo,
+		" debug ": slog.LevelDebug,
+		"warn":    slog.LevelWarn,
+		"warning": slog.LevelWarn,
+		"error":   slog.LevelError,
+	} {
+		got, err := parseLogLevel(name)
+		if err != nil || got != want {
+			t.Errorf("%q → %v, %v; want %v", name, got, err, want)
+		}
+	}
+	got, err := parseLogLevel("verbose")
+	if err == nil || !strings.Contains(err.Error(), "debug, info, warn, or error") {
+		t.Errorf("err = %v, want the choices spelled out", err)
+	}
+	if got != slog.LevelInfo {
+		t.Errorf("a refused level = %v, want the default kept", got)
 	}
 }

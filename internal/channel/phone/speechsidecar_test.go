@@ -491,3 +491,89 @@ func TestSpeechSupervisorSpeakerModelNeedsPrepare(t *testing.T) {
 		t.Error("both speaker models on disk still asks to prepare")
 	}
 }
+
+// Speaker identification is the one engine that can be turned on after the
+// venv was built, so it is backfilled rather than treated as a broken
+// install: a venv from before the feature existed is still a working speech
+// venv, and reinstalling the lot to add one wheel costs a gigabyte.
+func TestEnsureSpeakerEngineBackfillsSherpaOnnx(t *testing.T) {
+	home := t.TempDir()
+	python := speechVenvPython(home)
+	restore := runCmd
+	t.Cleanup(func() { runCmd = restore })
+
+	// Not wanted: nothing is probed and nothing installed.
+	var calls []string
+	runCmd = func(_ context.Context, argv []string) (string, error) {
+		calls = append(calls, strings.Join(argv, " "))
+		return "", nil
+	}
+	off := newSpeechSupervisor(SpeechConfig{}, home, "es", "tok", true, true, false)
+	if err := off.ensureSpeakerEngine(context.Background(), python); err != nil || len(calls) != 0 {
+		t.Fatalf("err = %v, calls = %v; want it left alone", err, calls)
+	}
+
+	// Wanted and already there: probed once, installed never.
+	on := newSpeechSupervisor(SpeechConfig{}, home, "es", "tok", true, true, true)
+	if err := on.ensureSpeakerEngine(context.Background(), python); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || !strings.Contains(calls[0], "sherpa-onnx") {
+		t.Fatalf("calls = %v, want one probe", calls)
+	}
+
+	// Wanted and missing: installed, once.
+	calls = nil
+	runCmd = func(_ context.Context, argv []string) (string, error) {
+		calls = append(calls, strings.Join(argv, " "))
+		if strings.Contains(strings.Join(argv, " "), "importlib") {
+			return "", errors.New("PackageNotFoundError")
+		}
+		return "", nil
+	}
+	backfill := newSpeechSupervisor(SpeechConfig{}, home, "es", "tok", true, true, true)
+	if err := backfill.ensureSpeakerEngine(context.Background(), python); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || !strings.Contains(calls[1], "install") || !strings.Contains(calls[1], sherpaOnnxSpec) {
+		t.Fatalf("calls = %v, want the probe then the install", calls)
+	}
+
+	// An install that fails is reported with what pip said, and is not
+	// retried for the rest of the run: a wheel that will not build here
+	// will not build on the next utterance either.
+	calls = nil
+	runCmd = func(_ context.Context, argv []string) (string, error) {
+		joined := strings.Join(argv, " ")
+		calls = append(calls, joined)
+		if strings.Contains(joined, "importlib") {
+			return "", errors.New("PackageNotFoundError")
+		}
+		return "error: no matching distribution", errors.New("exit status 1")
+	}
+	failing := newSpeechSupervisor(SpeechConfig{}, home, "es", "tok", true, true, true)
+	err := failing.ensureSpeakerEngine(context.Background(), python)
+	if err == nil || !strings.Contains(err.Error(), "no matching distribution") {
+		t.Fatalf("err = %v, want what pip said", err)
+	}
+	again := failing.ensureSpeakerEngine(context.Background(), python)
+	if again == nil || !strings.Contains(again.Error(), "already failed") {
+		t.Errorf("second call = %v, want it to stop trying", again)
+	}
+}
+
+// With installing switched off, a missing engine is a sentence naming what
+// to install rather than a silent download.
+func TestEnsureSpeakerEngineRespectsAutoInstallOff(t *testing.T) {
+	home := t.TempDir()
+	restore := runCmd
+	t.Cleanup(func() { runCmd = restore })
+	runCmd = func(context.Context, []string) (string, error) { return "", errors.New("PackageNotFoundError") }
+
+	no := false
+	s := newSpeechSupervisor(SpeechConfig{AutoInstall: &no}, home, "es", "tok", true, true, true)
+	err := s.ensureSpeakerEngine(context.Background(), speechVenvPython(home))
+	if err == nil || !strings.Contains(err.Error(), sherpaOnnxSpec) || !strings.Contains(err.Error(), "auto_install") {
+		t.Fatalf("err = %v, want the package and the setting named", err)
+	}
+}

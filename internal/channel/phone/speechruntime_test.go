@@ -189,3 +189,48 @@ type exitErr int
 
 func (e exitErr) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 func (e exitErr) ExitCode() int { return int(e) }
+
+// A weight download that half-arrives is worse than one that never starts:
+// the server loads the file next boot and fails on it. Every refusal has to
+// be an error the caller sees, with the URL in it.
+func TestFetchFileWritesWhatItGotAndReportsWhatItDidNot(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/voice.onnx":
+			_, _ = w.Write([]byte("weights"))
+		case "/gone":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "voice.onnx")
+	if err := fetchFile(context.Background(), srv.URL+"/voice.onnx", dest); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(dest); err != nil || string(data) != "weights" {
+		t.Errorf("file = %q, %v", data, err)
+	}
+
+	missing := filepath.Join(t.TempDir(), "missing.onnx")
+	err := fetchFile(context.Background(), srv.URL+"/gone", missing)
+	if err == nil || !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "/gone") {
+		t.Errorf("err = %v, want the status and the URL", err)
+	}
+	if _, statErr := os.Stat(missing); statErr == nil {
+		t.Error("a refused download left a file behind")
+	}
+	if err := fetchFile(context.Background(), "http://127.0.0.1:1/x", missing); err == nil {
+		t.Error("an unreachable host was accepted")
+	}
+	if err := fetchFile(context.Background(), "://not a url", missing); err == nil {
+		t.Error("a malformed URL was accepted")
+	}
+	// A destination that cannot be created is the caller's mistake, and it
+	// is reported rather than swallowed.
+	if err := fetchFile(context.Background(), srv.URL+"/voice.onnx", filepath.Join(t.TempDir(), "nope", "x")); err == nil {
+		t.Error("an unwritable destination was accepted")
+	}
+}

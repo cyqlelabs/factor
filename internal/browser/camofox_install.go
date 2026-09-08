@@ -219,6 +219,13 @@ func standIns(ctx context.Context, node, dir string, progress Progress) error {
 		if err == nil {
 			continue
 		}
+		// Only a C library too old for the prebuilt binding is stood in
+		// for. Every other load failure is the package itself being
+		// broken, and replacing the module there would hide it: the
+		// stand-ins cover what Factor does not use, not what it does.
+		if !strings.Contains(out, "GLIBC_") {
+			return fmt.Errorf("the %s module Camofox depends on does not load: %s", si.module, firstLine(out))
+		}
 		progress("%s does not load here (%s); standing in for it, since Factor never needs what it does", si.module, firstLine(out))
 		_ = os.Remove(path + ".orig")
 		if err := os.Rename(path, path+".orig"); err != nil {
@@ -359,12 +366,20 @@ func ensureNode(ctx context.Context, home string, progress Progress) (string, er
 }
 
 // nodeAsset names the official archive for this machine.
-func nodeAsset() (string, error) {
-	arch := map[string]string{"amd64": "x64", "arm64": "arm64"}[runtime.GOARCH]
+func nodeAsset() (string, error) { return nodeAssetFor(runtime.GOOS, runtime.GOARCH) }
+
+// nodeAssetFor is the platform matrix, spelled the way nodejs.org spells it:
+// Linux and macOS ship tarballs, Windows a zip, and the architecture is x64
+// rather than Go's amd64. Taking the platform as arguments is what lets one
+// machine check the names for all of them — a wrong name is a download that
+// 404s on somebody else's laptop.
+func nodeAssetFor(goos, goarch string) (string, error) {
+	arch := map[string]string{"amd64": "x64", "arm64": "arm64"}[goarch]
+	unsupported := fmt.Errorf("no Node build for %s/%s", goos, goarch)
 	if arch == "" {
-		return "", fmt.Errorf("no Node build for %s/%s", runtime.GOOS, runtime.GOARCH)
+		return "", unsupported
 	}
-	switch runtime.GOOS {
+	switch goos {
 	case "linux":
 		return fmt.Sprintf("node-v%s-linux-%s.tar.gz", nodeVersion, arch), nil
 	case "darwin":
@@ -372,7 +387,7 @@ func nodeAsset() (string, error) {
 	case "windows":
 		return fmt.Sprintf("node-v%s-win-%s.zip", nodeVersion, arch), nil
 	}
-	return "", fmt.Errorf("no Node build for %s/%s", runtime.GOOS, runtime.GOARCH)
+	return "", unsupported
 }
 
 // nodeChecksum reads the release's checksum for one asset.

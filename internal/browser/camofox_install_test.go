@@ -4,6 +4,7 @@ package browser
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -351,5 +352,436 @@ func TestNpmForSitsBesideNode(t *testing.T) {
 	}
 	if got := npmFor("/nowhere/node"); got != "npm" && got != "npm.cmd" {
 		t.Errorf("npmFor without a sibling = %q", got)
+	}
+}
+
+// zipWith builds an archive holding the named entries, so the unpacker can
+// be tested on what a Windows Node release looks like without one.
+func zipWith(t *testing.T, entries map[string]string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "archive.zip")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	w := zip.NewWriter(f)
+	for name, body := range entries {
+		if strings.HasSuffix(name, "/") {
+			if _, err := w.Create(name); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		hdr := &zip.FileHeader{Name: name, Method: zip.Deflate}
+		hdr.SetMode(0o755)
+		e, err := w.CreateHeader(hdr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestUnzipUnpacksAndKeepsModes(t *testing.T) {
+	archive := zipWith(t, map[string]string{
+		"node-v22/":         "",
+		"node-v22/node.exe": "binary",
+		"node-v22/lib/x.js": "module",
+	})
+	dest := t.TempDir()
+	if err := unzip(archive, dest); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "node-v22", "node.exe"))
+	if err != nil || string(data) != "binary" {
+		t.Fatalf("node.exe = %q, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "node-v22", "lib", "x.js")); err != nil {
+		t.Errorf("nested file missing: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dest, "node-v22", "node.exe"))
+	if err != nil || (runtime.GOOS != "windows" && info.Mode()&0o111 == 0) {
+		t.Errorf("the executable bit was lost: %v %v", info.Mode(), err)
+	}
+	if root, err := singleDir(dest); err != nil || filepath.Base(root) != "node-v22" {
+		t.Errorf("singleDir = %q, %v", root, err)
+	}
+}
+
+// An archive entry naming a path outside the destination is refused rather
+// than written: a release is a download, and a download is not trusted to
+// choose where it lands.
+func TestUnzipRefusesAnEscapingEntry(t *testing.T) {
+	archive := zipWith(t, map[string]string{"../escaped.txt": "no"})
+	dest := t.TempDir()
+	if err := unzip(archive, dest); err == nil || !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("err = %v, want the escape refused", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dest), "escaped.txt")); err == nil {
+		t.Error("the entry was written outside the destination")
+	}
+}
+
+// tarWith builds a gzipped tarball from a list of entries, including the
+// symlinks a real Node release carries.
+type tarEntry struct {
+	name, body, link string
+	dir              bool
+}
+
+func tarWith(t *testing.T, entries []tarEntry) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "archive.tar.gz")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for _, e := range entries {
+		hdr := &tar.Header{Name: e.name, Mode: 0o755}
+		switch {
+		case e.dir:
+			hdr.Typeflag = tar.TypeDir
+		case e.link != "":
+			hdr.Typeflag = tar.TypeSymlink
+			hdr.Linkname = e.link
+		default:
+			hdr.Typeflag = tar.TypeReg
+			hdr.Size = int64(len(e.body))
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			if _, err := tw.Write([]byte(e.body)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestUntarGzUnpacksFilesDirsAndLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need a privilege there")
+	}
+	archive := tarWith(t, []tarEntry{
+		{name: "node-v22/", dir: true},
+		{name: "node-v22/bin/", dir: true},
+		{name: "node-v22/bin/node", body: "binary"},
+		{name: "node-v22/bin/npm", link: "../lib/npm.js"},
+	})
+	dest := t.TempDir()
+	if err := untarGz(archive, dest); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dest, "node-v22", "bin", "node")); err != nil || string(data) != "binary" {
+		t.Fatalf("node = %q, %v", data, err)
+	}
+	link, err := os.Readlink(filepath.Join(dest, "node-v22", "bin", "npm"))
+	if err != nil || link != "../lib/npm.js" {
+		t.Errorf("npm link = %q, %v", link, err)
+	}
+	// Unpacking twice is how a retried install behaves; the link must not
+	// stop it.
+	if err := untarGz(archive, dest); err != nil {
+		t.Errorf("second unpack: %v", err)
+	}
+}
+
+func TestUntarGzRefusesAnEscapingEntry(t *testing.T) {
+	archive := tarWith(t, []tarEntry{{name: "../escaped", body: "no"}})
+	if err := untarGz(archive, t.TempDir()); err == nil || !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestUntarGzRejectsSomethingThatIsNotAnArchive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not.tar.gz")
+	if err := os.WriteFile(path, []byte("this is not gzip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := untarGz(path, t.TempDir()); err == nil {
+		t.Error("a plain file was accepted as a tarball")
+	}
+	if err := untarGz(filepath.Join(t.TempDir(), "missing.tar.gz"), t.TempDir()); err == nil {
+		t.Error("a missing archive was accepted")
+	}
+	if err := unzip(filepath.Join(t.TempDir(), "missing.zip"), t.TempDir()); err == nil {
+		t.Error("a missing zip was accepted")
+	}
+}
+
+// The checksum file lists every asset of a release; the one for this machine
+// has to be found in it, and a release that lists none is a refusal.
+func TestNodeChecksumFindsTheAssetAndReportsAMissingOne(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "empty"):
+			fmt.Fprint(w, "deadbeef  some-other-build.tar.gz\n")
+		case strings.Contains(r.URL.Path, "broken"):
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			fmt.Fprintf(w, "  \nabc123  wanted.tar.gz\ndeadbeef  other.tar.gz\n")
+		}
+	}))
+	defer srv.Close()
+
+	got, err := nodeChecksum(context.Background(), srv.URL+"/SHASUMS256.txt", "wanted.tar.gz")
+	if err != nil || got != "abc123" {
+		t.Errorf("checksum = %q, %v", got, err)
+	}
+	if _, err := nodeChecksum(context.Background(), srv.URL+"/empty", "wanted.tar.gz"); err == nil || !strings.Contains(err.Error(), "no checksum") {
+		t.Errorf("err = %v, want the missing asset reported", err)
+	}
+	if _, err := nodeChecksum(context.Background(), srv.URL+"/broken", "wanted.tar.gz"); err == nil {
+		t.Error("an unreadable checksum file was accepted")
+	}
+	if _, err := nodeChecksum(context.Background(), "http://127.0.0.1:1/x", "a"); err == nil {
+		t.Error("an unreachable host was accepted")
+	}
+}
+
+func TestFileSHA256(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := fileSHA256(path)
+	if err != nil || got != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" {
+		t.Errorf("sha256 = %q, %v", got, err)
+	}
+	if _, err := fileSHA256(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("a missing file was hashed")
+	}
+}
+
+// A release without a build for this machine is reported before anything is
+// downloaded.
+func TestEnsureNodeReportsAReleaseWithoutThisMachinesBuild(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "deadbeef  node-v1.2.3-nowhere-x64.tar.gz\n")
+	}))
+	defer srv.Close()
+	saved := nodeDist
+	nodeDist = srv.URL + "/v%s/"
+	t.Cleanup(func() { nodeDist = saved })
+	stubCommands(t, 0, true)
+
+	if _, err := ensureNode(context.Background(), t.TempDir(), func(string, ...any) {}); err == nil || !strings.Contains(err.Error(), "no checksum") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A download the server refuses is reported rather than written as an empty
+// archive.
+func TestEnsureNodeReportsAFailedDownload(t *testing.T) {
+	asset, err := nodeAsset()
+	if err != nil {
+		t.Skip(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "SHASUMS256.txt") {
+			fmt.Fprintf(w, "%s  %s\n", strings.Repeat("0", 64), asset)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	saved := nodeDist
+	nodeDist = srv.URL + "/v%s/"
+	t.Cleanup(func() { nodeDist = saved })
+	stubCommands(t, 0, true)
+
+	home := t.TempDir()
+	if _, err := ensureNode(context.Background(), home, func(string, ...any) {}); err == nil || !strings.Contains(err.Error(), "downloading Node") {
+		t.Fatalf("err = %v", err)
+	}
+	if executable(provisionedNode(home)) {
+		t.Error("a refused download left a Node behind")
+	}
+}
+
+// npm failing is the install failing: nothing is reported as installed, and
+// what npm said comes back with it.
+func TestEnsureCamofoxReportsAFailedInstall(t *testing.T) {
+	stubCommands(t, 22, true)
+	saved := runCmdEnv
+	runCmdEnv = func(_ context.Context, argv []string, _ []string, _ string) (string, error) {
+		if len(argv) > 1 && argv[1] == "install" {
+			return "npm error code E404\nnot found", errors.New("exit status 1")
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { runCmdEnv = saved })
+
+	home := t.TempDir()
+	server, installed, err := EnsureCamofox(context.Background(), home, nil)
+	if err == nil || !strings.Contains(err.Error(), "E404") {
+		t.Fatalf("err = %v, want what npm said", err)
+	}
+	if server != "" || installed {
+		t.Errorf("a failed install reported %q installed=%v", server, installed)
+	}
+}
+
+// npm can report success and lay down nothing, which is a failure that has
+// to be caught here rather than at the first page.
+func TestEnsureCamofoxCatchesAnEmptyInstall(t *testing.T) {
+	stubCommands(t, 22, true)
+	saved := runCmdEnv
+	runCmdEnv = func(context.Context, []string, []string, string) (string, error) { return "", nil }
+	t.Cleanup(func() { runCmdEnv = saved })
+
+	_, _, err := EnsureCamofox(context.Background(), t.TempDir(), nil)
+	if err == nil || !strings.Contains(err.Error(), "is missing") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// The browser build is what the engine cannot start without, so a fetch that
+// leaves nothing behind fails the install.
+func TestEnsureCamofoxCatchesAFetchThatFetchedNothing(t *testing.T) {
+	stubCommands(t, 22, true)
+	saved := runCmdEnv
+	inner := runCmdEnv
+	runCmdEnv = func(ctx context.Context, argv, env []string, dir string) (string, error) {
+		if len(argv) > 2 && argv[2] == "fetch" {
+			return "network unreachable", errors.New("exit status 1")
+		}
+		return inner(ctx, argv, env, dir)
+	}
+	t.Cleanup(func() { runCmdEnv = saved })
+
+	_, _, err := EnsureCamofox(context.Background(), t.TempDir(), nil)
+	if err == nil || !strings.Contains(err.Error(), "Camoufox build failed") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// Every platform Factor builds for has to name an archive nodejs.org
+// publishes, and name it exactly: this is checked from one machine because
+// a wrong name is a 404 on somebody else's.
+func TestNodeAssetNamesEveryPlatform(t *testing.T) {
+	for _, c := range []struct{ goos, goarch, want string }{
+		{"linux", "amd64", "node-v" + nodeVersion + "-linux-x64.tar.gz"},
+		{"linux", "arm64", "node-v" + nodeVersion + "-linux-arm64.tar.gz"},
+		{"darwin", "amd64", "node-v" + nodeVersion + "-darwin-x64.tar.gz"},
+		{"darwin", "arm64", "node-v" + nodeVersion + "-darwin-arm64.tar.gz"},
+		{"windows", "amd64", "node-v" + nodeVersion + "-win-x64.zip"},
+		{"windows", "arm64", "node-v" + nodeVersion + "-win-arm64.zip"},
+	} {
+		got, err := nodeAssetFor(c.goos, c.goarch)
+		if err != nil || got != c.want {
+			t.Errorf("%s/%s = %q, %v; want %q", c.goos, c.goarch, got, err, c.want)
+		}
+	}
+	for _, c := range []struct{ goos, goarch string }{
+		{"linux", "386"}, {"linux", "riscv64"}, {"freebsd", "amd64"}, {"plan9", "arm64"},
+	} {
+		if got, err := nodeAssetFor(c.goos, c.goarch); err == nil {
+			t.Errorf("%s/%s named %q, want it refused", c.goos, c.goarch, got)
+		}
+	}
+}
+
+// The interpreter and the browser both live where the platform puts them.
+func TestProvisionedPathsFollowThePlatform(t *testing.T) {
+	home := filepath.Join("h", ".factor")
+	node := provisionedNode(home)
+	wantNode := filepath.Join(home, "engine", "node", "bin", "node")
+	if runtime.GOOS == "windows" {
+		wantNode = filepath.Join(home, "engine", "node", "node.exe")
+	}
+	if node != wantNode {
+		t.Errorf("node = %q, want %q", node, wantNode)
+	}
+	if got := camofoxServer(CamofoxDir(home)); got != filepath.Join(home, "engine", "camofox", "node_modules", "@askjo", "camofox-browser", "server.js") {
+		t.Errorf("server = %q", got)
+	}
+	if got := camoufoxDir(CamofoxDir(home)); got != filepath.Join(home, "engine", "camofox", "camoufox") {
+		t.Errorf("camoufox dir = %q", got)
+	}
+}
+
+// A node whose --version says nothing usable is not a node to run the
+// engine on.
+func TestNodeVersionOfRejectsNonsense(t *testing.T) {
+	saved := runCmd
+	runCmd = func(_ context.Context, argv []string) (string, error) {
+		if strings.Contains(argv[0], "broken") {
+			return "", errors.New("exit status 127")
+		}
+		return "not a version at all\n", nil
+	}
+	t.Cleanup(func() { runCmd = saved })
+	if _, err := nodeVersionOf(context.Background(), "/usr/bin/node"); err == nil || !strings.Contains(err.Error(), "not a version") {
+		t.Errorf("err = %v, want what node printed", err)
+	}
+	if _, err := nodeVersionOf(context.Background(), "/usr/bin/broken"); err == nil {
+		t.Error("a node that would not run was accepted")
+	}
+}
+
+// A stand-in is written only where the module exists: a package version that
+// does not carry it is left alone rather than gaining a file.
+func TestStandInsSkipModulesThatAreNotThere(t *testing.T) {
+	dir := t.TempDir()
+	saved := runCmdEnv
+	runCmdEnv = func(context.Context, []string, []string, string) (string, error) {
+		t.Error("probed a module that is not installed")
+		return "", nil
+	}
+	t.Cleanup(func() { runCmdEnv = saved })
+	if err := standIns(context.Background(), "node", dir, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	for _, si := range standInList {
+		if _, err := os.Stat(filepath.Join(dir, "node_modules", si.file)); err == nil {
+			t.Errorf("wrote a stand-in for %s, which is not installed", si.module)
+		}
+	}
+}
+
+// A load failure that is not the C library is reported rather than papered
+// over: a stand-in would hide a real break in the package.
+func TestStandInsReportOtherLoadFailures(t *testing.T) {
+	dir := t.TempDir()
+	for _, si := range standInList {
+		path := filepath.Join(dir, "node_modules", si.file)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("native"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saved := runCmdEnv
+	runCmdEnv = func(context.Context, []string, []string, string) (string, error) {
+		return "SyntaxError: something else entirely", errors.New("exit status 1")
+	}
+	t.Cleanup(func() { runCmdEnv = saved })
+	err := standIns(context.Background(), "node", dir, func(string, ...any) {})
+	if err == nil || !strings.Contains(err.Error(), "something else") {
+		t.Fatalf("err = %v, want the real failure reported", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "node_modules", standInList[0].file))
+	if string(data) != "native" {
+		t.Error("the module was replaced despite an unexplained failure")
 	}
 }

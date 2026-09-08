@@ -569,3 +569,50 @@ func TestGuardUnrestrictedAllowsAnyPath(t *testing.T) {
 		t.Errorf("unrestricted guard denied a read: %v", err)
 	}
 }
+
+// conditionalTool declares itself safe only for some of its calls, which is
+// what a tool that both reads and writes looks like.
+type conditionalTool struct {
+	ReadOnly
+	name string
+	safe func(map[string]any) bool
+}
+
+func (c *conditionalTool) Name() string               { return c.name }
+func (c *conditionalTool) Description() string        { return "conditional" }
+func (c *conditionalTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
+func (c *conditionalTool) ParallelSafe(a map[string]any) bool {
+	return c.safe == nil || c.safe(a)
+}
+func (c *conditionalTool) Execute(context.Context, map[string]any) *Result { return Text("ok") }
+
+// What may run beside what is the registry's answer, and the default is no:
+// a tool that has not declared the capability is one nobody has thought
+// about, and being wrong there is a race rather than a slow turn.
+func TestRegistryParallelSafe(t *testing.T) {
+	r := NewRegistry(nil, nil)
+	r.Register(
+		&echoTool{},                      // says nothing
+		&conditionalTool{name: "reader"}, // always safe
+		&conditionalTool{name: "maybe", safe: func(a map[string]any) bool { return a["write"] != true }},
+	)
+	if r.ParallelSafe("echo", nil) {
+		t.Error("a tool that never declared the capability was run in parallel")
+	}
+	if !r.ParallelSafe("reader", nil) {
+		t.Error("a declared tool was serialized")
+	}
+	if !r.ParallelSafe("maybe", map[string]any{"write": false}) {
+		t.Error("a safe call was serialized")
+	}
+	if r.ParallelSafe("maybe", map[string]any{"write": true}) {
+		t.Error("a writing call was run in parallel")
+	}
+	if r.ParallelSafe("nothing-registered", nil) {
+		t.Error("an unknown tool was called parallel-safe")
+	}
+	// Embedding ReadOnly is the shorthand every read-only suite uses.
+	if !(ReadOnly{}).ParallelSafe(map[string]any{"anything": 1}) {
+		t.Error("ReadOnly did not declare itself safe")
+	}
+}

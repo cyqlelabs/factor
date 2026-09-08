@@ -2,6 +2,8 @@ package cron
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -231,5 +233,42 @@ func TestMinutelyScheduleStillFiresEveryMinute(t *testing.T) {
 		if due := s.dueJobs(); len(due) != 1 {
 			t.Fatalf("minute %d: due = %+v", i, due)
 		}
+	}
+}
+
+// Another process writing the store is the normal case — the gateway and a
+// terminal both hold one — so every operation re-reads it first. A read that
+// fails must not stop the jobs this process already holds: trading a stat
+// error for a scheduler that runs nothing is the failure this file exists to
+// prevent.
+func TestACorruptStoreDoesNotStopTheJobsAlreadyHeld(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewService(dir, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.Add("0 9 * * *", "morning", "telegram", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.List()) != 1 {
+		t.Fatalf("jobs = %d", len(s.List()))
+	}
+
+	// Something else writes nonsense over the file.
+	path := filepath.Join(dir, "cron.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.List(); len(got) != 1 || got[0].ID != job.ID {
+		t.Errorf("jobs after a corrupt store = %+v, want the last good copy", got)
+	}
+
+	// And a store that is simply gone leaves the same jobs scheduled.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.List(); len(got) != 1 {
+		t.Errorf("jobs after the store vanished = %+v", got)
 	}
 }

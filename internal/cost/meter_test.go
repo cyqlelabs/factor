@@ -347,3 +347,40 @@ func TestBySpendBreaksTiesPredictably(t *testing.T) {
 		t.Errorf("order = %v", got)
 	}
 }
+
+// The trace carries the money beside the tools it was spent on, and the
+// meter is the only place that sees the model that actually answered — the
+// chain fails over, so the caller cannot infer it from configuration.
+func TestMeterReportsEveryChargeToTheTraceHook(t *testing.T) {
+	type charge struct {
+		session, model string
+		totals         Totals
+		cacheWrite     int
+	}
+	var charges []charge
+	m, _ := meterFor(t, config.CostConfig{Track: true}, answered("a/model", 1000, 500))
+	if got := m.OnCharge(func(session, model string, t Totals, cacheWrite int) {
+		charges = append(charges, charge{session, model, t, cacheWrite})
+	}); got != m {
+		t.Error("OnCharge did not return the meter for chaining")
+	}
+	if _, err := m.Chat(inSession("telegram:1"), &provider.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(charges) != 1 {
+		t.Fatalf("charges = %+v, want one", charges)
+	}
+	c := charges[0]
+	if c.session != "telegram:1" || c.model != "a/model" {
+		t.Errorf("charge = %+v, want it billed to the session that called", c)
+	}
+	if c.totals.USD != 2 || c.totals.Input != 1000 || c.totals.Output != 500 {
+		t.Errorf("charged totals = %+v", c.totals)
+	}
+
+	// A meter nobody is counting with must not panic on the hook.
+	var nilMeter *Meter
+	if got := nilMeter.OnCharge(func(string, string, Totals, int) {}); got != nil {
+		t.Error("a nil meter answered OnCharge with something")
+	}
+}

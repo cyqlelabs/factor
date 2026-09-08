@@ -290,3 +290,41 @@ func TestSkillToolsDeclareUsableSchemas(t *testing.T) {
 		}
 	}
 }
+
+// Writing a skill is a change to the user's half of the prompt, which the
+// app records in version control through this hook. The package knows what
+// it wrote and nothing about git, and it stays that way.
+func TestSkillWritesReportThroughTheChangeHook(t *testing.T) {
+	root := t.TempDir()
+	var changes []string
+	write := &WriteTool{Root: root, ChangeHook: ChangeHook{OnChange: func(what string) {
+		changes = append(changes, what)
+	}}}
+	res := write.Execute(context.Background(), map[string]any{
+		"name": "deploy", "description": "how this project ships", "content": "# Deploy\n\nRun make.",
+	})
+	if res.IsError {
+		t.Fatalf("write: %s", res.ForLLM)
+	}
+	if len(changes) != 1 || !strings.Contains(changes[0], "deploy") {
+		t.Errorf("changes = %v, want the skill named", changes)
+	}
+
+	// A refused write changes nothing, so it reports nothing.
+	changes = nil
+	if res := write.Execute(context.Background(), map[string]any{"name": "no spaces allowed"}); !res.IsError {
+		t.Fatal("an invalid name was accepted")
+	}
+	if len(changes) != 0 {
+		t.Errorf("a refused write reported %v", changes)
+	}
+
+	// Without a hook the write still lands: the workspace is simply
+	// unversioned, which is the default.
+	plain := &WriteTool{Root: root}
+	if res := plain.Execute(context.Background(), map[string]any{
+		"name": "other", "description": "d", "content": "c",
+	}); res.IsError {
+		t.Errorf("write without a hook: %s", res.ForLLM)
+	}
+}

@@ -699,3 +699,32 @@ func TestLatestIgnoresACacheWithoutAChecksum(t *testing.T) {
 		t.Error("a cache carrying no checksum was accepted")
 	}
 }
+
+// The cache exists to keep Factor off GitHub's counted budget, which every
+// address behind a NAT shares. Failing to write it costs one request per
+// restart, which is not worth failing an upgrade over — so a cache that
+// cannot be written is silent, and the check still answers.
+func TestSaveReleaseCacheIsBestEffort(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	cached := releaseCache{
+		Checked: time.Now(),
+		Release: Release{Version: "v9.9.9", Asset: AssetName(), URL: "https://example/x", Sum: "abc"},
+	}
+	saveReleaseCache(cached)
+	got, ok := loadReleaseCache()
+	if !ok || got.Release.Version != "v9.9.9" {
+		t.Fatalf("cache = %+v, %v", got, ok)
+	}
+
+	// A home that is a file, not a directory: nothing can be written under
+	// it, and nothing may panic or fail over it either.
+	blocked := filepath.Join(t.TempDir(), "home")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FACTOR_HOME", blocked)
+	saveReleaseCache(cached)
+	if _, ok := loadReleaseCache(); ok {
+		t.Error("a cache was read back from a home that cannot hold one")
+	}
+}

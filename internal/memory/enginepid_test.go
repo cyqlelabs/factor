@@ -173,3 +173,37 @@ func TestStopEngineStopsAnEngineNobodyRecorded(t *testing.T) {
 		t.Fatal("the engine on the port is still running")
 	}
 }
+
+// EnginePid is how a caller tells a machine whose supervisor put a
+// replacement in place from one where nothing will: the exported reading has
+// to be the recorded pid and whether that process is still alive, not just
+// whether a file exists.
+func TestEnginePidReportsTheRecordedEngineAndItsLiveness(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	if pid, alive := EnginePid(); pid != 0 || alive {
+		t.Errorf("with no engine recorded: %d, %v", pid, alive)
+	}
+
+	writeEnginePid(os.Getpid())
+	pid, alive := EnginePid()
+	if pid != os.Getpid() || !alive {
+		t.Errorf("EnginePid() = %d, %v; want this process, running", pid, alive)
+	}
+
+	// A pid nothing is using any more names the engine that was stopped,
+	// and says it is gone.
+	if runtime.GOOS == "windows" {
+		return // windows cannot tell a live pid from a dead one
+	}
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=exit")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	gone := cmd.Process.Pid
+	_ = cmd.Wait()
+	writeEnginePid(gone)
+	if pid, alive := EnginePid(); pid != gone || alive {
+		t.Errorf("for a stopped engine: %d, %v; want %d and not alive", pid, alive, gone)
+	}
+}

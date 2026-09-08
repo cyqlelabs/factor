@@ -1470,3 +1470,71 @@ func TestVoiceKeepsTheSpeakerAcrossARunOfShortReplies(t *testing.T) {
 		}
 	}
 }
+
+// Both voice tools are offered to the model, so both need a name, a
+// description that says when to reach for them, and a schema the model can
+// fill: a tool the registry accepts but the model cannot call is dead prompt
+// weight.
+func TestVoiceToolsDeclareUsableSchemas(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	for _, tool := range []interface {
+		Name() string
+		Description() string
+		Parameters() map[string]any
+	}{
+		&speakersTool{voice: h.v},
+		&roomTool{voice: h.v},
+	} {
+		name := tool.Name()
+		if name == "" {
+			t.Fatal("a tool with no name")
+		}
+		if len(tool.Description()) < 40 {
+			t.Errorf("%s: description is too thin to act on: %q", name, tool.Description())
+		}
+		schema := tool.Parameters()
+		if schema["type"] != "object" {
+			t.Errorf("%s: schema type = %v", name, schema["type"])
+		}
+		props, ok := schema["properties"].(map[string]any)
+		if !ok || len(props) == 0 {
+			t.Fatalf("%s: no properties in %v", name, schema)
+		}
+		action, ok := props["action"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: no action property", name)
+		}
+		if action["description"] == "" || action["enum"] == nil {
+			t.Errorf("%s: action = %v, want the choices spelled out", name, action)
+		}
+		for key, raw := range props {
+			spec, ok := raw.(map[string]any)
+			if !ok || spec["type"] == "" || spec["description"] == "" {
+				t.Errorf("%s: %s = %v, want a type and a description", name, key, raw)
+			}
+		}
+	}
+	if got := (&speakersTool{voice: h.v}).Name(); got != "voice_speakers" {
+		t.Errorf("speakers tool = %q", got)
+	}
+	if got := (&roomTool{voice: h.v}).Name(); got != "room" {
+		t.Errorf("room tool = %q", got)
+	}
+}
+
+// The channel's capability declarations are what the gateway binds it by:
+// the language the synthesized voice speaks, and that its replies come back
+// through Send, which is what folds a spoken question into a busy turn
+// instead of queuing it behind one.
+func TestVoiceDeclaresItsCapabilities(t *testing.T) {
+	h := newVoiceHarness(t, func(c *Config) { c.Language = "es" })
+	if got := h.v.Language(); got != "es" {
+		t.Errorf("Language = %q, want the configured one", got)
+	}
+	var _ channel.Steerable = h.v
+	h.v.AcceptsSteering() // the marker itself does nothing
+	var _ channel.Localized = h.v
+	if h.v.MaxMessageLength() != 0 {
+		t.Error("speech has no message length to cap")
+	}
+}
