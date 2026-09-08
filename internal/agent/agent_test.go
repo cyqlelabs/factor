@@ -1217,3 +1217,18 @@ func TestTriggerOfNamesWhatStartedTheTurn(t *testing.T) {
 		}
 	}
 }
+
+// When the user says a thing had no effect, the model looks from the
+// receiving side before touching the sender. On one measured afternoon the
+// alternative was eight sends and a rewrite of a script that was fine, for
+// mail that had been filed under a label all along.
+func TestRulesSayToLookFromTheReceivingSide(t *testing.T) {
+	h := newHarness(t, final("ok"))
+	prompt := h.loop.builder.SystemPrompt()
+	if !strings.Contains(prompt, "look from the receiving side") {
+		t.Error("the operating rules do not say to verify from the receiving side")
+	}
+	if !strings.Contains(toolDiscipline, "receiving side") {
+		t.Error("the restated rules drop it, which is where a long session reads them")
+	}
+}

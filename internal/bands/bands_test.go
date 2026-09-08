@@ -215,9 +215,9 @@ func TestSpecsSkipTurnsThatCarryNoReading(t *testing.T) {
 	for _, spec := range Specs() {
 		if _, ok := spec.Of(trace.Record{}); ok {
 			switch spec.Name {
-			case "turn failures", "provider failovers", "context overflows":
+			case "turn failures", "provider failovers", "context overflows", "memory recall failures":
 				// These are true of every turn: a turn that failed over zero
-				// times is a real reading of zero.
+				// times, or had its memory, is a real reading of zero.
 			default:
 				t.Errorf("%q read a value off an empty turn", spec.Name)
 			}
@@ -442,5 +442,27 @@ func TestOneRecentTurnSaysNothing(t *testing.T) {
 	writeTraces(t, dir, recs)
 	if b, ok := breachFor(testWatcher(dir, now).Check(), "tool error rate"); ok {
 		t.Errorf("breached on one turn: %+v", b)
+	}
+}
+
+// A turn that ran without its memory is the number behind "it forgot what we
+// fixed last week", and the engine being down shows up nowhere else.
+func TestRecallFailuresAreABand(t *testing.T) {
+	var spec Spec
+	for _, s := range Specs() {
+		if s.Name == "memory recall failures" {
+			spec = s
+		}
+	}
+	if spec.Of == nil || spec.Dir != Above {
+		t.Fatalf("no rising band for recall failures: %+v", spec)
+	}
+	quiet := trace.Record{Started: time.Now(), Outcome: "ok"}
+	if v, ok := spec.Of(quiet); !ok || v != 0 {
+		t.Errorf("a turn with its memory = %v, %v", v, ok)
+	}
+	blind := trace.Record{Started: time.Now(), Outcome: "ok", Events: []trace.Event{{Kind: trace.EventRecallFailed}}}
+	if v, ok := spec.Of(blind); !ok || v != 1 {
+		t.Errorf("a turn without its memory = %v, %v", v, ok)
 	}
 }

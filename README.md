@@ -163,6 +163,7 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "utility": [{ "type": "ollama", "model": "qwen3:8b" }]  // cheaper chain for compaction summaries and skill verdicts; omit = the main one
   },
   "memory": {
+    "max_rss_mb": 1536,                      // restart the engine for size once idle; -1 turns it off
     "mode": "sidecar",                       // sidecar | external | off
     "auto_install": true,                    // install smrti when it is missing
     "personality": "balanced",               // analytical | curious | empathetic | maverick | deterministic

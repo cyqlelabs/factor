@@ -154,6 +154,16 @@ func Specs() []Spec {
 			},
 		},
 		{
+			// A turn that ran without its memory. Recall is best-effort, so
+			// this is the only place the engine being down shows up as a
+			// number rather than a log line — and it is the number behind
+			// "it forgot what we fixed last week".
+			Name: "memory recall failures", Unit: "per turn", Dir: Above,
+			Of: func(r trace.Record) (float64, bool) {
+				return float64(r.Count(trace.EventRecallFailed)), true
+			},
+		},
+		{
 			Name: "context overflows", Unit: "per turn", Dir: Above,
 			Of: func(r trace.Record) (float64, bool) {
 				return float64(r.Count(trace.EventOverflow)), true

@@ -328,6 +328,11 @@ func TestNormalizeFloors(t *testing.T) {
 	if cfg.Browser.Engine != "auto" || cfg.Browser.Camofox.Port != 9377 {
 		t.Errorf("browser defaults = %+v", cfg.Browser)
 	}
+	// A config written before the ceiling existed gets it on the next load,
+	// which is what puts the leaking engine on a leash after an upgrade.
+	if cfg.Memory.MaxRSSMB != DefaultMemoryMaxRSSMB {
+		t.Errorf("memory.max_rss_mb = %d, want the default filled in", cfg.Memory.MaxRSSMB)
+	}
 	if cfg.Agent.MaxToolIterations != 20 || cfg.Agent.MaxConcurrentTurns != 4 || cfg.Provider.MaxTokens != 16384 {
 		t.Errorf("floors not applied: %+v", cfg.Agent)
 	}
@@ -434,5 +439,21 @@ func TestParseLogLevel(t *testing.T) {
 	}
 	if got != slog.LevelInfo {
 		t.Errorf("a refused level = %v, want the default kept", got)
+	}
+}
+
+// The ceiling can be switched off, and off has to survive normalization:
+// zero is "the default", so off is spelled negative.
+func TestMemoryCeilingOffIsNegative(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"memory": {"max_rss_mb": -1}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Memory.MaxRSSMB != -1 {
+		t.Errorf("max_rss_mb = %d, want -1 kept", cfg.Memory.MaxRSSMB)
 	}
 }

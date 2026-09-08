@@ -164,11 +164,16 @@ func TestAmbientSkipsIgnoredAndUnhealthy(t *testing.T) {
 		t.Errorf("prompt = %q", prompt)
 	}
 
-	// unhealthy engine → no injection, no panic
+	// An engine that is configured but not answering: no recall, no panic,
+	// and the turn told so rather than handed an empty past.
 	dead := NewClient("http://127.0.0.1:1", "", "")
 	deadAmbient := NewAmbient(dead, 5, 0.3, 5, 500, 500, nil, SpacePolicy{})
-	if p := deadAmbient.MemoryPrompt(context.Background(), nil, "q"); p != "" {
-		t.Errorf("unhealthy engine injected: %q", p)
+	if p := deadAmbient.MemoryPrompt(context.Background(), nil, "q"); !strings.Contains(p, "could not be consulted") {
+		t.Errorf("unhealthy engine injected: %q, want the turn told", p)
+	}
+	// Memory switched off entirely says nothing at all.
+	if p := NewAmbient(Noop{}, 5, 0.3, 5, 500, 500, nil, SpacePolicy{}).MemoryPrompt(context.Background(), nil, "q"); p != "" {
+		t.Errorf("memory that is off injected: %q", p)
 	}
 }
 

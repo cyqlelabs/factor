@@ -590,6 +590,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 	// read afterwards.
 	tr := l.tracer.Begin(in.sessionKey, in.trigger, in.speaker)
 	defer func() { tr.End(turnOutcome(ctx, err), err) }()
+	ctx = trace.WithTurn(ctx, tr)
 
 	var history []provider.Message
 	if !in.ephemeral {

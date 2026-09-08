@@ -21,6 +21,7 @@
 package trace
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -106,6 +107,11 @@ const (
 	EventBargeIn    = "barge_in"
 	EventForget     = "forget"
 	EventAsk        = "ask"
+	// EventRecallFailed is a turn that ran without its long-term memory
+	// because the engine did not answer. Nothing else notices: recall is
+	// best-effort by design, so the failure is a log line and the reply
+	// reads as if there had been nothing to remember.
+	EventRecallFailed = "recall_failed"
 )
 
 // maxArgChars bounds a recorded argument blob. Enough to tell one call from
@@ -424,4 +430,24 @@ func sanitize(s string) string {
 		return "none"
 	}
 	return b.String()
+}
+
+type turnKey struct{}
+
+// WithTurn puts the turn's record on a context, so what runs on the turn's
+// behalf — a recall, a store — can note what happened to it without every
+// signature between here and there learning about tracing. TurnFrom returns
+// nil off a context that carries none, and every method on a nil Turn is a
+// no-op, so a caller never has to check.
+func WithTurn(ctx context.Context, t *Turn) context.Context {
+	if t == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, turnKey{}, t)
+}
+
+// TurnFrom is the turn a context was stamped with, or nil.
+func TurnFrom(ctx context.Context) *Turn {
+	t, _ := ctx.Value(turnKey{}).(*Turn)
+	return t
 }

@@ -95,6 +95,12 @@ type Sidecar struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	probeInterval time.Duration // healthy re-probe cadence; zero means 30s
+
+	// lastSizeRestart bounds how often the engine is restarted for size, as
+	// unix nanoseconds: the poll goroutine of a child that was just stopped
+	// may still be finishing when its replacement's begins.
+	lastSizeRestart atomic.Int64
+	sizeRestarts    atomic.Int64
 }
 
 func (s *Sidecar) reprobeInterval() time.Duration {
@@ -226,8 +232,63 @@ func (s *Sidecar) pollWhileHealthy(ctx context.Context) {
 		if ctx.Err() != nil || s.client.CheckHealth(ctx) != nil {
 			return
 		}
+		if s.restartForSize(ctx) {
+			return // the run loop finds the port free and spawns afresh
+		}
 	}
 }
+
+// sizeRestartGap is the least time between two restarts for size. An engine
+// that refills in minutes is a bug to report, not one to restart every
+// probe: each restart costs the next recall its model load.
+var sizeRestartGap = 10 * time.Minute
+
+// restartForSize stops an engine that has grown past memory.max_rss_mb once
+// the graph is idle, and reports whether it did. The engine leaks under
+// sustained use — measured from 100 MB at start to 2 GB two hours later on
+// a 3.5 GB box, at which point every recall timed out and every turn ran
+// without its memory — and a restart is the whole remedy: it comes back at
+// 100 MB with every atom it had. This is the by-hand fix from the runbook,
+// done by the supervisor that is watching anyway. An engine somebody else
+// runs is left alone.
+func (s *Sidecar) restartForSize(ctx context.Context) bool {
+	if s.external || s.cfg.MaxRSSMB < 0 {
+		return false
+	}
+	pid, ok := readEnginePid()
+	if !ok {
+		if pid, ok = ListenerPid(s.cfg.Port); !ok {
+			return false
+		}
+	}
+	rss, ok := processRSS(pid)
+	if !ok {
+		return false
+	}
+	ceiling := int64(s.cfg.MaxRSSMB) << 20
+	if rss < ceiling {
+		return false
+	}
+	if !s.Idle(UpgradeQuiet) {
+		return false // the turn in flight is using it; the next probe will ask again
+	}
+	if last := s.lastSizeRestart.Load(); last != 0 && time.Since(time.Unix(0, last)) < sizeRestartGap {
+		return false
+	}
+	slog.Warn("memory engine restarted for size; it comes back with every atom it had",
+		"rss_mb", rss>>20, "ceiling_mb", s.cfg.MaxRSSMB, "pid", pid)
+	s.lastSizeRestart.Store(time.Now().UnixNano())
+	if _, err := StopEngine(ctx, s.cfg.Port); err != nil {
+		slog.Warn("memory engine could not be stopped for size", "error", err)
+		return false
+	}
+	s.sizeRestarts.Add(1)
+	return true
+}
+
+// SizeRestarts is how many times this supervisor restarted the engine for
+// size, which is what tells a leak that keeps coming back from one bad day.
+func (s *Sidecar) SizeRestarts() int64 { return s.sizeRestarts.Load() }
 
 // arenaMax caps glibc's per-thread malloc arenas. smrti runs a dozen-odd
 // threads (its web server, its executor pool, and ONNX/OpenBLAS when local
@@ -319,8 +380,16 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 	// that verdict would stick for the whole session even though the server
 	// recovers moments later.
 	pollCtx, stopPoll := context.WithCancel(context.Background())
-	defer stopPoll()
+	pollDone := make(chan struct{})
+	defer func() {
+		// Joined, not merely cancelled: a poll that is mid-probe when the
+		// child exits would otherwise outlive this call and run beside the
+		// replacement's own poll.
+		stopPoll()
+		<-pollDone
+	}()
 	go func() {
+		defer close(pollDone)
 		deadline := time.Now().Add(time.Duration(s.cfg.StartupTimeoutSecs) * time.Second)
 		warned := false
 		for pollCtx.Err() == nil {
@@ -329,6 +398,9 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 				if !wasHealthy {
 					slog.Info("smrti sidecar healthy")
 				}
+				// The stop takes the child with it; cmd.Wait below sees
+				// it exit and the run loop respawns it after its backoff.
+				s.restartForSize(pollCtx)
 				sleepCtx(pollCtx, s.reprobeInterval())
 				continue
 			}

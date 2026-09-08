@@ -23,16 +23,21 @@ func TestBuildRecallQueryDefaults(t *testing.T) {
 	}
 }
 
-func TestFormatMemoriesUsesLabelWhenContentEmpty(t *testing.T) {
+// A concept atom with no content is a bare label, and "Note: email" tells
+// the model nothing while spending the budget the episode behind it would
+// have used. It is dropped, label or no label.
+func TestFormatMemoriesDropsContentlessAtoms(t *testing.T) {
 	out := FormatMemories([]Memory{
-		{Label: "Alice", Content: "  ", Severity: SeverityContext, Confidence: 0.5},
+		{Label: "email", Content: "  ", Type: "concept", Severity: SeverityContext, Confidence: 0.5},
 		{Label: "", Content: "", Severity: SeverityContext, Confidence: 0.5},
+		{Label: "send_email.py", Content: "", Severity: SeverityCriticalWarning, Confidence: 0.9},
+		{Content: "pipe the HTML in over stdin and pass --html", Severity: SeverityContext, Confidence: 0.7},
 	}, 0)
-	if !strings.Contains(out, "Alice") {
-		t.Errorf("concept label not used as content: %q", out)
+	if strings.Contains(out, "email") && !strings.Contains(out, "stdin") {
+		t.Fatalf("a bare label was injected: %q", out)
 	}
-	if strings.Count(out, "Note (") != 1 {
-		t.Errorf("empty label+content should be dropped entirely: %q", out)
+	if strings.Count(out, "Note (") != 1 || strings.Contains(out, "MUST NOT") {
+		t.Errorf("want exactly the one atom with content: %q", out)
 	}
 }
 
@@ -405,11 +410,14 @@ func TestMemoryPromptAsksOnceWhenThereIsNoHistory(t *testing.T) {
 	}
 }
 
+// A failed recall never blocks the reply, and it is not silent either: the
+// turn is told its memory was unavailable rather than handed an empty past.
 func TestMemoryPromptSurvivesAFailedRecall(t *testing.T) {
 	eng := &recordingEngine{err: errors.New("engine down")}
 	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, SpacePolicy{})
-	if got := a.MemoryPrompt(context.Background(),
-		[]provider.Message{{Role: "user", Content: "earlier"}}, "now"); got != "" {
-		t.Errorf("MemoryPrompt on a dead engine = %q, want \"\"", got)
+	got := a.MemoryPrompt(context.Background(),
+		[]provider.Message{{Role: "user", Content: "earlier"}}, "now")
+	if !strings.Contains(got, "could not be consulted") {
+		t.Errorf("MemoryPrompt on a dead engine = %q, want the turn told", got)
 	}
 }

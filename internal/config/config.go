@@ -209,6 +209,12 @@ type MemoryConfig struct {
 	ExtractAPIKey       string   `json:"extract_api_key,omitempty" env:"FACTOR_MEMORY_EXTRACT_API_KEY"`
 	IgnorePatterns      []string `json:"ignore_patterns,omitempty"`
 	StartupTimeoutSecs  int      `json:"startup_timeout_secs"`
+	// MaxRSSMB is the memory the engine may hold before the supervisor
+	// restarts it, once the graph is idle. The engine leaks under sustained
+	// use — measured from 100 MB to 2 GB in two hours on a 3.5 GB box — and
+	// a restart is the whole remedy: it comes back at 100 MB with every atom
+	// it had. 0 means the default; a negative value turns the check off.
+	MaxRSSMB int `json:"max_rss_mb"`
 }
 
 // BaseURL returns the effective smrti endpoint.
@@ -302,6 +308,12 @@ type CamofoxConfig struct {
 	// engine directory.
 	Dir string `json:"dir,omitempty"`
 }
+
+// DefaultMemoryMaxRSSMB is where the engine is restarted for size. A healthy
+// engine with its embedding model loaded sits near 700 MB; a leaking one
+// crosses this within a couple of hours, and the boxes Factor runs on cannot
+// spare what it takes after that.
+const DefaultMemoryMaxRSSMB = 1536
 
 type HeartbeatConfig struct {
 	Enabled         bool `json:"enabled"`
@@ -435,6 +447,7 @@ func Default() *Config {
 			Mode:          "sidecar",
 			Command:       "smrti",
 			AutoInstall:   true,
+			MaxRSSMB:      DefaultMemoryMaxRSSMB,
 			KeepAlive:     true,
 			Host:          "127.0.0.1",
 			Port:          8420,
@@ -611,6 +624,9 @@ func (c *Config) normalize() {
 	}
 	if c.Provider.MaxTokens <= 0 {
 		c.Provider.MaxTokens = 16384
+	}
+	if c.Memory.MaxRSSMB == 0 {
+		c.Memory.MaxRSSMB = DefaultMemoryMaxRSSMB
 	}
 	if c.Browser.Engine == "" {
 		c.Browser.Engine = "auto"

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/tools"
+	"github.com/cyqlelabs/factor/internal/trace"
 )
 
 // BuildRecallQuery assembles the recall query from recent conversation
@@ -62,11 +64,13 @@ func FormatMemories(mems []Memory, maxCharsEach int) string {
 	var constraints, background []string
 	for _, m := range mems {
 		if strings.TrimSpace(m.Content) == "" {
-			// concept atoms carry their text in the label
-			m.Content = m.Label
-			if strings.TrimSpace(m.Content) == "" {
-				continue
-			}
+			// A concept atom with no content is a bare label — "email",
+			// "send_email.py" — and a line saying "Note: email" tells the
+			// model nothing while spending the budget that the episode
+			// behind it would have used. Measured on one box, four of the
+			// six atoms recalled for a question about sending mail were
+			// these.
+			continue
 		}
 		conf := int(m.Confidence*100 + 0.5)
 		switch m.Severity {
@@ -183,9 +187,11 @@ func (a *Ambient) ignored(content string) bool {
 }
 
 // MemoryPrompt recalls context for the upcoming turn. Best-effort: failures
-// log and return "" so a memory outage never blocks a reply.
+// log and never block a reply — but a turn that runs without its memory is
+// told so, since an empty recall reads as an empty past.
 func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, current string) string {
-	if a == nil || a.Engine == nil || !a.Engine.Healthy() {
+	// Memory that is off says nothing; memory that is down says so below.
+	if a == nil || a.Engine == nil || (!a.Engine.Healthy() && !a.Engine.Enabled()) {
 		return ""
 	}
 	query := BuildRecallQuery(history, current, a.QueryMsgs, a.QueryMaxChars)
@@ -201,11 +207,29 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 	if !recall {
 		return ""
 	}
-	return FormatMemories(
-		a.recall(ctx, query, strings.TrimSpace(current), scope),
-		a.InjectMaxChars,
-	)
+	var mems []Memory
+	err := errors.New("the memory engine is not healthy")
+	if a.Engine.Healthy() {
+		mems, err = a.recall(ctx, query, strings.TrimSpace(current), scope)
+	}
+	if err != nil {
+		// The turn goes on without its memory, which is the right call —
+		// but it has to know. Silent, the model reads an empty recall as
+		// "nothing was ever saved" and rebuilds what it learned last week,
+		// and nobody finds out the engine was down until the pattern
+		// repeats. The record on the turn is what the drift bands count.
+		trace.TurnFrom(ctx).Event(trace.EventRecallFailed, err.Error())
+		return memoryUnavailable
+	}
+	return FormatMemories(mems, a.InjectMaxChars)
 }
+
+// memoryUnavailable is what the turn is told when the engine did not answer.
+// It names the absence so the model does not read it as an empty past, and
+// it points at the two places that still hold what was learned.
+const memoryUnavailable = "# Memory\n\nLong-term memory could not be consulted this turn: the memory engine did not answer. " +
+	"Nothing from past sessions is available right now, so an empty recall is not evidence that something was never learned. " +
+	"Check the skills catalog and the workspace files before assuming you are starting from scratch."
 
 // recall asks twice and interleaves the answers: once with the turn's own
 // message, once with the conversation tail behind it. Neither query serves
@@ -221,28 +245,37 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 //
 // The two run concurrently because this sits on the turn's critical path,
 // before the model is called.
-func (a *Ambient) recall(ctx context.Context, query, current string, scope Scope) []Memory {
+//
+// The error is the engine not answering at all: one query of the two failing
+// while the other answers is still a recall, and the turn gets what came
+// back.
+func (a *Ambient) recall(ctx context.Context, query, current string, scope Scope) ([]Memory, error) {
 	if current == "" || current == query {
 		return a.recallOne(ctx, query, scope)
 	}
 	var direct, contextual []Memory
+	var directErr, contextualErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); direct = a.recallOne(ctx, current, scope) }()
-	go func() { defer wg.Done(); contextual = a.recallOne(ctx, query, scope) }()
+	go func() { defer wg.Done(); direct, directErr = a.recallOne(ctx, current, scope) }()
+	go func() { defer wg.Done(); contextual, contextualErr = a.recallOne(ctx, query, scope) }()
 	wg.Wait()
-	return interleave(direct, contextual, a.TopK)
+	if directErr != nil && contextualErr != nil {
+		return nil, directErr
+	}
+	return interleave(direct, contextual, a.TopK), nil
 }
 
 // recallOne is best-effort like everything else on this path: a failed recall
-// costs the turn its memory, never its reply.
-func (a *Ambient) recallOne(ctx context.Context, query string, scope Scope) []Memory {
+// costs the turn its memory, never its reply. The error comes back so the
+// caller can say so.
+func (a *Ambient) recallOne(ctx context.Context, query string, scope Scope) ([]Memory, error) {
 	mems, err := a.Engine.Recall(ctx, query, a.TopK, a.MinConfidence, scope)
 	if err != nil {
 		slog.Warn("memory recall failed", "error", err)
-		return nil
+		return nil, err
 	}
-	return mems
+	return mems, nil
 }
 
 // interleave merges two recalls, taking from the first list first so the
