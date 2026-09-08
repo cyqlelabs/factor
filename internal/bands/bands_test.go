@@ -321,8 +321,15 @@ func TestToolBreachCarriesItsEvidence(t *testing.T) {
 		recs = append(recs, trace.Record{Started: now.Add(-time.Duration(i*24) * time.Hour), Session: "voice:local", Outcome: "ok",
 			Tools: []trace.ToolCall{{Name: "browser_fetch", Error: true, Fault: "lightpanda exited"}}})
 	}
-	// This hour: a search and the fast path both failed, and the loop ran
-	// on with Chrome.
+	// This hour: the fast path kept failing and the loop ran on with Chrome,
+	// and in the newest turn a search failed too.
+	for _, ago := range []time.Duration{30 * time.Minute, 20 * time.Minute} {
+		recs = append(recs, trace.Record{Started: now.Add(-ago), Session: "voice:local", Outcome: "ok",
+			Tools: []trace.ToolCall{
+				{Name: "browser_fetch", Error: true, Fault: "lightpanda exited"},
+				{Name: "browser_navigate"},
+			}})
+	}
 	recs = append(recs, trace.Record{Started: now.Add(-10 * time.Minute), Session: "voice:local", Outcome: "ok",
 		Tools: []trace.ToolCall{
 			{Name: "web_search", Error: true, Fault: "search failed: 403 from the engine"},
@@ -336,13 +343,13 @@ func TestToolBreachCarriesItsEvidence(t *testing.T) {
 		t.Fatal("no breach")
 	}
 	e := b.Evidence
-	if len(e.Failures) != 2 || e.Failures[0].Tool != "web_search" || e.Failures[0].Fault != "search failed: 403 from the engine" {
-		t.Errorf("failures = %+v, want this hour's two with what they said", e.Failures)
+	if len(e.Failures) != 4 || e.Failures[2].Tool != "web_search" || e.Failures[2].Fault != "search failed: 403 from the engine" {
+		t.Errorf("failures = %+v, want this hour's four with what they said, newest last", e.Failures)
 	}
 	if len(e.History) != 2 || e.History[0].Tool != "browser_fetch" {
 		t.Fatalf("history = %+v, want browser_fetch first as the worst", e.History)
 	}
-	if h := e.History[0]; h.Calls != 4 || h.Fails != 4 || !h.First.Before(now.Add(-48*time.Hour)) {
+	if h := e.History[0]; h.Calls != 6 || h.Fails != 6 || !h.First.Before(now.Add(-48*time.Hour)) {
 		t.Errorf("browser_fetch record = %+v, want every call a failure, the first days ago", h)
 	}
 	if h := e.History[1]; h.Tool != "web_search" || h.Calls != 1 || h.Fails != 1 {
@@ -354,7 +361,7 @@ func TestToolBreachCarriesItsEvidence(t *testing.T) {
 
 	lines := b.Details()
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"web_search failed: search failed: 403", "browser_fetch has failed 4 of 4 calls since"} {
+	for _, want := range []string{"web_search failed: search failed: 403", "browser_fetch has failed 6 of 6 calls since"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("details lack %q:\n%s", want, joined)
 		}
@@ -413,5 +420,27 @@ func TestEvidenceIsBounded(t *testing.T) {
 	}
 	if turns := turnEvidence(recs, now.Add(-time.Hour)).Turns; len(turns) != maxTurns {
 		t.Errorf("turns = %d, want %d", len(turns), maxTurns)
+	}
+}
+
+// One turn is not an hour. A heartbeat that made a single call and got it
+// wrong read as a 100% error rate at four sigma, and the next check acted
+// on it; the recent window needs more than one reading before it can say
+// anything.
+func TestOneRecentTurnSaysNothing(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	var recs []trace.Record
+	for i := 0; i < 40; i++ {
+		errs := 0
+		if i%8 == 0 {
+			errs = 1
+		}
+		recs = append(recs, record(now.Add(-time.Duration(24+i)*time.Hour), 4, errs))
+	}
+	recs = append(recs, record(now.Add(-time.Minute), 1, 1))
+	writeTraces(t, dir, recs)
+	if b, ok := breachFor(testWatcher(dir, now).Check(), "tool error rate"); ok {
+		t.Errorf("breached on one turn: %+v", b)
 	}
 }

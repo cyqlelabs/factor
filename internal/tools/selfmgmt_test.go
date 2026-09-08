@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -194,5 +195,24 @@ func TestPkgInstallRejectsHostileNames(t *testing.T) {
 		if !res.IsError || !strings.Contains(res.ForLLM, "invalid package name") {
 			t.Errorf("hostile name %q accepted: %+v", bad, res)
 		}
+	}
+}
+
+// Which tools exist is the user's decision: a heartbeat that judged
+// config_get broken for refusing a key that did not exist switched it off.
+func TestConfigSetRefusesToDisableToolsFromAHeartbeat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	set := &configSetTool{path: path}
+	heartbeat := WithToolContext(context.Background(), ToolContext{Channel: "system", ChatID: "heartbeat", SessionKey: "system:heartbeat"})
+	res := set.Execute(heartbeat, map[string]any{"key": "tools.disabled", "value": []any{"config_get"}})
+	if !res.IsError || !strings.Contains(res.ForLLM, "heartbeat") {
+		t.Fatalf("a heartbeat disabled a tool: %+v", res)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("the refused change was written")
+	}
+	res = set.Execute(context.Background(), map[string]any{"key": "tools.disabled", "value": []any{"config_get"}})
+	if res.IsError {
+		t.Errorf("a conversation was refused: %+v", res)
 	}
 }

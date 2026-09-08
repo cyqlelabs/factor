@@ -375,9 +375,15 @@ func (w *Watcher) Check() []Breach {
 	return out
 }
 
+// minRecent is the floor under the recent window. One turn is a reading,
+// not an hour: a heartbeat that made one call and got it wrong put the tool
+// error rate at 100% on that sample alone, at four sigma, and the next
+// check switched the tool off on the strength of it.
+const minRecent = 3
+
 // judge decides whether the recent window has left the baseline's band.
 func judge(spec Spec, base, recent []float64, minSamples int) (Breach, bool) {
-	if len(base) < minSamples || len(recent) == 0 {
+	if len(base) < minSamples || len(recent) < minRecent {
 		return Breach{}, false
 	}
 	mean, sd := stats(base)

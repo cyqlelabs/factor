@@ -60,7 +60,7 @@ type configSetTool struct {
 
 func (t *configSetTool) Name() string { return "config_set" }
 func (t *configSetTool) Description() string {
-	return "Set one configuration value by dotted key (e.g. key='heartbeat.interval_minutes', value=15) and persist it to the config file. Under the gateway it applies within seconds — the daemon reloads itself between turns; a plain chat session applies it on the next start. Confirm with the user before changing provider credentials. A proxy address is probed before it is saved, and is never changed from a heartbeat."
+	return "Set one configuration value by dotted key (e.g. key='heartbeat.interval_minutes', value=15) and persist it to the config file. Under the gateway it applies within seconds — the daemon reloads itself between turns; a plain chat session applies it on the next start. Confirm with the user before changing provider credentials. A proxy address is probed before it is saved, and is never changed from a heartbeat; neither is tools.disabled, which is the user's decision."
 }
 func (t *configSetTool) Parameters() map[string]any {
 	return map[string]any{
@@ -80,6 +80,12 @@ func (t *configSetTool) Execute(ctx context.Context, args map[string]any) *Resul
 	touchesProxy := key == "proxy" || strings.HasPrefix(key, "proxy.")
 	if touchesProxy && ToolContextFrom(ctx).Channel == "system" {
 		return Errorf("the proxy is not changed from a heartbeat; ask for it in a conversation")
+	}
+	// Which tools exist is the user's decision. A heartbeat judging a tool
+	// from an hour of its own calls has switched off config_get for refusing
+	// a key that did not exist — its own mistake, read back as the tool's.
+	if (key == "tools" || key == "tools.disabled") && ToolContextFrom(ctx).Channel == "system" {
+		return Errorf("tools are not disabled from a heartbeat; tell the user which one and why, and let them decide")
 	}
 	err := config.Update(t.path, func(cfg *config.Config) error {
 		if err := cfg.Set(key, args["value"]); err != nil {
