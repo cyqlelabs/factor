@@ -270,7 +270,7 @@ func spinner(*provider.Request) (*provider.Response, error) {
 func TestIterationLimitWrapsUp(t *testing.T) {
 	h := newHarness(t) // empty script
 	h.chat.script = nil
-	for range 5 { // MaxToolIterations
+	for range 5 * turnStretches { // MaxToolIterations, every stretch
 		h.chat.script = append(h.chat.script, spinner)
 	}
 	h.chat.script = append(h.chat.script, func(req *provider.Request) (*provider.Response, error) {
@@ -291,8 +291,8 @@ func TestIterationLimitWrapsUp(t *testing.T) {
 	if reply != "the probe kept saying again; nothing verified yet" {
 		t.Errorf("reply = %q", reply)
 	}
-	if len(h.chat.requests) != 6 {
-		t.Errorf("LLM called %d times, want 5 tool rounds plus one wrap-up", len(h.chat.requests))
+	if want := 5*turnStretches + 1; len(h.chat.requests) != want {
+		t.Errorf("LLM called %d times, want %d tool rounds plus one wrap-up", len(h.chat.requests), want)
 	}
 	history, _ := h.store.History("cli:test")
 	last := history[len(history)-1]
@@ -301,10 +301,61 @@ func TestIterationLimitWrapsUp(t *testing.T) {
 	}
 }
 
+// A turn that spends its iteration budget mid-task is checkpointed and
+// handed another stretch, not wrapped up: the model reads a system-framed
+// user message, still has its tools, and finishes when the work is done.
+func TestIterationBudgetCheckpointsAndContinues(t *testing.T) {
+	h := newHarness(t)
+	h.chat.script = nil
+	for range 5 { // one budget, spent on real work
+		h.chat.script = append(h.chat.script, spinner)
+	}
+	h.chat.script = append(h.chat.script, func(req *provider.Request) (*provider.Response, error) {
+		if len(req.Tools) == 0 {
+			t.Error("checkpoint withheld the tools; the turn cannot continue without them")
+		}
+		last := req.Messages[len(req.Messages)-1]
+		if last.Role != "user" || !strings.Contains(last.Content, "run 5 tool iterations") ||
+			!strings.Contains(last.Content, "not a message from the user") {
+			t.Errorf("checkpoint nudge missing or unframed: %+v", last)
+		}
+		return &provider.Response{Content: "pagination works; two pages left",
+			ToolCalls: []provider.ToolCall{{ID: "x", Name: "probe", Args: map[string]any{"value": "page 3"}}}}, nil
+	}, func(req *provider.Request) (*provider.Response, error) {
+		for _, m := range req.Messages {
+			if m.Role == "user" && strings.Contains(m.Content, "no further tool calls are possible") {
+				t.Error("the turn was wrapped up with a budget still to spend")
+			}
+		}
+		return &provider.Response{Content: "done: all three pages scraped"}, nil
+	})
+
+	reply, err := h.loop.ProcessDirect(context.Background(), "scrape every page", "cli:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "done: all three pages scraped" {
+		t.Errorf("reply = %q", reply)
+	}
+	if len(h.chat.requests) != 7 {
+		t.Errorf("LLM called %d times, want 5 rounds, one checkpointed round, one answer", len(h.chat.requests))
+	}
+	history, _ := h.store.History("cli:test")
+	var checkpoints int
+	for _, m := range history {
+		if m.Role == "user" && strings.Contains(m.Content, "[Checkpoint from the system") {
+			checkpoints++
+		}
+	}
+	if checkpoints != 1 {
+		t.Errorf("%d checkpoints persisted, want exactly one so the history replays", checkpoints)
+	}
+}
+
 func TestWrapUpStripsLeakedToolCall(t *testing.T) {
 	h := newHarness(t)
 	h.chat.script = nil
-	for range 5 {
+	for range 5 * turnStretches {
 		h.chat.script = append(h.chat.script, spinner)
 	}
 	const leaked = "Tengo suficiente información. Preparo el email.<tool_call>\n" +
@@ -348,7 +399,7 @@ func TestIterationLimitFallsBackWhenWrapUpFails(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.chat.script = nil
-			for range 5 {
+			for range 5 * turnStretches {
 				h.chat.script = append(h.chat.script, spinner)
 			}
 			h.chat.script = append(h.chat.script, tc.wrapUp)

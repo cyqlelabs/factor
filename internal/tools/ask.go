@@ -73,8 +73,9 @@ func (t *AskTool) Description() string {
 		"choice between real alternatives, or a go-ahead before something you cannot undo. " +
 		"Give options when the answer is a pick from a short list; leave them out for an open " +
 		"question. Ask one thing at a time, in their language. The reply comes back as text, " +
-		"or as a note that no answer came. Never use it for something you can look up, and " +
-		"never to confirm work you have already been asked to do."
+		"or as a note that no answer came. Never use it for something you can look up, never " +
+		"to ask whether to continue or which approach to try — try it — and never to confirm " +
+		"work you have already been asked to do."
 }
 
 func (t *AskTool) Parameters() map[string]any {

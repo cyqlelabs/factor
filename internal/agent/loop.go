@@ -633,7 +633,23 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 	// is worth learning from.
 	steered := 0
 
-	for iteration := 0; iteration < l.cfg.Agent.MaxToolIterations; iteration++ {
+	budget := l.cfg.Agent.MaxToolIterations
+	checkpointed := 0
+	for iteration := 0; iteration < budget*turnStretches; iteration++ {
+		// The budget is spent and the model is still working. A checkpoint
+		// asks where things stand and hands it another stretch rather than
+		// the wrap-up: see turnStretches.
+		if stretch := iteration / budget; stretch > checkpointed {
+			checkpointed = stretch
+			tr.Event(trace.EventCheckpoint, "")
+			slog.Info("tool-iteration budget spent; checkpointing and continuing",
+				"session", in.sessionKey, "iterations", iteration, "stretch", stretch+1, "stretches", turnStretches)
+			checkpoint := provider.Message{Role: "user", Content: checkpointNudge(iteration)}
+			if err := record(checkpoint); err != nil {
+				return "", err
+			}
+			messages = append(messages, checkpoint)
+		}
 		messages = l.trimInFlight(messages)
 		markTail(messages)
 		l.emit(in.sessionKey, PhaseThinking, "")
@@ -924,6 +940,33 @@ func callSignature(call provider.ToolCall) string {
 		return ""
 	}
 	return call.Name + string(args)
+}
+
+// turnStretches is how many tool-iteration budgets one turn may spend before
+// it is wrapped up. The budget (agent.max_tool_iterations) was written as a
+// guard against a model going in circles, and it is a fair one for that. But
+// a task that has to be tried, checked and fixed — a scraper against a site
+// that paginates in JavaScript, a report that has to land in a mailbox —
+// spends twenty iterations on the ordinary way to the answer, and ending it
+// there handed the user a summary and "ask me to continue". On the live box
+// that happened three times in one afternoon on one task, and each time the
+// user had to type "keep going" for the work they had asked for to resume.
+// So the budget is a checkpoint rather than a cliff: the model is asked where
+// things stand and handed another stretch, and only the last exhaustion wraps
+// up. The ceiling still exists — a model that really is in circles gets three
+// budgets rather than one — and the cost caps sit under all of it.
+const turnStretches = 3
+
+// checkpointNudge is what the model reads at a stretch boundary. It rides a
+// user message for the reason TurnContext does, and names itself as machinery
+// so it is not read as the user speaking. It says both halves — finish if
+// finished, go on if not — because without the second the model reads the
+// boundary as a request to stop and report, which is the behaviour this
+// exists to remove.
+func checkpointNudge(iterations int) string {
+	return fmt.Sprintf("[Checkpoint from the system, not a message from the user.] You have run %d tool iterations this turn. "+
+		"If the task is finished, answer the user now. If it is not, say in one line what has worked and what is left, "+
+		"then carry on with the tool calls it needs: this task is yours to finish, so do not stop to ask whether to continue.", iterations)
 }
 
 // wrapUp buys back a turn that ran out of tool iterations. Those iterations

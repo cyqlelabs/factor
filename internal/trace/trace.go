@@ -107,6 +107,7 @@ const (
 	EventBargeIn    = "barge_in"
 	EventForget     = "forget"
 	EventAsk        = "ask"
+	EventCheckpoint = "checkpoint"
 	// EventRecallFailed is a turn that ran without its long-term memory
 	// because the engine did not answer. Nothing else notices: recall is
 	// best-effort by design, so the failure is a log line and the reply

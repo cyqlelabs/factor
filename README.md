@@ -148,7 +148,7 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
   "log_level": "info",                       // debug | info | warn | error
   "agent": {
     "context_window_tokens": 0,              // 0 = ask the model catalog; a value only ever shrinks its answer
-    "max_tool_iterations": 20,
+    "max_tool_iterations": 20,                // per stretch; a turn still mid-task is checkpointed and gets up to three
     "summarize_at_percent": 75,              // how full the window gets before compaction
     "keep_recent_messages": 8,               // what survives it
     "learn_skills": true,                    // distill a finished multi-tool turn into a skill

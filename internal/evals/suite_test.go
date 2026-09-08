@@ -453,3 +453,73 @@ func TestHeartbeatIsBriefedForTheChatItIsDeliveredTo(t *testing.T) {
 		}
 	}
 }
+
+// A task that needs trying and testing is the model's to carry through. The
+// rules say so at the head of the prompt and again where a long session can
+// still read them, and the one behaviour they exist to remove — ending a
+// turn by asking whether to go on — is named rather than implied.
+func TestRulesTellTheModelToFinishRatherThanAsk(t *testing.T) {
+	e := newEnv(t, answer("ok"))
+	if _, err := e.say("cli:x", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	head := systemText(e.lastRequest())
+	for _, want := range []string{"yours to carry through", "Do not stop to ask whether to go on", "ends on its outcome"} {
+		if !strings.Contains(head, want) {
+			t.Errorf("the system prompt does not say %q", want)
+		}
+	}
+
+	filler := strings.Repeat("a long conversation about many things. ", 400)
+	for i := 0; i < 6; i++ {
+		if _, err := e.say("cli:x", filler); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if long := userText(e.lastRequest()); !strings.Contains(long, "yours to finish") {
+		t.Errorf("the autonomy rule was not restated past the fade point:\n%s", tail(long, 800))
+	}
+}
+
+// A turn that spends its iteration budget mid-task is not wrapped up: the
+// model is asked, on a user message framed as machinery, where things stand,
+// keeps its tools, and finishes when the work is done. Only a turn that
+// exhausts every stretch is asked for a final answer with no tools.
+func TestTurnOutlivesItsIterationBudgetWhileWorkRemains(t *testing.T) {
+	step := 0
+	var checkpointed *provider.Request
+	e := newEnv(t, func(_ int, req *provider.Request) *provider.Response {
+		step++
+		last := req.Messages[len(req.Messages)-1]
+		if last.Role == "user" && strings.Contains(last.Content, "[Checkpoint from the system") {
+			checkpointed = req
+		}
+		if strings.Contains(last.Content, "no further tool calls are possible") {
+			t.Error("the turn was wrapped up with budget still to spend")
+		}
+		if step <= 7 { // one budget of six, then one more call after the checkpoint
+			return &provider.Response{ToolCalls: []provider.ToolCall{
+				{ID: idFor(step), Name: "echo", Args: map[string]any{"text": "page"}},
+			}}
+		}
+		return &provider.Response{Content: "every page read", FinishReason: "stop"}
+	})
+	e.registry.Register(&echoTool{})
+
+	reply, err := e.say("cli:x", "read every page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "every page read" {
+		t.Errorf("reply = %q, want the finished answer", reply)
+	}
+	if checkpointed == nil {
+		t.Fatal("the budget was spent and no checkpoint reached the model")
+	}
+	if len(checkpointed.Tools) == 0 {
+		t.Error("the checkpoint withheld the tools, so the work could not have continued")
+	}
+	if !strings.Contains(checkpointed.Messages[len(checkpointed.Messages)-1].Content, "not a message from the user") {
+		t.Error("the checkpoint is not framed as machinery and reads as the user speaking")
+	}
+}
