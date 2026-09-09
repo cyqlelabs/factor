@@ -10,12 +10,16 @@ package jobs
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 type State string
@@ -49,11 +53,17 @@ type Job struct {
 	cancel context.CancelFunc
 }
 
-// Origin identifies where to deliver the completion report.
+// Origin identifies where to deliver the completion report, and who will be
+// able to hear it. Audience travels with the job because the work outlives
+// the turn that asked for it: a job started in a room with company in it
+// reports back into that same room, and a completion that arrived without an
+// audience was answered out of the private graph in front of whoever was
+// standing there.
 type Origin struct {
 	Channel    string
 	ChatID     string
 	SessionKey string
+	Audience   string
 }
 
 // state reads the job's state under the job's own lock. Every mutable Job
@@ -98,8 +108,11 @@ func (j *Job) Snapshot() View {
 	}
 }
 
-// TaskRunner runs a delegated agent sub-turn (wired to Loop.ProcessDirect).
-type TaskRunner func(ctx context.Context, prompt, sessionKey string) (string, error)
+// TaskRunner runs a delegated agent sub-turn (wired to Loop.ProcessDelegated).
+// The audience is the job origin's: the sub-turn recalls and stores under the
+// scope of the room the work was asked for in, not the empty one a background
+// session would otherwise default to.
+type TaskRunner func(ctx context.Context, prompt, sessionKey, audience string) (string, error)
 
 // Notifier receives finished jobs (wired to inject a session event).
 type Notifier func(job *Job)
@@ -109,13 +122,15 @@ type Engine struct {
 	jobs    map[string]*Job
 	order   []string
 	seq     int
+	run     string // this engine's share of every job id it mints
 	workdir string
 
-	runTask TaskRunner
-	notify  Notifier
-	sem     chan struct{}
-	wg      sync.WaitGroup
-	ctx     context.Context
+	runTask  TaskRunner
+	notify   Notifier
+	commands *tools.CommandGuard
+	sem      chan struct{}
+	wg       sync.WaitGroup
+	ctx      context.Context
 }
 
 const (
@@ -125,18 +140,39 @@ const (
 	tailBytes     = 8 * 1024
 )
 
-func NewEngine(ctx context.Context, workdir string, runTask TaskRunner, notify Notifier) *Engine {
+// NewEngine builds the job engine. commands is the deny-list a background
+// shell is checked against — the same one the foreground exec tool uses; nil
+// means no patterns are configured at all.
+func NewEngine(ctx context.Context, workdir string, commands *tools.CommandGuard, runTask TaskRunner, notify Notifier) *Engine {
 	if notify == nil {
 		notify = func(*Job) {}
 	}
 	return &Engine{
-		jobs:    map[string]*Job{},
-		workdir: workdir,
-		runTask: runTask,
-		notify:  notify,
-		sem:     make(chan struct{}, maxConcurrent),
-		ctx:     ctx,
+		jobs:     map[string]*Job{},
+		run:      runToken(),
+		workdir:  workdir,
+		runTask:  runTask,
+		notify:   notify,
+		commands: commands,
+		sem:      make(chan struct{}, maxConcurrent),
+		ctx:      ctx,
 	}
+}
+
+// runToken is what makes a job id unique beyond this engine. The counter
+// alone restarts at 1 with every process, and the id is also the session key
+// a task job runs its sub-turn under ("job:j1"): two unrelated jobs a restart
+// apart, or two Factor processes sharing one workspace, inherited each
+// other's history and spending bucket while the tool promised a fresh agent
+// run. Four bytes, so the id stays something a person can read back.
+func runToken() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Never observed; a clock-derived token still separates two engines
+		// that were not started in the same nanosecond.
+		return fmt.Sprintf("%08x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // Start launches a background job and returns immediately.
@@ -150,12 +186,19 @@ func (e *Engine) Start(kind Kind, description, payload string, origin Origin) (*
 	if kind == KindTask && e.runTask == nil {
 		return nil, fmt.Errorf("task jobs are not available in this mode")
 	}
+	// The background shell answers to the same deny-list as the foreground
+	// one. Refusing here rather than in the tool covers every caller.
+	if kind == KindExec {
+		if err := e.commands.Check(payload); err != nil {
+			return nil, err
+		}
+	}
 
 	jobCtx, cancel := context.WithCancel(e.ctx)
 	e.mu.Lock()
 	e.seq++
 	job := &Job{
-		ID:          fmt.Sprintf("j%d", e.seq),
+		ID:          fmt.Sprintf("j%d-%s", e.seq, e.run),
 		Kind:        kind,
 		Description: description,
 		Payload:     payload,
@@ -214,7 +257,7 @@ func (e *Engine) runExec(ctx context.Context, job *Job) error {
 }
 
 func (e *Engine) runTaskJob(ctx context.Context, job *Job) error {
-	result, err := e.runTask(ctx, job.Payload, "job:"+job.ID)
+	result, err := e.runTask(ctx, job.Payload, "job:"+job.ID, job.Origin.Audience)
 	if err != nil {
 		fmt.Fprintf(job.output, "error: %v", err)
 		return err

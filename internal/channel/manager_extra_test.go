@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/bus"
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 // scriptedChannel records every Send attempt (failed ones included) and can be
@@ -20,7 +21,8 @@ type scriptedChannel struct {
 	maxLen   int
 	startErr error
 	stopErr  error
-	sendErr  error // non-nil means every Send fails
+	sendErr  error         // non-nil means every Send fails
+	sendGate chan struct{} // non-nil holds every Send open until it closes
 
 	mu       sync.Mutex
 	attempts []string
@@ -47,6 +49,9 @@ func (s *scriptedChannel) Stop() error {
 }
 
 func (s *scriptedChannel) Send(_ context.Context, msg bus.OutboundMessage) error {
+	if s.sendGate != nil {
+		<-s.sendGate
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.attempts = append(s.attempts, msg.Content)
@@ -78,7 +83,12 @@ func TestManagerNamesListsEveryChannel(t *testing.T) {
 	}
 
 	// Serves answers the question a proactive sender has to ask before
-	// addressing a message: is anyone running who can deliver this?
+	// addressing a message: is anyone running who can deliver this? A
+	// configured channel is not one until it has actually started.
+	if m.Serves("alpha") {
+		t.Error("Serves claimed a channel that has not been started")
+	}
+	m.Start(t.Context())
 	if !m.Serves("alpha") {
 		t.Error("Serves said no to a running channel")
 	}
@@ -441,5 +451,100 @@ func TestManagerLanguageIsTheConnectorsWhereItFixesOne(t *testing.T) {
 		if got := m.Language(name); got != "" {
 			t.Errorf("Language(%q) = %q, want blank", name, got)
 		}
+	}
+}
+
+// The audit's sixth probe: a connector whose Start failed still reported as
+// reachable, so the heartbeat, a cron result and the restart notice were all
+// addressed to a channel that would drop them. Configured, started and running
+// are three different states.
+func TestAFailedConnectorIsNotAnAddress(t *testing.T) {
+	failing := &scriptedChannel{name: "voice", startErr: errors.New("no microphone")}
+	healthy := &scriptedChannel{name: "telegram"}
+	m := NewManager(bus.New(), []Channel{failing, healthy})
+	m.Start(t.Context())
+
+	if m.Serves("voice") {
+		t.Error("a connector that refused to start still reports as reachable")
+	}
+	if !m.Serves("telegram") {
+		t.Error("a connector that started does not report as reachable")
+	}
+	if got := m.Running(); len(got) != 1 || got[0] != "telegram" {
+		t.Errorf("Running() = %v, want only the connector that came up", got)
+	}
+	// Names is what is configured, which is a different question and still
+	// answered: a channel that failed has to be visible somewhere.
+	if len(m.Names()) != 2 {
+		t.Errorf("Names() = %v, want both configured channels", m.Names())
+	}
+	if failed := m.Failed(); failed["voice"] != "no microphone" {
+		t.Errorf("Failed() = %v, want the reason voice did not come up", failed)
+	}
+}
+
+// A message that has left the queue is not delivered — it is being delivered,
+// possibly through two retries and a backoff. The reload waits on both counts,
+// and the queue length alone cannot see the second.
+func TestInFlightCountsAMessageThePumpIsStillDelivering(t *testing.T) {
+	held := make(chan struct{})
+	ch := &scriptedChannel{name: "slow", sendGate: held}
+	b := bus.New()
+	m := NewManager(b, []Channel{ch})
+	m.Start(t.Context())
+
+	if got := m.InFlight(); got != 0 {
+		t.Fatalf("InFlight() = %d before anything was published", got)
+	}
+	b.PublishOutbound(bus.OutboundMessage{Channel: "slow", ChatID: "1", Content: "hello"})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for m.InFlight() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("a message being delivered was never counted as in flight")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := b.PendingOutbound(); got != 0 {
+		t.Errorf("PendingOutbound() = %d, want the queue empty while the send is running", got)
+	}
+	close(held)
+
+	for m.InFlight() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the delivered message is still counted as in flight")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// audibleChannel knows who is in the room, the way the microphone does.
+type audibleChannel struct {
+	scriptedChannel
+	audience string
+}
+
+func (a *audibleChannel) Audience(string) string { return a.audience }
+
+// The manager is where a delayed answer asks who can hear it. Only a
+// connector that can tell answers; every other one leaves the question alone
+// rather than guessing an empty room.
+func TestManagerAsksAConnectorWhoCanHearTheReply(t *testing.T) {
+	ears := &audibleChannel{scriptedChannel: scriptedChannel{name: "voice"}}
+	deaf := &scriptedChannel{name: "telegram"}
+	m := NewManager(bus.New(), []Channel{ears, deaf})
+
+	if got := m.Audience("voice", "local"); got != "" {
+		t.Errorf("Audience() on an empty room = %q, want blank", got)
+	}
+	ears.audience = tools.AudienceShared
+	if got := m.Audience("voice", "local"); got != tools.AudienceShared {
+		t.Errorf("Audience() with company present = %q, want shared", got)
+	}
+	if got := m.Audience("telegram", "7"); got != "" {
+		t.Errorf("a connector that cannot tell answered %q", got)
+	}
+	if got := m.Audience("nosuch", "1"); got != "" {
+		t.Errorf("an unknown channel answered %q", got)
 	}
 }

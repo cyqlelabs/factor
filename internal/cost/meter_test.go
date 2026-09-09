@@ -384,3 +384,66 @@ func TestMeterReportsEveryChargeToTheTraceHook(t *testing.T) {
 		t.Error("a nil meter answered OnCharge with something")
 	}
 }
+
+// slowChat holds every call at the door until the test lets them all through,
+// so several are genuinely in flight at once.
+type slowChat struct {
+	gate  chan struct{}
+	resp  *provider.Response
+	calls chan struct{}
+}
+
+func (s *slowChat) Chat(context.Context, *provider.Request) (*provider.Response, error) {
+	s.calls <- struct{}{}
+	<-s.gate
+	return s.resp, nil
+}
+
+// A cap is a stop line, and calls already in flight count against it. Without
+// that, every concurrent call passes the check in the moment before the first
+// of them is billed — a turn running four tools at once spends four calls
+// past a cap that was one call from being met.
+func TestCallsInFlightCountAgainstTheCap(t *testing.T) {
+	inner := &slowChat{gate: make(chan struct{}), calls: make(chan struct{}, 4),
+		resp: answered("a/model", 1000, 0)} // $1 a call
+	m := NewMeter(inner, pricedCatalog(), NewLedger(filepath.Join(t.TempDir(), "usage.json")),
+		config.CostConfig{Track: true, Budget: config.BudgetConfig{GlobalUSD: 3, Period: "total"}})
+
+	// One call completes, so the ledger knows what a call costs.
+	close(inner.gate)
+	if _, err := m.Chat(inSession("cli:main"), &provider.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Snapshot("").Total.USD; got != 1 {
+		t.Fatalf("first call billed %v, want $1", got)
+	}
+	<-inner.calls // that call's own token, so the two below are the only ones left
+
+	// Two more start and stay in flight: $1 spent plus $2 reserved meets the
+	// $3 cap, so the third call is refused rather than let through.
+	inner.gate = make(chan struct{})
+	started := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := m.Chat(inSession("cli:main"), &provider.Request{})
+			started <- err
+		}()
+	}
+	for range 2 {
+		<-inner.calls // both are past the check and waiting on the provider
+	}
+
+	if err := m.check("cli:main"); err == nil {
+		t.Error("a fourth call was approved with $1 spent and $2 in flight against a $3 cap")
+	}
+	close(inner.gate)
+	for range 2 {
+		if err := <-started; err != nil {
+			t.Errorf("an in-flight call failed: %v", err)
+		}
+	}
+	// And once they land the reservation is gone, replaced by real spend.
+	if got := m.Snapshot("").Total.USD; got != 3 {
+		t.Errorf("total after three calls = %v, want $3", got)
+	}
+}

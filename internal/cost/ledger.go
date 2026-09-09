@@ -2,6 +2,7 @@ package cost
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"sort"
@@ -96,10 +97,32 @@ type entry struct {
 	totals  Totals
 }
 
+// How long a writer waits for the ledger's file lock before giving up, and
+// how often it tries in the meantime. Merging is a few kilobytes of JSON, so
+// a wait this long means something is wrong rather than busy; giving up costs
+// the totals rather than the call.
+const (
+	lockWait = 5 * time.Second
+	lockPoll = 5 * time.Millisecond
+)
+
 // Ledger accumulates spend and keeps it on disk, so "what has this cost me"
 // survives a restart. Each call is merged into the file rather than
 // overwriting it: the gateway and a terminal session can both be spending at
 // once, and neither should erase the other's total.
+//
+// Merging alone is not enough for that, though, and this is where a cap
+// stops being a cap. Read-merge-write from two processes interleaves — both
+// read the same total, both add their own charge, and the second rename wins
+// with the first process's spend missing from it — so the sequence is done
+// under a lock file every Factor process takes. The scratch file is named
+// per process for the same reason: one shared ".tmp" is two writers filling
+// in one another's half-written JSON.
+//
+// The totals in memory are equally not the whole story. A gateway that read
+// the file at startup and only ever added its own calls to it cannot see what
+// a terminal session spent, which is exactly the number a global cap is about
+// — so a read re-reads the file whenever it has changed underneath.
 type Ledger struct {
 	path string
 	now  func() time.Time
@@ -108,6 +131,24 @@ type Ledger struct {
 	book    book
 	pending []entry
 	warned  bool
+	// stamp is the file as it was when book was last read from it, so a
+	// snapshot can tell "nothing has changed" from "another process has
+	// spent" for the cost of one stat.
+	stamp fileStamp
+}
+
+// fileStamp is what a stat can say about the ledger without reading it.
+type fileStamp struct {
+	mod  time.Time
+	size int64
+}
+
+func stampOf(path string) fileStamp {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}
+	}
+	return fileStamp{mod: info.ModTime(), size: info.Size()}
 }
 
 // NewLedger opens the ledger at path, reading whatever is already there. A
@@ -116,6 +157,7 @@ type Ledger struct {
 func NewLedger(path string) *Ledger {
 	l := &Ledger{path: path, now: time.Now}
 	l.book = l.read()
+	l.stamp = stampOf(path)
 	return l
 }
 
@@ -157,6 +199,15 @@ func (l *Ledger) flushLocked() error {
 	if l.path == "" || len(l.pending) == 0 {
 		return nil
 	}
+	// The whole read-merge-write is one critical section across processes.
+	// Without it two Factors each add their own calls to the same old total
+	// and the later rename silently drops the earlier one's spend.
+	lock, err := lockFile(l.path+".lock", lockWait)
+	if err != nil {
+		return err
+	}
+	defer unlockFile(lock)
+
 	merged := l.read()
 	for _, e := range l.pending {
 		apply(&merged, e)
@@ -166,6 +217,7 @@ func (l *Ledger) flushLocked() error {
 		return err
 	}
 	l.book, l.pending = merged, nil
+	l.stamp = stampOf(l.path)
 	return nil
 }
 
@@ -174,11 +226,36 @@ func (l *Ledger) write(b book) error {
 	if err != nil {
 		return err
 	}
-	tmp := l.path + ".tmp"
+	// Named per process: two writers sharing one scratch file overwrite each
+	// other's bytes and then rename whatever is left into place.
+	tmp := fmt.Sprintf("%s.%d.tmp", l.path, os.Getpid())
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, l.path)
+	if err := os.Rename(tmp, l.path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// refreshLocked re-reads the file when another process has written to it, so
+// what a cap is checked against is what has actually been spent rather than
+// what this process happens to have spent. Pending charges are re-applied on
+// top: they are real money, they are simply not on disk yet.
+func (l *Ledger) refreshLocked() {
+	if l.path == "" {
+		return
+	}
+	stamp := stampOf(l.path)
+	if stamp == l.stamp {
+		return
+	}
+	b := l.read()
+	for _, e := range l.pending {
+		apply(&b, e)
+	}
+	l.book, l.stamp = b, stamp
 }
 
 func apply(b *book, e entry) {
@@ -261,6 +338,7 @@ type Snapshot struct {
 func (l *Ledger) Snapshot(sessionKey string) Snapshot {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.refreshLocked()
 	now := l.now()
 	s := Snapshot{
 		Session:  l.book.Sessions[sessionKey].Totals,

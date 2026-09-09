@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,18 +31,24 @@ var defaultDenyPatterns = []string{
 	`\bhistory\s+-c\b`,
 }
 
-type ExecTool struct {
-	guard          *PathGuard
-	timeout        time.Duration
-	denyPatterns   []*regexp.Regexp
-	maxOutputBytes int
+// CommandGuard is the deny-list every path that runs a shell command is
+// checked against. It exists as its own type because there is more than one
+// such path: the exec tool runs a command in the foreground and job_start
+// runs one in the background, and for a while only the first was checked —
+// so a command the user had denied ran anyway by being asked for as a job.
+// Delegating slow work is ordinary here, and a rail one of two first-party
+// shells enforces is not a rail.
+//
+// A nil guard passes everything, which is what a configuration with the
+// defaults switched off and no custom patterns means.
+type CommandGuard struct {
+	patterns []*regexp.Regexp
 }
 
-func NewExecTool(guard *PathGuard, timeout time.Duration, enableDeny bool, customDeny []string) (*ExecTool, error) {
-	t := &ExecTool{guard: guard, timeout: timeout, maxOutputBytes: 32 * 1024}
-	if t.timeout <= 0 {
-		t.timeout = 2 * time.Minute
-	}
+// NewCommandGuard compiles the deny-list: the built-in catastrophes when
+// enableDeny is set, plus the user's own patterns either way.
+func NewCommandGuard(enableDeny bool, customDeny []string) (*CommandGuard, error) {
+	g := &CommandGuard{}
 	patterns := customDeny
 	if enableDeny {
 		patterns = append(append([]string{}, defaultDenyPatterns...), platformDenyPatterns...)
@@ -52,10 +59,47 @@ func NewExecTool(guard *PathGuard, timeout time.Duration, enableDeny bool, custo
 		if err != nil {
 			return nil, fmt.Errorf("bad deny pattern %q: %w", p, err)
 		}
-		t.denyPatterns = append(t.denyPatterns, re)
+		g.patterns = append(g.patterns, re)
+	}
+	return g, nil
+}
+
+// Check reports why a command is refused, or nil to let it run.
+func (g *CommandGuard) Check(command string) error {
+	if g == nil {
+		return nil
+	}
+	for _, re := range g.patterns {
+		if re.MatchString(command) {
+			return fmt.Errorf("command blocked by safety pattern %q — if this is intentional, "+
+				"the user can adjust tools.custom_deny_patterns or run it themselves", re.String())
+		}
+	}
+	return nil
+}
+
+type ExecTool struct {
+	guard          *PathGuard
+	timeout        time.Duration
+	commands       *CommandGuard
+	maxOutputBytes int
+}
+
+func NewExecTool(guard *PathGuard, timeout time.Duration, enableDeny bool, customDeny []string) (*ExecTool, error) {
+	commands, err := NewCommandGuard(enableDeny, customDeny)
+	if err != nil {
+		return nil, err
+	}
+	t := &ExecTool{guard: guard, timeout: timeout, commands: commands, maxOutputBytes: 32 * 1024}
+	if t.timeout <= 0 {
+		t.timeout = 2 * time.Minute
 	}
 	return t, nil
 }
+
+// Commands exposes the compiled deny-list, so the background job engine runs
+// its shell behind the same rail this one does.
+func (t *ExecTool) Commands() *CommandGuard { return t.commands }
 
 func (t *ExecTool) Name() string { return "exec" }
 func (t *ExecTool) Description() string {
@@ -78,10 +122,8 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *Result {
 	if command == "" {
 		return Errorf("command must not be empty")
 	}
-	for _, re := range t.denyPatterns {
-		if re.MatchString(command) {
-			return Errorf("command blocked by safety pattern %q — if this is intentional, the user can adjust tools.custom_deny_patterns or run it themselves", re.String())
-		}
+	if err := t.commands.Check(command); err != nil {
+		return Errorf("%v", err)
 	}
 
 	dir := t.guard.Workspace()
@@ -103,16 +145,19 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *Result {
 	cmd := shellCommand(ctx, command)
 	cmd.Dir = dir
 	// Without these, a killed shell can leave grandchildren holding the output
-	// pipe and CombinedOutput would block long past the timeout.
+	// pipe and Wait would block long past the timeout.
 	cmd.WaitDelay = 2 * time.Second
 	setProcessGroup(cmd)
-	out, err := cmd.CombinedOutput()
+	// Bounded while it runs rather than buffered and then cut. A command that
+	// prints a gigabyte — a build in a loop, a `yes`, a log tailed by mistake —
+	// used to be held in memory in full so that all but 32 KB of it could be
+	// thrown away, and on the small machines this runs on that is the whole
+	// box. What the model gets is the same either way.
+	out := newBoundedOutput(t.maxOutputBytes)
+	cmd.Stdout, cmd.Stderr = out, out
+	err := cmd.Run()
 
-	text := string(out)
-	if len(text) > t.maxOutputBytes {
-		half := t.maxOutputBytes / 2
-		text = text[:half] + fmt.Sprintf("\n... [%d bytes truncated] ...\n", len(text)-t.maxOutputBytes) + text[len(text)-half:]
-	}
+	text := out.String()
 
 	switch {
 	case ctx.Err() == context.DeadlineExceeded:
@@ -127,4 +172,57 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *Result {
 		text = "(no output)"
 	}
 	return Text(text)
+}
+
+// boundedOutput captures a command's output as it is produced, keeping the
+// first and last half of a budget and counting the bytes that fell between
+// them. Both ends are worth keeping: a failing build says what it was doing
+// at the top and why it stopped at the bottom.
+type boundedOutput struct {
+	mu      sync.Mutex
+	half    int
+	head    []byte
+	tail    []byte
+	omitted int
+}
+
+func newBoundedOutput(max int) *boundedOutput {
+	if max < 2 {
+		max = 2
+	}
+	return &boundedOutput{half: max / 2}
+}
+
+// Write implements io.Writer. It never grows past the budget: bytes past the
+// head go into a tail window that drops its oldest as it fills.
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(p)
+	if room := b.half - len(b.head); room > 0 {
+		take := min(room, len(p))
+		b.head = append(b.head, p[:take]...)
+		p = p[take:]
+	}
+	if len(p) == 0 {
+		return n, nil
+	}
+	b.tail = append(b.tail, p...)
+	if over := len(b.tail) - b.half; over > 0 {
+		b.tail = b.tail[over:]
+		b.omitted += over
+	}
+	return n, nil
+}
+
+// String is the captured output, with a line naming what was dropped where
+// it was dropped. A silent cut reads to the model as the whole answer.
+func (b *boundedOutput) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.omitted == 0 {
+		return string(b.head) + string(b.tail)
+	}
+	return fmt.Sprintf("%s\n... [%d bytes omitted; re-run with a narrower command or pipe through head/tail/grep] ...\n%s",
+		b.head, b.omitted, b.tail)
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/provider"
@@ -30,6 +31,14 @@ type Meter struct {
 	ledger  *Ledger
 	budget  config.BudgetConfig
 	active  bool
+
+	// flight counts the calls that have passed the check and have not been
+	// billed yet. A cap compared against spend alone lets every concurrent
+	// call through the moment before the first of them lands, which on a
+	// turn running four tools at once is four calls past a cap that was one
+	// call from being met.
+	flightMu sync.Mutex
+	flight   int
 
 	onCharge func(sessionKey, model string, t Totals, cacheWrite int)
 }
@@ -68,6 +77,8 @@ func (m *Meter) Chat(ctx context.Context, req *provider.Request) (*provider.Resp
 	if err := m.check(key); err != nil {
 		return nil, err
 	}
+	m.takeOff()
+	defer m.land()
 	resp, err := m.inner.Chat(ctx, req)
 	if err != nil {
 		return nil, err
@@ -76,19 +87,59 @@ func (m *Meter) Chat(ctx context.Context, req *provider.Request) (*provider.Resp
 	return resp, nil
 }
 
+func (m *Meter) takeOff() {
+	m.flightMu.Lock()
+	m.flight++
+	m.flightMu.Unlock()
+}
+
+func (m *Meter) land() {
+	m.flightMu.Lock()
+	m.flight--
+	m.flightMu.Unlock()
+}
+
+// reserved is what the calls already in flight are expected to add before
+// they are billed, priced at what a call has cost on average so far. It is an
+// estimate and it is meant to be: the price of a call is not known until it
+// comes back, so a cap enforced only against completed spend is a line the
+// agent notices it has crossed rather than one it stops at. With nothing
+// priced yet it is zero, and the check behaves exactly as it did before.
+func (m *Meter) reserved(s Snapshot) float64 {
+	m.flightMu.Lock()
+	flight := m.flight
+	m.flightMu.Unlock()
+	if flight <= 0 || s.Total.Calls == 0 {
+		return 0
+	}
+	return float64(flight) * s.Total.USD / float64(s.Total.Calls)
+}
+
 // check refuses the call when a cap is already met. Spend is compared before
 // the call rather than after it, so the cap is a line the agent stops at
 // instead of one it discovers it has crossed.
+//
+// It is a stop line and not a hard ceiling on what can be charged, and the
+// difference is worth being precise about. The call that crosses the cap is
+// allowed to finish and is billed in full; what a call will cost is not
+// known until it returns. Calls already in flight are reserved at the
+// average price of a call so far, which is an estimate. And a model nothing
+// prices adds tokens rather than money, so it moves no cap at all — the
+// usage report names those models for exactly that reason.
 func (m *Meter) check(sessionKey string) error {
 	if m.budget.Off() {
 		return nil
 	}
+	// Read through to the file rather than from this process's own running
+	// total: a gateway and a terminal spend against the same global cap, and
+	// each only knows what it spent itself.
 	s := m.ledger.Snapshot(sessionKey)
-	if limit := m.budget.SessionUSD; limit > 0 && s.Session.USD >= limit {
+	reserved := m.reserved(s)
+	if limit := m.budget.SessionUSD; limit > 0 && s.Session.USD+reserved >= limit {
 		return &BudgetError{Scope: "session", Spent: s.Session.USD, Limit: limit}
 	}
 	if limit := m.budget.GlobalUSD; limit > 0 {
-		if spent := s.Spent(m.budget.Period).USD; spent >= limit {
+		if spent := s.Spent(m.budget.Period).USD; spent+reserved >= limit {
 			return &BudgetError{Scope: m.budget.Period, Spent: spent, Limit: limit}
 		}
 	}

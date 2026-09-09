@@ -380,3 +380,34 @@ func TestPreflightRefusesAConfigTheReloadWouldNotSurvive(t *testing.T) {
 		t.Errorf("an unchanged config failed preflight: %v", err)
 	}
 }
+
+// A message the pump has picked up is invisible to the queue length, and that
+// is exactly the window a reload must not fire in: the send, its retries and
+// the speakers are all still ahead of it. settle counts both, and says so when
+// it gives up with work outstanding rather than leaving "reloaded" and
+// "delivered" indistinguishable afterwards.
+func TestSettleWaitsForADeliveryThatHasLeftTheQueue(t *testing.T) {
+	fastSettle(t)
+	var queued, inFlight atomic.Int32
+	inFlight.Store(1) // dequeued, being handed to the connector
+
+	done := make(chan struct{})
+	go func() {
+		settle(context.Background(),
+			func() bool { return true },
+			func() int { return int(queued.Load() + inFlight.Load()) })
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("settle returned while a message was still being delivered")
+	case <-time.After(200 * time.Millisecond):
+	}
+	inFlight.Store(0)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("settle never returned after the delivery landed")
+	}
+}

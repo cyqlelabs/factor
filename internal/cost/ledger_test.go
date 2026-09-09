@@ -212,3 +212,90 @@ func TestSpentPicksTheBucketThePeriodNames(t *testing.T) {
 		}
 	}
 }
+
+// The audit's first probe: two ledgers on one file, ten dollars recorded
+// through the second, and the first still approving calls against a five
+// dollar cap because its snapshot reported zero. A cap that only counts what
+// this process spent is not a cap — the gateway and a terminal spend against
+// the same one.
+func TestSnapshotSeesWhatAnotherProcessSpent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	gateway, terminal := NewLedger(path), NewLedger(path)
+
+	if got := gateway.Snapshot("").Total.USD; got != 0 {
+		t.Fatalf("a fresh ledger already holds %v", got)
+	}
+	terminal.Record("cli:main", "m", Totals{Input: 10, USD: 10, Calls: 1})
+
+	if got := gateway.Snapshot("").Total.USD; got != 10 {
+		t.Errorf("the gateway reads a total of %v after another process spent $10", got)
+	}
+	if got := gateway.Snapshot("cli:main").Session.USD; got != 10 {
+		t.Errorf("the other process's session reads %v", got)
+	}
+}
+
+// A snapshot must not lose what this process has spent but not yet written.
+// The two are added, never one instead of the other.
+func TestSnapshotAddsPendingChargesToWhatIsOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.json")
+	other := NewLedger(path)
+	other.Record("cli:main", "m", Totals{USD: 1, Input: 1, Calls: 1})
+
+	l := NewLedger(path)
+	l.path = filepath.Join(dir, "gone", "usage.json") // writes fail from here on
+	l.Record("cli:main", "m", Totals{USD: 2, Input: 1, Calls: 1})
+	l.path = path // and the file it reads is the shared one again
+
+	if got := l.Snapshot("cli:main").Session.USD; got != 3 {
+		t.Errorf("snapshot = %v, want the $1 on disk plus the $2 still pending", got)
+	}
+}
+
+// Two processes merging at once must not lose a charge. Each one's
+// read-merge-write is a critical section across processes; without the lock
+// the later rename carries the earlier writer's money away with it.
+func TestConcurrentLedgersLoseNothing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	const writers, each = 4, 25
+
+	done := make(chan struct{})
+	for w := range writers {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			l := NewLedger(path)
+			for range each {
+				l.Record(fmt.Sprintf("cli:%d", w), "m", Totals{Input: 1, USD: 0.01, Calls: 1})
+			}
+		}()
+	}
+	for range writers {
+		<-done
+	}
+
+	total := NewLedger(path).Snapshot("").Total
+	if total.Calls != writers*each {
+		t.Errorf("total calls = %d, want %d: a merge was lost", total.Calls, writers*each)
+	}
+}
+
+// The scratch file is named per process, so two writers cannot fill in one
+// another's half-written JSON and rename the result into place.
+func TestTheScratchFileIsNotShared(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	l := NewLedger(path)
+	l.Record("cli:main", "m", Totals{Input: 1, USD: 1, Calls: 1})
+
+	if _, err := os.Stat(path + ".tmp"); err == nil {
+		t.Error("the ledger still writes through a shared .tmp name")
+	}
+	var b book
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &b); err != nil {
+		t.Fatalf("the ledger on disk does not parse: %v", err)
+	}
+}

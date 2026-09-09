@@ -43,7 +43,7 @@ func waitCount(t *testing.T, counter *atomic.Int64, want int64, what string) {
 }
 
 func TestSnapshotCopiesJobStateWhileRunningAndAfterFinishing(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	origin := Origin{Channel: "cli", ChatID: "1", SessionKey: "cli:1"}
 	job, err := e.Start(KindExec, "sleeper", payloadSleep, origin)
 	if err != nil {
@@ -82,7 +82,7 @@ func TestSnapshotCopiesJobStateWhileRunningAndAfterFinishing(t *testing.T) {
 }
 
 func TestEngineWithoutANotifierStillFinishesJobs(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	job, err := e.Start(KindExec, "greet", "echo all done", Origin{})
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestEngineWithoutANotifierStillFinishesJobs(t *testing.T) {
 }
 
 func TestPruneDropsTheOldestFinishedJobsAndKeepsRunningOnes(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	sleeper, err := e.Start(KindExec, "sleeper", payloadSleep, Origin{})
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func TestConcurrencyCapRunsFourAtOnceAndCompletesTheRest(t *testing.T) {
 	const jobCount = maxConcurrent * 3
 	release := make(chan struct{})
 	var inFlight, peak atomic.Int64
-	runTask := func(context.Context, string, string) (string, error) {
+	runTask := func(context.Context, string, string, string) (string, error) {
 		n := inFlight.Add(1)
 		for {
 			p := peak.Load()
@@ -159,7 +159,7 @@ func TestConcurrencyCapRunsFourAtOnceAndCompletesTheRest(t *testing.T) {
 		inFlight.Add(-1)
 		return "ok", nil
 	}
-	e := NewEngine(context.Background(), t.TempDir(), runTask, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, runTask, nil)
 
 	var ids []string
 	for range jobCount {
@@ -194,13 +194,13 @@ func TestQueuedJobIsCancelledWhenTheEngineContextEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	release := make(chan struct{})
 	var inFlight atomic.Int64
-	runTask := func(context.Context, string, string) (string, error) {
+	runTask := func(context.Context, string, string, string) (string, error) {
 		inFlight.Add(1)
 		<-release
 		return "ok", nil
 	}
 	rec := newNotifyRecorder()
-	e := NewEngine(ctx, t.TempDir(), runTask, rec.notify)
+	e := NewEngine(ctx, t.TempDir(), nil, runTask, rec.notify)
 
 	for range maxConcurrent {
 		if _, err := e.Start(KindTask, "", "work", Origin{}); err != nil {
@@ -231,10 +231,10 @@ func TestQueuedJobIsCancelledWhenTheEngineContextEnds(t *testing.T) {
 
 func TestTaskJobRecordsRunnerErrors(t *testing.T) {
 	rec := newNotifyRecorder()
-	runTask := func(context.Context, string, string) (string, error) {
+	runTask := func(context.Context, string, string, string) (string, error) {
 		return "", errors.New("delegate exploded")
 	}
-	e := NewEngine(context.Background(), t.TempDir(), runTask, rec.notify)
+	e := NewEngine(context.Background(), t.TempDir(), nil, runTask, rec.notify)
 	if _, err := e.Start(KindTask, "research", "dig", Origin{}); err != nil {
 		t.Fatal(err)
 	}

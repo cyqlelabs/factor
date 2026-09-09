@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyqlelabs/factor/internal/provider"
 )
@@ -316,12 +317,12 @@ func TestCompactPropagatesTempWriteError(t *testing.T) {
 	if err := s.SetSummaryAt(key, "sum", 2); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(s.historyPath(key)+".tmp", 0o755); err != nil {
+	if err := os.Mkdir(s.compactPath(key), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := s.Compact(key); err == nil {
-		t.Fatal("want an error when the temporary log cannot be written")
+		t.Fatal("want an error when the staged log cannot be written")
 	}
 	total, _ := s.TotalLen(key)
 	if total != 4 {
@@ -329,29 +330,98 @@ func TestCompactPropagatesTempWriteError(t *testing.T) {
 	}
 }
 
-func TestCompactReportsMetaFailureAfterRewrite(t *testing.T) {
+// A compaction whose commit cannot be written changes nothing. The meta is
+// the commit point precisely so this failure is a no-op rather than the state
+// the audit found: a short log read through a long log's offset, which showed
+// two surviving messages as none.
+func TestCompactThatCannotCommitLeavesTheHistoryWhole(t *testing.T) {
 	s := newStore(t)
 	key := "k"
 	seed(t, s, key, 4)
 	if err := s.SetSummaryAt(key, "sum", 2); err != nil {
 		t.Fatal(err)
 	}
-	// Block the meta sidecar's temp file so the rewrite lands but the offset
-	// reset does not.
+	// Block the meta sidecar's temp file so the commit cannot land.
 	if err := os.Mkdir(s.metaPath(key)+".tmp", 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	err := s.Compact(key)
 	if err == nil {
-		t.Fatal("want an error when the log is rewritten but the meta is not")
+		t.Fatal("want an error when the compaction cannot be committed")
 	}
-	if !strings.Contains(err.Error(), "compact wrote history but not meta") {
-		t.Errorf("err = %v, want it to name the inconsistent state", err)
+	if !strings.Contains(err.Error(), "could not commit") {
+		t.Errorf("err = %v, want it to name the failure", err)
 	}
 	total, _ := s.TotalLen(key)
-	if total != 2 {
-		t.Errorf("physical len = %d, want the rewritten log", total)
+	if total != 4 {
+		t.Errorf("physical len = %d, want the original log left intact", total)
+	}
+	live, err := s.History(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 2 {
+		t.Errorf("live history = %d messages, want the 2 the summary did not cover", len(live))
+	}
+	if _, err := os.Stat(s.compactPath(key)); !os.IsNotExist(err) {
+		t.Error("a compaction that could not commit left its staged file behind")
+	}
+}
+
+// The crash the ordering exists for: the commit landed and the rename did
+// not. Whoever opens the session next adopts the staged file, and the history
+// reads as the compaction intended rather than as two messages missing.
+func TestInterruptedCompactionIsFinishedOnRead(t *testing.T) {
+	s := newStore(t)
+	key := "k"
+	seed(t, s, key, 4)
+	if err := s.SetSummaryAt(key, "sum", 2); err != nil {
+		t.Fatal(err)
+	}
+	// Exactly what Compact leaves behind between its two steps.
+	staged := "{\"role\":\"user\",\"content\":\"m2\"}\n{\"role\":\"user\",\"content\":\"m3\"}\n"
+	if err := os.WriteFile(s.compactPath(key), []byte(staged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.writeMeta(key, meta{Skip: 0, Summary: "sum", Compacting: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	live, err := s.History(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 2 || live[0].Content != "m2" || live[1].Content != "m3" {
+		t.Fatalf("history after an interrupted compaction = %+v, want the two staged messages", live)
+	}
+	if _, err := os.Stat(s.compactPath(key)); !os.IsNotExist(err) {
+		t.Error("the staged file survived its adoption")
+	}
+	if m := s.readMeta(key); m.Compacting {
+		t.Error("the compaction marker was not cleared")
+	}
+}
+
+// The other side of the same crash: the rename did land, and only the marker
+// is left. Nothing to adopt, and the shortened history stands as it is.
+func TestInterruptedCompactionAfterTheRenameIsJustAMarker(t *testing.T) {
+	s := newStore(t)
+	key := "k"
+	seed(t, s, key, 2)
+	if err := s.writeMeta(key, meta{Skip: 0, Summary: "sum", Compacting: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	live, err := s.History(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 2 {
+		t.Errorf("history = %d messages, want both of them", len(live))
+	}
+	if m := s.readMeta(key); m.Compacting {
+		t.Error("the compaction marker was not cleared")
 	}
 }
 
@@ -488,5 +558,60 @@ func TestHistoryPropagatesUnreadableLog(t *testing.T) {
 	}
 	if err := s.Compact(key); err == nil {
 		t.Error("want Compact to surface the same read error")
+	}
+}
+
+// Appending to the long file while a staged rewrite is waiting to be adopted
+// writes a message the adoption then throws away. Every operation that touches
+// the history file finishes the compaction first, so the new turn lands on the
+// file that survives.
+func TestAppendFinishesAnInterruptedCompactionFirst(t *testing.T) {
+	s := newStore(t)
+	key := "k"
+	seed(t, s, key, 4)
+	staged := "{\"role\":\"user\",\"content\":\"m2\"}\n{\"role\":\"user\",\"content\":\"m3\"}\n"
+	if err := os.WriteFile(s.compactPath(key), []byte(staged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.writeMeta(key, meta{Skip: 0, Summary: "sum", Compacting: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Append(key, provider.Message{Role: "user", Content: "m4"}); err != nil {
+		t.Fatal(err)
+	}
+	live, err := s.History(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 3 || live[2].Content != "m4" {
+		t.Fatalf("history = %+v, want the two staged messages and the new one", live)
+	}
+}
+
+// The log keeps the time it was last spoken into, across the staged rename as
+// well: compaction is housekeeping and can run long after the conversation, so
+// a session tidied at 4am must not read as recent.
+func TestCompactionKeepsTheTimeTheSessionWasLastSpokenInto(t *testing.T) {
+	s := newStore(t)
+	key := "k"
+	seed(t, s, key, 4)
+	spoken := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(s.historyPath(key), spoken, spoken); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSummaryAt(key, "sum", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Compact(key); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := s.LastActivity(key)
+	if !ok {
+		t.Fatal("no last activity after compaction")
+	}
+	if got.Sub(spoken).Abs() > time.Second {
+		t.Errorf("last activity = %v, want the %v the session was last spoken into", got, spoken)
 	}
 }

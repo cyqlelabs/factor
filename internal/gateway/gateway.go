@@ -184,6 +184,11 @@ func serve(configPath string) (bool, error) {
 	// that voice speaks — the one thing a heartbeat, with no user message to
 	// match, cannot work out for itself.
 	a.Loop.SetLanguage(manager.Language)
+	// And a reply about to be composed is scoped to whoever can hear it now,
+	// which is not always who could hear it when the work was asked for: a
+	// background job or a scheduled task is answered into whatever room it
+	// lands in, and only the connector knows what that room is.
+	a.Loop.SetAudience(manager.Audience)
 	manager.Start(ctx)
 
 	// The tray's overview reads from here for as long as serve runs; the
@@ -191,7 +196,7 @@ func serve(configPath string) (bool, error) {
 	// engine.
 	setStatusSource(func() []string {
 		return statusLines(version.Version, time.Since(began),
-			a.Memory.Enabled(), a.Memory.Healthy(), manager.Names(), a.Cost.OverviewLine())
+			a.Memory.Enabled(), a.Memory.Healthy(), manager.Running(), manager.Failed(), a.Cost.OverviewLine())
 	})
 	defer setStatusSource(nil)
 
@@ -258,7 +263,8 @@ func serve(configPath string) (bool, error) {
 
 	slog.Info("factor gateway running",
 		"version", version.Version,
-		"channels", manager.Names(),
+		"channels", manager.Running(),
+		"channels_failed", manager.Failed(),
 		"health", fmt.Sprintf("http://%s:%d/health", cfg.Gateway.Host, cfg.Gateway.Port))
 
 	// The daemon is where a gigabyte of engine is worth fetching unasked: it
@@ -273,7 +279,8 @@ func serve(configPath string) (bool, error) {
 		cancel()
 	case req := <-restart:
 		slog.Info("restart requested", "reason", req.reason)
-		settle(ctx, func() bool { return a.Loop.Idle() && a.Cron.Idle() }, a.Bus.PendingOutbound)
+		settle(ctx, func() bool { return a.Loop.Idle() && a.Cron.Idle() },
+			func() int { return a.Bus.PendingOutbound() + manager.InFlight() })
 		// A stop that lands while the answer is still going out wins: the
 		// user asked for this process to end, not to come back.
 		reloading = ctx.Err() == nil
@@ -350,6 +357,14 @@ func settle(ctx context.Context, idle func() bool, pending func() int) {
 			return
 		}
 	}
+	// The wait is bounded, so it can end with work still going: a connector
+	// that has stopped answering must not hold a reload forever. Saying so is
+	// the difference between a reply that was delivered and one that was
+	// given up on, which is otherwise indistinguishable afterwards.
+	if !idle() || pending() > 0 {
+		slog.Warn("reloading with work still outstanding",
+			"waited", settleTimeout, "turns_idle", idle(), "undelivered", pending())
+	}
 	pause(ctx, settleGrace) // the last send is still on the wire
 }
 
@@ -406,7 +421,11 @@ func startHealthServer(cfg *config.Config, a *app.App, manager *channel.Manager)
 			// the engine's container: only this process knows what it has in
 			// flight against the graph.
 			"memory_idle": memory.IdleFunc(a.Memory, memory.UpgradeQuiet)(),
-			"channels":    manager.Names(),
+			// Running rather than configured: a connector that did not come
+			// up is not an address, and saying it is here is how a message
+			// gets reported as delivered and then dropped.
+			"channels":        manager.Running(),
+			"channels_failed": manager.Failed(),
 		})
 	})
 	addr := net.JoinHostPort(cfg.Gateway.Host, strconv.Itoa(cfg.Gateway.Port))

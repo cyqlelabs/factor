@@ -145,3 +145,34 @@ func TestStaleAndUnusableRestartNoticesAreDropped(t *testing.T) {
 		}
 	}
 }
+
+// The note is what survives the exec, so it must not be thrown away before it
+// has been handed to the queue. A refused publish — the queue full, a
+// connector that never came up — used to swallow the one line the user was
+// waiting for and leave nothing on disk to try again with.
+func TestARefusedRestartNoticeIsKeptForTheNextStart(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	noteRestart(restartRequest{
+		reason: "installed factor v9.9.9",
+		target: upgrade.Target{Channel: "telegram", ChatID: "42"},
+	}, nobodySpoke, serving("telegram"))
+
+	refused := 0
+	announceRestart(func(bus.OutboundMessage) bool { refused++; return false })
+	if refused != 1 {
+		t.Fatalf("publish attempts = %d, want one", refused)
+	}
+	if _, err := os.Stat(restartNoticePath()); err != nil {
+		t.Fatalf("the note was cleared even though nothing took it: %v", err)
+	}
+
+	// The next start says it, and only then is the note gone.
+	var sent []bus.OutboundMessage
+	announceRestart(collector(&sent))
+	if len(sent) != 1 {
+		t.Fatalf("the kept note was not delivered on the next start: %+v", sent)
+	}
+	if _, err := os.Stat(restartNoticePath()); !os.IsNotExist(err) {
+		t.Error("a delivered note was not cleared")
+	}
+}

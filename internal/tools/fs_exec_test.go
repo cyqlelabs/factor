@@ -432,7 +432,7 @@ func TestExecTruncatesLargeOutput(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("res = %+v", res)
 	}
-	if !strings.Contains(res.ForLLM, "bytes truncated") {
+	if !strings.Contains(res.ForLLM, "bytes omitted") {
 		t.Errorf("no truncation marker in a %d byte output", size)
 	}
 	if len(res.ForLLM) >= size {
@@ -520,4 +520,33 @@ func tailOf(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+// The cap has to bound what is held, not only what is returned. Buffering a
+// noisy command in full so that all but 32 KB can be thrown away is how a
+// runaway `yes` takes the machine down — and these run on machines with
+// three and a half gigabytes in them.
+func TestBoundedOutputHoldsOnlyItsBudget(t *testing.T) {
+	out := newBoundedOutput(1000)
+	for range 1000 {
+		if _, err := out.Write(bytes.Repeat([]byte("x"), 1000)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if held := len(out.head) + len(out.tail); held > 1000 {
+		t.Errorf("held %d bytes of a 1000 byte budget", held)
+	}
+	text := out.String()
+	if !strings.Contains(text, "999000 bytes omitted") {
+		t.Errorf("the omitted count is wrong or missing: %.120q", text)
+	}
+
+	// Under the budget nothing is dropped and nothing is announced.
+	small := newBoundedOutput(1000)
+	if _, err := small.Write([]byte("all of it")); err != nil {
+		t.Fatal(err)
+	}
+	if got := small.String(); got != "all of it" {
+		t.Errorf("small output = %q", got)
+	}
 }

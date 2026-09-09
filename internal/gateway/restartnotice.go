@@ -72,30 +72,45 @@ func noteRestart(req restartRequest, last func() (string, string, bool), serves 
 	}
 }
 
-// announceRestart delivers the note the previous process left behind, and
-// clears it either way: being back is news exactly once.
+// announceRestart delivers the note the previous process left behind. The
+// note is cleared once it has been handed to the outbound queue, and only
+// then: clearing it first meant a queue that refused the message — full, or a
+// connector that never came up — swallowed the one line the user was waiting
+// for, with nothing left on disk to try again with. A note that outlives its
+// publication is bounded by the TTL, so the worst case is being told twice
+// about a restart that happened minutes ago rather than never being told.
 func announceRestart(publish func(bus.OutboundMessage) bool) {
 	data, err := os.ReadFile(restartNoticePath())
 	if err != nil {
 		return // the ordinary start: nobody asked for this one
 	}
-	if err := os.Remove(restartNoticePath()); err != nil {
-		slog.Warn("clearing the restart notice", "error", err)
+	drop := func() {
+		if err := os.Remove(restartNoticePath()); err != nil {
+			slog.Warn("clearing the restart notice", "error", err)
+		}
 	}
 	var note restartNotice
 	if err := json.Unmarshal(data, &note); err != nil {
 		slog.Warn("ignoring an unreadable restart notice", "error", err)
+		drop()
 		return
 	}
 	if !bus.External(note.Channel) {
+		drop()
 		return
 	}
 	if age := time.Since(note.At); age > restartNoticeTTL {
 		slog.Info("skipping a stale restart notice", "age", age.Round(time.Second), "reason", note.Reason)
+		drop()
 		return
 	}
 	slog.Info("reporting back after a restart", "channel", note.Channel, "reason", note.Reason)
-	publish(bus.OutboundMessage{Channel: note.Channel, ChatID: note.ChatID, Content: restartMessage(note)})
+	if !publish(bus.OutboundMessage{Channel: note.Channel, ChatID: note.ChatID, Content: restartMessage(note)}) {
+		slog.Error("the restart notice could not be queued; leaving it for the next start",
+			"channel", note.Channel, "reason", note.Reason)
+		return
+	}
+	drop()
 }
 
 func restartMessage(note restartNotice) string {

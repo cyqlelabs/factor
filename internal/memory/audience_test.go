@@ -53,14 +53,45 @@ func TestScopeIsOneDirectional(t *testing.T) {
 	}
 }
 
-// A machine turn is not a conversation and has no audience to speak of; it
-// keeps the system split it always had.
-func TestMachineTurnsIgnoreTheAudience(t *testing.T) {
+// A machine turn keeps the system split — but only while nobody else is
+// listening. The audience is not a property of the conversation that started
+// the work, it is a property of the room the answer is said in: a job
+// delegated with a guest in the house reports back into that house, and the
+// system routing used to hand it the private space to read on the way.
+func TestMachineTurnsKeepTheSystemSplitWhilePrivate(t *testing.T) {
+	p := audiencePolicy()
+	for _, channel := range []string{"cron", "job", "system"} {
+		got, ok := p.Scope(channel, "")
+		if !ok || got.Space != "system" {
+			t.Errorf("Scope(%q, private) = %+v, %v, want the system space", channel, got, ok)
+		}
+		if !reflect.DeepEqual(got.ReadSpaces, []string{"system", "main"}) {
+			t.Errorf("Scope(%q, private) reads %v, want system and main", channel, got.ReadSpaces)
+		}
+	}
+}
+
+// The audience outranks the channel. This is the leak the split exists to
+// stop, arriving by the one road that used to be open: a background job or a
+// scheduled task reporting into a room with company in it.
+func TestMachineTurnsObeyASharedAudience(t *testing.T) {
 	p := audiencePolicy()
 	for _, channel := range []string{"cron", "job", "system"} {
 		got, ok := p.Scope(channel, tools.AudienceShared)
-		if !ok || got.Space != "system" {
-			t.Errorf("Scope(%q, shared) = %+v, %v, want the system space", channel, got, ok)
+		if !ok {
+			t.Fatalf("Scope(%q, shared) refused recall with a shared space configured", channel)
+		}
+		if got.Space != "shared" || !reflect.DeepEqual(got.ReadSpaces, []string{"shared"}) {
+			t.Errorf("Scope(%q, shared) = %+v, want the shared space and nothing else", channel, got)
+		}
+	}
+
+	// And with nowhere to isolate into, a machine turn is refused recall
+	// exactly as a spoken one is, rather than falling back to main.
+	noShared := testPolicy()
+	for _, channel := range []string{"cron", "job", "system"} {
+		if _, ok := noShared.Scope(channel, tools.AudienceShared); ok {
+			t.Errorf("Scope(%q, shared) was served with no shared space to isolate into", channel)
 		}
 	}
 }
@@ -208,5 +239,50 @@ func TestRememberStillWorksWhenTheRoomCannotBeScoped(t *testing.T) {
 	}
 	if len(eng.remembered) == 0 {
 		t.Error("nothing was stored")
+	}
+}
+
+// The leak the audit found, at the level it actually happened: a background
+// job or a scheduled task reports into a room, and the routing that gave those
+// turns the system space handed them the private one to read along with it.
+// Who is standing there when the answer lands is not a property of what
+// started the work.
+func TestASharedMachineTurnRecallsAndStoresInTheRoom(t *testing.T) {
+	for _, channel := range []string{"job", "cron", "system"} {
+		eng := newScopeEngine()
+		a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, audiencePolicy())
+		ctx := tools.WithToolContext(context.Background(), tools.ToolContext{
+			Channel: channel, ChatID: "j1-3f9c", Audience: tools.AudienceShared,
+		})
+
+		a.MemoryPrompt(ctx, nil, "how did that job go")
+		if !reflect.DeepEqual(eng.recallScope.ReadSpaces, []string{"shared"}) {
+			t.Errorf("a shared %s turn recalled %v, want the shared space alone",
+				channel, eng.recallScope.ReadSpaces)
+		}
+
+		a.StoreExchange(channel, tools.AudienceShared, "", "the build finished", "told you")
+		for i, req := range eng.remembered {
+			if req.Space != "shared" {
+				t.Errorf("a shared %s turn stored remembered[%d] into %q, want shared", channel, i, req.Space)
+			}
+		}
+	}
+}
+
+// And with no shared space to isolate into, a machine turn in company recalls
+// nothing rather than being served from the one space holding everything.
+func TestASharedMachineTurnWithNothingToIsolateIntoRecallsNothing(t *testing.T) {
+	eng := newScopeEngine()
+	a := NewAmbient(eng, 5, 0.1, 5, 500, 500, nil, testPolicy()) // no shared space
+	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{
+		Channel: "job", ChatID: "j1-3f9c", Audience: tools.AudienceShared,
+	})
+
+	if got := a.MemoryPrompt(ctx, nil, "how did that job go"); strings.Contains(got, "Relevant") {
+		t.Errorf("a shared job turn was served recall it cannot isolate: %q", got)
+	}
+	if eng.recalls > 0 {
+		t.Errorf("the engine was asked to recall %d times for a turn that cannot be scoped", eng.recalls)
 	}
 }

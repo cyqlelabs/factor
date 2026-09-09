@@ -347,3 +347,146 @@ func TestStatusLineSaysWhenTheRoomIsShared(t *testing.T) {
 		t.Errorf("a private room was announced: %q", private.Line())
 	}
 }
+
+// Declaring company cannot take effect by relabelling a turn that is already
+// running: that turn was assembled for an empty room, its context holds
+// whatever private memory was recalled into it, and the tool changing a flag
+// does not take any of it back. So the turn ends where it stands and the same
+// utterance is asked again under the shared session — which is the only
+// version of "only shared memory is recalled" that is true when it is said.
+func TestDeclaringCompanyMidTurnRunsTheTurnAgainUnderTheSharedRoom(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.enableRoom(time.Hour)
+	tool := &roomTool{voice: h.v}
+
+	calls := make(chan turnCall, 4)
+	h.v.BindTurnRunner(func(ctx context.Context, content, session, speaker, audience string, notice func(string)) (string, error) {
+		calls <- turnCall{content: content, session: session, audience: audience}
+		if audience == "" {
+			// The user says somebody just walked in, so the model records it
+			// exactly as the tool's description tells it to: right away.
+			res := tool.Execute(ctx, map[string]any{"action": "company", "names": []any{"Roxana"}})
+			if res.IsError {
+				return "", fmt.Errorf("room tool: %s", res.ForLLM)
+			}
+			if !strings.Contains(res.ForLLM, "say nothing more") {
+				t.Errorf("the tool did not tell the model this turn is over: %q", res.ForLLM)
+			}
+			<-ctx.Done() // the turn was cancelled under it
+			return "the answer nobody should hear", ctx.Err()
+		}
+		return "we have company", nil
+	})
+
+	st := h.v.room.assess(time.Now())
+	if st.Shared {
+		t.Fatal("the room did not start private")
+	}
+	h.v.turn(context.Background(), "what is my passport number", speakerIdentity{}, st)
+
+	first := <-calls
+	if first.audience != "" || first.session != sessionKey {
+		t.Errorf("the first turn ran as %+v, want the private session", first)
+	}
+	select {
+	case second := <-calls:
+		if second.audience != tools.AudienceShared {
+			t.Errorf("the re-run turn's audience = %q, want shared", second.audience)
+		}
+		if second.session != sessionKey+":"+roomSessionSlug {
+			t.Errorf("the re-run turn's session = %q, want the room's", second.session)
+		}
+		if second.content != "what is my passport number" {
+			t.Errorf("the re-run turn asked %q, want the user's own words", second.content)
+		}
+	default:
+		t.Fatal("the turn was not run again under the shared room")
+	}
+	select {
+	case extra := <-calls:
+		t.Errorf("a third turn ran: %+v", extra)
+	default:
+	}
+}
+
+// The same tool call inside a turn that is already shared changes nothing:
+// there is nothing to take back, and re-running would loop.
+func TestDeclaringCompanyInASharedTurnDoesNotReRunIt(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.enableRoom(time.Hour)
+	tool := &roomTool{voice: h.v}
+
+	calls := make(chan turnCall, 4)
+	h.v.BindTurnRunner(func(ctx context.Context, content, session, speaker, audience string, _ func(string)) (string, error) {
+		calls <- turnCall{content: content, session: session, audience: audience}
+		res := tool.Execute(ctx, map[string]any{"action": "company", "names": []any{"Ada"}})
+		if strings.Contains(res.ForLLM, "say nothing more") {
+			t.Error("a turn that was already shared was told to stop")
+		}
+		return "noted", nil
+	})
+
+	h.v.room.declare(true, []string{"Roxana"}, time.Now())
+	st := h.v.room.assess(time.Now())
+	if !st.Shared {
+		t.Fatal("the room is not shared")
+	}
+	h.v.turn(context.Background(), "hello", speakerIdentity{}, st)
+
+	if len(calls) != 1 {
+		t.Errorf("%d turns ran, want the one", len(calls))
+	}
+}
+
+// A background job that finished, or a scheduled task landing here, is
+// composed for the room as it is at that moment — which is what Audiencer is
+// asked for. Nothing else on this channel can answer that question.
+func TestVoiceReportsTheRoomAsTheAudience(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.enableRoom(time.Hour)
+
+	if got := h.v.Audience("local"); got != "" {
+		t.Errorf("Audience() on an empty room = %q, want blank", got)
+	}
+	h.v.room.declare(true, []string{"Roxana"}, time.Now())
+	if got := h.v.Audience("local"); got != tools.AudienceShared {
+		t.Errorf("Audience() with company present = %q, want shared", got)
+	}
+	// And with the feature off there is nothing to report.
+	off := &Voice{}
+	if got := off.Audience("local"); got != "" {
+		t.Errorf("Audience() with room isolation off = %q, want blank", got)
+	}
+}
+
+// The floor belongs to whoever spoke last. A user who says something else
+// while a turn is being re-scoped has replaced the question, so the pending
+// re-run is dropped rather than answered beside the new one.
+func TestABargeBeatsAPendingRescope(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.enableRoom(time.Hour)
+	tool := &roomTool{voice: h.v}
+
+	calls := make(chan turnCall, 4)
+	h.v.BindTurnRunner(func(ctx context.Context, content, session, speaker, audience string, _ func(string)) (string, error) {
+		calls <- turnCall{content: content, session: session, audience: audience}
+		if audience == "" {
+			tool.Execute(ctx, map[string]any{"action": "company", "names": []any{"Roxana"}})
+			h.v.cancelTurn() // the user starts saying something else
+			<-ctx.Done()
+			return "", ctx.Err()
+		}
+		return "we have company", nil
+	})
+
+	st := h.v.room.assess(time.Now())
+	h.v.turn(context.Background(), "what is my passport number", speakerIdentity{}, st)
+
+	if len(calls) != 1 {
+		t.Errorf("%d turns ran, want only the one the barge cut off", len(calls))
+	}
+}

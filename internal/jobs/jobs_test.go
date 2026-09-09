@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 type notifyRecorder struct {
@@ -38,7 +40,7 @@ func (n *notifyRecorder) wait(t *testing.T) *Job {
 
 func TestExecJobCompletesAndNotifies(t *testing.T) {
 	rec := newNotifyRecorder()
-	e := NewEngine(context.Background(), t.TempDir(), nil, rec.notify)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, rec.notify)
 	origin := Origin{Channel: "telegram", ChatID: "42", SessionKey: "telegram:42"}
 
 	job, err := e.Start(KindExec, "greet", "echo working on it", origin)
@@ -59,7 +61,7 @@ func TestExecJobCompletesAndNotifies(t *testing.T) {
 
 func TestExecJobFailureState(t *testing.T) {
 	rec := newNotifyRecorder()
-	e := NewEngine(context.Background(), t.TempDir(), nil, rec.notify)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, rec.notify)
 	_, err := e.Start(KindExec, "", payloadFailErr, Origin{})
 	if err != nil {
 		t.Fatal(err)
@@ -75,13 +77,13 @@ func TestExecJobFailureState(t *testing.T) {
 
 func TestTaskJobRunsDelegate(t *testing.T) {
 	rec := newNotifyRecorder()
-	runTask := func(_ context.Context, prompt, sessionKey string) (string, error) {
+	runTask := func(_ context.Context, prompt, sessionKey, _ string) (string, error) {
 		if prompt != "research something" || !strings.HasPrefix(sessionKey, "job:") {
 			t.Errorf("prompt=%q session=%q", prompt, sessionKey)
 		}
 		return "research complete: 42", nil
 	}
-	e := NewEngine(context.Background(), t.TempDir(), runTask, rec.notify)
+	e := NewEngine(context.Background(), t.TempDir(), nil, runTask, rec.notify)
 	if _, err := e.Start(KindTask, "research", "research something", Origin{}); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +95,7 @@ func TestTaskJobRunsDelegate(t *testing.T) {
 
 func TestCancelRunningJob(t *testing.T) {
 	rec := newNotifyRecorder()
-	e := NewEngine(context.Background(), t.TempDir(), nil, rec.notify)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, rec.notify)
 	job, err := e.Start(KindExec, "long", payloadSleep, Origin{})
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +132,7 @@ func TestCancelRunningJob(t *testing.T) {
 
 func TestOutputTailBounded(t *testing.T) {
 	rec := newNotifyRecorder()
-	e := NewEngine(context.Background(), t.TempDir(), nil, rec.notify)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, rec.notify)
 	if _, err := e.Start(KindExec, "", payloadFlood, Origin{}); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +144,7 @@ func TestOutputTailBounded(t *testing.T) {
 
 func TestListOrdersAndPrunes(t *testing.T) {
 	rec := newNotifyRecorder()
-	e := NewEngine(context.Background(), t.TempDir(), nil, rec.notify)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, rec.notify)
 	for range 3 {
 		if _, err := e.Start(KindExec, "", payloadOK, Origin{}); err != nil {
 			t.Fatal(err)
@@ -151,5 +153,84 @@ func TestListOrdersAndPrunes(t *testing.T) {
 	e.Wait()
 	if got := len(e.List()); got != 3 {
 		t.Errorf("list = %d", got)
+	}
+}
+
+// The audit's fourth probe: two fresh engines both handed out "j1", and with
+// it the persistent session key "job:j1". Unrelated jobs a restart apart, or
+// two Factor processes sharing a workspace, inherited each other's history and
+// spending bucket while job_start promised a fresh agent run.
+func TestJobIDsAreUniqueAcrossEngines(t *testing.T) {
+	first := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
+	second := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
+
+	a, err := first.Start(KindExec, "one", "true", Origin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := second.Start(KindExec, "one", "true", Origin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID == b.ID {
+		t.Errorf("two fresh engines both minted %q, so both task sub-turns run as job:%s", a.ID, a.ID)
+	}
+	// Still readable, and still ordered within an engine.
+	c, err := first.Start(KindExec, "two", "true", Origin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(a.ID, "j1-") || !strings.HasPrefix(c.ID, "j2-") {
+		t.Errorf("ids = %q, %q, want a readable counter with the run token behind it", a.ID, c.ID)
+	}
+	first.Wait()
+	second.Wait()
+}
+
+// The audit's fifth probe: a command a custom deny pattern blocked in the
+// foreground ran happily as a background job. Delegating slow work is an
+// ordinary workflow the operating rules encourage, so a rail one of the two
+// first-party shells enforces is not a rail.
+func TestBackgroundExecObeysTheDenyPatterns(t *testing.T) {
+	guard, err := tools.NewCommandGuard(true, []string{`\bsecret-thing\b`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := NewEngine(context.Background(), t.TempDir(), guard, nil, nil)
+
+	if _, err := e.Start(KindExec, "custom", "echo secret-thing", Origin{}); err == nil {
+		t.Error("a command blocked in the foreground started as a background job")
+	}
+	if _, err := e.Start(KindExec, "builtin", "rm -rf /tmp/whatever", Origin{}); err == nil {
+		t.Error("a built-in catastrophe pattern started as a background job")
+	}
+	// A task job's prompt is not a command and is not checked against shell
+	// patterns: the words are for a model, not for a shell.
+	runTask := func(context.Context, string, string, string) (string, error) { return "ok", nil }
+	withTasks := NewEngine(context.Background(), t.TempDir(), guard, runTask, nil)
+	if _, err := withTasks.Start(KindTask, "prompt", "tell me about secret-thing", Origin{}); err != nil {
+		t.Errorf("a task prompt was refused by a shell pattern: %v", err)
+	}
+	withTasks.Wait()
+}
+
+// The audience travels with the job, so a sub-turn delegated from a room with
+// company in it recalls and stores under that room's scope rather than the
+// blank one a background session would otherwise default to.
+func TestTaskJobsRunUnderTheOriginAudience(t *testing.T) {
+	seen := make(chan string, 1)
+	runTask := func(_ context.Context, _, _, audience string) (string, error) {
+		seen <- audience
+		return "done", nil
+	}
+	e := NewEngine(context.Background(), t.TempDir(), nil, runTask, nil)
+	if _, err := e.Start(KindTask, "research", "look it up",
+		Origin{Channel: "voice", ChatID: "local:room", Audience: tools.AudienceShared}); err != nil {
+		t.Fatal(err)
+	}
+	e.Wait()
+
+	if got := <-seen; got != tools.AudienceShared {
+		t.Errorf("the sub-turn ran with audience %q, want the room the job was started in", got)
 	}
 }

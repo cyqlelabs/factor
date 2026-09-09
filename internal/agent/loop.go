@@ -85,6 +85,7 @@ type Loop struct {
 	reachable      func(channel string) bool
 	conversational func(channel string) bool
 	languageOf     func(channel string) string
+	audienceOf     func(channel, chatID string) string
 
 	// seen is every session this process has run a turn for, with the tool
 	// context it ran under. Idle compaction works from it rather than from
@@ -352,6 +353,16 @@ func (l *Loop) release(key string, t *turn) []bus.InboundMessage {
 
 func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 	key := msg.SessionKey()
+	// Who can hear this is asked again here rather than trusted from the
+	// publisher. A background job's completion was queued when the work
+	// started and a channel's own reading of the room is current, so a
+	// result composed for an empty room is rescoped before it is composed
+	// rather than withheld after.
+	if now := l.audienceAt(msg.Channel, msg.ChatID); widensAudience(now, msg.Audience) {
+		slog.Info("widening a message's audience to the room it will be answered in",
+			"session", key, "was", msg.Audience, "now", now)
+		msg.Audience = now
+	}
 	t, ok, _ := l.claim(key, &msg, true, true)
 	if !ok {
 		return
@@ -384,10 +395,19 @@ func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 	}()
 }
 
-// ProcessDirect runs a synchronous turn outside the bus (CLI one-shot,
-// delegated jobs) with nobody listening for progress.
+// ProcessDirect runs a synchronous turn outside the bus (CLI one-shot) with
+// nobody listening for progress.
 func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (string, error) {
 	return l.processDirect(ctx, false, content, sessionKey, "", "", "", nil)
+}
+
+// ProcessDelegated is ProcessDirect for a background job's sub-turn. It takes
+// the audience the job was started under, because the work outlives the turn
+// that asked for it: research delegated from a room with company in it is
+// answered back into that room, and a sub-turn that ran with a blank audience
+// recalled the private graph to do it.
+func (l *Loop) ProcessDelegated(ctx context.Context, content, sessionKey, audience string) (string, error) {
+	return l.processDirect(ctx, false, content, sessionKey, "", audience, "", nil)
 }
 
 // ProcessScheduled is ProcessDirect for a turn nobody asked for whose reply
@@ -396,7 +416,10 @@ func (l *Loop) ProcessDirect(ctx context.Context, content, sessionKey string) (s
 // channel, so the reply is composed for where it comes out: spoken where it
 // is spoken, in the language the voice there speaks.
 func (l *Loop) ProcessScheduled(ctx context.Context, content, sessionKey, outlet string) (string, error) {
-	return l.processDirect(ctx, false, content, sessionKey, "", "", outlet, nil)
+	// A scheduled turn is composed for a chat it did not come from, so the
+	// room it lands in is the one that governs it — and that room is whatever
+	// it is now, hours after the schedule was written.
+	return l.processDirect(ctx, false, content, sessionKey, "", l.audienceAt(outlet, ""), outlet, nil)
 }
 
 // ProcessDirectNotice runs a synchronous turn outside the bus and reports
@@ -478,9 +501,13 @@ func (l *Loop) processDirect(ctx context.Context, steer bool, content, sessionKe
 // a Spanish voice.
 func (l *Loop) ProcessEphemeral(ctx context.Context, content string) (string, error) {
 	tc := tools.ToolContext{Channel: "system", ChatID: "heartbeat", SessionKey: "system:heartbeat"}
-	if ch, _, ok := l.LastChannel(); ok {
+	if ch, chat, ok := l.LastChannel(); ok {
 		tc.Outlet = ch
 		tc.Language = l.language(ch)
+		// A check nobody asked for is still read out loud wherever the user
+		// last was, so it is scoped to whoever is in that room now — the
+		// same question a job's completion has to ask, for the same reason.
+		tc.Audience = l.audienceAt(ch, chat)
 	}
 	return l.execute(ctx, turnInput{
 		sessionKey: "system:heartbeat",
@@ -1220,6 +1247,34 @@ func (l *Loop) language(channel string) string {
 		return ""
 	}
 	return l.languageOf(channel)
+}
+
+// SetAudience teaches the loop how to ask a channel who can hear a reply
+// right now. It is what a delayed answer is rescoped against: a background
+// job or a scheduled task composes its report long after the turn that asked
+// for it, and the room it lands in is whatever the room is at that moment,
+// not what it was when the work started. Unset — the CLI, a written chat,
+// tests — nothing widens and the message's own audience stands.
+func (l *Loop) SetAudience(fn func(channel, chatID string) string) {
+	l.lastMu.Lock()
+	defer l.lastMu.Unlock()
+	l.audienceOf = fn
+}
+
+// audienceAt asks who can hear a reply on this channel now, and answers blank
+// where nothing can tell. Callers that already hold an audience only ever
+// widen to it (see widensAudience); a turn with none of its own — a scheduled
+// task, a heartbeat — takes it as the answer. Widening is the safe direction:
+// the wrong call costs a coy answer one way and a secret said in front of a
+// guest the other.
+func (l *Loop) audienceAt(channel, chatID string) string {
+	l.lastMu.Lock()
+	fn := l.audienceOf
+	l.lastMu.Unlock()
+	if fn == nil {
+		return ""
+	}
+	return fn(channel, chatID)
 }
 
 // SetConversational teaches the loop which channels are running chats whose

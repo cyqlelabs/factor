@@ -46,7 +46,7 @@ func (t *startTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 		Kind(tools.StringArg(args, "kind")),
 		desc,
 		tools.StringArg(args, "payload"),
-		Origin{Channel: tc.Channel, ChatID: tc.ChatID, SessionKey: tc.SessionKey},
+		Origin{Channel: tc.Channel, ChatID: tc.ChatID, SessionKey: tc.SessionKey, Audience: tc.Audience},
 	)
 	if err != nil {
 		return tools.Errorf("job start failed: %v", err)

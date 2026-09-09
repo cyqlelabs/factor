@@ -80,6 +80,11 @@ func TestConsoleDrivesARealTerminal(t *testing.T) {
 
 func TestNewStatusUsesTheTerminalWidth(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
+	// Every variable the expected behaviour depends on, not only the one
+	// this test is about: a console started under an inherited NO_COLOR does
+	// not paint, and the test would then be reporting the environment it ran
+	// in rather than the terminal width.
+	t.Setenv("NO_COLOR", "")
 	master, slave := openPTY(t)
 	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ,
 		&unix.Winsize{Col: 30, Row: 24}); err != nil {

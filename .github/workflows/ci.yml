@@ -50,7 +50,15 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: vet
         run: go vet ./...
+      # FACTOR_REQUIRE_LIVE_DESKTOP turns the desktop tests' environment skips
+      # into failures. Installing the helpers above is not the same claim as
+      # running the tests that need them: without this, a display that never
+      # came up or an xlogo that refused to start left the whole grid-vision
+      # path unexercised under a green tick, which is the state the install
+      # step exists to prevent.
       - name: test (race)
+        env:
+          FACTOR_REQUIRE_LIVE_DESKTOP: "1"
         run: go test -race ./...
       - name: test (nobrowser tag)
         run: go test -tags nobrowser ./...

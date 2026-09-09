@@ -103,6 +103,17 @@ type Addresser interface {
 	BindLastExternal(func() (channel, chatID string, ok bool))
 }
 
+// Audiencer is the optional capability of a connector that knows who can hear
+// a reply on one of its chats right now — the microphone that has heard a
+// second voice in the room. The answer is tools.AudienceShared when somebody
+// besides the user is present and blank otherwise, and it is asked again
+// whenever a message is about to be answered: work delegated to a background
+// job, or scheduled hours earlier, is composed long after the room it lands
+// in was last looked at.
+type Audiencer interface {
+	Audience(chatID string) string
+}
+
 // Localized is the optional capability of a connector whose replies are heard
 // in one fixed language: a synthesized voice speaks the language it was built
 // for and reads anything else in the wrong accent. A written chat has no such

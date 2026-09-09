@@ -277,8 +277,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// Background jobs: completion events re-enter the originating session as
 	// inbound messages, so the agent proactively reports back to the user
 	// (steering handles the case where that session is mid-turn).
-	jobEngine := jobs.NewEngine(ctx, ws,
-		loop.ProcessDirect,
+	jobEngine := jobs.NewEngine(ctx, ws, execTool.Commands(),
+		loop.ProcessDelegated,
 		func(job *jobs.Job) {
 			v := job.Snapshot()
 			content := fmt.Sprintf(
@@ -289,7 +289,12 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 				ChatID:  v.Origin.ChatID,
 				Content: content,
 				Time:    time.Now(),
-				System:  true, // never the user speaking: must not answer a standing ask_user
+				// The room the work was asked for in, so the report is
+				// composed under the same scope the asking turn was. The
+				// loop widens it again at dispatch if company has arrived
+				// since; it never narrows it here.
+				Audience: v.Origin.Audience,
+				System:   true, // never the user speaking: must not answer a standing ask_user
 			})
 		})
 	registry.Register(jobs.NewTools(jobEngine)...)

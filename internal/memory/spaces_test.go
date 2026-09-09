@@ -227,6 +227,7 @@ type scopeEngine struct {
 	spacesOK    bool
 	engineSpace string
 	recallScope Scope
+	recalls     int
 	forgotSpace string
 	remembered  []RememberRequest
 }
@@ -243,6 +244,7 @@ func (e *scopeEngine) Recall(_ context.Context, _ string, _ int, _ float64, scop
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.recallScope = scope
+	e.recalls++
 	return []Memory{{Content: "a note", Confidence: 0.8, Space: "system"}}, nil
 }
 

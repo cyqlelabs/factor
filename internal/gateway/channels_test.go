@@ -61,6 +61,16 @@ func TestRunStartsConfiguredChannelsAndHeartbeat(t *testing.T) {
 	if len(channels) != 1 || channels[0] != "telegram" {
 		t.Errorf("channels = %v, want just the telegram connector", body["channels"])
 	}
+	// The list is what came up, not what was configured, so the endpoint has
+	// to carry the other half too — a connector that failed is a channel
+	// nothing can be addressed to and has to be visible as one.
+	failed, ok := body["channels_failed"].(map[string]any)
+	if !ok {
+		t.Errorf("health body missing channels_failed: %v", body)
+	}
+	if len(failed) != 0 {
+		t.Errorf("channels_failed = %v, want none on a healthy start", failed)
+	}
 
 	stopSelf(t)
 	select {

@@ -109,6 +109,13 @@ func (e *env) say(sessionKey, content string) (string, error) {
 	return e.loop.ProcessDirect(context.Background(), content, sessionKey)
 }
 
+// sayWith runs one turn under an audience — who can hear the reply, blank for
+// the ordinary private conversation.
+func (e *env) sayWith(sessionKey, audience, content string) (string, error) {
+	e.t.Helper()
+	return e.loop.ProcessDirectNotice(context.Background(), content, sessionKey, "", audience, nil)
+}
+
 // lastRequest is what the model was sent on the final step.
 func (e *env) lastRequest() *provider.Request {
 	e.t.Helper()

@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,10 @@ import (
 type meta struct {
 	Skip    int    `json:"skip"`
 	Summary string `json:"summary,omitempty"`
+	// Compacting marks a rewrite of the history file that has been decided
+	// on but may not have landed. It is the commit point of compaction: see
+	// Compact for why the two writes cannot simply be ordered.
+	Compacting bool `json:"compacting,omitempty"`
 }
 
 // Store is safe for concurrent use; operations on different sessions do not
@@ -86,6 +91,7 @@ func (s *Store) Append(key string, msg provider.Message) error {
 	l := s.lock(key)
 	l.Lock()
 	defer l.Unlock()
+	s.recoverLocked(key)
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -110,7 +116,51 @@ func (s *Store) readMeta(key string) meta {
 	if m.Skip < 0 {
 		m.Skip = 0 // a hand-edited or corrupt sidecar must not slice out of range
 	}
+	if m.Compacting {
+		s.finishCompaction(key, &m)
+	}
 	return m
+}
+
+// recoverLocked finishes an interrupted compaction before anything reads or
+// appends to the history file. Every operation that touches that file comes
+// through here first: reading it while a staged rewrite is still waiting to be
+// adopted answers with a history that is about to change, and appending to it
+// writes a message the adoption would then throw away. Caller holds the key
+// lock. Costs one small read when there is nothing to recover, which is
+// always.
+func (s *Store) recoverLocked(key string) { _ = s.readMeta(key) }
+
+// compactPath is where a compaction stages the shortened history until the
+// meta that describes it has landed.
+func (s *Store) compactPath(key string) string {
+	return s.historyPath(key) + ".compact"
+}
+
+// finishCompaction completes a compaction that was interrupted between its
+// commit and its rename, and is a no-op for one that got all the way. Either
+// the staged file is still there — the rename never happened, and adopting it
+// now is what makes the offset in this meta true — or it is gone, and the
+// rename already did. Both end with a meta that no longer says compacting.
+//
+// It runs on the read path because that is where the question is asked: any
+// process that opens this session, however long after the crash, has to see
+// the same history.
+func (s *Store) finishCompaction(key string, m *meta) {
+	if _, err := os.Stat(s.compactPath(key)); err == nil {
+		if err := os.Rename(s.compactPath(key), s.historyPath(key)); err != nil {
+			// The live file is then still the long one and the meta says to
+			// skip nothing, which shows the summarized turns twice rather
+			// than losing them. Leaving the marker set means the next read
+			// tries again.
+			slog.Warn("finishing an interrupted compaction", "session", key, "error", err)
+			return
+		}
+	}
+	m.Compacting = false
+	if err := s.writeMeta(key, *m); err != nil {
+		slog.Warn("clearing an interrupted compaction marker", "session", key, "error", err)
+	}
 }
 
 func (s *Store) writeMeta(key string, m meta) error {
@@ -156,6 +206,7 @@ func (s *Store) History(key string) ([]provider.Message, error) {
 	l := s.lock(key)
 	l.Lock()
 	defer l.Unlock()
+	s.recoverLocked(key)
 	msgs, err := s.readAll(key)
 	if err != nil {
 		return nil, err
@@ -180,6 +231,7 @@ func (s *Store) LastActivity(key string) (time.Time, bool) {
 	l := s.lock(key)
 	l.Lock()
 	defer l.Unlock()
+	s.recoverLocked(key)
 	info, err := os.Stat(s.historyPath(key))
 	if err != nil {
 		return time.Time{}, false
@@ -201,6 +253,7 @@ func (s *Store) SetSummary(key, summary string, keepLast int) error {
 	l := s.lock(key)
 	l.Lock()
 	defer l.Unlock()
+	s.recoverLocked(key)
 	msgs, err := s.readAll(key)
 	if err != nil {
 		return err
@@ -253,6 +306,7 @@ func (s *Store) TotalLen(key string) (int, error) {
 	l := s.lock(key)
 	l.Lock()
 	defer l.Unlock()
+	s.recoverLocked(key)
 	msgs, err := s.readAll(key)
 	return len(msgs), err
 }
@@ -262,7 +316,7 @@ func (s *Store) Clear(key string) error {
 	l := s.lock(key)
 	l.Lock()
 	defer l.Unlock()
-	for _, p := range []string{s.historyPath(key), s.metaPath(key), s.archivePath(key)} {
+	for _, p := range []string{s.historyPath(key), s.metaPath(key), s.archivePath(key), s.compactPath(key)} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -325,6 +379,7 @@ func (s *Store) Compact(key string) error {
 	l := s.lock(key)
 	l.Lock()
 	defer l.Unlock()
+	s.recoverLocked(key)
 	msgs, err := s.readAll(key)
 	if err != nil {
 		return err
@@ -357,19 +412,33 @@ func (s *Store) Compact(key string) error {
 		buf.Write(data)
 		buf.WriteByte('\n')
 	}
-	tmp := s.historyPath(key) + ".tmp"
-	if err := os.WriteFile(tmp, []byte(buf.String()), 0o600); err != nil {
+	staged := s.compactPath(key)
+	if err := os.WriteFile(staged, []byte(buf.String()), 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, s.historyPath(key)); err != nil {
-		return err
-	}
+	// Stamped before the rename rather than restored after it, so a crash in
+	// between leaves a file whose adoption already carries the right time.
 	if !spokenAt.IsZero() {
-		if err := os.Chtimes(s.historyPath(key), spokenAt, spokenAt); err != nil {
+		if err := os.Chtimes(staged, spokenAt, spokenAt); err != nil {
 			return fmt.Errorf("restore session mtime: %w", err)
 		}
 	}
-	m.Skip = 0
+	// The commit point, and it comes first. Shortening the file and then
+	// writing the meta looks like the safe order and is the opposite of it:
+	// a crash between them leaves a skip counted against the long file being
+	// applied to the short one, which slices the surviving turns off the
+	// front of a history that is still whole on disk — visible loss with the
+	// bytes still there. Marking the intent first means an interrupted
+	// compaction is a state a reader can recognise and finish.
+	m.Skip, m.Compacting = 0, true
+	if err := s.writeMeta(key, m); err != nil {
+		_ = os.Remove(staged)
+		return fmt.Errorf("compact staged history but could not commit: %w", err)
+	}
+	if err := os.Rename(staged, s.historyPath(key)); err != nil {
+		return fmt.Errorf("compact committed but could not adopt the shortened history: %w", err)
+	}
+	m.Compacting = false
 	if err := s.writeMeta(key, m); err != nil {
 		return fmt.Errorf("compact wrote history but not meta: %w", err)
 	}

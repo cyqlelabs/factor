@@ -202,9 +202,16 @@ func (t *roomTool) Execute(_ context.Context, args map[string]any) *tools.Result
 		return tools.Errorf("room isolation is off (channels.voice.room_isolation)")
 	}
 	now := time.Now()
+	rescoped := false
 	switch tools.StringArg(args, "action") {
 	case "company":
 		r.declare(true, stringsArg(args, "names"), now)
+		// Recording the company is not the same as being discreet about it.
+		// This turn was assembled for an empty room — its context holds
+		// whatever private memory was recalled into it — so it ends here and
+		// the question is asked again under the shared session. Nothing it
+		// was about to say is spoken.
+		rescoped = t.voice.rescopeTurn()
 	case "alone":
 		r.declare(false, nil, now)
 	case "left":
@@ -222,6 +229,11 @@ func (t *roomTool) Execute(_ context.Context, args map[string]any) *tools.Result
 	st := r.snapshot(now)
 	if !st.Shared {
 		return tools.Textf("The room is private: nobody but the user is within earshot.")
+	}
+	if rescoped {
+		return tools.Textf("Noted: the room is shared with %s. This turn was assembled while the room "+
+			"was private, so it ends here and the user's question is being asked again under the shared "+
+			"scope — say nothing more.", strings.Join(st.Present, ", "))
 	}
 	return tools.Textf("The room is shared with %s. Replies are audible to them, and only shared "+
 		"memory is being recalled. Nothing announces a departure to the microphone, so if the "+

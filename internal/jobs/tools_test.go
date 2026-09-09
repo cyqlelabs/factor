@@ -20,7 +20,7 @@ func suiteFor(t *testing.T, e *Engine) map[string]tools.Tool {
 }
 
 func TestNewToolsExposesTheFourJobTools(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	suite := NewTools(e)
 	if len(suite) != 4 {
 		t.Fatalf("suite size = %d", len(suite))
@@ -34,7 +34,7 @@ func TestNewToolsExposesTheFourJobTools(t *testing.T) {
 }
 
 func TestJobToolsDeclareUsableSchemas(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	for _, tool := range NewTools(e) {
 		if strings.TrimSpace(tool.Description()) == "" {
 			t.Errorf("%s has no description", tool.Name())
@@ -75,7 +75,7 @@ func TestJobToolsDeclareUsableSchemas(t *testing.T) {
 }
 
 func TestJobStartRecordsToolContextAsOrigin(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	defer e.Wait()
 	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{
 		Channel: "telegram", ChatID: "42", SessionKey: "telegram:42",
@@ -106,7 +106,7 @@ func TestJobStartRecordsToolContextAsOrigin(t *testing.T) {
 }
 
 func TestJobStartWithoutToolContextLeavesOriginEmpty(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	defer e.Wait()
 
 	res := suiteFor(t, e)["job_start"].Execute(context.Background(), map[string]any{
@@ -133,7 +133,7 @@ func TestJobStartDefaultsDescriptionToFirstLineOfPayload(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+			e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 			defer e.Wait()
 			res := suiteFor(t, e)["job_start"].Execute(context.Background(), map[string]any{
 				"kind": "exec", "payload": tc.payload,
@@ -172,7 +172,7 @@ func TestFirstLine(t *testing.T) {
 }
 
 func TestJobStartRejectsEmptyPayload(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	res := suiteFor(t, e)["job_start"].Execute(context.Background(), map[string]any{
 		"kind": "exec", "payload": "   ",
 	})
@@ -185,7 +185,7 @@ func TestJobStartRejectsEmptyPayload(t *testing.T) {
 }
 
 func TestJobStartRejectsTaskKindWithoutARunner(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	res := suiteFor(t, e)["job_start"].Execute(context.Background(), map[string]any{
 		"kind": "task", "payload": "research something",
 	})
@@ -200,7 +200,7 @@ func TestJobStartRejectsTaskKindWithoutARunner(t *testing.T) {
 // An unrecognised kind is rejected up front, so the model gets an actionable
 // error instead of being told a doomed job started.
 func TestJobStartWithUnknownKindIsRejected(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	res := suiteFor(t, e)["job_start"].Execute(context.Background(), map[string]any{
 		"kind": "bogus", "payload": payloadOK,
 	})
@@ -216,7 +216,7 @@ func TestJobStartWithUnknownKindIsRejected(t *testing.T) {
 }
 
 func TestJobListReportsNothingUntilAJobExists(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	byName := suiteFor(t, e)
 
 	if res := byName["job_list"].Execute(context.Background(), nil); res.ForLLM != "No jobs." {
@@ -241,7 +241,7 @@ func TestJobListReportsNothingUntilAJobExists(t *testing.T) {
 }
 
 func TestJobStatusRejectsUnknownID(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	res := suiteFor(t, e)["job_status"].Execute(context.Background(), map[string]any{"id": "j99"})
 	if !res.IsError || !strings.Contains(res.ForLLM, `no job "j99"`) {
 		t.Fatalf("result = %+v", res)
@@ -249,7 +249,7 @@ func TestJobStatusRejectsUnknownID(t *testing.T) {
 }
 
 func TestJobStatusShowsStateAndOutputTail(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	byName := suiteFor(t, e)
 	if res := byName["job_start"].Execute(context.Background(), map[string]any{
 		"kind": "exec", "description": "greet", "payload": "echo hello from the job",
@@ -271,7 +271,7 @@ func TestJobStatusShowsStateAndOutputTail(t *testing.T) {
 }
 
 func TestJobStatusSaysSoWhenAJobPrintedNothing(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	byName := suiteFor(t, e)
 	if res := byName["job_start"].Execute(context.Background(), map[string]any{
 		"kind": "exec", "payload": payloadOK,
@@ -288,7 +288,7 @@ func TestJobStatusSaysSoWhenAJobPrintedNothing(t *testing.T) {
 }
 
 func TestJobCancelRejectsUnknownID(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	res := suiteFor(t, e)["job_cancel"].Execute(context.Background(), map[string]any{"id": "j99"})
 	if !res.IsError || !strings.Contains(res.ForLLM, "no job j99") {
 		t.Fatalf("result = %+v", res)
@@ -296,7 +296,7 @@ func TestJobCancelRejectsUnknownID(t *testing.T) {
 }
 
 func TestJobCancelRejectsAFinishedJob(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	byName := suiteFor(t, e)
 	if res := byName["job_start"].Execute(context.Background(), map[string]any{
 		"kind": "exec", "payload": payloadOK,
@@ -313,7 +313,7 @@ func TestJobCancelRejectsAFinishedJob(t *testing.T) {
 }
 
 func TestJobCancelStopsARunningJob(t *testing.T) {
-	e := NewEngine(context.Background(), t.TempDir(), nil, nil)
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, nil)
 	byName := suiteFor(t, e)
 	if res := byName["job_start"].Execute(context.Background(), map[string]any{
 		"kind": "exec", "payload": payloadSleep,
@@ -333,5 +333,61 @@ func TestJobCancelStopsARunningJob(t *testing.T) {
 	e.Wait()
 	if got := waitFinished(t, e, id).State; got != StateCancelled {
 		t.Errorf("state = %s, want %s", got, StateCancelled)
+	}
+}
+
+// The origin is everything the completion needs to be composed correctly, and
+// that includes who will be able to hear it. A job started with company in the
+// room reports back into that room; without the audience on the origin the
+// report was written out of the private graph in front of them.
+func TestJobStartRecordsTheRoomItWasAskedIn(t *testing.T) {
+	e := NewEngine(context.Background(), t.TempDir(), nil,
+		func(context.Context, string, string, string) (string, error) { return "done", nil }, nil)
+	ctx := tools.WithToolContext(context.Background(), tools.ToolContext{
+		Channel: "voice", ChatID: "local:room", SessionKey: "voice:local:room",
+		Audience: tools.AudienceShared,
+	})
+
+	res := suiteFor(t, e)["job_start"].Execute(ctx, map[string]any{
+		"kind": "task", "payload": "look up the train times",
+	})
+	if res.IsError {
+		t.Fatalf("job_start = %+v", res)
+	}
+	e.Wait()
+
+	list := e.List()
+	if len(list) != 1 {
+		t.Fatalf("jobs = %d, want one", len(list))
+	}
+	origin := list[0].Snapshot().Origin
+	if origin.Audience != tools.AudienceShared {
+		t.Errorf("origin.Audience = %q, want the room the job was started in", origin.Audience)
+	}
+	if origin.Channel != "voice" || origin.ChatID != "local:room" {
+		t.Errorf("origin = %+v, want the chat that asked", origin)
+	}
+}
+
+// The refusal reaches the model as the tool's own answer, naming the pattern,
+// rather than as a job that quietly never ran.
+func TestJobStartSurfacesADeniedCommand(t *testing.T) {
+	guard, err := tools.NewCommandGuard(true, []string{`\bsecret-thing\b`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := NewEngine(context.Background(), t.TempDir(), guard, nil, nil)
+
+	res := suiteFor(t, e)["job_start"].Execute(context.Background(), map[string]any{
+		"kind": "exec", "payload": "echo secret-thing",
+	})
+	if !res.IsError {
+		t.Fatalf("job_start = %+v, want a refusal", res)
+	}
+	if !strings.Contains(res.ForLLM, "safety pattern") {
+		t.Errorf("the refusal does not say what blocked it: %q", res.ForLLM)
+	}
+	if len(e.List()) != 0 {
+		t.Error("a blocked command still created a job")
 	}
 }

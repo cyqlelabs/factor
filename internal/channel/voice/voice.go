@@ -133,6 +133,8 @@ type Voice struct {
 	client        *speechClient
 	turnID        int
 	turnCancel    context.CancelFunc
+	turnShared    bool // the room the live turn was claimed for
+	turnRescope   bool // that room filled up while it was running
 	pttUntil      time.Time
 	windowUntil   time.Time
 	lastChime     time.Time
@@ -700,18 +702,47 @@ func (v *Voice) followUp() time.Duration {
 }
 
 // turn runs one utterance through the agent loop and speaks the reply.
+//
+// A turn is claimed for the room it started in, and the room can change while
+// it runs — the whole point of the room tool is that somebody who walked in
+// silently is announced by the user, mid-sentence. Declaring company cannot
+// take effect by relabelling a turn that has already recalled private memory
+// into its context: what is in the request is in the request. So the flip
+// ends this turn and the same utterance is asked again under the shared
+// session, which is the only version of "only shared memory is recalled" that
+// is true when it is said.
 func (v *Voice) turn(parent context.Context, text string, who speakerIdentity, st roomState) {
+	for {
+		rescope := v.runTurn(parent, text, who, st)
+		if !rescope || parent.Err() != nil {
+			return
+		}
+		// The room tool has already recorded the company; assess is what
+		// turns that into the announcement this turn now owes the user.
+		st = v.room.assess(time.Now())
+		slog.Info("re-running a turn under the shared room", "session", sessionFor(who, st.Shared))
+	}
+}
+
+// runTurn runs one utterance to a spoken answer, and reports whether the room
+// filled up while it ran — in which case nothing was said and the caller asks
+// again under the shared scope.
+func (v *Voice) runTurn(parent context.Context, text string, who speakerIdentity, st roomState) (rescope bool) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	v.mu.Lock()
 	v.turnID++
 	id := v.turnID
 	v.turnCancel = cancel
+	v.turnShared = st.Shared
+	v.turnRescope = false
 	v.mu.Unlock()
 	defer func() {
 		v.mu.Lock()
 		if v.turnID == id {
 			v.turnCancel = nil
+			rescope = v.turnRescope
+			v.turnRescope = false
 		}
 		v.mu.Unlock()
 	}()
@@ -732,7 +763,9 @@ func (v *Voice) turn(parent context.Context, text string, who speakerIdentity, s
 	}
 	reply, err := v.runner(ctx, text, sessionFor(who, st.Shared), who.attributed(), st.audience(), notice)
 	if ctx.Err() != nil {
-		return // barged in on — the next utterance owns the conversation
+		// Barged in on — the next utterance owns the conversation — or cut
+		// short by the room filling up, which the caller reads off the flag.
+		return
 	}
 	if err != nil {
 		slog.Error("voice turn failed", "error", err)
@@ -742,6 +775,35 @@ func (v *Voice) turn(parent context.Context, text string, who speakerIdentity, s
 		return
 	}
 	v.speak(ctx, reply)
+	return
+}
+
+// rescopeTurn is what the room tool calls when the user says company has
+// arrived. A turn already running for an empty room is cancelled where it
+// stands: it holds private recall in its context and anything it says next —
+// a note on its way to the answer, the answer itself — is said in front of
+// whoever just walked in. It reports whether there was such a turn to stop,
+// which is what the tool tells the model.
+func (v *Voice) rescopeTurn() bool {
+	v.mu.Lock()
+	cancel := v.turnCancel
+	if cancel == nil || v.turnShared {
+		v.mu.Unlock()
+		return false
+	}
+	v.turnRescope = true
+	v.turnCancel = nil
+	v.mu.Unlock()
+	cancel()
+	return true
+}
+
+// Audience implements channel.Audiencer: who can hear a reply spoken here
+// right now. It is asked of every message about to be answered on this
+// channel, which is how a background job started alone and finished in
+// company is composed for the room it actually lands in.
+func (v *Voice) Audience(string) string {
+	return v.room.snapshot(time.Now()).audience()
 }
 
 // speak synthesises and plays text, a paragraph at a time, returning once the
@@ -848,6 +910,10 @@ func (v *Voice) cancelTurn() {
 	v.mu.Lock()
 	cancel := v.turnCancel
 	v.turnCancel = nil
+	// A new utterance owns the floor, including over a turn the room tool
+	// has just cancelled to re-run: the user is asking something else now,
+	// and re-asking the old question beside it would run two turns at once.
+	v.turnRescope = false
 	v.mu.Unlock()
 	if cancel != nil {
 		cancel()

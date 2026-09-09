@@ -67,11 +67,11 @@ func startLiveDesktop(t *testing.T) { startLiveDesktopAt(t, liveScreenW, liveScr
 func startLiveDesktopAt(t *testing.T, screenW, screenH int) {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("short mode")
+		liveSkip(t, "short mode")
 	}
 	for _, bin := range []string{"Xvfb", "scrot", "xdotool", "xlogo"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s is not installed", bin)
+			liveSkip(t, "%s is not installed", bin)
 		}
 	}
 
@@ -84,6 +84,24 @@ func startLiveDesktopAt(t *testing.T, screenW, screenH int) {
 		"big":   {magenta, bigTarget()},
 		"small": {red, smallTarget()},
 	})
+}
+
+// requireLive is the environment variable that turns every skip below into a
+// failure. Installing Xvfb, scrot, xdotool and xlogo is not the same claim as
+// running the tests that need them: a job that installs the helpers and then
+// skips for a reason nobody reads ships a desktop path nobody exercised,
+// under a green tick. CI sets this; a laptop without the helpers does not,
+// and skips exactly as before.
+const requireLive = "FACTOR_REQUIRE_LIVE_DESKTOP"
+
+// liveSkip gives up on the environment: a skip ordinarily, a failure where
+// the live tests were declared a requirement.
+func liveSkip(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv(requireLive) != "" {
+		t.Fatalf(requireLive+" is set, so this is a failure rather than a skip: "+format, args...)
+	}
+	t.Skipf(format, args...)
 }
 
 // colorMatch pairs a color test with the box that color should occupy.
@@ -102,7 +120,7 @@ func paintTarget(t *testing.T, box image.Rectangle, color string) {
 		fmt.Sprintf("%dx%d+%d+%d", box.Dx(), box.Dy(), box.Min.X, box.Min.Y),
 		"-bg", color, "-fg", color)
 	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot start xlogo: %v", err)
+		liveSkip(t, "cannot start xlogo: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
@@ -154,7 +172,7 @@ func startXvfb(t *testing.T, screenW, screenH int) string {
 		xvfb := exec.Command("Xvfb", display, "-screen", "0",
 			fmt.Sprintf("%dx%dx24", screenW, screenH))
 		if err := xvfb.Start(); err != nil {
-			t.Skipf("cannot start Xvfb: %v", err)
+			liveSkip(t, "cannot start Xvfb: %v", err)
 		}
 		stop := func() {
 			_ = xvfb.Process.Kill()
@@ -167,7 +185,7 @@ func startXvfb(t *testing.T, screenW, screenH int) string {
 		lastErr = fmt.Errorf("%s never answered", display)
 		stop()
 	}
-	t.Skipf("no usable X display: %v", lastErr)
+	liveSkip(t, "no usable X display: %v", lastErr)
 	return ""
 }
 
@@ -563,7 +581,7 @@ func TestLiveGridSurvivesAScreenChange(t *testing.T) {
 		fmt.Sprintf("%dx%d+%d+%d", moved.Dx(), moved.Dy(), moved.Min.X, moved.Min.Y),
 		"-bg", "#00ff00", "-fg", "#00ff00")
 	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot start xlogo: %v", err)
+		liveSkip(t, "cannot start xlogo: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()

@@ -523,3 +523,53 @@ func TestTurnOutlivesItsIterationBudgetWhileWorkRemains(t *testing.T) {
 		t.Error("the checkpoint is not framed as machinery and reads as the user speaking")
 	}
 }
+
+// Discretion in company is a per-turn instruction, and it has to ride the
+// turn context rather than the system prompt. Two things depend on that. The
+// prompt is the cacheable prefix, so an audience-dependent one would fork the
+// cache the moment a guest walked in and charge every later turn for it. And
+// the tail is where a per-turn instruction is actually read, which is the
+// whole reason the notice exists.
+func TestTheSharedRoomNoticeRidesTheTurnAndNotThePrompt(t *testing.T) {
+	e := newEnv(t, answer("of course"))
+	if _, err := e.sayWith("voice:local", "", "what is my passport number"); err != nil {
+		t.Fatal(err)
+	}
+	private := e.lastRequest()
+	if _, err := e.sayWith("voice:local:room", tools.AudienceShared, "what is my passport number"); err != nil {
+		t.Fatal(err)
+	}
+	shared := e.lastRequest()
+
+	if systemText(private) != systemText(shared) {
+		t.Error("the system prompt varies with the audience; the cacheable prefix forks when a guest arrives")
+	}
+	const notice = "Somebody besides the user is in the room"
+	if strings.Contains(systemText(shared), notice) {
+		t.Error("the shared-room notice is in the system prompt, where a long session stops reading it")
+	}
+	if !strings.Contains(userText(shared), notice) {
+		t.Error("a shared turn was never told somebody else can hear it")
+	}
+	if strings.Contains(userText(private), notice) {
+		t.Error("a private turn was told it had company")
+	}
+}
+
+// The escape hatch has to travel with the claim it corrects. The notice
+// states presence as fact from the strongest seat in the request, so a user
+// saying "they left" has to be able to outrank it — and the way to record
+// that is named in the same paragraph rather than in a tool schema at the
+// faded head of the prompt.
+func TestTheSharedRoomNoticeCarriesItsOwnCorrection(t *testing.T) {
+	e := newEnv(t, answer("noted"))
+	if _, err := e.sayWith("voice:local:room", tools.AudienceShared, "she's gone"); err != nil {
+		t.Fatal(err)
+	}
+	tail := userText(e.lastRequest())
+	for _, want := range []string{"action=alone", "their word outranks this notice"} {
+		if !strings.Contains(tail, want) {
+			t.Errorf("the shared-room notice never says %q", want)
+		}
+	}
+}

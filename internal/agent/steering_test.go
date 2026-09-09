@@ -386,3 +386,117 @@ func TestATurnNobodyIsHoldingPublishesItsNotes(t *testing.T) {
 		t.Errorf("no note published in %v", phases(*seen))
 	}
 }
+
+// A background job's completion, or a scheduled task's report, is composed
+// long after the turn that asked for it — and the room it lands in is
+// whatever the room is at that moment. The message carries the audience it
+// was queued with; the channel is asked again before it is answered, and the
+// wider of the two wins. Withholding the result afterwards would be too late:
+// by then it has already been written out of private context.
+func TestADelayedResultIsScopedToTheRoomItLandsIn(t *testing.T) {
+	h := newHarness(t, final("the build finished"))
+	h.loop.SetAudience(func(channel, chatID string) string {
+		if channel == "voice" && chatID == "local:room" {
+			return tools.AudienceShared
+		}
+		return ""
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.loop.Run(ctx)
+
+	h.bus.PublishInbound(bus.InboundMessage{
+		Channel: "voice", ChatID: "local:room",
+		Content: "[system] Background job j1-ab12 finished.", System: true,
+	})
+	if out := awaitOutbound(t, h); out.Content != "the build finished" {
+		t.Fatalf("outbound = %q", out.Content)
+	}
+
+	var user strings.Builder
+	for _, m := range lastRequest(h).Messages {
+		if m.Role == "user" {
+			user.WriteString(m.Content)
+		}
+	}
+	if !strings.Contains(user.String(), "Somebody besides the user is in the room") {
+		t.Error("the delayed result was composed for an empty room")
+	}
+}
+
+// The resolver only ever widens. A channel that reports a private room must
+// not quietly narrow a message that was published as shared — the message
+// knows something the channel's sensor does not.
+func TestTheChannelCanWidenAnAudienceButNotNarrowIt(t *testing.T) {
+	h := newHarness(t, final("ok"))
+	h.loop.SetAudience(func(string, string) string { return "" })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.loop.Run(ctx)
+
+	h.bus.PublishInbound(bus.InboundMessage{
+		Channel: "voice", ChatID: "local:room",
+		Content: "how much did I spend?", Audience: tools.AudienceShared,
+	})
+	awaitOutbound(t, h)
+
+	var user strings.Builder
+	for _, m := range lastRequest(h).Messages {
+		if m.Role == "user" {
+			user.WriteString(m.Content)
+		}
+	}
+	if !strings.Contains(user.String(), "Somebody besides the user is in the room") {
+		t.Error("a shared message was narrowed to private by the channel's own reading")
+	}
+}
+
+// A scheduled task and a heartbeat are both composed for a chat they did not
+// come from, hours or days after anyone asked for them. The room they land in
+// is the one that governs them, and neither has a user message to take it
+// from — so the outlet's own channel is asked.
+func TestWorkNobodyAskedForIsScopedToTheRoomItReportsInto(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*harness) error
+	}{
+		{"a scheduled task", func(h *harness) error {
+			_, err := h.loop.ProcessScheduled(context.Background(), "water the plants", "cron:c1", "voice")
+			return err
+		}},
+		{"a heartbeat", func(h *harness) error {
+			_, err := h.loop.ProcessEphemeral(context.Background(), "anything to report?")
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, final("done"))
+			h.loop.SetAudience(func(channel, _ string) string {
+				if channel == "voice" {
+					return tools.AudienceShared
+				}
+				return ""
+			})
+			// The heartbeat follows the user to the chat they last used, so
+			// give it one that is a spoken room.
+			h.bus.PublishInbound(bus.InboundMessage{Channel: "voice", ChatID: "local:room", Content: "hi"})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go h.loop.Run(ctx)
+			awaitOutbound(t, h)
+
+			if err := tc.run(h); err != nil {
+				t.Fatal(err)
+			}
+			var user strings.Builder
+			for _, m := range lastRequest(h).Messages {
+				if m.Role == "user" {
+					user.WriteString(m.Content)
+				}
+			}
+			if !strings.Contains(user.String(), "Somebody besides the user is in the room") {
+				t.Error("it was composed for an empty room")
+			}
+		})
+	}
+}

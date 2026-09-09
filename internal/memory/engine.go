@@ -124,15 +124,22 @@ func (p SpacePolicy) Scope(channel, audience string) (Scope, bool) {
 	if p.Strategy == "single" || p.Main == "" || p.System == "" {
 		return Scope{}, audience != tools.AudienceShared
 	}
-	switch channel {
-	case "cron", "job", "system":
-		return Scope{Space: p.System, ReadSpaces: []string{p.System, p.Main}}, true
-	}
+	// Audience outranks channel. A background job or a scheduled task reports
+	// back into the room it was started from, and the routing that gives
+	// those turns the system space also handed them the private one to read:
+	// a job started in company would have recalled main and answered out of
+	// it, which is the one thing the split exists to prevent. Discretion is
+	// about who hears the answer, and nothing about where the turn came from
+	// changes who is standing there.
 	if audience == tools.AudienceShared {
 		if p.Shared == "" {
 			return Scope{}, false
 		}
 		return Scope{Space: p.Shared, ReadSpaces: []string{p.Shared}}, true
+	}
+	switch channel {
+	case "cron", "job", "system":
+		return Scope{Space: p.System, ReadSpaces: []string{p.System, p.Main}}, true
 	}
 	read := []string{p.Main, p.System}
 	if p.Shared != "" {

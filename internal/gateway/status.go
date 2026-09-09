@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,7 +40,7 @@ func StatusLines() []string {
 // the facts that say "everything is fine" or name what is not, one per row.
 // An empty spend line is left out rather than shown as zero: nothing counted
 // is not the same fact as nothing spent.
-func statusLines(version string, up time.Duration, memOn, memHealthy bool, channels []string, spend string) []string {
+func statusLines(version string, up time.Duration, memOn, memHealthy bool, channels []string, failed map[string]string, spend string) []string {
 	mem := "memory: off"
 	if memOn {
 		if mem = "memory: healthy"; !memHealthy {
@@ -55,6 +56,18 @@ func statusLines(version string, up time.Duration, memOn, memHealthy bool, chann
 		"up " + upWords(up),
 		mem,
 		chs,
+	}
+	// A connector that did not come up gets its own row. It is not in the
+	// channels line at all — that line is what can be reached — and a silent
+	// channel with nothing said about it is the failure a user discovers by
+	// waiting for a reply that never comes.
+	if len(failed) > 0 {
+		names := make([]string, 0, len(failed))
+		for name := range failed {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		lines = append(lines, "not running: "+strings.Join(names, ", "))
 	}
 	if spend != "" {
 		lines = append(lines, spend)

@@ -247,6 +247,13 @@ are free; models the catalog doesn't list are counted in tokens rather than gues
 at. Caps are checked before the call, and the turn answers with a line saying what
 stopped. Ask for `usage` to see the breakdown.
 
+A cap is a stop line rather than a hard ceiling, and the difference is worth
+knowing: the totals are re-read from disk on every check, so a gateway and a
+terminal spend against the same number, and calls already in flight are reserved at
+what a call has cost on average so far — but the call that crosses the cap finishes
+and is billed in full, because what a call costs is not known until it answers. A
+model nothing prices moves no cap at all; the usage report names those.
+
 The workspace (`~/.factor/workspace`) is the agent's home. The persona is built into
 the binary, so an upgrade improves it everywhere at once; `SOUL.md` layers yours on
 top, `USER.md` holds what Factor should always know about you, `AGENT.md` tunes how
@@ -478,6 +485,23 @@ speech of its own.
 |---|---|---|---|
 | private | `voice:local`, or the guest's own | `space` + `shared_space` | `space` |
 | shared | `voice:local:room` — everyone in one thread | `shared_space` | `shared_space` |
+
+The room governs delayed work too. A background job or a scheduled task is answered
+into whatever room it lands in rather than the one it was asked in — the channel is
+asked again at the moment the report is composed, and the wider answer wins, so a
+job started alone and finished in company is written under the shared scope instead
+of being withheld after the fact. Telling Factor mid-answer that somebody just
+walked in ends that turn where it stands and asks your question again in the room's
+session: a turn already assembled for an empty room holds private recall in it, and
+relabelling it afterwards would not take any of that back.
+
+What the split covers is memory: what is recalled, and what is written down. It is
+not a filter over everything Factor knows. `AGENT.md`, `USER.md` and your
+`instructions/` are in every turn's system prompt whoever is listening — they have
+to be, or the prompt would stop being cacheable and every turn of a long
+conversation would cost more than the last — so discretion about what is in them is
+asked of the model, in a notice on every shared turn, rather than enforced by the
+scope.
 
 Three seconds of a voice that is not yours, added up over a couple of minutes,
 declares company — a cough, a shout or the "Gracias." Whisper hears in noise never

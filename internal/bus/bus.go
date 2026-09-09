@@ -82,6 +82,11 @@ func (b *MessageBus) Outbound() <-chan OutboundMessage { return b.outbound }
 // PendingOutbound counts replies waiting for a connector to deliver them.
 // The gateway waits for zero before restarting: a queued message dies with
 // the process that holds it.
+//
+// It is half the answer, not the whole one: a message is invisible here from
+// the moment the pump picks it up, while its send, its retries and the
+// speakers carrying it are all still ahead. channel.Manager.InFlight counts
+// that half, and the reload waits on both.
 func (b *MessageBus) PendingOutbound() int { return len(b.outbound) }
 
 // PublishInbound enqueues without blocking; a full queue drops the message
