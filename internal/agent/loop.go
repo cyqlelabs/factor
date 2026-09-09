@@ -972,11 +972,11 @@ const turnStretches = 3
 func checkpointNudge(ctx context.Context, iterations int) string {
 	text := fmt.Sprintf("[Checkpoint from the system, not a message from the user.] You have run %d tool iterations this turn. ", iterations)
 	if deadline, ok := ctx.Deadline(); ok {
-		left := time.Until(deadline).Round(time.Minute)
-		if left < time.Minute {
-			left = time.Minute
+		left := int(time.Until(deadline).Round(time.Minute).Minutes())
+		if left < 1 {
+			left = 1
 		}
-		text += fmt.Sprintf("This task is cut off in about %s, so write what you have gathered to a file before going on. ", left)
+		text += fmt.Sprintf("This task is cut off in about %d minutes, so write what you have gathered to a file before going on. ", left)
 	}
 	return text + "If the task is finished, answer the user now. If it is not, say in one line what has worked and what is left, " +
 		"then carry on with the tool calls it needs: this task is yours to finish, so do not stop to ask whether to continue."

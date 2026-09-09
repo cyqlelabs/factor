@@ -1291,7 +1291,7 @@ func TestCheckpointNudgeNamesTheTimeLeftUnderADeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	got := checkpointNudge(ctx, 20)
-	for _, want := range []string{"cut off in about 20m0s", "write what you have gathered to a file", "yours to finish"} {
+	for _, want := range []string{"cut off in about 20 minutes", "write what you have gathered to a file", "yours to finish"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("checkpoint under a deadline lacks %q: %q", want, got)
 		}

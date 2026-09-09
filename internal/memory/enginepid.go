@@ -104,8 +104,9 @@ func StopEngine(ctx context.Context, port int) (int, error) {
 // no exec.Cmd for it, and nothing waited: the live box carried two defunct
 // smrti entries, one per restart. A zombie also answers kill -0, so the stop
 // above used to spend its whole grace period on a process that had already
-// exited. For a pid this process did not spawn the wait fails at once, which
-// is the right answer.
+// exited. On unix a pid this process did not spawn fails the wait at once;
+// on Windows the wait holds the handle until that process exits, which costs
+// one parked goroutine and reaps nothing, since there is nothing to reap.
 func reap(pid int) {
 	if p, err := os.FindProcess(pid); err == nil {
 		_, _ = p.Wait()
