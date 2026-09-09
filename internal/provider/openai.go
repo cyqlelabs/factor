@@ -199,6 +199,7 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	Identify(httpReq.Header)
 	if p.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}

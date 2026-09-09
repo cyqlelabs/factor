@@ -200,6 +200,9 @@ func fakeProvider(t *testing.T, models ...string) *httptest.Server {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		if r.Header.Get("X-Title") != "Factor" {
+			t.Errorf("model probe did not name the app: X-Title = %q", r.Header.Get("X-Title"))
+		}
 		var data []map[string]string
 		for _, m := range models {
 			data = append(data, map[string]string{"id": m})

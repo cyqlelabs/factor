@@ -36,6 +36,7 @@ func ListModels(ctx context.Context, client *http.Client, cand config.Candidate)
 	if err != nil {
 		return nil, err
 	}
+	provider.Identify(req.Header)
 	if cand.Type == "anthropic" {
 		req.Header.Set("x-api-key", cand.APIKey)
 		req.Header.Set("anthropic-version", "2023-06-01")

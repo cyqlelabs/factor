@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,6 +20,7 @@ func TestOpenAIRoundTrip(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Errorf("auth = %q", got)
 		}
+		assertIdentified(t, r)
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Error(err)
 		}
@@ -80,6 +82,7 @@ func TestAnthropicRoundTrip(t *testing.T) {
 		if got := r.Header.Get("x-api-key"); got != "ak" {
 			t.Errorf("key = %q", got)
 		}
+		assertIdentified(t, r)
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Error(err)
 		}
@@ -295,5 +298,19 @@ func TestOpenAIMarksUndecodableArguments(t *testing.T) {
 	}
 	if cut := resp.ToolCalls[1]; !cut.Malformed || cut.ID != "c2" || len(cut.Args) != 0 {
 		t.Errorf("the cut-off call = %+v, want flagged with no arguments", cut)
+	}
+}
+
+// assertIdentified checks the request names Factor as the calling app.
+func assertIdentified(t *testing.T, r *http.Request) {
+	t.Helper()
+	if got := r.Header.Get("User-Agent"); !strings.HasPrefix(got, "factor/") || !strings.Contains(got, appURL) {
+		t.Errorf("User-Agent = %q", got)
+	}
+	if got := r.Header.Get("HTTP-Referer"); got != appURL {
+		t.Errorf("HTTP-Referer = %q", got)
+	}
+	if got := r.Header.Get("X-Title"); got != appName {
+		t.Errorf("X-Title = %q", got)
 	}
 }

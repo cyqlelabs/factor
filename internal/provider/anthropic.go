@@ -254,6 +254,7 @@ func (p *Anthropic) Chat(ctx context.Context, req *Request) (*Response, error) {
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", p.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	Identify(httpReq.Header)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
