@@ -373,6 +373,34 @@ func (s *Store) archive(key string, msgs []provider.Message) error {
 	return f.Sync()
 }
 
+// stage writes the messages that survive compaction to the file the commit
+// will adopt, carrying the time the session was last spoken into. Stamping it
+// here rather than restoring it after the rename is what makes the staged
+// file complete on its own: a crash between the commit and the rename leaves
+// something whose adoption needs no repair beyond the rename itself.
+func (s *Store) stage(key string, live []provider.Message, spokenAt time.Time) (string, error) {
+	var buf strings.Builder
+	for _, msg := range live {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return "", err
+		}
+		buf.Write(data)
+		buf.WriteByte('\n')
+	}
+	staged := s.compactPath(key)
+	if err := os.WriteFile(staged, []byte(buf.String()), 0o600); err != nil {
+		return "", err
+	}
+	if spokenAt.IsZero() {
+		return staged, nil
+	}
+	if err := os.Chtimes(staged, spokenAt, spokenAt); err != nil {
+		return "", fmt.Errorf("restore session mtime: %w", err)
+	}
+	return staged, nil
+}
+
 // Compact physically rewrites the log, moving truncated messages to the
 // archive.
 func (s *Store) Compact(key string) error {
@@ -402,26 +430,9 @@ func (s *Store) Compact(key string) error {
 	if err := s.archive(key, msgs[:m.Skip]); err != nil {
 		return err
 	}
-	live := msgs[m.Skip:]
-	var buf strings.Builder
-	for _, msg := range live {
-		data, err := json.Marshal(msg)
-		if err != nil {
-			return err
-		}
-		buf.Write(data)
-		buf.WriteByte('\n')
-	}
-	staged := s.compactPath(key)
-	if err := os.WriteFile(staged, []byte(buf.String()), 0o600); err != nil {
+	staged, err := s.stage(key, msgs[m.Skip:], spokenAt)
+	if err != nil {
 		return err
-	}
-	// Stamped before the rename rather than restored after it, so a crash in
-	// between leaves a file whose adoption already carries the right time.
-	if !spokenAt.IsZero() {
-		if err := os.Chtimes(staged, spokenAt, spokenAt); err != nil {
-			return fmt.Errorf("restore session mtime: %w", err)
-		}
 	}
 	// The commit point, and it comes first. Shortening the file and then
 	// writing the meta looks like the safe order and is the opposite of it:

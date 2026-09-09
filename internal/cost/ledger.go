@@ -151,6 +151,12 @@ func stampOf(path string) fileStamp {
 	return fileStamp{mod: info.ModTime(), size: info.Size()}
 }
 
+// same reports whether the file looks untouched since it was last read.
+// Times are compared with Equal rather than ==, which also weighs a
+// monotonic reading and the location pointer and would answer no to two
+// stats of one unchanged file.
+func (f fileStamp) same(o fileStamp) bool { return f.size == o.size && f.mod.Equal(o.mod) }
+
 // NewLedger opens the ledger at path, reading whatever is already there. A
 // file that cannot be read starts empty: losing a total is not worth failing
 // startup over.
@@ -248,7 +254,7 @@ func (l *Ledger) refreshLocked() {
 		return
 	}
 	stamp := stampOf(l.path)
-	if stamp == l.stamp {
+	if stamp.same(l.stamp) {
 		return
 	}
 	b := l.read()

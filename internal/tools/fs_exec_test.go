@@ -550,3 +550,28 @@ func TestBoundedOutputHoldsOnlyItsBudget(t *testing.T) {
 		t.Errorf("small output = %q", got)
 	}
 }
+
+// The budget has to hold whatever the writer hands over, not only the 32 KB
+// pieces os/exec happens to copy in. A single write larger than the window is
+// never copied in full.
+func TestBoundedOutputSurvivesOneEnormousWrite(t *testing.T) {
+	out := newBoundedOutput(1000)
+	if _, err := out.Write([]byte("head")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := out.Write(append(bytes.Repeat([]byte("x"), 100_000), []byte("tail")...)); err != nil {
+		t.Fatal(err)
+	}
+	if held := len(out.head) + len(out.tail); held > 1000 {
+		t.Errorf("held %d bytes of a 1000 byte budget", held)
+	}
+	text := out.String()
+	if !strings.HasPrefix(text, "head") || !strings.HasSuffix(text, "tail") {
+		t.Errorf("both ends should survive: %.60q … %.60q", text, text[len(text)-60:])
+	}
+	// Everything written is either kept or counted.
+	if len(out.head)+len(out.tail)+out.omitted != 4+100_004 {
+		t.Errorf("kept %d + omitted %d does not account for what was written",
+			len(out.head)+len(out.tail), out.omitted)
+	}
+}

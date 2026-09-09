@@ -169,29 +169,35 @@ func runToken() string {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		// Never observed; a clock-derived token still separates two engines
-		// that were not started in the same nanosecond.
-		return fmt.Sprintf("%08x", time.Now().UnixNano())
+		// that were not started in the same nanosecond, at the same width.
+		return fmt.Sprintf("%08x", uint32(time.Now().UnixNano()))
 	}
 	return hex.EncodeToString(b[:])
 }
 
+// admits reports why a job may not start: a kind nothing runs, an empty
+// payload, a delegated turn with no loop behind it, or a command the shell
+// deny-list refuses. That last one is checked here rather than in the tool so
+// it covers every caller — the background shell answers to the same list as
+// the foreground one.
+func (e *Engine) admits(kind Kind, payload string) error {
+	switch {
+	case kind != KindExec && kind != KindTask:
+		return fmt.Errorf("unknown job kind %q (want %q or %q)", kind, KindExec, KindTask)
+	case strings.TrimSpace(payload) == "":
+		return fmt.Errorf("empty %s payload", kind)
+	case kind == KindTask && e.runTask == nil:
+		return fmt.Errorf("task jobs are not available in this mode")
+	case kind == KindExec:
+		return e.commands.Check(payload)
+	}
+	return nil
+}
+
 // Start launches a background job and returns immediately.
 func (e *Engine) Start(kind Kind, description, payload string, origin Origin) (*Job, error) {
-	if kind != KindExec && kind != KindTask {
-		return nil, fmt.Errorf("unknown job kind %q (want %q or %q)", kind, KindExec, KindTask)
-	}
-	if strings.TrimSpace(payload) == "" {
-		return nil, fmt.Errorf("empty %s payload", kind)
-	}
-	if kind == KindTask && e.runTask == nil {
-		return nil, fmt.Errorf("task jobs are not available in this mode")
-	}
-	// The background shell answers to the same deny-list as the foreground
-	// one. Refusing here rather than in the tool covers every caller.
-	if kind == KindExec {
-		if err := e.commands.Check(payload); err != nil {
-			return nil, err
-		}
+	if err := e.admits(kind, payload); err != nil {
+		return nil, err
 	}
 
 	jobCtx, cancel := context.WithCancel(e.ctx)

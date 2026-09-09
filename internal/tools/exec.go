@@ -207,6 +207,15 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return n, nil
 	}
+	if len(p) > b.half {
+		// One write larger than the whole window: only its tail can survive,
+		// so it is never copied in. Without this the bound would hold only
+		// because os/exec happens to copy in 32 KB pieces, which is not a
+		// property of this type.
+		b.omitted += len(b.tail) + len(p) - b.half
+		b.tail = append(b.tail[:0], p[len(p)-b.half:]...)
+		return n, nil
+	}
 	b.tail = append(b.tail, p...)
 	if over := len(b.tail) - b.half; over > 0 {
 		b.tail = b.tail[over:]

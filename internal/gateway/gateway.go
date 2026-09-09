@@ -361,9 +361,9 @@ func settle(ctx context.Context, idle func() bool, pending func() int) {
 	// that has stopped answering must not hold a reload forever. Saying so is
 	// the difference between a reply that was delivered and one that was
 	// given up on, which is otherwise indistinguishable afterwards.
-	if !idle() || pending() > 0 {
+	if done, undelivered := idle(), pending(); !done || undelivered > 0 {
 		slog.Warn("reloading with work still outstanding",
-			"waited", settleTimeout, "turns_idle", idle(), "undelivered", pending())
+			"waited", settleTimeout, "turns_idle", done, "undelivered", undelivered)
 	}
 	pause(ctx, settleGrace) // the last send is still on the wire
 }
