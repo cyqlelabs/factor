@@ -78,6 +78,7 @@ func maskedResult(call provider.ToolCall, content string) string {
 	if strings.HasPrefix(content, "ERROR: ") {
 		outcome = "failure"
 	}
-	return fmt.Sprintf("[The %s of %s%s was cleared to save context. Run it again if you need it.]",
+	return fmt.Sprintf("[The %s of %s%s was cleared to save context. Run it again if you need it, "+
+		"and write what matters from it to a file this time: results are cleared as they age, and a file is not.]",
 		outcome, name, summarizeArgs(call.Args))
 }

@@ -319,6 +319,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cron: %w", err)
 	}
+	if cfg.Cron.JobTimeoutMinutes > 0 {
+		cronService.SetJobTimeout(time.Duration(cfg.Cron.JobTimeoutMinutes) * time.Minute)
+	}
 	registry.Register(&cron.Tool{Service: cronService})
 
 	bgCtx, bgCancel := context.WithCancel(ctx)

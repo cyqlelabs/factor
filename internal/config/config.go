@@ -28,6 +28,7 @@ type Config struct {
 	Desktop       DesktopConfig              `json:"desktop"`
 	Browser       BrowserConfig              `json:"browser"`
 	Heartbeat     HeartbeatConfig            `json:"heartbeat"`
+	Cron          CronConfig                 `json:"cron"`
 	Gateway       GatewayConfig              `json:"gateway"`
 	Upgrade       UpgradeConfig              `json:"upgrade"`
 	Cost          CostConfig                 `json:"cost"`
@@ -320,6 +321,13 @@ type HeartbeatConfig struct {
 	IntervalMinutes int  `json:"interval_minutes"`
 }
 
+// CronConfig bounds the turns the scheduler runs. JobTimeoutMinutes is how
+// long one scheduled task may run before it is cut off; the model is told how
+// much of it is left at each checkpoint.
+type CronConfig struct {
+	JobTimeoutMinutes int `json:"job_timeout_minutes"`
+}
+
 type GatewayConfig struct {
 	Host string `json:"host" env:"FACTOR_GATEWAY_HOST"`
 	Port int    `json:"port" env:"FACTOR_GATEWAY_PORT"`
@@ -489,6 +497,7 @@ func Default() *Config {
 			Camofox:     CamofoxConfig{Port: 9377},
 		},
 		Heartbeat: HeartbeatConfig{Enabled: true, IntervalMinutes: 30},
+		Cron:      CronConfig{JobTimeoutMinutes: 30},
 		Gateway:   GatewayConfig{Host: "127.0.0.1", Port: 8720},
 		Upgrade:   UpgradeConfig{Check: true, CheckIntervalHours: 24},
 		Cost:      CostConfig{Track: true, Budget: BudgetConfig{Period: "month"}, RefreshHours: 24},

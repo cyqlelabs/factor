@@ -48,7 +48,9 @@ func TestNeedsCompaction(t *testing.T) {
 	h := newHarness(t)
 	h.loop.cfg.Agent.ContextWindowTokens = 100000
 	h.loop.cfg.Agent.SummarizeAtPercent = 50
-	h.loop.cfg.Agent.MaxContextTokens = 2000
+	// Above the fixed cost of the prompt and the tool schemas, which the
+	// budget is measured against and which a line added to the rules moves.
+	h.loop.cfg.Agent.MaxContextTokens = h.loop.overhead() + 1000
 
 	short := []provider.Message{{Role: "user", Content: "hi"}}
 	if h.loop.needsCompaction(short) {

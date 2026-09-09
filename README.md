@@ -219,6 +219,7 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "camofox": { "port": 9377 }              // the headless engine's sidecar; one already answering here is adopted
   },
   "heartbeat": { "enabled": true, "interval_minutes": 30 },
+  "cron": { "job_timeout_minutes": 30 },     // how long one scheduled task may run; it is told what is left at each checkpoint
   "trace": {
     "enabled": true,                         // one JSON line per turn in ~/.factor/traces
     "record_args": false,                    // the shape of a turn, not what was said to the tools

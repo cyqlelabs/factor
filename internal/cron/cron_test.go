@@ -272,3 +272,36 @@ func TestACorruptStoreDoesNotStopTheJobsAlreadyHeld(t *testing.T) {
 		t.Errorf("jobs after the store vanished = %+v", got)
 	}
 }
+
+func TestRunJobNamesTheTimeLimitItRanPast(t *testing.T) {
+	var mu sync.Mutex
+	var delivered []string
+	handler := func(ctx context.Context, _ Job) (string, error) {
+		<-ctx.Done() // a turn that is still scraping when the clock runs out
+		return "", ctx.Err()
+	}
+	deliver := func(_, _, content string) {
+		mu.Lock()
+		delivered = append(delivered, content)
+		mu.Unlock()
+	}
+	s := newService(t, handler, deliver)
+	if s.JobTimeout() != defaultJobTimeout {
+		t.Fatalf("JobTimeout() = %s, want the default %s", s.JobTimeout(), defaultJobTimeout)
+	}
+	s.SetJobTimeout(50 * time.Millisecond)
+	s.runJob(context.Background(), Job{ID: "cron-7", Message: "scrape the listings", Channel: "telegram", ChatID: "42"})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(delivered) != 1 {
+		t.Fatalf("delivered = %v", delivered)
+	}
+	for _, want := range []string{"ran past the 50ms a scheduled task is allowed", "cron.job_timeout_minutes"} {
+		if !strings.Contains(delivered[0], want) {
+			t.Errorf("the failure does not say %q: %q", want, delivered[0])
+		}
+	}
+	if strings.Contains(delivered[0], "context deadline exceeded") {
+		t.Errorf("the failure still reads as a Go error: %q", delivered[0])
+	}
+}

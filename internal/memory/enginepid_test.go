@@ -207,3 +207,44 @@ func TestEnginePidReportsTheRecordedEngineAndItsLiveness(t *testing.T) {
 		t.Errorf("for a stopped engine: %d, %v; want %d and not alive", pid, alive, gone)
 	}
 }
+
+// An engine adopted across an in-place reload is still this process's child,
+// and one nothing waits on stays in the process table as a zombie — which
+// also answers kill -0, so the stop used to spend its whole grace period on
+// a process that had already exited.
+func TestStopEngineReapsAnEngineItInherited(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("zombies are a unix notion")
+	}
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	prev := engineStopWait
+	engineStopWait = 5 * time.Second
+	t.Cleanup(func() { engineStopWait = prev })
+
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=hang")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	// Deliberately no cmd.Wait: this process holds the child the way the
+	// gateway holds an engine it inherited across exec, with nothing waiting.
+	pid := cmd.Process.Pid
+	writeEnginePid(pid)
+
+	started := time.Now()
+	stopped, err := StopEngine(context.Background(), 0)
+	if err != nil || stopped != pid {
+		t.Fatalf("stopped = %d, err = %v; want %d", stopped, err, pid)
+	}
+	if took := time.Since(started); took > 3*time.Second {
+		t.Errorf("the stop waited %s on a process that had exited", took)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for pidAlive(pid) {
+		if time.Now().After(deadline) {
+			t.Fatal("the stopped engine is still in the process table: nothing reaped it")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

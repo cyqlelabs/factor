@@ -182,6 +182,12 @@ func (s *Sidecar) run(ctx context.Context) {
 		if s.client.CheckHealth(ctx) == nil {
 			backoff = 5 * time.Second
 			heldWarned = false
+			// An engine adopted warm may be this process's own child from
+			// before an in-place reload; reaping it when it dies is what
+			// keeps it out of the process table afterwards.
+			if pid, ok := ListenerPid(s.cfg.Port); ok {
+				go reap(pid)
+			}
 			s.pollWhileHealthy(ctx)
 			continue
 		}

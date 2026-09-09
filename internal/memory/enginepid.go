@@ -80,6 +80,7 @@ func StopEngine(ctx context.Context, port int) (int, error) {
 	if err := terminateProcess(pid); err != nil {
 		return 0, fmt.Errorf("stopping the memory engine (pid %d): %w", pid, err)
 	}
+	go reap(pid)
 	deadline := time.Now().Add(engineStopWait)
 	for pidAlive(pid) {
 		if ctx.Err() != nil {
@@ -93,4 +94,20 @@ func StopEngine(ctx context.Context, port int) (int, error) {
 	}
 	clearEnginePid(pid) // a supervisor may already have written its replacement down
 	return pid, nil
+}
+
+// reap waits on pid when it is a child of this process, so that an engine
+// inherited across an in-place reload does not stay in the process table as a
+// zombie once it exits. The gateway execs itself for an upgrade or a config
+// change and keeps its pid, so the engine it "left running for the next
+// invocation" is still its child on the far side — but the new process has
+// no exec.Cmd for it, and nothing waited: the live box carried two defunct
+// smrti entries, one per restart. A zombie also answers kill -0, so the stop
+// above used to spend its whole grace period on a process that had already
+// exited. For a pid this process did not spawn the wait fails at once, which
+// is the right answer.
+func reap(pid int) {
+	if p, err := os.FindProcess(pid); err == nil {
+		_, _ = p.Wait()
+	}
 }

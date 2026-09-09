@@ -644,7 +644,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 			tr.Event(trace.EventCheckpoint, "")
 			slog.Info("tool-iteration budget spent; checkpointing and continuing",
 				"session", in.sessionKey, "iterations", iteration, "stretch", stretch+1, "stretches", turnStretches)
-			checkpoint := provider.Message{Role: "user", Content: checkpointNudge(iteration)}
+			checkpoint := provider.Message{Role: "user", Content: checkpointNudge(ctx, iteration)}
 			if err := record(checkpoint); err != nil {
 				return "", err
 			}
@@ -963,10 +963,23 @@ const turnStretches = 3
 // finished, go on if not — because without the second the model reads the
 // boundary as a request to stop and report, which is the behaviour this
 // exists to remove.
-func checkpointNudge(iterations int) string {
-	return fmt.Sprintf("[Checkpoint from the system, not a message from the user.] You have run %d tool iterations this turn. "+
-		"If the task is finished, answer the user now. If it is not, say in one line what has worked and what is left, "+
-		"then carry on with the tool calls it needs: this task is yours to finish, so do not stop to ask whether to continue.", iterations)
+//
+// A turn that runs under a deadline — a scheduled task — is told how much of
+// it is left, in the same breath. Without that the two halves of the system
+// contradict each other: the checkpoint says the task is the model's to
+// finish, and the clock cuts it off minutes later with nothing written, and
+// the model never had a reason to save what it had.
+func checkpointNudge(ctx context.Context, iterations int) string {
+	text := fmt.Sprintf("[Checkpoint from the system, not a message from the user.] You have run %d tool iterations this turn. ", iterations)
+	if deadline, ok := ctx.Deadline(); ok {
+		left := time.Until(deadline).Round(time.Minute)
+		if left < time.Minute {
+			left = time.Minute
+		}
+		text += fmt.Sprintf("This task is cut off in about %s, so write what you have gathered to a file before going on. ", left)
+	}
+	return text + "If the task is finished, answer the user now. If it is not, say in one line what has worked and what is left, " +
+		"then carry on with the tool calls it needs: this task is yours to finish, so do not stop to ask whether to continue."
 }
 
 // wrapUp buys back a turn that ran out of tool iterations. Those iterations

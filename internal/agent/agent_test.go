@@ -1283,3 +1283,17 @@ func TestRulesSayToLookFromTheReceivingSide(t *testing.T) {
 		t.Error("the restated rules drop it, which is where a long session reads them")
 	}
 }
+
+func TestCheckpointNudgeNamesTheTimeLeftUnderADeadline(t *testing.T) {
+	if got := checkpointNudge(context.Background(), 20); strings.Contains(got, "cut off") {
+		t.Errorf("a turn with no deadline is told about one: %q", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	got := checkpointNudge(ctx, 20)
+	for _, want := range []string{"cut off in about 20m0s", "write what you have gathered to a file", "yours to finish"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("checkpoint under a deadline lacks %q: %q", want, got)
+		}
+	}
+}

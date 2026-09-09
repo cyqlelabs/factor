@@ -19,6 +19,7 @@ package cron
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -81,6 +82,8 @@ type Service struct {
 	// elsewhere reports a scheduler in another process — the gateway, seen
 	// from a `factor chat` that only writes to the store.
 	elsewhere func() bool
+	// jobTimeout bounds one scheduled turn; zero means defaultJobTimeout.
+	jobTimeout time.Duration
 }
 
 func NewService(dir string, handler Handler, deliver Deliver) (*Service, error) {
@@ -424,10 +427,27 @@ func (s *Service) dueJobs() []Job {
 	return due
 }
 
-// jobTimeout bounds one scheduled turn. Long enough for a turn that reads a
-// dozen pages, short enough that a wedged one is not still holding a slot when
-// the schedule next comes round.
-const jobTimeout = 10 * time.Minute
+// defaultJobTimeout bounds one scheduled turn when cron.job_timeout_minutes
+// is unset. It is sized against the turn's own iteration budget rather than
+// against a wedge: a daily scrape that walks ten listing pages in a browser
+// spends thirty-odd tool calls at half a minute each on a slow box, and the
+// loop grants that turn three budgets of twenty. The ten minutes this used to
+// be cut such a turn off three minutes after the checkpoint had told it the
+// task was its to finish — with nothing written, since the model was told
+// nothing about a clock. A wedged turn now holds its slot for half an hour,
+// which for a schedule measured in days is still nothing.
+const defaultJobTimeout = 30 * time.Minute
+
+// SetJobTimeout bounds every scheduled turn this service dispatches.
+func (s *Service) SetJobTimeout(d time.Duration) { s.jobTimeout = d }
+
+// JobTimeout is the deadline a scheduled turn runs under.
+func (s *Service) JobTimeout() time.Duration {
+	if s.jobTimeout > 0 {
+		return s.jobTimeout
+	}
+	return defaultJobTimeout
+}
 
 // Scheduling reports whether due jobs will actually be run — by this process,
 // or by one this service was told to look for. A `factor chat` that schedules
@@ -519,10 +539,17 @@ func (s *Service) Run(ctx context.Context) {
 
 func (s *Service) runJob(ctx context.Context, job Job) {
 	slog.Info("cron job firing", "id", job.ID)
-	ctx, cancel := context.WithTimeout(ctx, jobTimeout)
+	timeout := s.JobTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	result, err := s.call(ctx, job)
 	if err != nil {
+		// "context deadline exceeded" names neither the limit nor the knob,
+		// and the user reading it in a chat has no other way to learn that
+		// the task was cut off by a clock rather than by something it did.
+		if errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("it ran past the %s a scheduled task is allowed (cron.job_timeout_minutes)", timeout)
+		}
 		slog.Error("cron job failed", "id", job.ID, "error", err)
 		result = failureText(job, err)
 	}
