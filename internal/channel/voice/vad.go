@@ -44,6 +44,11 @@ const (
 	// meaningful on digitally silent inputs.
 	floorAlpha = 0.05
 	minFloor   = 120.0
+
+	// noiseLearnSeconds is how long a sound the transcriber heard nobody in
+	// has to last before absorb takes its level as the room's floor
+	// outright; shorter sounds move the floor in proportion.
+	noiseLearnSeconds = 10.0
 )
 
 // segmenter turns a stream of PCM frames into utterances.
@@ -125,6 +130,22 @@ func (s *segmenter) push(frame []byte, playing bool) (started bool, ended bool, 
 		return false, true, s.take()
 	}
 	return false, false, nil
+}
+
+// absorb learns the floor from a segment the transcriber found no one in.
+//
+// The floor is otherwise learned only from idle frames under the threshold,
+// which is the one place a sustained noise cannot teach it: a fan or a
+// compressor that starts up at three times the floor is speech to the
+// detector, opens a segment, runs it to the cap, and opens the next one the
+// moment it closes — for as long as the noise lasts, with every segment sent
+// to the transcriber to be found empty. The transcriber's verdict is the
+// signal the detector lacks, and its level over the recording is what the
+// room sounds like now. How far the floor moves follows how long the sound
+// lasted: half a minute of it is the room, half a second is a door.
+func (s *segmenter) absorb(level, seconds float64) {
+	weight := math.Min(1, seconds/noiseLearnSeconds)
+	s.floor = math.Max(s.floor+weight*(level-s.floor), minFloor)
 }
 
 // take closes the current segment, dropping one too short to hold a word.

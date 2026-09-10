@@ -520,7 +520,9 @@ make a noise, it measures, and a silent source is called out on the spot. The ch
 status bar carries a live meter — `mic ▂▄▁` moves with the room and turns green on
 speech, `♪` lights cyan while Factor talks, a dead source shows `mic ✗`.
 
-Voice activity detection is pure Go: adaptive noise floor, a pre-roll so the first
+Voice activity detection is pure Go: an adaptive noise floor that also learns from
+what the transcriber heard nobody in (a fan that starts up is speech to an energy
+detector until the empty transcripts teach it otherwise), a pre-roll so the first
 syllable survives, and a higher bar while the agent speaks so the speakers can't
 barge in on themselves. Speakers loud enough get past that bar anyway, so what got
 through is matched against the words Factor just sent them: its own voice is dropped

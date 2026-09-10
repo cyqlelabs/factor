@@ -47,8 +47,8 @@ const (
 	// pttWindow is how long an armed push-to-talk waits for the utterance.
 	pttWindow = 15 * time.Second
 
-	// ttsChunkChars keeps one synthesis call to a paragraph, so long replies
-	// start sounding before they finish rendering.
+	// ttsChunkChars caps one synthesis call at a paragraph. See speechChunks
+	// for how a reply is cut up to it.
 	ttsChunkChars = 1200
 
 	// echoSettleMargin is what echoSettle allows for transcription on top of
@@ -82,6 +82,9 @@ type Voice struct {
 
 	player *player
 	utts   chan capturedUtterance
+	// floorHints carries what the transcriber made of a recording back to
+	// the detector, which is the one thing it cannot hear for itself.
+	floorHints chan floorHint
 	// outbound is what the bus hands this channel, kept in the order it
 	// arrived. A note from a turn still running and the reply that follows
 	// it are two messages, and speaking them out of order is worse than
@@ -160,6 +163,7 @@ func New(cfg Config, b *bus.MessageBus) (*Voice, error) {
 		publish:    publish,
 		speechWait: speechReadyWait,
 		utts:       make(chan capturedUtterance, 3),
+		floorHints: make(chan floorHint, 1),
 		outbound:   make(chan bus.OutboundMessage, outboundQueue),
 		effective:  cfg,
 	}
@@ -436,6 +440,11 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 			return err
 		}
 		level := rms(frame)
+		select {
+		case hint := <-v.floorHints:
+			seg.absorb(hint.level, hint.seconds)
+		default:
+		}
 		v.micLevel.Store(math.Float64bits(level))
 		v.micFloor.Store(math.Float64bits(seg.floor))
 		if level == 0 {
@@ -497,6 +506,26 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 	}
 }
 
+// floorHint is one recording's level and length, handed from the
+// transcription worker back to the capture loop once the transcriber has
+// found nobody in it.
+type floorHint struct {
+	level   float64
+	seconds float64
+}
+
+// hintFloor hands the capture loop a recording the transcriber heard no one
+// in, so the detector learns its level as the room's. Only the newest counts:
+// a hint the loop has not taken yet is stale the moment a later one exists.
+func (v *Voice) hintFloor(pcm []byte) {
+	hint := floorHint{level: rms(pcm), seconds: float64(len(pcm)) / 2 / captureRate}
+	select {
+	case <-v.floorHints:
+	default:
+	}
+	v.floorHints <- hint
+}
+
 // capturedUtterance is one segment on its way to transcription; started is
 // when its first frame opened the VAD.
 type capturedUtterance struct {
@@ -537,6 +566,12 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		return
 	}
 	dec := v.gate(text, utterance.started, utterance.barged, utterance.overlapped)
+	if dec.noise && !utterance.overlapped {
+		// A sound nobody spoke in is what the room sounds like, and the
+		// detector cannot learn that on its own — see segmenter.absorb. Not
+		// one the agent's own voice was in: that level is the speakers'.
+		v.hintFloor(utterance.pcm)
+	}
 	var heard heardVoices
 	switch {
 	case dec.accept:
@@ -806,9 +841,18 @@ func (v *Voice) Audience(string) string {
 	return v.room.snapshot(time.Now()).audience()
 }
 
-// speak synthesises and plays text, a paragraph at a time, returning once the
-// last chunk has been heard or the floor was taken. The wake-word follow-up
-// window opens as it ends, so answering back does not need the wake word.
+// speak synthesises and plays text, returning once the last chunk has been
+// heard or the floor was taken. The wake-word follow-up window opens as it
+// ends, so answering back does not need the wake word.
+//
+// The reply is cut at sentence boundaries with a short first piece
+// (speechChunks), and each piece is synthesised while the one before it
+// plays. Rendering a whole reply before its first word was the larger part
+// of the pause after every question: a CPU voice renders at a few times real
+// time, so a twenty-second answer sat silent for several of them. One
+// sentence renders in a fraction of that, and the rest is in hand before the
+// speakers need it. One request stays in flight at most — a barge cancels
+// it with the reply, and anything past it would be paid for and thrown away.
 func (v *Voice) speak(ctx context.Context, text string) {
 	client := v.speechClient()
 	if client == nil {
@@ -827,20 +871,39 @@ func (v *Voice) speak(ctx context.Context, text string) {
 	if text == "" {
 		return
 	}
-	for _, chunk := range channel.SplitMessage(text, ttsChunkChars) {
-		pcm, err := client.synthesize(ctx, chunk)
-		if err != nil {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type rendered struct {
+		pcm []byte
+		err error
+	}
+	render := func(chunk string) <-chan rendered {
+		out := make(chan rendered, 1)
+		go func() {
+			pcm, err := client.synthesize(ctx, chunk)
+			out <- rendered{pcm, err}
+		}()
+		return out
+	}
+	chunks := speechChunks(text, ttsChunkChars)
+	ahead := render(chunks[0])
+	for i, chunk := range chunks {
+		next := <-ahead
+		if i+1 < len(chunks) {
+			ahead = render(chunks[i+1])
+		}
+		if next.err != nil {
 			if ctx.Err() == nil {
-				slog.Warn("speech synthesis failed", "error", v.redact(err))
+				slog.Warn("speech synthesis failed", "error", v.redact(next.err))
 			}
 			return
 		}
-		if len(pcm) == 0 {
+		if len(next.pcm) == 0 {
 			continue
 		}
-		scalePCM(pcm, v.cfg.OutputVolume)
+		scalePCM(next.pcm, v.cfg.OutputVolume)
 		v.echo.record(chunk)
-		done := v.player.play(ctx, pcm)
+		done := v.player.play(ctx, next.pcm)
 		select {
 		case <-ctx.Done():
 			return

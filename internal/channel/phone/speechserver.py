@@ -213,6 +213,11 @@ SPEAKER_RELEASE = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
 )
 
+# Which engines this process serves. A tier that keeps one half in the cloud
+# must not pay for the other half's weights or memory: the flags follow the
+# tier, and an engine that is not asked for is neither loaded nor waited on.
+NEED_STT = bool(CFG.get("need_stt"))
+NEED_TTS = bool(CFG.get("need_tts")) and bool(PIPER_VOICE)
 NEED_SPEAKER = bool(CFG.get("need_speaker"))
 SPEAKER_MODEL = CFG.get("speaker_model") or DEFAULT_SPEAKER_MODEL
 if NEED_SPEAKER and SPEAKER_MODEL not in SPEAKER_MODELS:
@@ -265,29 +270,19 @@ _tts_lock = threading.Lock()
 _speaker_lock = threading.Lock()
 
 
-
 def load_models() -> None:
-    """Load both engines before the server reports itself healthy.
+    """Load the engines this tier asked for before the server reports itself
+    healthy.
 
     Factor waits on /health before it starts the voice shell, so paying the
     load here is what keeps the first call of the day from opening with a
     twenty-second silence while a model is read off disk."""
     global _stt, _tts, _speaker, _diarizer
 
-    if STT_ENGINE == "parakeet":
-        _stt = load_parakeet(STT_MODEL or PARAKEET_MODEL)
-    else:
-        from faster_whisper import WhisperModel
+    if NEED_STT:
+        _stt = load_stt()
 
-        log("loading speech-to-text", model=WHISPER_MODEL, device=WHISPER_DEVICE, compute=WHISPER_COMPUTE)
-        _stt = WhisperModel(
-            WHISPER_MODEL,
-            device=WHISPER_DEVICE,
-            compute_type=WHISPER_COMPUTE,
-            download_root=str(DATA_DIR / "whisper"),
-        )
-
-    if PIPER_VOICE:
+    if NEED_TTS:
         from piper import PiperVoice
 
         onnx = DATA_DIR / "piper" / f"{PIPER_VOICE}.onnx"
@@ -308,9 +303,27 @@ def load_models() -> None:
                 model=str(model), num_threads=1, provider="cpu"))
         _diarizer = load_diarizer(model)
 
-    log("ready", stt=stt_name(), tts=PIPER_VOICE or "disabled",
+    log("ready", stt=stt_name() if NEED_STT else "disabled", tts=PIPER_VOICE if NEED_TTS else "disabled",
         speaker=SPEAKER_MODEL_FILE if NEED_SPEAKER else "disabled",
         diarization="on" if _diarizer is not None else "off", rate=OUTPUT_RATE)
+
+
+def load_stt():
+    if STT_ENGINE == "parakeet":
+        stt = load_parakeet(STT_MODEL or PARAKEET_MODEL)
+        # The speech detector that gates the transducer, warmed here so the
+        # first utterance of the day does not pay for its session.
+        get_vad_model()
+        return stt
+    from faster_whisper import WhisperModel
+
+    log("loading speech-to-text", model=WHISPER_MODEL, device=WHISPER_DEVICE, compute=WHISPER_COMPUTE)
+    return WhisperModel(
+        WHISPER_MODEL,
+        device=WHISPER_DEVICE,
+        compute_type=WHISPER_COMPUTE,
+        download_root=str(DATA_DIR / "whisper"),
+    )
 
 
 def load_diarizer(embedding_model: Path):
@@ -411,7 +424,7 @@ def authorize(header: str | None) -> None:
 
 @app.get("/health")
 def health() -> JSONResponse:
-    ready = (_stt is not None and (_tts is not None or not PIPER_VOICE)
+    ready = ((_stt is not None or not NEED_STT) and (_tts is not None or not NEED_TTS)
              and (_speaker is not None or not NEED_SPEAKER))
     return JSONResponse({"status": "ok" if ready else "loading"}, status_code=200 if ready else 503)
 
@@ -419,9 +432,11 @@ def health() -> JSONResponse:
 @app.get("/v1/models")
 def models() -> dict:
     """The catalogue Factor's startup probe reads to tell that we are alive."""
-    owner = "onnx-asr" if STT_ENGINE == "parakeet" else "faster-whisper"
-    listed = [{"id": stt_name(), "object": "model", "owned_by": owner}]
-    if PIPER_VOICE:
+    listed = []
+    if NEED_STT:
+        owner = "onnx-asr" if STT_ENGINE == "parakeet" else "faster-whisper"
+        listed.append({"id": stt_name(), "object": "model", "owned_by": owner})
+    if NEED_TTS:
         listed.append({"id": PIPER_VOICE, "object": "model", "owned_by": "piper"})
     return {"object": "list", "data": listed}
 
@@ -441,7 +456,7 @@ def transcriptions(
     the length of the audio it was handed."""
     authorize(authorization)
     if _stt is None:
-        raise HTTPException(status_code=503, detail="the speech-to-text model is still loading")
+        raise HTTPException(status_code=503, detail="no speech-to-text engine is loaded on this server")
 
     raw = file.file.read()
     # An empty upload is a hang-up racing the last chunk, not an error.
@@ -528,7 +543,7 @@ def speech(payload: dict = Body(...), authorization: str | None = Header(default
     out. Skipping that lands every voice about nine percent flat."""
     authorize(authorization)
     if _tts is None:
-        raise HTTPException(status_code=503, detail="no text-to-speech voice is configured")
+        raise HTTPException(status_code=503, detail="no text-to-speech voice is loaded on this server")
 
     text = (payload.get("input") or "").strip()
     response_format = payload.get("response_format") or "pcm"
@@ -743,6 +758,38 @@ def wav_to_float32(raw: bytes):
     return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
 
 
+def get_vad_model():
+    """The Silero speech detector faster-whisper ships, loaded once."""
+    from faster_whisper.vad import get_vad_model as load
+
+    return load()
+
+
+def speech_span(waveform):
+    """Where the speech in a recording is: (first sample, last sample), or
+    None when the detector found nobody talking.
+
+    This is the speech classifier the transducer otherwise lacks. Whisper's
+    path runs Silero under vad_filter=True and scores what the decoder heard;
+    Parakeet decodes whatever it is handed and returns text, and the length
+    bar in front of it measures the recording, not whether anyone spoke in
+    it. A cough, a door, a burst of typing loud enough to open the caller's
+    detector all reach the decoder — and a transducer emitting nothing over
+    clean silence says nothing about what it emits over those. The same
+    detector, the same defaults, one layer up.
+
+    The span is the first speech chunk's start to the last one's end, with
+    the pauses between kept: a desktop utterance closes on two seconds of
+    silence and opens with a third of pre-roll, which is a third to a half
+    of a short recording the transducer no longer has to encode."""
+    from faster_whisper.vad import get_speech_timestamps
+
+    chunks = get_speech_timestamps(waveform)
+    if not chunks:
+        return None
+    return chunks[0]["start"], chunks[-1]["end"]
+
+
 def transcribe_parakeet(raw: bytes) -> tuple[str, float]:
     """One buffered chunk through the transducer.
 
@@ -750,10 +797,14 @@ def transcribe_parakeet(raw: bytes) -> tuple[str, float]:
     log-probabilities. is_hallucination deliberately does not apply here: its
     thresholds are tuned to Whisper's decoder, whose habit of inventing
     speech over silence is the thing being defended against — a transducer
-    handed silence emits no tokens at all, and the VAD gates upstream (
-    Patter's, and MIN_TRANSCRIBE_SECONDS here) already drop what little gets
-    through."""
+    handed silence emits no tokens at all. What it is defended by instead is
+    speech_span: nothing reaches the decoder that the speech detector did not
+    hear a person in."""
     waveform = wav_to_float32(raw)
+    span = speech_span(waveform)
+    if span is None:
+        return "", 0.0
+    waveform = waveform[span[0]:span[1]]
 
     result = _stt.recognize(waveform, sample_rate=16000)
     logprobs = result.logprobs or []
@@ -942,10 +993,63 @@ def pick_stt(explicit_engine: str, explicit_whisper: str, explicit_model: str) -
 
 
 def total_ram_gb() -> float:
-    try:
-        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024**3)
-    except (ValueError, OSError, AttributeError):
+    """What this process may use, in GiB: the machine's memory, or the
+    container's limit where one is set and smaller.
+
+    The engine ladder is measured against this number, so it has to be the
+    memory the server will actually get. A container carved out of a large
+    host reports the host's memory through sysconf and is killed at its
+    cgroup limit; a Windows machine has no sysconf at all, and assuming a
+    comfortable default there picked the gigabyte transducer on boxes that
+    could not hold it."""
+    total = physical_ram_bytes()
+    limit = cgroup_memory_limit()
+    if limit and (not total or limit < total):
+        total = limit
+    if not total:
         return 8.0
+    return total / (1024**3)
+
+
+def physical_ram_bytes() -> int:
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        pass
+    if sys.platform != "win32":
+        return 0
+    import ctypes
+
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32),
+            ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+            ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+            ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+            ("ullAvailExtendedVirtual", ctypes.c_uint64),
+        ]
+
+    status = MemoryStatus()
+    status.dwLength = ctypes.sizeof(MemoryStatus)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return 0
+    return int(status.ullTotalPhys)
+
+
+def cgroup_memory_limit() -> int:
+    """The container's memory ceiling in bytes, 0 where there is none."""
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            raw = Path(path).read_text().strip()
+        except OSError:
+            continue
+        if not raw.isdigit():
+            continue  # "max": unlimited
+        limit = int(raw)
+        # cgroup v1 reports "unlimited" as a number near 2**63.
+        if 0 < limit < 1 << 60:
+            return limit
+    return 0
 
 
 def prepare() -> None:

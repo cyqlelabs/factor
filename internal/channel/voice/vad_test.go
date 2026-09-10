@@ -211,3 +211,40 @@ func TestScalePCMLowersEverySample(t *testing.T) {
 		t.Error("scalePCM at 100 changed the audio")
 	}
 }
+
+// A sustained noise above the threshold — a fan starting up — is speech to
+// the detector and never teaches the floor, because the floor learns only
+// from idle frames under it. The transcriber's verdict is what settles it:
+// a recording nobody spoke in is absorbed as the room's level, in proportion
+// to how long it lasted.
+func TestSegmenterLearnsTheFloorFromASoundNobodySpokeIn(t *testing.T) {
+	seg := newSegmenter(defaultVADRatio, defaultBargeRatio, defaultSilenceMs)
+	feed(seg, repeat(silenceFrame(), 20), false)
+	fan := repeat(toneFrame(1000), maxUtteranceSeconds*1000/frameMs+10)
+	if started, _ := feed(seg, fan, false); started == 0 {
+		t.Fatal("the fan never opened a segment; the scenario is wrong")
+	}
+	before := seg.floor
+	seg.absorb(1000, 30)
+	if seg.floor < 950 {
+		t.Errorf("after half a minute of fan the floor is %v (was %v), want the fan's level", seg.floor, before)
+	}
+	// Now the fan is the room: it opens nothing, and a voice over it does.
+	seg = newSegmenter(defaultVADRatio, defaultBargeRatio, defaultSilenceMs)
+	feed(seg, repeat(silenceFrame(), 20), false)
+	seg.absorb(1000, 30)
+	if started, _ := feed(seg, repeat(toneFrame(1000), 20), false); started != 0 {
+		t.Error("the fan still opens segments after the floor learned it")
+	}
+	if started, _ := feed(seg, repeat(toneFrame(8000), 10), false); started != 1 {
+		t.Error("a voice over the fan did not open speech")
+	}
+
+	// A door — loud, but half a second — barely moves it.
+	seg = newSegmenter(defaultVADRatio, defaultBargeRatio, defaultSilenceMs)
+	feed(seg, repeat(silenceFrame(), 20), false)
+	seg.absorb(8000, 0.5)
+	if seg.floor > 600 {
+		t.Errorf("half a second of a door moved the floor to %v", seg.floor)
+	}
+}

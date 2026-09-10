@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -1537,4 +1538,57 @@ func TestVoiceDeclaresItsCapabilities(t *testing.T) {
 	if h.v.MaxMessageLength() != 0 {
 		t.Error("speech has no message length to cap")
 	}
+}
+
+// A reply starts sounding on its first sentence: that sentence is rendered
+// alone, and the rest is requested while it plays rather than after.
+func TestVoiceSpeaksTheFirstSentenceWhileTheRestRenders(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.mu.Lock()
+	h.reply = "Claro que sí, ahora mismo lo veo. La respuesta es que mañana llueve por la tarde. Llevá paraguas."
+	h.mu.Unlock()
+	h.setReplyPCM(make([]byte, playbackRate*2)) // a second of audio per piece, paced in real time
+	h.start()
+	h.say()
+	h.turn(10 * time.Second)
+
+	waitUntil(t, func() bool { return len(h.synthesized()) >= 2 })
+	if !h.v.player.busy() {
+		t.Error("the second piece was requested only after the first had been heard out")
+	}
+	want := []string{
+		"Claro que sí, ahora mismo lo veo.",
+		"La respuesta es que mañana llueve por la tarde. Llevá paraguas.",
+	}
+	if got := h.synthesized(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("synthesized = %q, want %q", got, want)
+	}
+	waitUntil(t, func() bool { return len(h.speaker.heard()) >= 2*playbackRate*2 })
+}
+
+// A fan that starts up is speech to the detector for as long as it runs.
+// The transcriber finding nobody in the recording is what teaches the
+// detector the room's new level, so the fan stops opening segments.
+func TestVoiceLearnsTheRoomFromASoundNobodySpokeIn(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.setTranscript("")
+	h.start()
+	floorOf := func() float64 { return math.Float64frombits(h.v.micFloor.Load()) }
+
+	h.mic.feed(repeat(silenceFrame(), 20)...)
+	h.mic.feed(repeat(toneFrame(1000), 12*1000/frameMs)...) // twelve seconds of fan
+	h.mic.feed(repeat(silenceFrame(), silenceEndFrames)...)
+	waitUntil(t, func() bool {
+		h.api.mu.Lock()
+		defer h.api.mu.Unlock()
+		return len(h.api.forms) > 0
+	})
+	// The fan keeps running; the floor rises to meet it once the verdict
+	// reaches the detector, and settles on the fan's own level.
+	waitUntil(t, func() bool {
+		h.mic.feed(toneFrame(1000))
+		floor := floorOf()
+		return floor > 800 && floor < 1200
+	})
+	h.noTurn(200 * time.Millisecond)
 }

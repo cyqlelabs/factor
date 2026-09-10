@@ -81,10 +81,12 @@ func (s *speechClient) transcribe(ctx context.Context, pcm []byte) (string, erro
 		if s.cfg.managedSpeech() {
 			token = s.token
 		}
-		// Plain text on purpose. Factor's own server has already applied
-		// these bars before answering, and a server the user pointed us at
-		// is theirs — asking an unknown implementation for a response format
-		// it may not implement would trade a defence for an outage.
+		// Plain text on purpose. Factor's own server defends its answer
+		// before it gives it — Whisper's scored against these bars, the
+		// transducer's gated by a speech detector — and a server the user
+		// pointed us at is theirs: asking an unknown implementation for a
+		// response format it may not implement would trade a defence for an
+		// outage.
 		return s.transcribeOpenAI(ctx, s.cfg.STT.BaseURL, s.cfg.STT.Model, token, pcm, plainText)
 	}
 }

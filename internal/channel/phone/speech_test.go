@@ -925,3 +925,73 @@ func TestRenderSpeechConfigCarriesTheSpeechSpeed(t *testing.T) {
 		t.Errorf("speech_speed = %v, dropped on the way to the server", rendered.SpeechSpeed)
 	}
 }
+
+// A tier that keeps one half in the cloud must not pay for the other half's
+// weights or memory: the server loads the engines its flags ask for and
+// nothing else, reports itself ready without them, and refuses their routes
+// by name rather than claiming to be still loading.
+func TestEmbeddedSpeechServerLoadsOnlyWhatTheTierAskedFor(t *testing.T) {
+	out := runSpeechSnippetWith(t, map[string]any{
+		"need_stt": false, "need_tts": false, "stt_engine": "whisper", "piper_voice": "es_ES-davefx-medium",
+	}, `
+mod.load_models()
+ids = [m["id"] for m in mod.models()["data"]]
+refused = []
+for route, call in (("stt", lambda: mod.transcriptions(file=None)), ("tts", lambda: mod.speech({"input": "hola"}))):
+    try:
+        call()
+    except mod.HTTPException as err:
+        refused.append(route)
+print(mod._stt is None, mod._tts is None, ids, "|".join(refused))
+`)
+	// The last line: the ready line above it says what was loaded, and
+	// that is the log's.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if got := lines[len(lines)-1]; got != "True True [] stt|tts" {
+		t.Errorf("with nothing asked for: %q, want no engine loaded, no model listed, both routes refused", got)
+	}
+}
+
+// The transducer decodes whatever it is handed and returns text, so the
+// speech detector in front of it is the only thing that tells a cough from
+// a word. Nothing the detector heard nobody in reaches the decoder, and what
+// does reach it is cut to where the speech was.
+func TestEmbeddedSpeechServerGatesTheTransducerOnSpeech(t *testing.T) {
+	out := runSpeechSnippet(t, `
+import sys, types
+
+spans = []
+vad = types.ModuleType("faster_whisper.vad")
+vad.get_speech_timestamps = lambda audio, *a, **k: spans
+pkg = types.ModuleType("faster_whisper")
+pkg.vad = vad
+sys.modules["faster_whisper"] = pkg
+sys.modules["faster_whisper.vad"] = vad
+
+class Result:
+    text = " hola "
+    logprobs = [-0.2, -0.4]
+
+class Transducer:
+    def __init__(self):
+        self.heard = []
+    def recognize(self, waveform, sample_rate=16000):
+        self.heard.append(len(waveform))
+        return Result()
+
+mod._stt = Transducer()
+mod.wav_to_float32 = lambda raw: list(range(48000))  # three seconds, as samples
+
+def heard():
+    text, avg = mod.transcribe_parakeet(b"wav")
+    return text, round(avg, 4), mod._stt.heard
+
+print(heard())
+spans[:] = [{"start": 8000, "end": 20000}, {"start": 24000, "end": 30000}]
+print(heard())
+`)
+	want := "('', 0.0, [])\n('hola', -0.3, [22000])"
+	if got := strings.TrimSpace(out); got != want {
+		t.Errorf("transcribe_parakeet:\n got %q\nwant %q", got, want)
+	}
+}

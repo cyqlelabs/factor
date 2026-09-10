@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/cyqlelabs/factor/internal/channel"
 )
 
 // The agent is told to answer voice turns in plain prose, but a prompt is a
@@ -86,4 +88,89 @@ func codeOmitted(language string) string {
 		return "(código omitido)"
 	}
 	return "(code omitted)"
+}
+
+// How a reply is cut into synthesis requests. A voice renders at a few times
+// real time on a CPU, so the wait between a question and the first spoken
+// word is set by how much text the first request carries — and the sentence
+// the reply opens with is all the speakers need to start. The rest is
+// rendered while that plays, a piece at a time, each piece allowed to be
+// twice the one before it: a synthesizer keeping up at just twice real time
+// has every piece in hand before the last one ends, and the gaps between
+// pieces — one playback helper ends, the next spawns — fall on sentence
+// ends, where a pause belongs.
+const (
+	// firstChunkChars is the least the first request carries. A reply that
+	// opens with a word — "Sí." — is not worth a helper of its own and the
+	// gap after it; the next sentence or two ride along.
+	firstChunkChars = 24
+	chunkGrowth     = 2
+)
+
+// sentenceEnd is a sentence's closing punctuation, any quote or bracket it is
+// wrapped in, and the space after it. Punctuation with no space after it —
+// a decimal, a version number, a domain — ends nothing.
+var sentenceEnd = regexp.MustCompile(`[.!?…]+["'”’)\]]*\s+`)
+
+// sentences cuts speakable prose at sentence ends and line breaks.
+func sentences(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		last := 0
+		for _, m := range sentenceEnd.FindAllStringIndex(line, -1) {
+			if s := strings.TrimSpace(line[last:m[1]]); s != "" {
+				out = append(out, s)
+			}
+			last = m[1]
+		}
+		if s := strings.TrimSpace(line[last:]); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// speechChunks groups a reply's sentences into synthesis requests: the first
+// holds at least firstChunkChars, each later one up to chunkGrowth times the
+// one before it and never past limit. A sentence is never split across two
+// requests unless it alone is longer than limit.
+func speechChunks(text string, limit int) []string {
+	var chunks []string
+	current := ""
+	target := firstChunkChars
+	flush := func() {
+		if current == "" {
+			return
+		}
+		chunks = append(chunks, current)
+		target = min(limit, chunkGrowth*len(current))
+		current = ""
+	}
+	for _, sentence := range sentences(text) {
+		if len(sentence) > limit {
+			flush()
+			chunks = append(chunks, channel.SplitMessage(sentence, limit)...)
+			target = limit
+			continue
+		}
+		switch {
+		case current == "":
+			current = sentence
+		case len(chunks) == 0, len(current)+1+len(sentence) <= target:
+			// The first chunk is still short of its floor, or this one has
+			// room under its cap.
+			current += " " + sentence
+		default:
+			flush()
+			current = sentence
+		}
+		if len(chunks) == 0 && len(current) >= firstChunkChars {
+			flush()
+		}
+	}
+	flush()
+	if len(chunks) == 0 {
+		return []string{text}
+	}
+	return chunks
 }
