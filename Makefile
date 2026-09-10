@@ -109,8 +109,10 @@ check: vet test-race cover
 version:
 	@$(SVU) current
 
+# svu bumps on feat and fix alone. A perf commit is a change worth a release
+# too, so one landed since the last tag moves the version at least a patch.
 version-next:
-	@$(SVU) next
+	@if git log "$$($(SVU) current)..HEAD" --format=%s | grep -qE '^perf(\([^)]*\))?!?:'; then $(SVU) next --always; else $(SVU) next; fi
 
 clean:
 	rm -rf dist $(BINARY) $(BINARY)-tiny
