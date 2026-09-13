@@ -2,27 +2,44 @@
 
 package memory
 
-import "os"
+import (
+	"fmt"
 
-func pidAlive(pid int) bool {
-	// Windows has no signal 0: FindProcess is as far as this goes, and it
-	// succeeds for a pid that has already exited.
-	_, err := os.FindProcess(pid)
-	return err == nil
+	"golang.org/x/sys/windows"
+
+	"github.com/cyqlelabs/factor/internal/childproc"
+)
+
+// isEngine guards the two calls that end a process: the pid file naming one
+// may have outlived a crash, and a recycled pid would make these the calls
+// that kill something else.
+func isEngine(pid int) bool {
+	return childproc.Alive(pid) && childproc.IsImage(pid, BinaryName())
 }
 
-// terminateProcess stops the engine. Windows has no graceful signal to send a
-// process that owns no console of ours, so this is the blunt one.
+// terminateProcess stops the engine. Windows has no graceful signal for a
+// process holding a console of its own, so this is the blunt one — but it is
+// aimed carefully: the pid is checked against the engine's image first, since
+// the file naming it may have outlived a crash and a recycled pid would make
+// this the call that kills something else.
 func terminateProcess(pid int) error {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return err
+	if !isEngine(pid) {
+		return fmt.Errorf("pid %d is not %s any more", pid, BinaryName())
 	}
-	return p.Kill()
+	return terminate(pid)
 }
 
 func killProcess(pid int) {
-	if p, err := os.FindProcess(pid); err == nil {
-		_ = p.Kill()
+	if isEngine(pid) {
+		_ = terminate(pid)
 	}
+}
+
+func terminate(pid int) error {
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h)
+	return windows.TerminateProcess(h, 1)
 }

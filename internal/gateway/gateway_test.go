@@ -366,3 +366,21 @@ func TestAnnounceEngine(t *testing.T) {
 		}
 	}
 }
+
+func TestSameBinaryIgnoresAnUpgradesStagedName(t *testing.T) {
+	for _, tc := range []struct {
+		running, want string
+		same          bool
+	}{
+		{"factor.exe", "factor.exe", true},
+		{"FACTOR.EXE", "factor.exe", true},
+		{"factor.exe.old", "factor.exe", true}, // mid-upgrade, before the reload
+		{"factor", "factor", true},
+		{"smrti.exe", "factor.exe", false},
+		{"factorial.exe", "factor.exe", false},
+	} {
+		if got := sameBinary(tc.running, tc.want); got != tc.same {
+			t.Errorf("sameBinary(%q, %q) = %v", tc.running, tc.want, got)
+		}
+	}
+}

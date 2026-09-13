@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/childproc"
 	"github.com/cyqlelabs/factor/internal/config"
 )
 
@@ -111,4 +112,13 @@ func reap(pid int) {
 	if p, err := os.FindProcess(pid); err == nil {
 		_, _ = p.Wait()
 	}
+}
+
+// pidAlive reports whether the recorded pid is still the memory engine. The
+// pid file survives a crash and a power cut, and the pid in it is reissued to
+// an unrelated program soon after — so on the platform where that is an
+// everyday event the image is checked too, because the callers here do not
+// merely report on this pid, they stop it.
+func pidAlive(pid int) bool {
+	return childproc.Alive(pid) && childproc.IsImage(pid, BinaryName())
 }
