@@ -30,16 +30,27 @@ import (
 // one state — concurrent sessions share it, hence the lock.
 type visionState struct {
 	mu        sync.Mutex
-	raw       *image.RGBA // native-resolution frame from the last screen_view
-	viewScale float64     // view px per native px (≤ 1)
-	grid      gridLayout  // over the view image
-	zoom      *zoomView   // nil until screen_zoom; cleared by screen_view
+	raw       *image.RGBA // capture-resolution frame from the last screen_view
+	viewScale float64     // view px per capture px (≤ 1)
+	// pointScale is capture px per unit of the pointer's own coordinate
+	// space. It is 1 wherever a screenshot is measured in the same units the
+	// mouse is moved in, and 2 on a Retina Mac, where screencapture writes the
+	// backing store — twice the desktop in each direction — while cliclick and
+	// AppleScript take points. Without it every click computed from a frame
+	// landed at twice its coordinates, which put three quarters of the screen
+	// out of reach and every hit in the wrong place.
+	pointScale float64
+	grid       gridLayout // over the view image
+	zoom       *zoomView  // nil until screen_zoom; cleared by screen_view
 }
 
-func (v *visionState) setView(raw *image.RGBA, scale float64, grid gridLayout) {
+func (v *visionState) setView(raw *image.RGBA, scale, pointScale float64, grid gridLayout) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.raw, v.viewScale, v.grid, v.zoom = raw, scale, grid, nil
+	if pointScale <= 0 {
+		pointScale = 1
+	}
+	v.raw, v.viewScale, v.pointScale, v.grid, v.zoom = raw, scale, pointScale, grid, nil
 }
 
 func (v *visionState) setZoom(z zoomView) {
@@ -69,7 +80,7 @@ func (v *visionState) resolveCell(coord string) (image.Point, string, error) {
 		if err != nil {
 			return image.Point{}, "", fmt.Errorf("%v (on the current zoomed view; screen_view resets to the full screen)", err)
 		}
-		return p, "zoomed cell", nil
+		return v.toPointer(p), "zoomed cell", nil
 	}
 	r, err := v.grid.cellRectByName(coord)
 	if err != nil {
@@ -77,7 +88,16 @@ func (v *visionState) resolveCell(coord string) (image.Point, string, error) {
 	}
 	cx := float64(r.Min.X+r.Max.X) / 2
 	cy := float64(r.Min.Y+r.Max.Y) / 2
-	return image.Point{X: int(cx / v.viewScale), Y: int(cy / v.viewScale)}, "cell", nil
+	return v.toPointer(image.Point{X: int(cx / v.viewScale), Y: int(cy / v.viewScale)}), "cell", nil
+}
+
+// toPointer converts a pixel in the captured frame to the coordinate the
+// pointer is moved in. Caller holds the lock.
+func (v *visionState) toPointer(p image.Point) image.Point {
+	if v.pointScale <= 1 {
+		return p
+	}
+	return image.Point{X: int(float64(p.X) / v.pointScale), Y: int(float64(p.Y) / v.pointScale)}
 }
 
 // captureFrame takes a full-screen screenshot through the controller into a
@@ -144,14 +164,20 @@ func (t *screenViewTool) Execute(ctx context.Context, args map[string]any) *tool
 	if err != nil {
 		return tools.Errorf("screen_view: encode: %v", err)
 	}
-	t.vision.setView(raw, scale, grid)
+	pointScale := captureScale(ctx, t.ctl, t.env, raw)
+	t.vision.setView(raw, scale, pointScale, grid)
 
-	cellNative := int(float64(grid.CellSize) / scale)
+	// Reported in the pointer's units rather than the capture's: they are the
+	// same number everywhere but a Retina Mac, and there a screen announced as
+	// 2880x1800 invites coordinates half the desktop past its right edge.
+	screenW := int(float64(raw.Bounds().Dx()) / pointScale)
+	screenH := int(float64(raw.Bounds().Dy()) / pointScale)
+	cellNative := int(float64(grid.CellSize) / scale / pointScale)
 	return &tools.Result{
 		ForLLM: fmt.Sprintf(
 			"Screen is %dx%d px. Attached: the current screen with grid cells A1-%s (each ≈%dpx square on screen). "+
 				"Pick the cell containing your target, then screen_zoom cell=... for precision, then mouse cell=... to click.",
-			raw.Bounds().Dx(), raw.Bounds().Dy(), grid.lastCell(), cellNative),
+			screenW, screenH, grid.lastCell(), cellNative),
 		ForUser: "👁 screen view",
 		Images:  []provider.ImagePart{part},
 	}
@@ -227,4 +253,38 @@ func (t *screenZoomTool) Execute(ctx context.Context, args map[string]any) *tool
 		ForUser: "🔎 zoom: " + what,
 		Images:  []provider.ImagePart{part},
 	}
+}
+
+// captureScale reports how many pixels of a screenshot cover one unit of the
+// coordinate space the pointer moves in.
+//
+// They are the same thing on every platform but macOS, where screencapture
+// writes the backing store — on a Retina display twice the desktop in each
+// direction — while cliclick and System Events take points. Nothing in a
+// frame says which it is, so the capture is measured against the screen size
+// the controller reports, which is in the pointer's own units.
+//
+// It is only asked on darwin. Elsewhere the two are equal by construction, and
+// a screen size that disagrees with the capture there means something else
+// entirely — an xrandr reporting one monitor of several, say — which this must
+// not read as a scale factor and silently halve every click by.
+func captureScale(ctx context.Context, ctl Controller, env Env, raw *image.RGBA) float64 {
+	if env.GOOS != "darwin" {
+		return 1
+	}
+	w, _, err := ctl.ScreenSize(ctx)
+	if err != nil || w <= 0 {
+		return 1
+	}
+	scale := float64(raw.Bounds().Dx()) / float64(w)
+	// Apple has shipped 1x and 2x, and rounds to whole factors; anything else
+	// is a screen that moved between the two calls or a size read wrongly, and
+	// a fraction of a pixel is not worth moving every click by.
+	if scale < 1.5 {
+		return 1
+	}
+	if scale > 3 {
+		return 1
+	}
+	return 2
 }
