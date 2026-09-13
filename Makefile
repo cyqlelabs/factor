@@ -31,6 +31,7 @@ build-all: clean
 	GOOS=linux  GOARCH=arm64              go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-linux-arm64 ./cmd/factor
 	GOOS=linux  GOARCH=arm GOARM=7        go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-linux-armv7 ./cmd/factor
 	GOOS=darwin GOARCH=arm64              go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-darwin-arm64 ./cmd/factor
+	GOOS=darwin GOARCH=amd64              go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-darwin-amd64 ./cmd/factor
 	GOOS=windows GOARCH=amd64             go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-windows-amd64.exe ./cmd/factor
 
 # Smallest binary: browser suite stripped.

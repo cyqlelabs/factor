@@ -176,8 +176,8 @@ func (t *screenViewTool) Execute(ctx context.Context, args map[string]any) *tool
 	return &tools.Result{
 		ForLLM: fmt.Sprintf(
 			"Screen is %dx%d px. Attached: the current screen with grid cells A1-%s (each ≈%dpx square on screen). "+
-				"Pick the cell containing your target, then screen_zoom cell=... for precision, then mouse cell=... to click.",
-			screenW, screenH, grid.lastCell(), cellNative),
+				"Pick the cell containing your target, then screen_zoom cell=... for precision, then mouse cell=... to click.%s",
+			screenW, screenH, grid.lastCell(), cellNative, emptyScreenHint(t.env)),
 		ForUser: "👁 screen view",
 		Images:  []provider.ImagePart{part},
 	}
@@ -287,4 +287,21 @@ func captureScale(ctx context.Context, ctl Controller, env Env, raw *image.RGBA)
 		return 1
 	}
 	return 2
+}
+
+// emptyScreenHint is what to make of a macOS capture with nothing on it.
+//
+// Since macOS 10.15 a process without Screen Recording permission does not
+// fail: screencapture exits 0 and writes a picture of the wallpaper with every
+// window removed. Nothing in the result says so, so the model reads a desktop
+// with six applications open as an empty one and reports that to the user with
+// a screenshot to back it up. The permission is the first thing to suspect,
+// and only this platform can produce the symptom.
+func emptyScreenHint(env Env) string {
+	if env.GOOS != "darwin" {
+		return ""
+	}
+	return " If the screen appears to have no windows on it, macOS is withholding Screen Recording " +
+		"permission rather than showing you an empty desktop: ask the user to grant it in " +
+		"System Settings → Privacy & Security → Screen Recording."
 }

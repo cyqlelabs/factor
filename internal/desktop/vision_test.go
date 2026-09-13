@@ -344,3 +344,17 @@ func (c *sizedController) ScreenSize(context.Context) (int, int, error) {
 	c.asked = true
 	return c.w, c.h, c.err
 }
+
+// A Mac without Screen Recording permission does not fail: screencapture exits
+// 0 and writes the wallpaper with every window removed, so the model reads a
+// busy desktop as an empty one and says so with a screenshot to back it up.
+func TestScreenViewSaysWhatAnEmptyMacScreenMeans(t *testing.T) {
+	if hint := emptyScreenHint(Env{GOOS: "darwin"}); !strings.Contains(hint, "Screen Recording") {
+		t.Errorf("hint = %q", hint)
+	}
+	for _, goos := range []string{"linux", "windows"} {
+		if hint := emptyScreenHint(Env{GOOS: goos}); hint != "" {
+			t.Errorf("%s cannot produce the symptom, yet says: %q", goos, hint)
+		}
+	}
+}
