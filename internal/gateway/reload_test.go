@@ -15,6 +15,8 @@ import (
 
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
+	"net/http"
+	"net/http/httptest"
 )
 
 // fastSettle shrinks the restart pacing so a test does not wait out a real
@@ -83,7 +85,7 @@ func TestNotifyReloadTurnsSighupIntoARequest(t *testing.T) {
 	got := make(chan string, 1)
 	notifyReload(ctx, func(reason string) { got <- reason })
 
-	if err := SignalRestart(os.Getpid()); err != nil {
+	if err := SignalRestart("", os.Getpid()); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -409,5 +411,68 @@ func TestSettleWaitsForADeliveryThatHasLeftTheQueue(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("settle never returned after the delivery landed")
+	}
+}
+
+func TestControlAddrAsksOverLoopback(t *testing.T) {
+	for _, tc := range []struct{ host, want string }{
+		{"127.0.0.1", "127.0.0.1:8720"},
+		{"0.0.0.0", "127.0.0.1:8720"},
+		{"::", "127.0.0.1:8720"},
+		{"", "127.0.0.1:8720"},
+		{"192.168.0.5", "192.168.0.5:8720"},
+	} {
+		if got := ControlAddr(tc.host, 8720); got != tc.want {
+			t.Errorf("ControlAddr(%q) = %q, want %q", tc.host, got, tc.want)
+		}
+	}
+}
+
+// The health port may be bound wider than localhost, and a restart anybody on
+// the network can ask for is not the same thing as a status page.
+func TestReloadIsRefusedFromOffTheMachine(t *testing.T) {
+	for _, remote := range []string{"127.0.0.1:5051", "[::1]:5051"} {
+		if !fromLoopback(remote) {
+			t.Errorf("%s is this machine", remote)
+		}
+	}
+	for _, remote := range []string{"192.168.0.9:5051", "8.8.8.8:53", "", "garbage"} {
+		if fromLoopback(remote) {
+			t.Errorf("%s is not this machine", remote)
+		}
+	}
+}
+
+func TestReloadHandlerTakesTheRequestFromThisMachineOnly(t *testing.T) {
+	asked := make(chan string, 1)
+	h := reloadHandler(func(reason string) { asked <- reason })
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/reload", nil)
+	req.RemoteAddr = "127.0.0.1:51111"
+	h(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	select {
+	case reason := <-asked:
+		if reason == "" {
+			t.Error("a restart was requested without a reason")
+		}
+	default:
+		t.Fatal("the reload was never asked for")
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/reload", nil)
+	req.RemoteAddr = "10.0.0.4:51111"
+	h(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	select {
+	case reason := <-asked:
+		t.Fatalf("a restart was accepted from off the machine: %q", reason)
+	default:
 	}
 }

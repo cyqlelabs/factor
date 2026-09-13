@@ -31,7 +31,7 @@ func stubUpgrade(t *testing.T, running string, latest func(context.Context) (upg
 	// restart. A test that wants the signal path overlays stubGateway.
 	testHome(t)
 	prevRestart := restartGateway
-	restartGateway = func(pid int) error {
+	restartGateway = func(_ string, pid int) error {
 		t.Errorf("no gateway holds this home's pid file, yet pid %d was signalled", pid)
 		return nil
 	}
@@ -111,7 +111,7 @@ func stubGateway(t *testing.T, signalErr error) *[]int {
 	}
 	var signalled []int
 	prev := restartGateway
-	restartGateway = func(pid int) error {
+	restartGateway = func(_ string, pid int) error {
 		signalled = append(signalled, pid)
 		return signalErr
 	}

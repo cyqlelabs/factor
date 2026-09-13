@@ -28,5 +28,7 @@ func notifyReload(ctx context.Context, request func(string)) {
 }
 
 // SignalRestart asks the gateway running as pid to reload into the binary
-// currently on disk.
-func SignalRestart(pid int) error { return syscall.Kill(pid, syscall.SIGHUP) }
+// currently on disk. The signal is the shortest path and needs nothing to be
+// listening, so the control endpoint is left to the platform that has no
+// signal to send.
+func SignalRestart(_ string, pid int) error { return syscall.Kill(pid, syscall.SIGHUP) }

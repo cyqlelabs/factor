@@ -254,7 +254,15 @@ func runUpgrade(configPath string, checkOnly bool) error {
 	// upgrade is only half done until it reloads. It restarts itself once the
 	// conversation it is in the middle of has been answered.
 	if pid, alive := gateway.ReadPidFile(); alive {
-		if err := restartGateway(pid); err != nil {
+		// The daemon is reached at the address it serves on, which only the
+		// config knows. A config that will not load is not a reason to skip
+		// the restart: the defaults are where a gateway with no config of its
+		// own is listening.
+		addr := gateway.ControlAddr(config.Default().Gateway.Host, config.Default().Gateway.Port)
+		if cfg, err := config.Load(configPath); err == nil {
+			addr = gateway.ControlAddr(cfg.Gateway.Host, cfg.Gateway.Port)
+		}
+		if err := restartGateway(addr, pid); err != nil {
 			fmt.Printf("the gateway is still running %s (pid %d) — restart it to pick this up (%v)\n",
 				version.Version, pid, err)
 		} else {

@@ -728,3 +728,35 @@ func TestSaveReleaseCacheIsBestEffort(t *testing.T) {
 		t.Error("a cache was read back from a home that cannot hold one")
 	}
 }
+
+// A second upgrade must not fail on the binary the first one moved aside. The
+// gateway goes on executing that file until it reloads, and on Windows a file
+// being executed can be neither removed nor renamed over.
+func TestApplyStagesEachReplacedBinaryUnderItsOwnName(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "factor")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Stand in for the copy a previous upgrade left behind and could not
+	// remove, in the shape the swap now writes.
+	held := exe + ".old-424242"
+	if err := os.WriteFile(held, []byte("older"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if name := fmt.Sprintf("%s.old-%d", exe, os.Getpid()); name == held {
+		t.Fatal("the test's stand-in collided with this process's own name")
+	}
+	SweepStaged(exe)
+	if _, err := os.Stat(held); !os.IsNotExist(err) {
+		t.Fatalf("a staged binary nothing is running was left behind: %v", err)
+	}
+	if _, err := os.Stat(exe); err != nil {
+		t.Fatalf("the sweep took the binary itself: %v", err)
+	}
+}
+
+func TestSweepStagedSurvivesAPathThatMatchesNothing(t *testing.T) {
+	SweepStaged(filepath.Join(t.TempDir(), "absent"))
+}

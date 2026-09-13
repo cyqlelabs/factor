@@ -332,7 +332,14 @@ func Apply(ctx context.Context, rel Release, progress Progress) (string, error) 
 	// Two renames rather than one: Windows cannot rename onto a running
 	// executable, and moving the old binary aside first leaves every
 	// platform something to put back when the swap fails.
-	old := exe + ".old"
+	//
+	// The name it is moved to carries this process's pid. A fixed ".old" is
+	// the same name every upgrade wants, and on Windows the previous one is
+	// still being executed by the gateway that has not reloaded yet — so it
+	// can be neither removed nor renamed over, and the second upgrade on a
+	// machine failed with "Access is denied" on a file the user never asked
+	// about. A name of its own means the swap never waits on the last one.
+	old := fmt.Sprintf("%s.old-%d", exe, os.Getpid())
 	_ = os.Remove(old)
 	if err := os.Rename(exe, old); err != nil {
 		_ = os.Remove(staged)
@@ -343,8 +350,29 @@ func Apply(ctx context.Context, rel Release, progress Progress) (string, error) 
 		_ = os.Remove(staged)
 		return "", fmt.Errorf("replacing %s: %w", exe, err)
 	}
-	_ = os.Remove(old) // Windows holds it until this process exits
+	// Windows holds the file open until the process running it exits, so this
+	// removal is the one that usually fails; SweepStaged is what eventually
+	// collects it.
+	_ = os.Remove(old)
+	SweepStaged(exe)
 	return exe, nil
+}
+
+// SweepStaged removes the binaries earlier upgrades left beside this one.
+//
+// A replaced binary cannot be deleted on Windows while a process is still
+// executing it, which is the ordinary case: the gateway goes on running the
+// old code until it reloads. Nothing collected them, so an install gathered a
+// factor.exe.old-<pid> per upgrade for as long as it lived. The ones still
+// held refuse removal and are left for the next sweep.
+func SweepStaged(exe string) {
+	matches, err := filepath.Glob(exe + ".old-*")
+	if err != nil {
+		return
+	}
+	for _, path := range matches {
+		_ = os.Remove(path)
+	}
 }
 
 func download(ctx context.Context, rel Release, dest string, mode os.FileMode, progress Progress) error {

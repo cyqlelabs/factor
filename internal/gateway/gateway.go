@@ -104,6 +104,13 @@ func serve(configPath string) (bool, error) {
 	}
 	defer func() { _ = os.Remove(pidPath()) }()
 
+	// The binary an earlier upgrade replaced is only removable once nothing is
+	// executing it, which on Windows is not true until the gateway running it
+	// has gone — this process is the proof it has.
+	if exe, err := os.Executable(); err == nil {
+		upgrade.SweepStaged(exe)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -249,7 +256,7 @@ func serve(configPath string) (bool, error) {
 		}
 	}
 
-	healthSrv, err := startHealthServer(cfg, a, manager)
+	healthSrv, err := startHealthServer(cfg, a, manager, func(reason string) { request(reason, upgrade.Target{}) })
 	if err != nil {
 		return false, err
 	}
@@ -408,7 +415,7 @@ func announceEngine(rel upgrade.SmrtiRelease, last func() (string, string, bool)
 		rel.Version, rel.RunningVersion())})
 }
 
-func startHealthServer(cfg *config.Config, a *app.App, manager *channel.Manager) (*http.Server, error) {
+func startHealthServer(cfg *config.Config, a *app.App, manager *channel.Manager, reload func(string)) (*http.Server, error) {
 	started := time.Now()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -428,6 +435,7 @@ func startHealthServer(cfg *config.Config, a *app.App, manager *channel.Manager)
 			"channels_failed": manager.Failed(),
 		})
 	})
+	mux.Handle("POST /reload", reloadHandler(reload))
 	addr := net.JoinHostPort(cfg.Gateway.Host, strconv.Itoa(cfg.Gateway.Port))
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
