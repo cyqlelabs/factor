@@ -306,7 +306,7 @@ func (w *wiz) quietAudioHelpers(ctx context.Context) {
 	manager := tools.DetectSystemManager()
 	if manager == "" {
 		if env.GOOS == "windows" {
-			w.ui.printf("voice:     missing %s — install SoX (https://sourceforge.net/projects/sox/)\n", helperNames(missing))
+			w.ui.printf("voice:     missing %s — %s\n", helperNames(missing), voice.SoxHint)
 		} else {
 			w.ui.printf("voice:     missing %s and no package manager to install them\n", helperNames(missing))
 		}
@@ -1712,7 +1712,7 @@ func (w *wiz) installAudioHelpers(ctx context.Context, env voice.Env) error {
 	manager := tools.DetectSystemManager()
 	if manager == "" {
 		if env.GOOS == "windows" {
-			w.ui.Note("install SoX (https://sourceforge.net/projects/sox/) and put rec.exe and play.exe on PATH")
+			w.ui.Note("%s", voice.SoxHint)
 		} else {
 			w.ui.Note("no supported package manager found — install them with your system's tools")
 		}
