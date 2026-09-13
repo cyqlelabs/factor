@@ -354,3 +354,47 @@ func TestTimeoutSecsFallsBack(t *testing.T) {
 		t.Errorf("timeoutSecs = %d, want the default", got)
 	}
 }
+
+// osascript exits 1 both when the user presses Cancel and when macOS refuses
+// the Apple event, so a gateway whose Automation permission was declined told
+// the model that the user had dismissed every question, for good.
+func TestMacPermissionDenialIsNotADismissal(t *testing.T) {
+	for _, stderr := range []string{
+		"execution error: Not authorized to send Apple events to System Events. (-1743)",
+		"osascript is not allowed assistive access. (-25211)",
+		"execution error: An error of type -25211 has occurred.",
+	} {
+		if !neverOpened(stderr) {
+			t.Errorf("a refused dialog read as an answer: %s", stderr)
+		}
+	}
+	// The user actually saying no still says no.
+	if neverOpened("") || neverOpened("User canceled.") {
+		t.Error("a cancelled dialog was read as a broken one")
+	}
+}
+
+// A dialog nobody answered is silence, not a refusal. AppleScript reports that
+// in its result rather than in its exit code.
+func TestAppleScriptTimeoutIsSilenceNotADismissal(t *testing.T) {
+	script := appleScript(Question{Prompt: "Which one?"})
+	if !strings.Contains(script, "giving up after") {
+		t.Fatalf("the dialog waits forever:\n%s", script)
+	}
+	if !strings.Contains(script, appleTimedOut) {
+		t.Fatalf("a timeout is indistinguishable from a dismissal:\n%s", script)
+	}
+
+	d := &DialogAsker{env: AskEnv{
+		GOOS:    "darwin",
+		Has:     func(string) bool { return true },
+		Display: func() bool { return true },
+		Run: func(context.Context, ...string) (string, int, error) {
+			return appleTimedOut + "\n", 0, nil
+		},
+	}}
+	_, err := d.Ask(context.Background(), Question{Prompt: "Which one?"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want a timeout", err)
+	}
+}

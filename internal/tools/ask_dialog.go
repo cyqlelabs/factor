@@ -70,10 +70,31 @@ func askRunner(ctx context.Context, argv ...string) (string, int, error) {
 }
 
 // neverOpened spots the stderr line that means the dialog never reached a
-// screen: the display named in the environment is not there any more.
+// screen: the display named in the environment is not there any more, or
+// macOS refused this process the right to put one there.
+//
+// The macOS half matters as much as the X11 half and is easier to miss.
+// osascript exits 1 both when the user presses Cancel and when TCC denies the
+// Apple event, so a gateway whose Automation or Accessibility permission was
+// declined — the prompt appears the first time a launch agent talks to System
+// Events, and nobody may be there to answer it — reported that the user had
+// dismissed every question, for the life of the install. The text is the only
+// thing that tells the two apart.
 func neverOpened(stderr string) bool {
 	s := strings.ToLower(stderr)
-	return strings.Contains(s, "open display") || strings.Contains(s, "unable to init server")
+	for _, sign := range []string{
+		"open display", "unable to init server",
+		"not authorized to send apple events", // TCC: Automation, -1743
+		"-1743",
+		"not allowed assistive access", // TCC: Accessibility, -25211
+		"-25211",
+		"application isn\u2019t running", // System Events never started
+	} {
+		if strings.Contains(s, sign) {
+			return true
+		}
+	}
+	return false
 }
 
 // DialogAsker puts the question on the machine's own screen, in whatever
@@ -92,7 +113,8 @@ func (d *DialogAsker) Ask(ctx context.Context, q Question) (Answer, error) {
 	}
 	switch d.env.GOOS {
 	case "darwin":
-		return d.run(ctx, q, []string{"osascript", "-e", appleScript(q)}, outcome{})
+		return d.run(ctx, q, []string{"osascript", "-e", appleScript(q)},
+			outcome{timedOutSays: appleTimedOut})
 	case "windows":
 		shell := d.first("pwsh", "powershell")
 		if shell == "" {
@@ -126,9 +148,12 @@ func (d *DialogAsker) first(bins ...string) string {
 // outcome is how one dialog program spells its exit codes, and what it adds
 // to the answer it prints.
 type outcome struct {
-	timedOut int    // gave up on its own; 0 when it cannot
-	broken   int    // the program failed, which is not the user saying no
-	strip    string // row separator the program appends (yad's "|")
+	timedOut int // gave up on its own; 0 when it cannot
+	broken   int // the program failed, which is not the user saying no
+	// timedOutSays is what the program prints when it gave up, for the one
+	// that reports a timeout in its output rather than in its exit code.
+	timedOutSays string
+	strip        string // row separator the program appends (yad's "|")
 }
 
 // run executes one dialog and reads the result from its exit code: zero is an
@@ -154,6 +179,9 @@ func (d *DialogAsker) run(ctx context.Context, q Question, argv []string, codes 
 	text := strings.TrimSpace(out)
 	if codes.strip != "" {
 		text = strings.TrimSpace(strings.TrimSuffix(text, codes.strip))
+	}
+	if codes.timedOutSays != "" && text == codes.timedOutSays {
+		return Answer{}, context.DeadlineExceeded
 	}
 	if text == "" {
 		return Answer{Dismissed: true}, nil
@@ -196,13 +224,20 @@ func yadArgs(q Question) []string {
 // appleScript asks through System Events, which owns a window server session
 // even when Factor itself has no UI. Giving up after the timeout leaves no
 // dialog stranded on the screen.
+// appleTimedOut is what the AppleScript prints when the dialog gave up. It is
+// a string no answer could be.
+const appleTimedOut = "___factor_gave_up___"
+
 func appleScript(q Question) string {
 	var b strings.Builder
 	b.WriteString("tell application \"System Events\"\n")
 	if len(q.Options) == 0 {
 		fmt.Fprintf(&b, "set r to display dialog %s default answer \"\" with title \"Factor\" giving up after %d\n",
 			appleQuote(q.Prompt), timeoutSecs(q))
-		b.WriteString("if gave up of r then return \"\"\n")
+		// A dialog nobody answered is silence, not a refusal, and the two are
+		// acted on differently. AppleScript reports it in the result rather
+		// than in the exit code, so it is carried out in the text.
+		b.WriteString("if gave up of r then return " + appleQuote(appleTimedOut) + "\n")
 		b.WriteString("return text returned of r\n")
 		b.WriteString("end tell")
 		return b.String()
