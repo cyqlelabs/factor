@@ -202,3 +202,54 @@ func TestInstalledVersionIgnoresOutputThatIsNotAVersion(t *testing.T) {
 		t.Fatalf("version = %q", got)
 	}
 }
+
+// On Windows uv and pipx leave a trampoline .exe in a shared bin directory
+// rather than a link into the environment they built, so the executable's path
+// says nothing and the layout on disk has to answer instead. Reading it as pip
+// installs a second smrti and lets PATH decide which one answers.
+func TestUpgradeMethodReadsTheWindowsToolLayout(t *testing.T) {
+	oldGoos := goos
+	goos = "windows"
+	t.Cleanup(func() { goos = oldGoos })
+
+	home := t.TempDir()
+	exe := filepath.Join(home, "bin", "smrti.exe") // a trampoline: no layout in the path
+	if got := UpgradeMethod(exe, home); got != MethodPip {
+		t.Fatalf("with no tool environment, UpgradeMethod = %q, want %q", got, MethodPip)
+	}
+
+	uv := t.TempDir()
+	t.Setenv("UV_TOOL_DIR", uv)
+	if err := os.MkdirAll(filepath.Join(uv, PackageName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := UpgradeMethod(exe, home); got != MethodUv {
+		t.Fatalf("UpgradeMethod = %q, want %q", got, MethodUv)
+	}
+
+	t.Setenv("UV_TOOL_DIR", t.TempDir())
+	pipx := t.TempDir()
+	t.Setenv("PIPX_HOME", pipx)
+	if err := os.MkdirAll(filepath.Join(pipx, "venvs", PackageName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := UpgradeMethod(exe, home); got != MethodPipx {
+		t.Fatalf("UpgradeMethod = %q, want %q", got, MethodPipx)
+	}
+}
+
+// The same layout on a unix box is read from the path, so the directory probe
+// must not fire there: a pipx smrti sitting beside a pip one would relabel it.
+func TestUpgradeMethodIgnoresToolDirsOffWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("this is the non-Windows rule")
+	}
+	pipx := t.TempDir()
+	t.Setenv("PIPX_HOME", pipx)
+	if err := os.MkdirAll(filepath.Join(pipx, "venvs", PackageName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := UpgradeMethod("/usr/local/bin/smrti", t.TempDir()); got != MethodPip {
+		t.Fatalf("UpgradeMethod = %q, want %q", got, MethodPip)
+	}
+}

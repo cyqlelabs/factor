@@ -50,8 +50,67 @@ func UpgradeMethod(exe, home string) string {
 		return MethodUv
 	case strings.Contains(path, "/pipx/venvs/"):
 		return MethodPipx
+	case goos == "windows" && toolVenvThere(uvToolRoots()):
+		return MethodUv
+	case goos == "windows" && toolVenvThere(pipxVenvRoots()):
+		return MethodPipx
 	default:
 		return MethodPip
+	}
+}
+
+// toolVenvThere reports whether one of these roots holds an environment for
+// smrti. It is what reads the layout on Windows, where neither tool installer
+// leaves a path to follow: uv and pipx both put a trampoline .exe in a shared
+// bin directory instead of a symlink into the environment they made, so the
+// executable says nothing about who made it and the default — pip — would
+// install a second smrti beside the first and let PATH decide which answers.
+// goos is a seam: the Windows layouts below have to be exercised on the
+// machine the tests run on.
+var goos = runtime.GOOS
+
+func toolVenvThere(roots []string) bool {
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(root, PackageName)); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// uvToolRoots are the directories uv keeps tool environments in.
+func uvToolRoots() []string {
+	if dir := os.Getenv("UV_TOOL_DIR"); dir != "" {
+		return []string{dir}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	if goos == "windows" {
+		return []string{filepath.Join(os.Getenv("APPDATA"), "uv", "tools")}
+	}
+	return []string{filepath.Join(home, ".local", "share", "uv", "tools")}
+}
+
+// pipxVenvRoots are the directories pipx keeps its environments in.
+func pipxVenvRoots() []string {
+	if dir := os.Getenv("PIPX_HOME"); dir != "" {
+		return []string{filepath.Join(dir, "venvs")}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	if goos == "windows" {
+		return []string{filepath.Join(os.Getenv("LOCALAPPDATA"), "pipx", "pipx", "venvs")}
+	}
+	return []string{
+		filepath.Join(home, ".local", "share", "pipx", "venvs"),
+		filepath.Join(home, ".local", "pipx", "venvs"),
 	}
 }
 
