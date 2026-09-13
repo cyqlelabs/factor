@@ -231,13 +231,80 @@ type installStrategy struct {
 	retry func(home, output string) [][]string
 }
 
+// probeTimeout bounds one interpreter probe. It is generous because the first
+// run of a freshly installed Python pays for its own bytecode cache.
+const probeTimeout = 20 * time.Second
+
+// pythonNames are the interpreter names to try on PATH, best first. On
+// Windows any of them can be an App Execution Alias — a stub that resolves,
+// exits 9009 and advertises the Microsoft Store — so `py`, the launcher
+// python.org drops into C:\\Windows, is appended as the one name that never is
+// one, and it picks the newest Python 3 on the machine.
+func pythonNames() []string {
+	names := []string{"python3", "python"}
+	if goos == "windows" {
+		names = append(names, "py")
+	}
+	return names
+}
+
+// pythonDirs are the directories a real Python is installed into but a
+// desktop session's PATH frequently misses — Homebrew above all, which on a
+// Mac without the Xcode Command Line Tools holds the only usable interpreter
+// on the machine. Windows has no equivalent: `py` covers the python.org
+// install wherever it landed.
+var pythonDirs = func() []string {
+	if goos == "windows" {
+		return nil
+	}
+	dirs := []string{"/opt/homebrew/bin", "/usr/local/bin"}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
+	}
+	return dirs
+}
+
+// pythonBin returns an interpreter that actually runs, preferring one a
+// package manager installed over the system's own.
+//
+// Looking a name up on PATH is not enough on either desktop platform, and the
+// name that resolves first is the one that fails: Windows answers python3 and
+// python with WindowsApps stubs that exit 9009 with no Python behind them,
+// and macOS without the Command Line Tools answers /usr/bin/python3 with a
+// shim that opens the "install developer tools" dialog and exits 1. Both are
+// found ahead of a working interpreter and both take the install down with
+// them, so every candidate is asked to import a module before it is believed.
 func pythonBin() string {
-	for _, c := range []string{"python3", "python"} {
-		if _, err := lookPath(c); err == nil {
-			return c
+	for _, dir := range pythonDirs() {
+		for _, name := range pythonNames() {
+			path := filepath.Join(dir, name)
+			if info, err := os.Stat(path); err != nil || info.IsDir() {
+				continue
+			}
+			if pythonRuns(path) {
+				return path
+			}
+		}
+	}
+	for _, name := range pythonNames() {
+		path, err := lookPath(name)
+		if err != nil {
+			continue
+		}
+		if pythonRuns(path) {
+			return name
 		}
 	}
 	return ""
+}
+
+// pythonRuns reports whether a candidate is an interpreter rather than a stub
+// that resolves and then refuses to run.
+func pythonRuns(path string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	_, err := runCmd(ctx, []string{path, "-c", "import sys"})
+	return err == nil
 }
 
 func strategies() []installStrategy {
@@ -338,9 +405,20 @@ func venvInstall(home string) []string {
 	return append([]string{venvPip, "install", "--upgrade"}, pinned(PackageName)...)
 }
 
+// pipCommand is the pip on this machine. A bare pip3/pip is only taken when
+// it runs: /usr/bin/pip3 on a Mac without the Xcode Command Line Tools is the
+// same shim /usr/bin/python3 is, and answering with it hands every install
+// strategy a command that opens a dialog and exits 1.
 func pipCommand() []string {
 	for _, c := range []string{"pip3", "pip"} {
-		if _, err := lookPath(c); err == nil {
+		path, err := lookPath(c)
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		_, err = runCmd(ctx, []string{path, "--version"})
+		cancel()
+		if err == nil {
 			return []string{c}
 		}
 	}

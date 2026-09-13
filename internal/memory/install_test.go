@@ -505,3 +505,78 @@ func pipName() string {
 	}
 	return "pip"
 }
+
+// A stub interpreter is the first thing PATH answers with on both desktop
+// platforms — WindowsApps on Windows, the Xcode shim on macOS — and taking it
+// at its word is how the install fails on a machine that has a real Python.
+func TestPythonBinRejectsAnInterpreterThatWillNotRun(t *testing.T) {
+	f := newFakeEnv(t, "python3", "python")
+	f.fail("/usr/bin/python3 -c import sys", "Python was not found; run without arguments to install from the Microsoft Store")
+
+	if got := pythonBin(); got != "python" {
+		t.Fatalf("pythonBin() = %q, want the candidate that runs", got)
+	}
+	if !strings.Contains(strings.Join(f.log, " | "), "/usr/bin/python3 -c import sys") {
+		t.Errorf("the stub was never probed: %v", f.log)
+	}
+}
+
+func TestPythonBinIsEmptyWhenEveryCandidateIsAStub(t *testing.T) {
+	f := newFakeEnv(t, "python3", "python")
+	for _, c := range []string{"python3", "python"} {
+		f.fail("/usr/bin/"+c+" -c import sys", "exit status 9009")
+	}
+	if got := pythonBin(); got != "" {
+		t.Fatalf("pythonBin() = %q, want none", got)
+	}
+}
+
+// Homebrew is off a launchd agent's PATH, so a Mac's only working interpreter
+// is found by looking where it lives rather than by asking PATH.
+func TestPythonBinPrefersAnInterpreterOffPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pythonDirs is empty on Windows: py covers the install")
+	}
+	dir := t.TempDir()
+	brew := filepath.Join(dir, "python3")
+	if err := os.WriteFile(brew, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeEnv(t, "python3")
+	oldDirs := pythonDirs
+	pythonDirs = func() []string { return []string{dir} }
+	t.Cleanup(func() { pythonDirs = oldDirs })
+
+	if got := pythonBin(); got != brew {
+		t.Fatalf("pythonBin() = %q, want %q", got, brew)
+	}
+	if strings.Contains(strings.Join(f.log, " | "), "/usr/bin/python3") {
+		t.Errorf("PATH was consulted before the directory that has one: %v", f.log)
+	}
+}
+
+// The py launcher is the one name on Windows that is never an alias stub.
+func TestPythonNamesEndWithTheWindowsLauncher(t *testing.T) {
+	old := goos
+	goos = "windows"
+	t.Cleanup(func() { goos = old })
+	names := pythonNames()
+	if len(names) == 0 || names[len(names)-1] != "py" {
+		t.Fatalf("pythonNames() = %v, want py last", names)
+	}
+	if len(pythonDirs()) != 0 {
+		t.Errorf("pythonDirs() = %v, want none on Windows", pythonDirs())
+	}
+}
+
+func TestPipCommandRejectsAStub(t *testing.T) {
+	f := newFakeEnv(t, "pip3", "pip")
+	f.fail("/usr/bin/pip3 --version", "exit status 1")
+	got := pipCommand()
+	if len(got) != 1 || got[0] != "pip" {
+		t.Fatalf("pipCommand() = %v, want the pip that runs", got)
+	}
+	if !strings.Contains(strings.Join(f.log, " | "), "/usr/bin/pip3 --version") {
+		t.Errorf("the stub was never probed: %v", f.log)
+	}
+}
