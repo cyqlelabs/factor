@@ -212,6 +212,14 @@ func TestUpgradeMethodReadsTheWindowsToolLayout(t *testing.T) {
 	goos = "windows"
 	t.Cleanup(func() { goos = oldGoos })
 
+	// Hermetic: a CI runner sets PIPX_HOME for its own pipx, and reading the
+	// machine's would make this test's answer depend on what is installed on
+	// it.
+	t.Setenv("UV_TOOL_DIR", t.TempDir())
+	t.Setenv("PIPX_HOME", t.TempDir())
+	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+
 	home := t.TempDir()
 	exe := filepath.Join(home, "bin", "smrti.exe") // a trampoline: no layout in the path
 	if got := UpgradeMethod(exe, home); got != MethodPip {
@@ -246,10 +254,34 @@ func TestUpgradeMethodIgnoresToolDirsOffWindows(t *testing.T) {
 	}
 	pipx := t.TempDir()
 	t.Setenv("PIPX_HOME", pipx)
+	t.Setenv("UV_TOOL_DIR", t.TempDir())
 	if err := os.MkdirAll(filepath.Join(pipx, "venvs", PackageName), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if got := UpgradeMethod("/usr/local/bin/smrti", t.TempDir()); got != MethodPip {
 		t.Fatalf("UpgradeMethod = %q, want %q", got, MethodPip)
+	}
+}
+
+// An unset APPDATA must not turn into a relative path: joined onto nothing it
+// would be resolved against this process's working directory and could answer
+// for a directory belonging to something else.
+func TestToolRootsIgnoreAnUnsetBase(t *testing.T) {
+	oldGoos := goos
+	goos = "windows"
+	t.Cleanup(func() { goos = oldGoos })
+	t.Setenv("UV_TOOL_DIR", "")
+	t.Setenv("PIPX_HOME", "")
+	t.Setenv("APPDATA", "")
+	t.Setenv("LOCALAPPDATA", "")
+
+	if got := uvToolRoots(); len(got) != 0 {
+		t.Errorf("uvToolRoots() = %v, want none", got)
+	}
+	if got := pipxVenvRoots(); len(got) != 0 {
+		t.Errorf("pipxVenvRoots() = %v, want none", got)
+	}
+	if toolVenvThere(nil) || toolVenvThere([]string{""}) {
+		t.Error("a root that names nothing cannot hold an environment")
 	}
 }

@@ -86,12 +86,12 @@ func uvToolRoots() []string {
 	if dir := os.Getenv("UV_TOOL_DIR"); dir != "" {
 		return []string{dir}
 	}
+	if goos == "windows" {
+		return under(os.Getenv("APPDATA"), "uv", "tools")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
-	}
-	if goos == "windows" {
-		return []string{filepath.Join(os.Getenv("APPDATA"), "uv", "tools")}
 	}
 	return []string{filepath.Join(home, ".local", "share", "uv", "tools")}
 }
@@ -99,19 +99,30 @@ func uvToolRoots() []string {
 // pipxVenvRoots are the directories pipx keeps its environments in.
 func pipxVenvRoots() []string {
 	if dir := os.Getenv("PIPX_HOME"); dir != "" {
-		return []string{filepath.Join(dir, "venvs")}
+		return under(dir, "venvs")
+	}
+	if goos == "windows" {
+		return under(os.Getenv("LOCALAPPDATA"), "pipx", "pipx", "venvs")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
-	if goos == "windows" {
-		return []string{filepath.Join(os.Getenv("LOCALAPPDATA"), "pipx", "pipx", "venvs")}
-	}
 	return []string{
 		filepath.Join(home, ".local", "share", "pipx", "venvs"),
 		filepath.Join(home, ".local", "pipx", "venvs"),
 	}
+}
+
+// under joins a root that may not be set. An empty base is no directory at
+// all: joining onto it yields a relative path, which would be resolved against
+// whatever this process happens to have as its working directory and could
+// answer for a directory belonging to something else entirely.
+func under(base string, parts ...string) []string {
+	if base == "" {
+		return nil
+	}
+	return []string{filepath.Join(append([]string{base}, parts...)...)}
 }
 
 // Upgrade re-runs the installer behind exe so it installs the newest published
