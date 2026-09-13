@@ -12,9 +12,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/childproc"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/provider"
 )
@@ -429,17 +429,14 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 			go func() { <-waitCh }() // reap if it dies while we're still alive
 			return ctx.Err()
 		}
-		_ = cmd.Process.Signal(syscall.SIGTERM)
 		defer clearEnginePid(cmd.Process.Pid)
-		select {
-		case err := <-waitCh:
-			return err
-		case <-time.After(8 * time.Second):
-			_ = cmd.Process.Kill()
-			return <-waitCh
-		}
+		return childproc.StopAndWait(cmd.Process, waitCh, sidecarGrace)
 	}
 }
+
+// sidecarGrace is how long a sidecar asked to stop is given to finish before
+// it is killed. It is only ever spent where the request could be delivered.
+const sidecarGrace = 8 * time.Second
 
 func sleepCtx(ctx context.Context, d time.Duration) {
 	t := time.NewTimer(d)

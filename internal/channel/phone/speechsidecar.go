@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/cyqlelabs/factor/internal/childproc"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -286,7 +286,7 @@ func (s *speechSupervisor) spawnAndWait(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, command, s.scriptPath)
 	cmd.Env = append(speechEnv(), "FACTOR_SPEECH_CONFIG="+string(blob))
 	cmd.WaitDelay = 5 * time.Second
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.Cancel = func() error { childproc.Stop(cmd.Process); return nil }
 
 	logDir := filepath.Join(s.home, "logs")
 	if err := os.MkdirAll(logDir, 0o755); err == nil {
@@ -319,16 +319,9 @@ func (s *speechSupervisor) spawnAndWait(ctx context.Context) error {
 		s.healthy.Store(false)
 		return err
 	case <-ctx.Done():
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		select {
-		case err := <-waitCh:
-			s.healthy.Store(false)
-			return err
-		case <-time.After(8 * time.Second):
-			_ = cmd.Process.Kill()
-			s.healthy.Store(false)
-			return <-waitCh
-		}
+		err := childproc.StopAndWait(cmd.Process, waitCh, sidecarGrace)
+		s.healthy.Store(false)
+		return err
 	}
 }
 

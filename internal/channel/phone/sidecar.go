@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/cyqlelabs/factor/internal/childproc"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,7 +14,6 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -198,7 +198,7 @@ func (s *supervisor) spawnAndWait(ctx context.Context) error {
 	// the machine could read them out of /proc.
 	cmd.Env = append(os.Environ(), "FACTOR_VOICE_CONFIG="+string(blob))
 	cmd.WaitDelay = 5 * time.Second
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.Cancel = func() error { childproc.Stop(cmd.Process); return nil }
 
 	logDir := filepath.Join(s.home, "logs")
 	if err := os.MkdirAll(logDir, 0o755); err == nil {
@@ -229,18 +229,15 @@ func (s *supervisor) spawnAndWait(ctx context.Context) error {
 	case <-ctx.Done():
 		// A live phone call must not outlive the agent: unlike smrti there is
 		// no keep-alive here, the shell always goes down with us.
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		select {
-		case err := <-waitCh:
-			s.healthy.Store(false)
-			return err
-		case <-time.After(8 * time.Second):
-			_ = cmd.Process.Kill()
-			s.healthy.Store(false)
-			return <-waitCh
-		}
+		err := childproc.StopAndWait(cmd.Process, waitCh, sidecarGrace)
+		s.healthy.Store(false)
+		return err
 	}
 }
+
+// sidecarGrace is how long a sidecar asked to stop is given to finish before
+// it is killed. It is only ever spent where the request could be delivered.
+const sidecarGrace = 8 * time.Second
 
 // pollUntilHealthy tracks the child's health for as long as it lives. It keeps
 // probing past the first success so a transient failure does not stick.
