@@ -349,7 +349,7 @@ func TestPkgInstallResolveErrors(t *testing.T) {
 		lookPath func(string) (string, error)
 		want     string
 	}{
-		{"unsupported manager", "brew", alwaysFound, `unsupported manager "brew"`},
+		{"unsupported manager", "macports", alwaysFound, `unsupported manager "macports"`},
 		{"named manager not installed", "npm", alwaysMissing, "npm is not installed on this system"},
 		{"probe name differs from manager name", "apt", alwaysMissing, "apt-get is not installed on this system"},
 		{"auto finds nothing", "auto", alwaysMissing, "no supported system package manager found"},
@@ -777,5 +777,48 @@ func TestPkgInstallFindsAManagerOffPath(t *testing.T) {
 	}
 	if len(argv) == 0 || argv[0] != bin {
 		t.Errorf("argv = %v, want the manager run from %s", argv, bin)
+	}
+}
+
+// Homebrew is the only package manager a Mac has. Without it every missing
+// helper was reported with "no supported package manager found" on the one
+// platform where the thing to install has a one-word name.
+func TestPkgInstallUsesHomebrew(t *testing.T) {
+	var ran []string
+	tool := &PkgInstallTool{
+		lookPath: func(bin string) (string, error) {
+			if bin == "brew" {
+				return "/opt/homebrew/bin/brew", nil
+			}
+			return "", errors.New("not found")
+		},
+		euid:   func() int { return 501 },
+		runner: func(_ context.Context, argv []string) (string, error) { ran = argv; return "", nil },
+	}
+	res := tool.Execute(context.Background(), map[string]any{"packages": []any{"cliclick", "sox"}})
+	if res.IsError {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(ran) == 0 || ran[0] == "sudo" {
+		t.Fatalf("brew ran as %v; it refuses to run under sudo", ran)
+	}
+	if strings.Join(ran, " ") != "/opt/homebrew/bin/brew install cliclick sox" {
+		t.Errorf("ran %v", ran)
+	}
+}
+
+// A distribution's own manager installs desktop helpers on a Linux box that
+// also has Homebrew.
+func TestAutoPrefersTheDistributionManagerOverHomebrew(t *testing.T) {
+	if got := autoOrder[len(autoOrder)-1]; got != "brew" {
+		t.Fatalf("autoOrder ends with %q, want brew last", got)
+	}
+	for _, name := range autoOrder {
+		if _, ok := managerSpecs[name]; !ok {
+			t.Errorf("autoOrder names %q, which has no spec", name)
+		}
+	}
+	if managerSpecs["brew"].system {
+		t.Error("brew is not a system manager: it refuses to run as root")
 	}
 }

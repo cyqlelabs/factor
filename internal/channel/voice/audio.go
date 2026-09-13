@@ -199,6 +199,15 @@ func captureCommand(e Env, device string) ([]string, error) {
 		}
 		return argv, nil
 	case e.has("rec"):
+		// A named device needs the full sox spelling with its coreaudio
+		// driver: rec takes the default one and nothing else, because SoX is
+		// pointed at a device through AUDIODEV and the Env seam runs a bare
+		// argv with no environment to put it in. Without this the device the
+		// config names was accepted and then quietly ignored.
+		if device != "" && e.has("sox") {
+			return append([]string{"sox", "-q", "-t", "coreaudio", device},
+				"-t", "raw", "-b", "16", "-e", "signed-integer", "-r", "16000", "-c", "1", "-"), nil
+		}
 		return []string{"rec", "-q", "-t", "raw", "-b", "16", "-e", "signed-integer",
 			"-r", "16000", "-c", "1", "-"}, nil
 	}
@@ -231,6 +240,10 @@ func playbackCommand(e Env, device string) ([]string, error) {
 		}
 		return argv, nil
 	case e.has("play"):
+		if device != "" && e.has("sox") {
+			return append([]string{"sox", "-q", "-t", "raw", "-b", "16", "-e", "signed-integer",
+				"-r", "24000", "-c", "1", "-"}, "-t", "coreaudio", device), nil
+		}
 		return []string{"play", "-q", "-t", "raw", "-b", "16", "-e", "signed-integer",
 			"-r", "24000", "-c", "1", "-"}, nil
 	case e.has("afplay"):
@@ -248,7 +261,11 @@ func playbackCommand(e Env, device string) ([]string, error) {
 // device needs the full `sox` spelling with its waveaudio driver, because the
 // Env seam runs a bare argv — AUDIODEV, how SoX is usually pointed at a
 // device, would need an environment it has no way to pass.
-const soxHint = "install SoX (winget install ChrisBagwell.SoX) and put sox.exe on PATH"
+// SoxHint is the one sentence that tells a Windows user what to install. It
+// is exported so the wizard says the same thing: it used to name rec.exe and
+// play.exe, which SoX for Windows does not ship, and point at a download page
+// instead of the package id.
+const SoxHint = "install SoX (winget install ChrisBagwell.SoX) and put sox.exe on PATH"
 
 // The device is always named, and "default" is a name like any other. Two
 // things forced that. SoX for Windows ships sox.exe alone - rec and play are
@@ -260,7 +277,7 @@ const soxHint = "install SoX (winget install ChrisBagwell.SoX) and put sox.exe o
 func windowsCapture(e Env, device string) ([]string, error) {
 	raw := []string{"-t", "raw", "-b", "16", "-e", "signed-integer", "-r", "16000", "-c", "1", "-"}
 	if !e.has("sox") {
-		return nil, fmt.Errorf("no microphone helper is installed — %s", soxHint)
+		return nil, fmt.Errorf("no microphone helper is installed — %s", SoxHint)
 	}
 	if device == "" {
 		device = "default"
@@ -288,7 +305,7 @@ const soxPlaybackPadSecs = "0.4"
 func windowsPlayback(e Env, device string) ([]string, error) {
 	raw := []string{"-t", "raw", "-b", "16", "-e", "signed-integer", "-r", "24000", "-c", "1", "-"}
 	if !e.has("sox") {
-		return nil, fmt.Errorf("no speaker helper is installed — %s", soxHint)
+		return nil, fmt.Errorf("no speaker helper is installed — %s", SoxHint)
 	}
 	if device == "" {
 		device = "default"
@@ -338,14 +355,27 @@ var (
 		Packages: map[string]string{"winget": "ChrisBagwell.SoX"}}
 	windowsPlaybackHelper = desktop.Helper{Bin: "sox", Purpose: "speaker playback (SoX)",
 		Packages: map[string]string{"winget": "ChrisBagwell.SoX"}}
+
+	// macOS has no PulseAudio either. Reporting parec and paplay there named
+	// two programs that cannot be installed on the machine, against package
+	// managers it does not run — and since afplay ships with the system, the
+	// report claimed the speakers were fine and only the microphone was
+	// missing. SoX covers both directions and Homebrew installs it.
+	macCaptureHelper = desktop.Helper{Bin: "rec", Purpose: "microphone capture (SoX)",
+		Packages: map[string]string{"brew": "sox"}}
+	macPlaybackHelper = desktop.Helper{Bin: "play", Purpose: "speaker playback (SoX)",
+		Packages: map[string]string{"brew": "sox"}}
 )
 
 // MissingHelpers lists what the channel needs and cannot find; empty means
 // both directions of audio have a helper.
 func MissingHelpers(e Env) []desktop.Helper {
 	capture, playback := captureHelper, playbackHelper
-	if e.GOOS == "windows" {
+	switch e.GOOS {
+	case "windows":
 		capture, playback = windowsCaptureHelper, windowsPlaybackHelper
+	case "darwin":
+		capture, playback = macCaptureHelper, macPlaybackHelper
 	}
 	var missing []desktop.Helper
 	if _, err := captureCommand(e, ""); err != nil {

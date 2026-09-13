@@ -44,17 +44,31 @@ var managerSpecs = map[string]managerSpec{
 	"winget": {probe: "winget", install: []string{"winget", "install", "--exact", "--silent",
 		"--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"},
 		oneAtATime: true},
+	// macOS. Homebrew is the only package manager a Mac has, and without it
+	// neither the wizard nor this tool could install anything there at all:
+	// every missing helper was reported with "no supported package manager
+	// found", on the one platform where the thing to install has a one-word
+	// name and a working installer. It is deliberately not a system manager —
+	// brew refuses to run under sudo and says so.
+	"brew": {probe: "brew", install: []string{"brew", "install"}},
 }
 
 // autoOrder is the probe order for system managers in auto mode.
-var autoOrder = []string{"apt", "apk", "dnf", "pacman", "xbps", "pkg", "winget"}
+// brew is last of the system managers: Homebrew runs on Linux too, and on a
+// box that has both, the distribution's own manager is the one that installs
+// desktop helpers.
+var autoOrder = []string{"apt", "apk", "dnf", "pacman", "xbps", "pkg", "winget", "brew"}
 
 // sbinDirs are searched after PATH for a manager's binary. A gateway started
 // from cron, an rc script or a login entry inherits the caller's minimal
 // PATH, which leaves out the directories a root-only manager lives in:
 // Puppy's pkg is in /usr/sbin, and pkg_install on a box with a working
 // manager reported that it had none.
-var sbinDirs = []string{"/usr/local/sbin", "/usr/sbin", "/sbin"}
+var sbinDirs = []string{"/usr/local/sbin", "/usr/sbin", "/sbin",
+	// Homebrew, for the same reason: a launchd agent is handed a PATH with
+	// neither of these on it, so an install that predates the entry carrying
+	// its own would report a Mac with no package manager.
+	"/opt/homebrew/bin", "/usr/local/bin"}
 
 // lookSystem finds a binary on PATH or, failing that, in sbinDirs, and
 // returns where it was found so the manager runs from there: the install
@@ -111,14 +125,14 @@ func NewPkgInstallTool() *PkgInstallTool {
 
 func (t *PkgInstallTool) Name() string { return "pkg_install" }
 func (t *PkgInstallTool) Description() string {
-	return "Install packages. manager=auto detects the system package manager (apt/apk/dnf/pacman/xbps/pkg); or pick pip/pipx/uv/npm for language packages. Confirm with the user before installing anything they didn't ask for."
+	return "Install packages. manager=auto detects the system package manager (apt/apk/dnf/pacman/xbps/pkg/winget/brew); or pick pip/pipx/uv/npm for language packages. Confirm with the user before installing anything they didn't ask for."
 }
 func (t *PkgInstallTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"packages": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Package names as the chosen manager spells them (e.g. python3-pip for apt, pillow for pip)"},
-			"manager":  map[string]any{"type": "string", "enum": []any{"auto", "apt", "apk", "dnf", "pacman", "xbps", "pkg", "pip", "pipx", "uv", "npm"}, "description": "Which manager to use (default auto, which picks the system one). Choose pip/pipx/uv/npm explicitly for language packages"},
+			"manager":  map[string]any{"type": "string", "enum": []any{"auto", "apt", "apk", "dnf", "pacman", "xbps", "pkg", "winget", "brew", "pip", "pipx", "uv", "npm"}, "description": "Which manager to use (default auto, which picks the system one). Choose pip/pipx/uv/npm explicitly for language packages"},
 		},
 		"required": []any{"packages"},
 	}

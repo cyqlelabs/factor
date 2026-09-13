@@ -217,9 +217,33 @@ func plistText(exe, configPath string) string {
 	<string>%s</string>
 	<key>StandardErrorPath</key>
 	<string>%s</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>%s</string>
+	</dict>
 </dict>
 </plist>
-`, launchLabel, argv.String(), log, log)
+`, launchLabel, argv.String(), log, log, xmlEscape(launchdPath()))
+}
+
+// launchdPath is the PATH the agent runs with.
+//
+// launchd hands a user agent /usr/bin:/bin:/usr/sbin:/sbin and nothing else,
+// which is the one list a Mac keeps none of its software in: cliclick, sox,
+// node, uv, pipx and Homebrew's own Python all live under /opt/homebrew/bin or
+// /usr/local/bin. Every one of them is found when the user runs Factor from a
+// terminal and missing when the same Factor starts at login, which reads as a
+// machine that has nothing installed rather than as a login entry that cannot
+// see it. The directories are named rather than inherited so the entry does
+// not carry whatever the wizard's shell happened to have.
+func launchdPath() string {
+	dirs := []string{"/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
+	}
+	dirs = append(dirs, "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+	return strings.Join(dirs, ":")
 }
 
 func uninstallLaunchd(ctx context.Context, env desktop.Env) error {

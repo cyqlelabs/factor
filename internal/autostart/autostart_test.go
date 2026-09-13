@@ -2,6 +2,7 @@ package autostart
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"os"
 	"path/filepath"
@@ -267,5 +268,39 @@ func TestConfigDirFallsBackToTheUsersHome(t *testing.T) {
 	// An Env that cannot read the environment at all must still answer.
 	if got := configDir(desktop.Env{}); got != want {
 		t.Errorf("configDir without a Getenv = %q, want %q", got, want)
+	}
+}
+
+// launchd hands an agent /usr/bin:/bin:/usr/sbin:/sbin, which is the one list
+// a Mac keeps none of its software in: everything Factor shells out to is
+// under Homebrew. Without a PATH of its own the login entry reads as a machine
+// with nothing installed while the user's terminal finds it all.
+func TestLaunchdAgentCanSeeHomebrew(t *testing.T) {
+	plist := plistText("/usr/local/bin/factor", "/home/u/.factor/config.json")
+	if !strings.Contains(plist, "<key>EnvironmentVariables</key>") {
+		t.Fatalf("the agent inherits launchd's bare environment:\n%s", plist)
+	}
+	for _, dir := range []string{"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"} {
+		if !strings.Contains(plist, dir) {
+			t.Errorf("PATH is missing %s:\n%s", dir, plist)
+		}
+	}
+	path := launchdPath()
+	if !strings.HasPrefix(path, "/opt/homebrew/bin:") {
+		t.Errorf("Homebrew is not searched first: %s", path)
+	}
+	if !strings.HasSuffix(path, ":/sbin") {
+		t.Errorf("the system directories are not last: %s", path)
+	}
+}
+
+func TestPlistStaysWellFormed(t *testing.T) {
+	plist := plistText("/Applications/factor", "/home/u/a & b/config.json")
+	var doc any
+	if err := xml.Unmarshal([]byte(plist), &doc); err != nil {
+		t.Fatalf("the plist does not parse: %v\n%s", err, plist)
+	}
+	if !strings.Contains(plist, "a &amp; b") {
+		t.Errorf("the config path was not escaped:\n%s", plist)
 	}
 }

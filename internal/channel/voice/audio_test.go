@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -445,4 +446,55 @@ func (neverEndingReader) Read(b []byte) (int, error) {
 		b[i] = 0
 	}
 	return len(b), nil
+}
+
+// macOS has no PulseAudio. Reporting parec and paplay there named two programs
+// that cannot be installed on the machine, against package managers it does
+// not run — and because afplay ships with the system, the report claimed the
+// speakers were fine and only the microphone was missing.
+func TestMissingHelpersNamesSoxOnMacOS(t *testing.T) {
+	e := Env{GOOS: "darwin", Has: func(string) bool { return false }}
+	missing := MissingHelpers(e)
+	if len(missing) != 2 {
+		t.Fatalf("missing = %+v, want both directions", missing)
+	}
+	for _, h := range missing {
+		if h.Bin != "rec" && h.Bin != "play" {
+			t.Errorf("helper %q is not a program a Mac can install", h.Bin)
+		}
+		if got := h.Package("brew"); got != "sox" {
+			t.Errorf("Package(brew) = %q, want sox", got)
+		}
+	}
+}
+
+// SoX is pointed at a device through AUDIODEV, which the Env seam has no way
+// to set, so a named device was accepted and then quietly ignored.
+func TestSoxHonoursANamedDeviceOnMacOS(t *testing.T) {
+	e := Env{GOOS: "darwin", Has: func(bin string) bool { return bin == "rec" || bin == "play" || bin == "sox" }}
+
+	capture, err := captureCommand(e, "Scarlett Solo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capture[0] != "sox" || !slices.Contains(capture, "coreaudio") || !slices.Contains(capture, "Scarlett Solo") {
+		t.Errorf("capture = %v", capture)
+	}
+
+	playback, err := playbackCommand(e, "Scarlett Solo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if playback[0] != "sox" || !slices.Contains(playback, "coreaudio") {
+		t.Errorf("playback = %v", playback)
+	}
+
+	// With no device named, the short spelling is still the one used.
+	bare, err := captureCommand(e, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bare[0] != "rec" {
+		t.Errorf("capture with no device = %v", bare)
+	}
 }
