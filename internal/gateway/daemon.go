@@ -62,6 +62,11 @@ func Daemonize(configPath string, passthrough []string) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
+	// Nothing is printed here that anyone is watching: the login entry is the
+	// only caller that gets a console of its own, and it gets it for the few
+	// seconds this waits for the child. Hiding it keeps a window from flashing
+	// up on every login, and leaves a terminal the user typed into alone.
+	hideConsole()
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 	return awaitDaemon(exited)

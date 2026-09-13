@@ -12,3 +12,7 @@ import (
 func detach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
+
+// hideConsole has nothing to hide: a unix terminal is not opened for a
+// program the way a Windows console is.
+func hideConsole() {}
