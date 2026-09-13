@@ -35,6 +35,18 @@ public class FactorWin {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 }
 "@
+` + psVirtualScreen
+
+// psVirtualScreen defines $vs, the rectangle covering every monitor.
+//
+// Windows addresses the desktop from the primary monitor's top-left, so a
+// second screen placed above or to the left of it lives at negative
+// coordinates. Factor addresses it from the top-left of what it captured,
+// which is how the other backends work and the only origin the model can see.
+// $vs is what converts between the two, and it is (0, 0) on the single-screen
+// machine most of these run on.
+const psVirtualScreen = `Add-Type -AssemblyName System.Windows.Forms
+$vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
 `
 
 // psQuote renders a Go string as a PowerShell single-quoted literal.
@@ -57,7 +69,7 @@ const psListScript = psPrelude + `$t = [char]9
 Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | ForEach-Object {
   $r = New-Object FactorWin+RECT
   [void][FactorWin]::GetWindowRect($_.MainWindowHandle, [ref]$r)
-  ($_.MainWindowHandle, $_.Id, $_.ProcessName, $r.Left, $r.Top, ($r.Right - $r.Left), ($r.Bottom - $r.Top), $_.MainWindowTitle) -join $t
+  ($_.MainWindowHandle, $_.Id, $_.ProcessName, ($r.Left - $vs.Left), ($r.Top - $vs.Top), ($r.Right - $r.Left), ($r.Bottom - $r.Top), $_.MainWindowTitle) -join $t
 }`
 
 func (c *windowsController) ListWindows(ctx context.Context) ([]Window, error) {
@@ -143,7 +155,7 @@ func (c *windowsController) MoveResize(ctx context.Context, w Window, g Geometry
 			}
 		}
 	}
-	_, err := c.ps(ctx, psPrelude+fmt.Sprintf(`[void][FactorWin]::MoveWindow(%s, %d, %d, %d, %d, $true)`,
+	_, err := c.ps(ctx, psPrelude+fmt.Sprintf(`[void][FactorWin]::MoveWindow(%s, %d + $vs.Left, %d + $vs.Top, %d, %d, $true)`,
 		c.handle(w), x, y, width, height))
 	return err
 }
@@ -160,11 +172,16 @@ func (c *windowsController) Screenshot(ctx context.Context, path string, shot Sh
 		region = Geometry{X: shot.Window.X, Y: shot.Window.Y, W: shot.Window.W, H: shot.Window.H, HasPos: true, HasSize: true}
 		shot.Mode = "region"
 	}
-	bounds := `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds`
+	// The whole desktop, not the primary monitor: a window the user dragged
+	// onto their second screen was never in the frame, so the model was told
+	// the screen was empty and every cell it named pointed at the wrong one.
+	bounds := `$b = $vs`
 	if shot.Mode == "region" {
-		bounds = fmt.Sprintf(`$b = New-Object Drawing.Rectangle(%d, %d, %d, %d)`, region.X, region.Y, region.W, region.H)
+		bounds = fmt.Sprintf(`$b = New-Object Drawing.Rectangle(%d + $vs.Left, %d + $vs.Top, %d, %d)`,
+			region.X, region.Y, region.W, region.H)
 	}
-	script := `Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+	script := `Add-Type -AssemblyName System.Drawing
+` + psVirtualScreen + `
 ` + bounds + `
 $bmp = New-Object Drawing.Bitmap($b.Width, $b.Height)
 $g = [Drawing.Graphics]::FromImage($bmp)
@@ -176,7 +193,7 @@ $g.Dispose(); $bmp.Dispose()`
 }
 
 func (c *windowsController) MoveMouse(ctx context.Context, x, y int) error {
-	_, err := c.ps(ctx, psPrelude+fmt.Sprintf(`[void][FactorWin]::SetCursorPos(%d, %d)`, x, y))
+	_, err := c.ps(ctx, psPrelude+fmt.Sprintf(`[void][FactorWin]::SetCursorPos(%d + $vs.Left, %d + $vs.Top)`, x, y))
 	return err
 }
 
@@ -198,7 +215,7 @@ func (c *windowsController) Click(ctx context.Context, button string, count int,
 	var b strings.Builder
 	b.WriteString(psPrelude)
 	if at != nil {
-		fmt.Fprintf(&b, "[void][FactorWin]::SetCursorPos(%d, %d)\n", at.X, at.Y)
+		fmt.Fprintf(&b, "[void][FactorWin]::SetCursorPos(%d + $vs.Left, %d + $vs.Top)\n", at.X, at.Y)
 	}
 	for i := 0; i < count; i++ {
 		fmt.Fprintf(&b, "[FactorWin]::mouse_event(%s, 0, 0, 0, 0)\n[FactorWin]::mouse_event(%s, 0, 0, 0, 0)\n", flags[0], flags[1])
@@ -294,9 +311,7 @@ func (c *windowsController) Open(ctx context.Context, target string) error {
 }
 
 func (c *windowsController) ScreenSize(ctx context.Context) (int, int, error) {
-	out, err := c.ps(ctx, `Add-Type -AssemblyName System.Windows.Forms
-$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-"$($b.Width) $($b.Height)"`)
+	out, err := c.ps(ctx, psVirtualScreen+`"$($vs.Width) $($vs.Height)"`)
 	if err != nil {
 		return 0, 0, err
 	}

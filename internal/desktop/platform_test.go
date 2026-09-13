@@ -162,7 +162,7 @@ func TestWindowsMoveResizeFillsMissingHalf(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := m.lastCall()[len(m.lastCall())-1]
-	if !strings.Contains(script, "MoveWindow(") || !strings.Contains(script, ", 10, 20, 800, 600, $true)") {
+	if !strings.Contains(script, "MoveWindow(") || !strings.Contains(script, ", 10 + $vs.Left, 20 + $vs.Top, 800, 600, $true)") {
 		t.Errorf("script = %s", script)
 	}
 }

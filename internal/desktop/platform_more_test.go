@@ -285,7 +285,7 @@ func TestWindowsWindowOperationsBuildTheirScripts(t *testing.T) {
 		{"minimize", func(c Controller) error { return c.SetState(ctx, w, "minimize") }, "ShowWindow([IntPtr]::new([int64]'4242'), 6)"},
 		{"maximize", func(c Controller) error { return c.SetState(ctx, w, "maximize") }, "ShowWindow([IntPtr]::new([int64]'4242'), 3)"},
 		{"restore", func(c Controller) error { return c.SetState(ctx, w, "restore") }, "ShowWindow([IntPtr]::new([int64]'4242'), 9)"},
-		{"mouse", func(c Controller) error { return c.MoveMouse(ctx, 7, 8) }, "SetCursorPos(7, 8)"},
+		{"mouse", func(c Controller) error { return c.MoveMouse(ctx, 7, 8) }, "SetCursorPos(7 + $vs.Left, 8 + $vs.Top)"},
 		{"open", func(c Controller) error { return c.Open(ctx, "C:\\tmp\\a.txt") }, `Start-Process 'C:\tmp\a.txt'`},
 		{"clipboard", func(c Controller) error { return c.ClipboardSet(ctx, "it's") }, `Set-Clipboard -Value 'it''s'`},
 		{"notify", func(c Controller) error { return c.Notify(ctx, "T", "B", "normal") }, "ShowBalloonTip(5000, 'T', 'B'"},
@@ -317,7 +317,7 @@ func TestWindowsClick(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := m.lastCall()[len(m.lastCall())-1]
-	if !strings.Contains(script, "SetCursorPos(3, 4)") || !strings.Contains(script, "mouse_event(0x0008") {
+	if !strings.Contains(script, "SetCursorPos(3 + $vs.Left, 4 + $vs.Top)") || !strings.Contains(script, "mouse_event(0x0008") {
 		t.Errorf("script = %s", script)
 	}
 
@@ -343,14 +343,14 @@ func TestWindowsScreenshotModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := m.lastCall()[len(m.lastCall())-1]
-	if !strings.Contains(script, "PrimaryScreen.Bounds") || !strings.Contains(script, `'C:\shots\a.png'`) {
+	if !strings.Contains(script, "$b = $vs") || !strings.Contains(script, `'C:\shots\a.png'`) {
 		t.Errorf("script = %s", script)
 	}
 
 	if err := c.Screenshot(ctx, "a.png", Shot{Mode: "region", Region: Geometry{X: 1, Y: 2, W: 3, H: 4}}); err != nil {
 		t.Fatal(err)
 	}
-	if script := m.lastCall()[len(m.lastCall())-1]; !strings.Contains(script, "Drawing.Rectangle(1, 2, 3, 4)") {
+	if script := m.lastCall()[len(m.lastCall())-1]; !strings.Contains(script, "Drawing.Rectangle(1 + $vs.Left, 2 + $vs.Top, 3, 4)") {
 		t.Errorf("script = %s", script)
 	}
 
