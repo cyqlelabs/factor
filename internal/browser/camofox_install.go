@@ -130,11 +130,11 @@ func EnsureCamofox(ctx context.Context, home string, progress Progress) (string,
 	progress("installing Camofox %s (a 300 MB Firefox build downloads with it)", camofoxVersion)
 	argv := []string{npmFor(node), "install", "--prefix", dir, "--no-fund", "--no-audit", "--loglevel=error",
 		camofoxPackage + "@" + camofoxVersion}
-	env := append(os.Environ(),
+	env := withNode(append(os.Environ(),
 		"CAMOUFOX_INSTALL_DIR="+camoufoxDir(dir),
 		"CAMOFOX_CRASH_REPORT_ENABLED=false",
 		"npm_config_update_notifier=false",
-	)
+	), node)
 	if out, err := runCmdEnv(ctx, argv, env, dir); err != nil {
 		return "", false, fmt.Errorf("installing Camofox: %v: %s", err, firstLine(out))
 	}
@@ -215,7 +215,7 @@ func standIns(ctx context.Context, node, dir string, progress Progress) error {
 		if _, err := os.Stat(path); err != nil {
 			continue // the version installed does not carry it
 		}
-		out, err := runCmdEnv(ctx, []string{node, "-e", `require("` + si.module + `")`}, os.Environ(), dir)
+		out, err := runCmdEnv(ctx, []string{node, "-e", `require("` + si.module + `")`}, withNode(os.Environ(), node), dir)
 		if err == nil {
 			continue
 		}
@@ -536,4 +536,35 @@ func safeJoin(dest, name string) (string, error) {
 		return "", fmt.Errorf("archive entry %q escapes the destination", name)
 	}
 	return target, nil
+}
+
+// withNode puts the interpreter's own directory at the front of PATH.
+//
+// npm is not a program but a script: the file beside a node binary is a
+// symlink to npm-cli.js, whose first line is `#!/usr/bin/env node`. Run with
+// the environment as it stands, it looks up node on PATH — and the whole
+// reason Factor downloaded one is that PATH had none, or had one too old. So
+// the install of the engine failed at its first command with `env: node: No
+// such file or directory` on a machine that had just been given a working
+// Node, or handed the new npm to the old interpreter. Everything Node spawns
+// in turn reads the same variable, which is why this is set on the environment
+// rather than by naming the interpreter once.
+func withNode(env []string, node string) []string {
+	dir := filepath.Dir(node)
+	if dir == "" || dir == "." {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	var path string
+	for _, kv := range env {
+		if name, value, ok := strings.Cut(kv, "="); ok && strings.EqualFold(name, "PATH") {
+			path = value
+			continue
+		}
+		out = append(out, kv)
+	}
+	if path != "" {
+		dir += string(os.PathListSeparator) + path
+	}
+	return append(out, "PATH="+dir)
 }

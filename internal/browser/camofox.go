@@ -131,7 +131,7 @@ func (c *camofox) ensure(ctx context.Context) error {
 	}
 	cmd := exec.Command(node, server)
 	cmd.Dir = filepath.Dir(server)
-	cmd.Env = c.env()
+	cmd.Env = c.env(node)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.WaitDelay = 5 * time.Second
@@ -201,12 +201,15 @@ func (c *camofox) node() (string, error) {
 // project's collector by default, and nothing this process runs phones
 // anyone unasked. Everything the server writes is kept under Factor's own
 // directories, so an install and its profiles leave with it.
-func (c *camofox) env() []string {
+func (c *camofox) env(node string) []string {
 	state := filepath.Join(c.cfg.UserDataDir, "camofox")
 	if c.cfg.UserDataDir == "" {
 		state = filepath.Join(c.home, "browser", "camofox")
 	}
-	env := os.Environ()
+	// The server is Node, and what it spawns — the browser fetcher above all —
+	// looks node up on PATH. A Factor that had to provision one did so because
+	// PATH has none.
+	env := withNode(os.Environ(), node)
 	set := func(k, v string) { env = append(env, k+"="+v) }
 	set("CAMOFOX_PORT", strconv.Itoa(c.cfg.Camofox.Port))
 	set("CAMOFOX_BIND_HOST", "127.0.0.1")

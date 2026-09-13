@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -475,7 +476,7 @@ func TestAutoFallsBackWhenCamofoxCannotStart(t *testing.T) {
 func TestCamofoxEnvKeepsEverythingUnderFactor(t *testing.T) {
 	cfg := config.BrowserConfig{UserDataDir: "/data/browser", Camofox: config.CamofoxConfig{Port: 9377}}
 	c := newCamofox(cfg, "/home/x/.factor", "/ws", nil)
-	env := strings.Join(c.env(), "\n")
+	env := strings.Join(c.env("/opt/node/bin/node"), "\n")
 	for _, want := range []string{
 		"CAMOFOX_PORT=9377", "CAMOFOX_BIND_HOST=127.0.0.1", "CAMOFOX_CRASH_REPORT_ENABLED=false",
 		"CAMOUFOX_INSTALL_DIR=" + filepath.Join("/home/x/.factor", "engine", "camofox", "camoufox"),
@@ -566,4 +567,57 @@ func freeLoopbackPort() (int, error) {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// npm is a script whose first line is `#!/usr/bin/env node`, so it resolves
+// node from PATH — and the reason Factor downloaded one is that PATH had none,
+// or had one too old. Without its own directory in front, the install failed
+// at its first command on a machine that had just been given a working Node.
+func TestWithNodePutsTheInterpreterFirstOnPath(t *testing.T) {
+	sep := string(os.PathListSeparator)
+	got := withNode([]string{"HOME=/home/x", "PATH=/usr/bin" + sep + "/bin", "TERM=xterm"}, "/opt/node/bin/node")
+
+	var path string
+	var kept int
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "PATH=") {
+			path = strings.TrimPrefix(kv, "PATH=")
+		}
+		if kv == "HOME=/home/x" || kv == "TERM=xterm" {
+			kept++
+		}
+	}
+	if path != "/opt/node/bin"+sep+"/usr/bin"+sep+"/bin" {
+		t.Fatalf("PATH = %q", path)
+	}
+	if kept != 2 {
+		t.Errorf("the rest of the environment was dropped: %v", got)
+	}
+	if n := strings.Count(strings.Join(got, "\n"), "PATH="); n != 1 {
+		t.Errorf("PATH appears %d times", n)
+	}
+}
+
+func TestWithNodeHandlesAnEmptyPathAndABareName(t *testing.T) {
+	got := withNode([]string{"HOME=/home/x"}, "/opt/node/bin/node")
+	if !slices.Contains(got, "PATH=/opt/node/bin") {
+		t.Fatalf("env = %v", got)
+	}
+	// A node found on PATH under its bare name has no directory to add.
+	before := []string{"PATH=/usr/bin"}
+	if after := withNode(before, "node"); !slices.Equal(after, before) {
+		t.Fatalf("env = %v, want it untouched", after)
+	}
+}
+
+// Windows spells the variable Path, and setting a second one leaves the child
+// reading whichever the OS hands it first.
+func TestWithNodeReplacesPathWhateverItsCase(t *testing.T) {
+	got := withNode([]string{"Path=C:\\Windows"}, filepath.Join("C:\\node", "node.exe"))
+	if n := strings.Count(strings.ToLower(strings.Join(got, "\n")), "path="); n != 1 {
+		t.Fatalf("the environment carries two path variables: %v", got)
+	}
+	if !strings.Contains(strings.Join(got, "\n"), "C:\\node") {
+		t.Fatalf("env = %v", got)
+	}
 }

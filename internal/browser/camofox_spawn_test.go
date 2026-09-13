@@ -362,7 +362,7 @@ func TestCamofoxReportsANonJSONReply(t *testing.T) {
 // user data directory is configured.
 func TestCamofoxEnvFallsBackToTheFactorHome(t *testing.T) {
 	c := newCamofox(config.BrowserConfig{}, filepath.Join("home", ".factor"), "/ws", nil)
-	env := strings.Join(c.env(), "\n")
+	env := strings.Join(c.env("/opt/node/bin/node"), "\n")
 	if !strings.Contains(env, "CAMOFOX_PROFILE_DIR="+filepath.Join("home", ".factor", "browser", "camofox", "profiles")) {
 		t.Errorf("env: %s", env)
 	}
