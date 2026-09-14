@@ -1297,3 +1297,22 @@ func TestCheckpointNudgeNamesTheTimeLeftUnderADeadline(t *testing.T) {
 		}
 	}
 }
+
+// A turn that ends with nothing to say used to be handed to the channel as a
+// perfectly good empty answer, which a voice channel says by saying nothing.
+// The user cannot tell that from a crash, and the blank turn recorded in its
+// place means "repeat what you just said" finds nothing either.
+func TestEmptyFinalAnswerIsAFailure(t *testing.T) {
+	h := newHarness(t, final("   "))
+	reply, err := h.loop.ProcessDirect(context.Background(), "hi", "cli:test")
+	if !errors.Is(err, errEmptyAnswer) {
+		t.Fatalf("err = %v, want errEmptyAnswer", err)
+	}
+	if reply != "" {
+		t.Errorf("reply = %q, want nothing", reply)
+	}
+	// Nothing was said, so nothing is remembered as having been said.
+	if len(h.engine.remembered) != 0 {
+		t.Errorf("an empty turn was stored: %v", h.engine.remembered)
+	}
+}

@@ -484,3 +484,46 @@ func TestOpenAIChatStripsReasoningDelimiters(t *testing.T) {
 		})
 	}
 }
+
+// Observed on a live OpenRouter route: a reasoning model stopped cleanly with
+// its whole spoken reply in the reasoning field and content null. Read
+// strictly, the turn had nothing to say and the user heard silence.
+func TestOpenAIChatReadsTheAnswerOutOfAnEmptyReplysReasoning(t *testing.T) {
+	const said = "Esa adrenalina de arrancar de nuevo. ¿El terreno es para algo específico?"
+	srv := jsonServer(t, http.StatusOK, `{"choices":[{"finish_reason":"stop","message":`+
+		`{"role":"assistant","content":null,"reasoning":"`+said+`"}}]}`)
+	resp, err := NewOpenAI(srv.URL, "k", "gpt-x").Chat(context.Background(), &Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != said {
+		t.Errorf("content = %q, want the reasoning text", resp.Content)
+	}
+}
+
+// The fallback is for a turn with nothing else at all. A model that said
+// something, asked for a tool, or was cut off mid-thought keeps its reasoning
+// to itself — a half-finished chain of thought is not an answer.
+func TestOpenAIChatKeepsReasoningPrivateWhenTheTurnHasAnythingElse(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"content wins", `{"choices":[{"finish_reason":"stop","message":` +
+			`{"content":"the answer","reasoning":"the thinking"}}]}`, "the answer"},
+		{"a tool call is the turn", `{"choices":[{"finish_reason":"tool_calls","message":` +
+			`{"content":null,"reasoning":"the thinking","tool_calls":[{"id":"1","function":{"name":"read_file","arguments":"{}"}}]}}]}`, ""},
+		{"truncated mid-thought", `{"choices":[{"finish_reason":"length","message":` +
+			`{"content":null,"reasoning":"the thinking, cut off halfway"}}]}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := jsonServer(t, http.StatusOK, tc.body)
+			resp, err := NewOpenAI(srv.URL, "k", "gpt-x").Chat(context.Background(), &Request{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.Content != tc.want {
+				t.Errorf("content = %q, want %q", resp.Content, tc.want)
+			}
+		})
+	}
+}

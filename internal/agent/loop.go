@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -26,6 +27,12 @@ type ChatProvider interface {
 }
 
 const steeringBuffer = 8
+
+// errEmptyAnswer is a turn that finished with no tool call and nothing to
+// say. It is a provider fault rather than anything the user did — see the
+// reasoning-field case in provider.answerOf — and it is reported as one, so
+// the channel says something instead of going quiet.
+var errEmptyAnswer = errors.New("the model returned an empty reply")
 
 // claimRetry is how often a synchronous turn that must own its session
 // re-checks whether the live one has ended.
@@ -718,6 +725,16 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 			// Final answer — unless steering arrived mid-turn; then keep going.
 			injected := l.drainSteering(in, t, record)
 			if len(injected) == 0 {
+				// A turn that ends with nothing to say is a failure, not an
+				// answer, and it is the one failure that looks like working
+				// software: the channel has nothing to send, so it sends
+				// nothing, and the user is left deciding whether to ask
+				// again. Saying so out loud is the whole fix — a blank reply
+				// silently dropped is how a spoken conversation ends without
+				// anyone knowing it ended.
+				if strings.TrimSpace(resp.Content) == "" {
+					return "", errEmptyAnswer
+				}
 				l.noteInduceCandidate(in, messages, thisTurn, resp.Content, steered > 0)
 				l.maybeCompactAsync(in)
 				return resp.Content, nil

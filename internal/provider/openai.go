@@ -102,8 +102,12 @@ type oaTool struct {
 
 // oaRespMessage keeps response decoding strict: models reply with string
 // content, never parts.
+//
+// Reasoning is read for one reason: some endpoints put the answer in it. See
+// answerOf.
 type oaRespMessage struct {
 	Content   string       `json:"content"`
+	Reasoning string       `json:"reasoning"`
 	ToolCalls []oaToolCall `json:"tool_calls"`
 }
 
@@ -144,6 +148,33 @@ func stripReasoning(content string) string {
 		return strings.TrimSpace(strings.TrimPrefix(s, "</think>"))
 	}
 	return content
+}
+
+// answerOf is what the model said to the user. Normally that is the content,
+// and the reasoning beside it is the model thinking out loud — never
+// something to repeat back.
+//
+// Some endpoints do not keep them apart. A reply that stopped cleanly with no
+// content, no tool calls and a full paragraph in its reasoning field is an
+// answer filed under the wrong name: observed here on one OpenRouter route
+// for a reasoning model, where the whole spoken reply — "esa adrenalina de
+// arrancar de nuevo…" — arrived as reasoning and the user heard silence. A
+// turn with nothing to say is worse than one that says its working: the user
+// cannot tell it from a crash, and asking it to repeat itself finds nothing
+// in the transcript either, because the empty message is what was recorded.
+//
+// The fallback is deliberately narrow. Any tool call, any content at all, or
+// a completion cut short mid-thought, and the reasoning stays private: a
+// truncated chain of thought is not an answer, and a model that said
+// something has already chosen what to say.
+func answerOf(msg oaRespMessage, finishReason string) string {
+	if content := stripReasoning(msg.Content); content != "" {
+		return content
+	}
+	if len(msg.ToolCalls) > 0 || finishReason == "length" {
+		return ""
+	}
+	return strings.TrimSpace(msg.Reasoning)
 }
 
 func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
@@ -226,7 +257,7 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 
 	choice := parsed.Choices[0]
 	out := &Response{
-		Content:      stripReasoning(choice.Message.Content),
+		Content:      answerOf(choice.Message, choice.FinishReason),
 		FinishReason: choice.FinishReason,
 		Usage: Usage{
 			PromptTokens:     parsed.Usage.PromptTokens,
