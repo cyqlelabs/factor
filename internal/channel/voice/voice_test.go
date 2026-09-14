@@ -1592,3 +1592,70 @@ func TestVoiceLearnsTheRoomFromASoundNobodySpokeIn(t *testing.T) {
 	})
 	h.noTurn(200 * time.Millisecond)
 }
+
+// A pair of speakers has no typing indicator. A turn that spends a minute in
+// tools without saying anything is indistinguishable from a crash, so the
+// channel fills the silence itself rather than trusting the model to.
+func TestVoiceFillsALongTurnsSilence(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.mu.Lock()
+	h.block = true // the runner never answers: the whole turn is silence
+	h.mu.Unlock()
+	h.v.holdGrace = 20 * time.Millisecond
+	h.v.holdEvery = 20 * time.Millisecond
+	h.start()
+
+	h.say()
+	h.turn(10 * time.Second)
+
+	waitUntil(t, func() bool { return h.spoke(holdingLine(0, "")) })
+	// A turn that keeps running is told about more than once, and in
+	// different words: the same sentence every twenty seconds is a metronome.
+	waitUntil(t, func() bool { return h.spoke(holdingLine(1, "")) })
+}
+
+// The filler is for the wait, not for the answer: once the turn has replied
+// there is nothing left to apologise for.
+func TestVoiceStopsFillingOnceTheTurnAnswers(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.v.holdGrace = 20 * time.Millisecond
+	h.v.holdEvery = 20 * time.Millisecond
+	h.start()
+
+	h.say()
+	h.turn(10 * time.Second)
+	waitUntil(t, func() bool { return h.spoke("as you wish") })
+
+	said := len(h.synthesized())
+	time.Sleep(200 * time.Millisecond) // many intervals' worth of quiet
+	if grown := len(h.synthesized()) - said; grown != 0 {
+		t.Errorf("the channel said %d more things after the answer", grown)
+	}
+}
+
+// A turn that says what it is about to do owes the user nothing else for a
+// while: the filler exists to cover silence, and there is none.
+func TestVoiceHoldingClockRestartsWhenTheTurnSpeaks(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.v.holdGrace = 50 * time.Millisecond
+	h.v.holdEvery = time.Hour
+	h.start()
+
+	held := h.v.hold(context.Background())
+	defer held.stop()
+	held.mark()
+
+	time.Sleep(300 * time.Millisecond) // six graces
+	if h.spoke(holdingLine(0, "")) {
+		t.Error("the channel filled a silence the turn had already broken")
+	}
+}
+
+func TestHoldingLineLocalization(t *testing.T) {
+	if holdingLine(0, "es") != "Dame un momento." || holdingLine(0, "en") != "Give me a moment." {
+		t.Error("holdingLine localization")
+	}
+	if holdingLine(3, "en") != holdingLine(0, "en") {
+		t.Error("holdingLine should cycle through its lines")
+	}
+}

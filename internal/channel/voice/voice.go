@@ -59,6 +59,27 @@ const (
 	// enough that a turn's notes and its reply never contend, shallow enough
 	// that a channel minutes behind says so instead of hoarding.
 	outboundQueue = 16
+
+	// holdingGrace is how long a turn may run without a word before the
+	// channel says something of its own, and holdingInterval how often it
+	// says it again after that.
+	//
+	// The agent is told to open with a line before its first tool call, and
+	// the notice path carries that line the moment it exists — but a prompt
+	// is a request, not a guarantee. Captured over a long spoken session
+	// here, five of six tool-calling iterations came back with the call and
+	// no text at all, and the first word the user heard landed 136 seconds
+	// after they stopped speaking. A pair of speakers has no typing
+	// indicator: silence is the whole of what the channel can say, and two
+	// minutes of it reads as a crash rather than as work.
+	//
+	// The grace is set past an ordinary answer rather than at the edge of
+	// politeness. A turn that answers without tools lands between six and
+	// eleven seconds on this machine, and a filler in front of every one of
+	// them is a verbal tic; past eight seconds the pause has stopped being
+	// conversational and a word costs less than the doubt.
+	holdingGrace    = 8 * time.Second
+	holdingInterval = 30 * time.Second
 )
 
 // Voice is the PC voice connector. Like the phone it does not publish inbound
@@ -75,6 +96,11 @@ type Voice struct {
 
 	speech     *phone.SpeechServer // nil unless a local tier runs on Factor's own server
 	speechWait time.Duration
+
+	// How long a turn may run in silence before the channel fills it, and
+	// how often it fills it after that. See holdingGrace.
+	holdGrace time.Duration
+	holdEvery time.Duration
 
 	runner       channel.TurnFunc
 	lastExternal func() (chatChannel, chatID string, ok bool)
@@ -162,6 +188,8 @@ func New(cfg Config, b *bus.MessageBus) (*Voice, error) {
 		env:        DefaultEnv(),
 		publish:    publish,
 		speechWait: speechReadyWait,
+		holdGrace:  holdingGrace,
+		holdEvery:  holdingInterval,
 		utts:       make(chan capturedUtterance, 3),
 		floorHints: make(chan floorHint, 1),
 		outbound:   make(chan bus.OutboundMessage, outboundQueue),
@@ -782,13 +810,6 @@ func (v *Voice) runTurn(parent context.Context, text string, who speakerIdentity
 		v.mu.Unlock()
 	}()
 
-	// What the agent says before a tool call is spoken as it happens, on its
-	// own goroutine: the point of a filler line is to fill the time the tools
-	// take, not to be queued behind them. speak serialises it against the
-	// answer, so the two arrive in the order they were written.
-	notice := func(line string) {
-		v.spawn(func() { v.speak(ctx, line) })
-	}
 	// The room's flip is said out loud before the answer that depends on it,
 	// so a user who has just been made discreet knows why — a silent switch
 	// is untrustworthy in both directions, and the one that goes quiet about
@@ -796,7 +817,21 @@ func (v *Voice) runTurn(parent context.Context, text string, who speakerIdentity
 	if st.Changed {
 		v.speak(ctx, roomChangeLine(st, v.cfg.Language))
 	}
+	// Whatever the turn does not say for itself, the channel says. See
+	// holdingGrace.
+	held := v.hold(ctx)
+	// What the agent says before a tool call is spoken as it happens, on its
+	// own goroutine: the point of a filler line is to fill the time the tools
+	// take, not to be queued behind them. speak serialises it against the
+	// answer, so the two arrive in the order they were written.
+	notice := func(line string) {
+		held.mark()
+		v.spawn(func() { v.speak(ctx, line) })
+	}
 	reply, err := v.runner(ctx, text, sessionFor(who, st.Shared), who.attributed(), st.audience(), notice)
+	// The turn has its answer; anything the channel adds now arrives after
+	// the user has stopped waiting.
+	held.stop()
 	if ctx.Err() != nil {
 		// Barged in on — the next utterance owns the conversation — or cut
 		// short by the room filling up, which the caller reads off the flag.
@@ -1147,6 +1182,68 @@ func normalizeWord(w string) string {
 		}
 	}
 	return b.String()
+}
+
+// holder fills a running turn's silence. A turn says nothing until its first
+// model response comes back, which on a slow provider is half a minute, and
+// says nothing at all on an iteration the model spent entirely on tool calls.
+type holder struct {
+	said chan struct{}
+	done chan struct{}
+}
+
+// mark restarts the clock: the turn has just said something of its own, so
+// the channel owes nothing for another interval.
+func (h *holder) mark() {
+	select {
+	case h.said <- struct{}{}:
+	default:
+	}
+}
+
+// stop ends the filler, and is called once: the turn's own cancellation ends
+// the goroutine on every other path out.
+func (h *holder) stop() { close(h.done) }
+
+// hold starts the filler for one turn: nothing for holdingGrace, then a short
+// line every holdingInterval for as long as the turn runs. speak takes the
+// floor for the length of the line, so a holding line and the answer behind
+// it can never overlap.
+func (v *Voice) hold(ctx context.Context) *holder {
+	h := &holder{said: make(chan struct{}, 1), done: make(chan struct{})}
+	v.spawn(func() {
+		wait, spoken := v.holdGrace, 0
+		for {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-h.done:
+				timer.Stop()
+				return
+			case <-h.said:
+				timer.Stop()
+			case <-timer.C:
+				v.speak(ctx, holdingLine(spoken, v.cfg.Language))
+				spoken++
+			}
+			wait = v.holdEvery
+		}
+	})
+	return h
+}
+
+// holdingLine is what the channel says while a turn runs long. The lines
+// rotate so a turn that runs for minutes is not a metronome, and every one of
+// them says only that the work is still happening: the channel does not know
+// what the answer is, and a filler that guesses is worse than the silence.
+func holdingLine(n int, language string) string {
+	lines := []string{"Give me a moment.", "Still on it.", "One moment more."}
+	if isSpanish(language) {
+		lines = []string{"Dame un momento.", "Sigo en eso.", "Un momento más."}
+	}
+	return lines[n%len(lines)]
 }
 
 func spokenFailure(language string) string {

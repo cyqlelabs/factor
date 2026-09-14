@@ -125,11 +125,19 @@ const rulesFadeAt = 8000
 // it names itself as a restatement so the model does not read it as a fresh
 // instruction that arrived this turn.
 //
-// It is about *which* tool, not about using more of them. What decays is not
-// the appetite for tools, it is the discipline of preferring the machine's
-// answer to the model's own; a reminder that read as "call something" would
-// turn a greeting into a search.
+// It is mostly about *which* tool, not about using more of them. What decays
+// is not the appetite for tools, it is the discipline of preferring the
+// machine's answer to the model's own; a reminder that read as "call
+// something" would turn a greeting into a search.
+//
+// The one clause here that is not about choosing a tool is the line said
+// before it. That rule fades the same way and costs the most when it does:
+// captured over a long spoken session, five of six tool-calling iterations
+// came back with the call and no text, so the notice path had nothing to
+// deliver and the user sat through two minutes of silence waiting for an
+// answer to one sentence.
 const toolDiscipline = "Still in force this turn, from the rules at the top of this prompt: " +
+	"open with one short line before your first tool call, saying what you are about to do, so the user is not left listening to silence; " +
 	"when a tool can settle a question, run it rather than answering from memory; " +
 	"a task that needs trying and testing is yours to finish, so do not stop to ask whether to go on or which approach to try; " +
 	"work web pages with the browser tools rather than a fetch or the screen; " +
