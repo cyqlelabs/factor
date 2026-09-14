@@ -116,10 +116,16 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("provider: %w", err)
 	}
 
-	// The catalog prices whatever answered, so it has to know the utility
-	// models too — an unpriced summary is reported in tokens rather than
-	// money, which is the one thing worse than pricing it wrong.
+	lightChain, err := provider.BuildLightChain(cfg.Provider)
+	if err != nil {
+		return nil, fmt.Errorf("provider: %w", err)
+	}
+
+	// The catalog prices whatever answered, so it has to know the utility and
+	// filler models too — an unpriced summary is reported in tokens rather
+	// than money, which is the one thing worse than pricing it wrong.
 	priced := append(cfg.Provider.Candidates(), cfg.Provider.UtilityCandidates()...)
+	priced = append(priced, cfg.Provider.LightCandidates()...)
 	catalog := cost.NewCatalog(cfg.Cost, priced, filepath.Join(config.Home(), "pricing.json"))
 	ledger := cost.NewLedger(filepath.Join(config.Home(), "usage.json"))
 	meter := cost.NewMeter(chain, catalog, ledger, cfg.Cost)
@@ -131,6 +137,14 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	utilityCost := cost.NewMeter(utilityChain, catalog, ledger, cfg.Cost)
 	if utilityChain != nil {
 		utilityMeter = utilityCost
+	}
+	// The filler is metered on the same terms. It is pennies a turn by
+	// design, and the way to find out it stopped being pennies is to have
+	// been counting.
+	var lightMeter agent.ChatProvider
+	lightCost := cost.NewMeter(lightChain, catalog, ledger, cfg.Cost)
+	if lightChain != nil {
+		lightMeter = lightCost
 	}
 
 	// The trace is written next to everything else Factor keeps, and reads
@@ -151,6 +165,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 	meter.OnCharge(charge)
 	utilityCost.OnCharge(charge)
+	lightCost.OnCharge(charge)
 	// A failover is invisible in aggregate today: the chain logs a line and
 	// nothing counts it, so "it got slower last week" has no answer.
 	failover := func(ctx context.Context, name, reason string) {
@@ -159,6 +174,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	chain.OnFailover(failover)
 	if utilityChain != nil {
 		utilityChain.OnFailover(failover)
+	}
+	if lightChain != nil {
+		lightChain.OnFailover(failover)
 	}
 
 	extract := memory.DeriveExtract(cfg.Memory, cfg.Provider)
@@ -254,6 +272,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	b := bus.New()
 	loop := agent.NewLoop(cfg, b, meter, registry, sessions, builder, ambient).
 		WithUtility(utilityMeter).
+		WithLight(lightMeter).
 		WithTracer(tracer).
 		WithVersioner(repo.Committer("skill"))
 	// A turn that arrived from a chat asks its questions there — the user the

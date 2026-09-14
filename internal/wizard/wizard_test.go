@@ -241,6 +241,7 @@ func TestWizardHappyPath(t *testing.T) {
 		"2",                // model: small-model (menu is sorted)
 		"1",                // reasoning effort: xhigh
 		"",                 // do not hide the reasoning text
+		"",                 // fast model: the default
 		"1",                // memory: managed sidecar
 		"y",                // install smrti
 		"3",                // personality: curious
@@ -326,7 +327,7 @@ func TestWizardProviderRetryAfterBadKey(t *testing.T) {
 		"8", provider.URL+"/v1",
 		"sk-wrong", // rejected by /models and /chat/completions
 		"good-model",
-		"1", "", // reasoning: xhigh, reasoning text visible
+		"1", "", "", // reasoning: xhigh, reasoning text visible, default fast model
 		"1",       // "Re-enter the API key" after the check fails
 		"sk-test", // correct key
 		"3",       // memory: off, to keep the rest of the run short
@@ -352,7 +353,7 @@ func TestWizardContinueAnywayWithBrokenProvider(t *testing.T) {
 		"8", "http://127.0.0.1:1/v1", // nothing listens there
 		"sk-x",
 		"some-model", // no model list: free-text entry
-		"1", "",      // reasoning: xhigh, visible
+		"1", "", "",  // reasoning: xhigh, visible, default fast model
 		"3",        // continue anyway
 		"3",        // memory off
 		"n",        // no telegram
@@ -377,9 +378,9 @@ func TestWizardModelFilterForLongLists(t *testing.T) {
 
 	h := newHarness(t,
 		"8", provider.URL+"/v1", "sk-test",
-		"sonnet", // filter
-		"1",      // the single match
-		"1", "",  // reasoning: xhigh, visible
+		"sonnet",    // filter
+		"1",         // the single match
+		"1", "", "", // reasoning: xhigh, visible, default fast model
 		"3", // memory off
 		"n", // no telegram
 		"n", // no phone
@@ -400,6 +401,7 @@ func TestWizardSmrtiInstallFailureIsNotFatal(t *testing.T) {
 	h := newHarness(t,
 		"5",      // ollama: no key needed
 		"llama3", // model (no live list)
+		"",       // fast model: the default
 		"3",      // continue anyway after the check fails
 		"1", "y", // memory sidecar, install smrti
 		"", "", // personality, extraction model: both default
@@ -428,6 +430,7 @@ func TestWizardReasoningOverrides(t *testing.T) {
 		"6",     // custom token budget
 		"12000", // the budget
 		"y",     // keep the reasoning text out of replies
+		"",      // fast model: the default
 		"3",     // memory off
 		"n",     // no telegram
 		"n",     // no phone
@@ -447,7 +450,7 @@ func TestWizardReasoningOverrides(t *testing.T) {
 
 func TestWizardReasoningOffAndSkippedForLocalProviders(t *testing.T) {
 	// Ollama: the wizard must not ask about reasoning at all.
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "", "")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "", "", "")
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
@@ -460,7 +463,7 @@ func TestWizardReasoningOffAndSkippedForLocalProviders(t *testing.T) {
 
 	// A key-based provider can still turn reasoning off explicitly.
 	provider := fakeProvider(t, "m1")
-	h2 := newHarness(t, "8", provider.URL+"/v1", "sk-test", "1", "5", "3", "n", "n", "", "", "")
+	h2 := newHarness(t, "8", provider.URL+"/v1", "sk-test", "1", "5", "", "3", "n", "n", "", "", "")
 	if err := h2.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h2.out.String())
 	}
@@ -471,7 +474,7 @@ func TestWizardReasoningOffAndSkippedForLocalProviders(t *testing.T) {
 
 func TestWizardExternalMemory(t *testing.T) {
 	h := newHarness(t,
-		"5", "llama3", "3", // provider: ollama, unchecked
+		"5", "llama3", "", "3", // provider: ollama, unchecked
 		"2", "http://memory.lan:8420", // external smrti
 		"1", // personality
 		"n", // no telegram
@@ -488,7 +491,7 @@ func TestWizardExternalMemory(t *testing.T) {
 }
 
 func TestWizardDesktopHelpersOffered(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "y", "y", "y", "n")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "y", "y", "y", "n")
 	var installed []string
 	h.opts.Desktop = desktop.Env{
 		GOOS:   "linux",
@@ -522,7 +525,7 @@ func TestWizardDesktopHelpersOffered(t *testing.T) {
 }
 
 func TestWizardDesktopSkippedWhenHeadless(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "y", "y", "n")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "y", "y", "n")
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
@@ -665,7 +668,7 @@ func savedPhone(t *testing.T, h *harness) phoneSection {
 func TestWizardPhoneCloudTier(t *testing.T) {
 	twilio, elevenlabs, _ := fakeTelephony(t)
 	h := newHarness(t,
-		"5", "llama3", "3", // provider: ollama, unchecked
+		"5", "llama3", "", "3", // provider: ollama, unchecked
 		"3",               // memory off
 		"n",               // no telegram
 		"y",               // set up the phone
@@ -718,7 +721,7 @@ func TestWizardPhoneCloudTier(t *testing.T) {
 func TestWizardPhoneFullyLocalTier(t *testing.T) {
 	twilio, elevenlabs, speech := fakeTelephony(t)
 	h := newHarness(t,
-		"5", "llama3", "3",
+		"5", "llama3", "", "3",
 		"3", // memory off
 		"n", // no telegram
 		"y", "1", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
@@ -759,7 +762,7 @@ func TestWizardPhoneFullyLocalTier(t *testing.T) {
 func TestWizardPhoneLocalTierSurvivesAnAbsentServer(t *testing.T) {
 	twilio, elevenlabs, _ := fakeTelephony(t)
 	h := newHarness(t,
-		"5", "llama3", "3", "3", "n",
+		"5", "llama3", "", "3", "3", "n",
 		"y", "1", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"",                      // language
 		"2",                     // local speech-to-text only
@@ -790,7 +793,7 @@ func TestWizardPhoneLocalTierSurvivesAnAbsentServer(t *testing.T) {
 func TestWizardPhoneLocalTierInstallsEverything(t *testing.T) {
 	twilio, elevenlabs, _ := fakeTelephony(t)
 	h := newHarness(t,
-		"5", "llama3", "3", "3", "n",
+		"5", "llama3", "", "3", "3", "n",
 		"y", "1", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"es-MX", // language
 		"4",     // fully local audio
@@ -848,7 +851,7 @@ func TestWizardPhoneLocalTierInstallsEverything(t *testing.T) {
 func TestWizardPhoneLocalTierSurvivesAFailedInstall(t *testing.T) {
 	twilio, elevenlabs, _ := fakeTelephony(t)
 	h := newHarness(t,
-		"5", "llama3", "3", "3", "n",
+		"5", "llama3", "", "3", "3", "n",
 		"y", "1", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"en", "4", "1", "1", "", "", "",
 	)
@@ -877,7 +880,7 @@ func TestWizardPhoneLocalTierSurvivesAFailedInstall(t *testing.T) {
 func TestWizardLocalVoiceOnlyDoesNotInstallTranscription(t *testing.T) {
 	twilio, elevenlabs, _ := fakeTelephony(t)
 	h := newHarness(t,
-		"5", "llama3", "3", "3", "n",
+		"5", "llama3", "", "3", "3", "n",
 		"y", "1", "AC-test", "twilio-secret", "+15550002222", "+15550001111",
 		"en",
 		"3",               // local text-to-speech only
@@ -920,7 +923,7 @@ func TestWizardPhoneOnTelnyx(t *testing.T) {
 	t.Cleanup(telnyx.Close)
 
 	h := newHarness(t,
-		"5", "llama3", "3", "3", "n",
+		"5", "llama3", "", "3", "3", "n",
 		"y",                 // set up the phone
 		"2",                 // carrier: telnyx
 		"telnyx-secret",     // api key
@@ -974,7 +977,7 @@ func TestWizardPhoneSkippedWithoutTheTelnyxPublicKey(t *testing.T) {
 	t.Cleanup(telnyx.Close)
 
 	h := newHarness(t,
-		"5", "llama3", "3", "3", "n",
+		"5", "llama3", "", "3", "3", "n",
 		"y", "2", "telnyx-secret", "285123",
 		"", // no public key
 		"", "", "",
@@ -993,7 +996,7 @@ func TestWizardPhoneSkippedWithoutTheTelnyxPublicKey(t *testing.T) {
 
 func TestWizardPhoneSkippedWithoutCarrierCredentials(t *testing.T) {
 	h := newHarness(t,
-		"5", "llama3", "3", "3", "n",
+		"5", "llama3", "", "3", "3", "n",
 		"y", // set up the phone
 		"1", // carrier: twilio
 		"",  // no account sid
@@ -1015,7 +1018,7 @@ func TestWizardPhoneSkippedWithoutCarrierCredentials(t *testing.T) {
 // to install one on top of it is how `factor init` ended up asking a user to
 // install something they were already running.
 func TestWizardDoesNotOfferSmrtiOverALiveEngine(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "1", "3", "", "n", "n", "", "n")
+	h := newHarness(t, "5", "llama3", "", "3", "1", "3", "", "n", "n", "", "n")
 	h.opts.MemoryAnswering = func(context.Context, config.MemoryConfig) bool { return true }
 	h.opts.EnsureSmrti = func(context.Context, config.MemoryConfig, memory.Progress) (string, bool, error) {
 		t.Error("offered to install smrti while one was already answering")
@@ -1058,7 +1061,7 @@ func TestQuietRunLeavesAnExternalEngineAlone(t *testing.T) {
 // deciding from this session's environment is how xdotool never got installed
 // on a machine with a screen in front of it.
 func TestWizardSetsUpTheDesktopWhenOnlyTheSessionIsHeadless(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "y", "y", "y", "n")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "y", "y", "y", "n")
 	h.opts.Desktop = desktop.Env{
 		GOOS:   "linux",
 		Run:    func(context.Context, string, ...string) (string, error) { return "", nil },

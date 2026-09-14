@@ -82,6 +82,7 @@ func voiceAnswers(provider *httptest.Server, rest ...string) []string {
 		"sk-test", // api key
 		"1",       // model
 		"5",       // reasoning: none
+		"",        // fast model: the default
 		"3",       // memory: off
 		"n",       // no telegram
 		"n",       // no phone
@@ -441,7 +442,7 @@ func TestWizardVoicePickersOfferCloudAndLocalVoices(t *testing.T) {
 func TestWizardDecliningAConfiguredChannelCanDisableIt(t *testing.T) {
 	provider := fakeProvider(t, "big-model")
 	h := newHarness(t,
-		"8", provider.URL+"/v1", "sk-test", "1", "5", // provider, reasoning off
+		"8", provider.URL+"/v1", "sk-test", "1", "5", "", // provider, reasoning off, default fast model
 		"3", // memory: off
 		"n", // set up telegram? no —
 		"n", // — and do not keep it enabled
@@ -481,7 +482,7 @@ func TestWizardDecliningAConfiguredChannelCanDisableIt(t *testing.T) {
 
 	// The other answer: declining setup but keeping the channel on.
 	kept := newHarness(t,
-		"8", provider.URL+"/v1", "sk-test", "1", "5",
+		"8", provider.URL+"/v1", "sk-test", "1", "5", "",
 		"3",
 		"n", // set up telegram? no —
 		"y", // — but keep it running

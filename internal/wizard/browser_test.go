@@ -23,7 +23,7 @@ import (
 // The browser step is the one that used to lie: it asked "enable the browser
 // tools?", took yes for an answer, and left the machine with no browser.
 func TestWizardInstallsBrowserWhenMissing(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y", "n")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "", "y", "y", "n")
 	if err := os.Remove(fakeBrowserPath(h.home)); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestWizardInstallsBrowserWhenMissing(t *testing.T) {
 // silently is how a box ends up with the browser tools registered, no browser
 // behind them, and nothing left that would ever install one.
 func TestWizardReportsAFailedBrowserInstall(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "y", "n")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "", "y", "y", "n")
 	if err := os.Remove(fakeBrowserPath(h.home)); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestWizardReportsAFailedBrowserInstall(t *testing.T) {
 }
 
 func TestWizardKeepsBrowserToolsWhenInstallDeclined(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y", "n", "n")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "", "y", "n", "n")
 	if err := os.Remove(fakeBrowserPath(h.home)); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestWizardKeepsBrowserToolsWhenInstallDeclined(t *testing.T) {
 }
 
 func TestWizardUsesTheBrowserAlreadyInstalled(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "", "y")
 	h.opts.EnsureBrowser = func(context.Context, browser.Progress) (string, bool, error) {
 		t.Error("EnsureBrowser called with a browser already on PATH")
 		return "", false, nil
@@ -113,7 +113,7 @@ func TestWizardUsesTheBrowserAlreadyInstalled(t *testing.T) {
 // installed browser still refuses to start; the other, no display, is decided
 // at launch instead of here.
 func TestWizardConfiguresBrowserForRoot(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "", "y")
 	old := geteuid
 	geteuid = func() int { return 0 }
 	t.Cleanup(func() { geteuid = old })
@@ -130,7 +130,7 @@ func TestWizardConfiguresBrowserForRoot(t *testing.T) {
 }
 
 func TestWizardReportsABrowserThatWillNotDrive(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "", "y")
 	h.opts.VerifyBrowser = func(context.Context, config.BrowserConfig) error {
 		return errors.New("chrome exited before the socket appeared")
 	}
@@ -176,7 +176,7 @@ func TestQuietRunProvisionsBrowser(t *testing.T) {
 // The headless engine is installed without a question: it is the browser
 // every gateway without a display runs.
 func TestWizardInstallsCamofox(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "", "y")
 	if err := h.run(); err != nil {
 		t.Fatalf("wizard: %v\n%s", err, h.out.String())
 	}
@@ -188,7 +188,7 @@ func TestWizardInstallsCamofox(t *testing.T) {
 // A headless engine that will not install must not cost the user the
 // browser they already have, and the reason is shown.
 func TestWizardKeepsTheBrowserWhenCamofoxWillNotInstall(t *testing.T) {
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "y")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "", "y")
 	h.opts.EnsureCamofox = func(context.Context, browser.Progress) (string, bool, error) {
 		return "", false, errors.New("no Node 22 or newer on this machine")
 	}

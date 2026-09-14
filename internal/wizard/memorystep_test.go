@@ -70,6 +70,7 @@ func TestWizardPicksAnExtractionModel(t *testing.T) {
 		"2",                // model: small-model
 		"1",                // reasoning effort: xhigh
 		"",                 // do not hide the reasoning text
+		"",                 // fast model: the default
 		"1",                // memory: managed sidecar
 		"y",                // install smrti
 		"1",                // personality: balanced

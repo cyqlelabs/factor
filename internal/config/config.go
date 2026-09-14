@@ -134,14 +134,54 @@ type ProviderConfig struct {
 	// Candidates inherit type, key and base from the main provider, so
 	// naming a cheaper model of the same vendor is one line.
 	Utility []Candidate `json:"utility,omitempty"`
+	// Light is the chain for the line said while a turn is still working.
+	// That call is the opposite of the conversation's: it carries a couple
+	// of hundred tokens, its answer is a dozen words, and the only quality
+	// that matters is arriving before the user decides nothing is happening.
+	// Running it on the conversation's model spends thirty seconds and a
+	// reasoning budget saying "give me a second".
+	//
+	// Unset resolves to the fastest thing this install can reach rather than
+	// to nothing, because a filler that needs configuring is a filler nobody
+	// has. See LightCandidates. It is one candidate rather than a chain:
+	// there is no failover worth having for a line that is only worth saying
+	// while the user is still waiting, and one object is what makes
+	// `provider.light.model` a key config_set can reach.
+	Light *Candidate `json:"light,omitempty"`
 }
 
-// UtilityCandidates resolves the housekeeping chain, filling each candidate's
-// blanks from the main provider. Nil when nothing is configured, which the
-// caller reads as "use the main chain".
-func (p ProviderConfig) UtilityCandidates() []Candidate {
+// DefaultLightModel is what an OpenRouter install reaches for when nothing is
+// configured: one key already buys every vendor there, so the fastest model
+// on the market is a model name away. Other backends have no such catalogue —
+// a name picked for them would be a guaranteed 404 — so they run the filler
+// on the model they already have, with the thinking switched off, which is
+// most of what makes it slow.
+const DefaultLightModel = "deepseek/deepseek-v4-flash-0731"
+
+// LightCandidates resolves the filler chain. Unlike the utility chain it
+// always names something: the line exists to keep a conversation from going
+// silent, and falling back to "no filler" would answer the complaint with the
+// thing complained about.
+func (p ProviderConfig) LightCandidates() []Candidate {
+	c := Candidate{}
+	if p.Light != nil {
+		c = *p.Light
+	}
+	if c.Model == "" {
+		c.Model = p.Model
+		if p.Type == "openrouter" {
+			c.Model = DefaultLightModel
+		}
+	}
+	return p.inherit([]Candidate{c})
+}
+
+// inherit fills each candidate's blanks from the main provider and switches
+// reasoning off. A model that thinks before saying "one moment" has missed
+// the point of being asked.
+func (p ProviderConfig) inherit(cands []Candidate) []Candidate {
 	var out []Candidate
-	for _, c := range p.Utility {
+	for _, c := range cands {
 		if c.Type == "" {
 			c.Type = p.Type
 		}
@@ -154,9 +194,6 @@ func (p ProviderConfig) UtilityCandidates() []Candidate {
 		if c.Model == "" {
 			continue // a candidate with no model names nothing to call
 		}
-		// Reasoning stays off unless asked for: a summary spent thinking is
-		// a summary that never arrives, which is what NoReasoning already
-		// guards against on the main chain.
 		if c.Reasoning == nil {
 			c.Reasoning = &ReasoningConfig{}
 		}
@@ -164,6 +201,11 @@ func (p ProviderConfig) UtilityCandidates() []Candidate {
 	}
 	return out
 }
+
+// UtilityCandidates resolves the housekeeping chain, filling each candidate's
+// blanks from the main provider. Nil when nothing is configured, which the
+// caller reads as "use the main chain".
+func (p ProviderConfig) UtilityCandidates() []Candidate { return p.inherit(p.Utility) }
 
 // Candidates returns the primary candidate followed by the fallbacks, each
 // carrying the reasoning settings it should use.

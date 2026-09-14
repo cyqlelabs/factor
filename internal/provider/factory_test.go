@@ -301,3 +301,24 @@ func TestBuildUtilityChain(t *testing.T) {
 		t.Error("an unknown provider type was accepted")
 	}
 }
+
+// The filler chain is built from a resolved default rather than from config
+// alone, so an install that never mentioned it still has one.
+func TestBuildLightChainAlwaysNamesSomething(t *testing.T) {
+	chain, err := BuildLightChain(config.ProviderConfig{Type: "openrouter", APIKey: "k", Model: "big"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chain == nil {
+		t.Fatal("an openrouter install should have a filler chain")
+	}
+	// Nothing configured at all is the one case with no chain: there is no
+	// endpoint to ask.
+	chain, err = BuildLightChain(config.ProviderConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chain != nil {
+		t.Error("a Factor with no provider should have no filler chain")
+	}
+}

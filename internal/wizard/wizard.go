@@ -442,7 +442,10 @@ func (w *wiz) stepProvider(ctx context.Context) error {
 		}
 		w.cfg.Provider.Model = model
 		w.ui.Note("add the key later with: factor config set provider.api_key <key>")
-		return w.askReasoning(preset.Type)
+		if err := w.askReasoning(preset.Type); err != nil {
+			return err
+		}
+		return w.askLightModel()
 	}
 
 	var models []string
@@ -461,8 +464,54 @@ func (w *wiz) stepProvider(ctx context.Context) error {
 	if err := w.askReasoning(preset.Type); err != nil {
 		return err
 	}
+	if err := w.askLightModel(); err != nil {
+		return err
+	}
 	cand.Reasoning = &w.cfg.Provider.Reasoning
 	return w.verifyProvider(ctx, cand)
+}
+
+// askLightModel picks the model that writes the line Factor says while a turn
+// is still working. It is a separate question from the main model because it
+// is a separate job: the answer is a dozen words about what is happening, and
+// the only thing that makes it worth having is that it arrives while the user
+// is still wondering.
+//
+// The default is already right on most installs — OpenRouter sells the
+// fastest model on the market behind the key just entered, and everywhere
+// else the conversation's own model with the thinking switched off is as fast
+// as that backend gets — so the question is an input with the answer in it
+// rather than a decision the user has to make.
+func (w *wiz) askLightModel() error {
+	def := ""
+	if cands := w.cfg.Provider.LightCandidates(); len(cands) > 0 {
+		def = cands[0].Model
+	}
+	if def == "" {
+		return nil // no main model either; there is nothing to fall back to
+	}
+	w.ui.Note("while a turn is still working, Factor says what it is doing — that line is written by a second, faster model")
+	model, err := w.ui.Input("Fast model", def)
+	if err != nil {
+		return err
+	}
+	if model = strings.TrimSpace(model); model == "" || model == def {
+		// The resolved default already names this one; storing it would pin
+		// a name that then has to be changed in two places.
+		w.cfg.Provider.Light = nil
+		return nil
+	}
+	w.cfg.Provider.Light = &config.Candidate{Model: model}
+	return nil
+}
+
+// lightSummary names the model that writes the line said while a turn works.
+func (w *wiz) lightSummary() string {
+	cands := w.cfg.Provider.LightCandidates()
+	if len(cands) == 0 {
+		return "none"
+	}
+	return cands[0].Model
 }
 
 // reasoningLevels are the efforts Factor can ask for. The wire spelling
@@ -2232,6 +2281,7 @@ func (w *wiz) stepFinish(context.Context) error {
 	rows := [][2]string{
 		{"provider", fmt.Sprintf("%s · %s", w.cfg.Provider.Type, w.cfg.Provider.Model)},
 		{"reasoning", reasoningSummary(w.cfg.Provider.Reasoning)},
+		{"fast model", w.lightSummary()},
 		{"memory", w.memorySummary()},
 		{"channels", w.channelSummary()},
 		{"desktop", w.desktopSummary()},

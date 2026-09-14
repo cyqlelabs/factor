@@ -65,7 +65,11 @@ func (t *AskTool) current() Asker {
 	return t.asker
 }
 
-func (t *AskTool) Name() string { return "ask_user" }
+// AskToolName is the one tool whose runtime is the user thinking rather than
+// a machine working. Anything that fills a turn's silence has to know it.
+const AskToolName = "ask_user"
+
+func (t *AskTool) Name() string { return AskToolName }
 
 func (t *AskTool) Description() string {
 	return "Ask the user a question and wait for their answer. Use it when the work cannot " +

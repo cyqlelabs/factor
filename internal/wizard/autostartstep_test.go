@@ -16,7 +16,7 @@ import (
 // the build tag — a fixed list would land the autostart answer two prompts
 // early under -tags nobrowser.
 func autostartAnswers(answer string) []string {
-	base := []string{"5", "llama3", "3", "3", "n", "n", ""}
+	base := []string{"5", "llama3", "", "3", "3", "n", "n", ""}
 	if browser.Available() {
 		base = append(base, "")
 	}
@@ -140,7 +140,7 @@ func TestWizardAutostartRemoveFailureKeepsTheSummaryHonest(t *testing.T) {
 func TestWizardAutostartSkippedByNoInstall(t *testing.T) {
 	// --no-install and nothing installed: no prompt, no machine mutation.
 	// The script carries no autostart answer at all.
-	h := newHarness(t, "5", "llama3", "3", "3", "n", "n", "", "", "")
+	h := newHarness(t, "5", "llama3", "", "3", "3", "n", "n", "", "", "")
 	h.opts.NoInstall = true
 	h.opts.InstallAutostart = func(context.Context, string) (string, error) {
 		t.Error("--no-install installed a login entry")

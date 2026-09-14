@@ -64,22 +64,21 @@ const (
 	// channel says something of its own, and holdingInterval how often it
 	// says it again after that.
 	//
-	// The agent is told to open with a line before its first tool call, and
-	// the notice path carries that line the moment it exists — but a prompt
-	// is a request, not a guarantee. Captured over a long spoken session
-	// here, five of six tool-calling iterations came back with the call and
-	// no text at all, and the first word the user heard landed 136 seconds
-	// after they stopped speaking. A pair of speakers has no typing
-	// indicator: silence is the whole of what the channel can say, and two
-	// minutes of it reads as a crash rather than as work.
+	// This is the net under the net. A pair of speakers has no typing
+	// indicator, so silence is the whole of what the channel can say and two
+	// minutes of it reads as a crash — but a canned line is an on-hold
+	// message, and the turn itself has two better answers first: what the
+	// model says before its own tool call, and the filler the loop writes on
+	// a fast model when the model says nothing (see agent.fillerGrace). Both
+	// arrive as notices and both restart this clock.
 	//
-	// The grace is set past an ordinary answer rather than at the edge of
-	// politeness. A turn that answers without tools lands between six and
-	// eleven seconds on this machine, and a filler in front of every one of
-	// them is a verbal tic; past eight seconds the pause has stopped being
-	// conversational and a word costs less than the doubt.
-	holdingGrace    = 8 * time.Second
-	holdingInterval = 30 * time.Second
+	// So the grace sits past the point where those two have failed rather
+	// than past an ordinary answer: eight seconds for the filler to fire,
+	// six more for its call to time out. What is left over is a chain that
+	// is down or a Factor with no provider at all, and there a word nobody
+	// wrote still beats the room going quiet.
+	holdingGrace    = 20 * time.Second
+	holdingInterval = 45 * time.Second
 )
 
 // Voice is the PC voice connector. Like the phone it does not publish inbound

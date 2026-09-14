@@ -50,10 +50,20 @@ func New(c config.Candidate) (Provider, error) {
 
 // BuildChain assembles the failover chain from configuration.
 func BuildChain(cfg config.ProviderConfig) (*Chain, error) {
+	return buildChain(cfg.Candidates(), cfg.MaxRetries, cfg, "")
+}
+
+// buildChain turns candidates into a failover chain. label names the chain in
+// an error, and is empty for the conversation's own: "provider: openai: …"
+// already says which one that is.
+func buildChain(cands []config.Candidate, retries int, cfg config.ProviderConfig, label string) (*Chain, error) {
 	var providers []Provider
-	for _, cand := range cfg.Candidates() {
+	for _, cand := range cands {
 		p, err := New(cand)
 		if err != nil {
+			if label != "" {
+				return nil, fmt.Errorf("%s provider: %w", label, err)
+			}
 			return nil, err
 		}
 		providers = append(providers, p)
@@ -62,7 +72,7 @@ func BuildChain(cfg config.ProviderConfig) (*Chain, error) {
 	if backoff <= 0 {
 		backoff = 2 * time.Second
 	}
-	return NewChain(providers, cfg.MaxRetries, backoff), nil
+	return NewChain(providers, retries, backoff), nil
 }
 
 // BuildUtilityChain assembles the housekeeping chain, or returns nil when none
@@ -73,19 +83,20 @@ func BuildUtilityChain(cfg config.ProviderConfig) (*Chain, error) {
 	if len(cands) == 0 {
 		return nil, nil
 	}
-	var providers []Provider
-	for _, cand := range cands {
-		p, err := New(cand)
-		if err != nil {
-			return nil, fmt.Errorf("utility provider: %w", err)
-		}
-		providers = append(providers, p)
+	return buildChain(cands, cfg.MaxRetries, cfg, "utility")
+}
+
+// BuildLightChain assembles the filler chain — the one call the user is
+// waiting on rather than reading. It is nil only when no provider is
+// configured at all, since config.LightCandidates always names something.
+func BuildLightChain(cfg config.ProviderConfig) (*Chain, error) {
+	cands := cfg.LightCandidates()
+	if len(cands) == 0 {
+		return nil, nil
 	}
-	backoff := time.Duration(cfg.RetryBackoffSecs) * time.Second
-	if backoff <= 0 {
-		backoff = 2 * time.Second
-	}
-	return NewChain(providers, cfg.MaxRetries, backoff), nil
+	// No retries, unlike the conversation's chain: a filler that arrives
+	// after the answer is worse than one that never arrives.
+	return buildChain(cands, 0, cfg, "light")
 }
 
 // OpenAICompatibleEndpoint returns the chat-completions base URL and key of the

@@ -72,11 +72,25 @@ type Loop struct {
 	chat ChatProvider
 	// utility is the chain for calls the user never reads. Nil means they
 	// share the conversation's chain.
-	utility  ChatProvider
-	registry *tools.Registry
-	sessions *session.Store
-	builder  *ContextBuilder
-	ambient  *memory.Ambient
+	utility ChatProvider
+	// light is the chain for the line said while a turn is still working.
+	// Nil turns the filler off, which is what a Factor with no provider at
+	// all has.
+	light ChatProvider
+	// How long a turn may run in silence before the filler speaks, and how
+	// often it speaks after that. See fillerGrace.
+	fillGrace time.Duration
+	fillEvery time.Duration
+	// lightFault reports the filler chain failing once rather than on every
+	// turn. A model name that does not exist on this account fails the same
+	// way a timeout does and is the far likelier of the two, so a dead
+	// filler has to be findable — and a line per turn for a feature nobody
+	// is waiting on is how a log stops being read.
+	lightFault sync.Once
+	registry   *tools.Registry
+	sessions   *session.Store
+	builder    *ContextBuilder
+	ambient    *memory.Ambient
 
 	mu        sync.Mutex
 	active    map[string]*turn
@@ -133,6 +147,8 @@ func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry 
 		pendingInduce: map[string]induceCandidate{},
 		sem:           make(chan struct{}, cfg.Agent.MaxConcurrentTurns),
 		lastChannel:   loadLastChannel(),
+		fillGrace:     fillerGrace,
+		fillEvery:     fillerInterval,
 	}
 }
 
@@ -140,6 +156,13 @@ func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry 
 // induction verdict — at their own chain. Nil leaves them on the main one.
 func (l *Loop) WithUtility(chat ChatProvider) *Loop {
 	l.utility = chat
+	return l
+}
+
+// WithLight points the filler — the line said while a turn is still working —
+// at its own chain. Nil leaves a turn to say what it says for itself.
+func (l *Loop) WithLight(chat ChatProvider) *Loop {
+	l.light = chat
 	return l
 }
 
@@ -187,6 +210,12 @@ func (l *Loop) utilityChat() ChatProvider {
 	}
 	return l.chat
 }
+
+// lightChat is the chain the filler runs on. Unlike utilityChat it does not
+// fall back to the conversation's own chain: that chain is the thing the user
+// is already waiting on, at the reasoning effort and prompt size that made
+// them wait, and asking it to explain itself would arrive after the answer.
+func (l *Loop) lightChat() ChatProvider { return l.light }
 
 // Run drains the inbound bus until ctx is cancelled. One live turn per
 // session key; overflow becomes steering. It also sweeps for sessions that
@@ -626,6 +655,12 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 	defer func() { tr.End(turnOutcome(ctx, err), err) }()
 	ctx = trace.WithTurn(ctx, tr)
 
+	// Whatever the turn does not say for itself, the filler says. It is armed
+	// before the history is loaded because the wait starts when the user
+	// stops talking, not when the first provider call leaves.
+	fill := l.fill(ctx, in)
+	defer fill.stop()
+
 	var history []provider.Message
 	if !in.ephemeral {
 		if history, err = l.sessions.History(in.sessionKey); err != nil {
@@ -725,6 +760,9 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 			// Final answer — unless steering arrived mid-turn; then keep going.
 			injected := l.drainSteering(in, t, record)
 			if len(injected) == 0 {
+				// The turn has its answer; anything the filler adds now
+				// arrives after the user has stopped waiting.
+				fill.stop()
 				// A turn that ends with nothing to say is a failure, not an
 				// answer, and it is the one failure that looks like working
 				// software: the channel has nothing to send, so it sends
@@ -750,6 +788,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 		// the whole turn — on a chat channel that is the difference between a
 		// silent minute and a conversation.
 		if notice := strings.TrimSpace(resp.Content); notice != "" && !in.ephemeral {
+			fill.spoke()
 			// Whoever is running this turn hears the line from the turn
 			// itself, which is the one place it arrives in time to be worth
 			// saying. Only a turn nobody is holding sends it the long way,
@@ -764,7 +803,9 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 		// The batch is answered before any of it is written down, so the
 		// calls can run in whatever order suits them and still be recorded
 		// in the order the model asked for.
+		fill.running(toolNames(resp.ToolCalls)...)
 		outcomes := l.runTools(ctx, in.sessionKey, tr, resp.ToolCalls, summaryTruncated(resp.FinishReason))
+		fill.finished()
 		for i, call := range resp.ToolCalls {
 			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: outcomes[i].content}
 			if err := record(toolMsg); err != nil {
@@ -799,6 +840,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 		}
 	}
 
+	fill.stop()
 	reply = l.wrapUp(ctx, in, messages)
 	l.maybeCompactAsync(in)
 	return reply, nil
