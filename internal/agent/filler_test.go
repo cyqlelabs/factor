@@ -192,3 +192,29 @@ func TestFillerIsQuietWhileTheUserIsBeingAsked(t *testing.T) {
 		t.Errorf("filler = %q after the question was answered", got)
 	}
 }
+
+// Composing takes a call, and the answer can land while it is in flight. A
+// line arriving behind the thing it said it was about to do is worse than
+// silence, so the turn outrunning its filler drops it.
+func TestFillerDropsALineTheAnswerHasOutrun(t *testing.T) {
+	h := newHarness(t)
+	f := &filler{loop: h.loop, in: turnInput{sessionKey: "cli:test", content: "hola"},
+		said: make(chan struct{}, 1), done: make(chan struct{})}
+	said := make(chan string, 1)
+	f.in.notice = func(line string) { said <- line }
+
+	// The turn answers while the filler's call is still out.
+	h.loop.WithLight(&scriptedChat{script: []func(*provider.Request) (*provider.Response, error){
+		func(*provider.Request) (*provider.Response, error) {
+			f.stop()
+			return &provider.Response{Content: "Estoy mirando eso."}, nil
+		},
+	}})
+	f.speak(context.Background())
+
+	select {
+	case line := <-said:
+		t.Errorf("a filler landed behind the answer: %q", line)
+	default:
+	}
+}

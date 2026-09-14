@@ -401,11 +401,20 @@ type sseStream struct {
 	w       http.ResponseWriter
 	id      string
 	created int64
-	open    bool
-	notes   int
+
+	// The turn's own notes used to arrive on the turn's goroutine and
+	// nothing else wrote here. The filler writes from a goroutine of its
+	// own, so two writers can reach one ResponseWriter — and interleaved
+	// halves of two SSE frames are not a late line, they are a stream the
+	// shell cannot parse at all.
+	mu     sync.Mutex
+	open   bool
+	sealed bool
+	notes  int
 }
 
-func (s *sseStream) begin() {
+// beginLocked opens the stream. Every caller already holds mu.
+func (s *sseStream) beginLocked() {
 	if s.open {
 		return
 	}
@@ -414,10 +423,10 @@ func (s *sseStream) begin() {
 	s.w.Header().Set("Cache-Control", "no-cache")
 	s.w.Header().Set("Connection", "keep-alive")
 	s.w.WriteHeader(http.StatusOK)
-	s.chunk(chatMessage{Role: "assistant"}, nil)
+	s.chunkLocked(chatMessage{Role: "assistant"}, nil)
 }
 
-func (s *sseStream) chunk(delta chatMessage, reason *string) {
+func (s *sseStream) chunkLocked(delta chatMessage, reason *string) {
 	payload, err := json.Marshal(chatResponse{
 		ID:      s.id,
 		Object:  "chat.completion.chunk",
@@ -438,28 +447,46 @@ func (s *sseStream) flush() {
 	}
 }
 
-// say speaks one mid-turn note into the live stream. It runs on the turn's
-// goroutine, so it does no more than write and flush.
+// say speaks one mid-turn note into the live stream — the turn's own, or the
+// filler's from a goroutine beside it.
 func (s *sseStream) say(line string) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return
 	}
-	s.begin()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// The turn is over and the handler has let go of the ResponseWriter, or
+	// is about to: a note arriving now is not late, it is a write to a dead
+	// stream. The answer already said everything this line was covering for.
+	if s.sealed {
+		return
+	}
+	s.beginLocked()
 	s.notes++
-	s.chunk(chatMessage{Content: line + " "}, nil)
+	s.chunkLocked(chatMessage{Content: line + " "}, nil)
 }
 
 // spoke reports whether anything has already reached the caller, so an empty
 // answer after a note is silence rather than a placeholder read aloud.
-func (s *sseStream) spoke() bool { return s != nil && s.notes > 0 }
+func (s *sseStream) spoke() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.notes > 0
+}
 
 func (s *sseStream) finish(reply string) {
-	s.begin()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sealed = true
+	s.beginLocked()
 	if reply != "" {
-		s.chunk(chatMessage{Content: reply}, nil)
+		s.chunkLocked(chatMessage{Content: reply}, nil)
 	}
-	s.chunk(chatMessage{}, finish("stop"))
+	s.chunkLocked(chatMessage{}, finish("stop"))
 	_, _ = fmt.Fprint(s.w, "data: [DONE]\n\n")
 	s.flush()
 }

@@ -34,11 +34,18 @@ import (
 // it reports what is happening and stops.
 const (
 	// fillerGrace is how long a turn may run in silence before the filler
-	// speaks, and fillerInterval how often it speaks after that. The grace
-	// sits past an ordinary answer — a turn that answers without tools lands
-	// between six and eleven seconds on a slow chain — because a preamble in
-	// front of every one of those is a verbal tic.
-	fillerGrace    = 8 * time.Second
+	// speaks, and fillerInterval how often it speaks after that.
+	//
+	// The grace is set by what a pause means to a person, not by what the
+	// chain costs. Three seconds of nothing is already long enough in a room
+	// and past the point where a caller checks whether the line dropped, and
+	// a person who is about to go and look something up says so about that
+	// fast. There is no longer a reason to wait out an ordinary answer
+	// either: the line is written about this turn rather than stamped out,
+	// so hearing one before a quick reply is a conversation rather than a
+	// tic — and an answer that beats the filler to the speakers cancels it
+	// outright rather than queuing behind it. See speak.
+	fillerGrace    = 3 * time.Second
 	fillerInterval = 30 * time.Second
 
 	// fillerDeadline bounds the call. A filler is worth having only while the
@@ -144,10 +151,22 @@ func (f *filler) run(ctx context.Context) {
 // speak composes one line and delivers it the way the turn's own notices go
 // out. A failure is silence rather than a fault: nothing here is part of the
 // answer, and a turn must never end because its filler could not be written.
+//
+// Composing takes a call, and the answer can land while it is in flight. What
+// the channel does with the two then is not overlap — a spoken reply holds
+// the floor for its whole length, and the phone's stream serializes its
+// writers — it is order, and "I'm looking that up" arriving behind the thing
+// it was looking up is worse than silence. So a line the turn has outrun is
+// dropped where it stands.
 func (f *filler) speak(ctx context.Context) {
 	line := f.compose(ctx)
 	if line == "" {
 		return
+	}
+	select {
+	case <-f.done:
+		return
+	default:
 	}
 	f.mu.Lock()
 	f.lines = append(f.lines, line)
@@ -178,9 +197,17 @@ func (f *filler) compose(ctx context.Context) string {
 	}
 
 	// The deadline hangs off the turn, so a cancelled turn cancels the filler
-	// it no longer needs.
+	// it no longer needs — and so does a turn that simply finished, since
+	// there is nothing left to say and no reason to pay for the saying.
 	ctx, cancel := context.WithTimeout(ctx, fillerDeadline)
 	defer cancel()
+	go func() {
+		select {
+		case <-f.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	resp, err := chat.Chat(ctx, &provider.Request{
 		Messages: []provider.Message{
 			{Role: "system", Content: fillerRules(f.in.toolCtx.Language)},

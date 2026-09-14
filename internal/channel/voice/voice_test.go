@@ -1659,3 +1659,24 @@ func TestHoldingLineLocalization(t *testing.T) {
 		t.Error("holdingLine should cycle through its lines")
 	}
 }
+
+// A turn that answers with nothing — an utterance folded into a turn already
+// running — used to return the moment its runner did, and this function's own
+// cancellation followed it out and cut whatever note was still on the
+// speakers mid-word. Nothing else was going to speak; the line had only to be
+// allowed to finish.
+func TestVoiceLetsANoteFinishWhenTheTurnSaysNothing(t *testing.T) {
+	const note = "dejame ver eso"
+	h := newVoiceHarness(t, nil)
+	// Long enough that a cut is a short run rather than a rounding error.
+	h.setReplyPCM(clip(64000))
+	h.v.BindTurnRunner(func(_ context.Context, _, _, _, _ string, notice func(string)) (string, error) {
+		notice(note)
+		return "", nil // steered into a live turn: this one has nothing to say
+	})
+	h.start()
+
+	h.say()
+	waitUntil(t, func() bool { return h.spoke(note) })
+	waitUntil(t, func() bool { return len(h.speaker.heard()) >= 64000 })
+}

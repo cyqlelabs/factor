@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -680,5 +681,52 @@ func TestBridgeDoesNotPadAnAnswerlessTurnThatAlreadySpoke(t *testing.T) {
 	}
 	if strings.Contains(string(body), "…") {
 		t.Errorf("a turn that already spoke was padded: %s", body)
+	}
+}
+
+// The turn's own notes arrive on the turn's goroutine; the filler's arrive on
+// a goroutine beside it. Two writers on one ResponseWriter do not produce a
+// late line, they produce half of one frame inside another and a stream the
+// shell cannot parse.
+func TestSSEStreamSurvivesTwoWriters(t *testing.T) {
+	rec := httptest.NewRecorder()
+	stream := &sseStream{w: rec, id: "chatcmpl-x", created: 1}
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stream.say(fmt.Sprintf("note %d", i))
+		}()
+	}
+	wg.Wait()
+	stream.finish("the answer")
+
+	if !stream.spoke() {
+		t.Error("notes should count as having reached the caller")
+	}
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+		if !json.Valid([]byte(payload)) {
+			t.Fatalf("interleaved frame: %q", payload)
+		}
+	}
+}
+
+// The handler lets go of the ResponseWriter the moment it returns, and the
+// filler runs on a goroutine that does not know that. A note arriving after
+// the answer is not a late line, it is a write to a dead stream.
+func TestSSEStreamRefusesNotesAfterTheAnswer(t *testing.T) {
+	rec := httptest.NewRecorder()
+	stream := &sseStream{w: rec, id: "chatcmpl-x", created: 1}
+	stream.finish("the answer")
+	stream.say("still looking that up")
+
+	if strings.Contains(rec.Body.String(), "still looking that up") {
+		t.Errorf("a note was written after the stream closed:\n%s", rec.Body.String())
 	}
 }

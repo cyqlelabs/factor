@@ -73,10 +73,11 @@ const (
 	// arrive as notices and both restart this clock.
 	//
 	// So the grace sits past the point where those two have failed rather
-	// than past an ordinary answer: eight seconds for the filler to fire,
-	// six more for its call to time out. What is left over is a chain that
-	// is down or a Factor with no provider at all, and there a word nobody
-	// wrote still beats the room going quiet.
+	// than past an ordinary answer: three seconds for the filler to fire,
+	// six more for its call to time out, and room after that for a line the
+	// turn outran and dropped. What is left over is a chain that is down or
+	// a Factor with no provider at all, and there a word nobody wrote still
+	// beats the room going quiet.
 	holdingGrace    = 20 * time.Second
 	holdingInterval = 45 * time.Second
 )
@@ -823,14 +824,26 @@ func (v *Voice) runTurn(parent context.Context, text string, who speakerIdentity
 	// own goroutine: the point of a filler line is to fill the time the tools
 	// take, not to be queued behind them. speak serialises it against the
 	// answer, so the two arrive in the order they were written.
+	var notes sync.WaitGroup
 	notice := func(line string) {
 		held.mark()
-		v.spawn(func() { v.speak(ctx, line) })
+		notes.Add(1)
+		if !v.spawn(func() { defer notes.Done(); v.speak(ctx, line) }) {
+			notes.Done()
+		}
 	}
 	reply, err := v.runner(ctx, text, sessionFor(who, st.Shared), who.attributed(), st.audience(), notice)
 	// The turn has its answer; anything the channel adds now arrives after
 	// the user has stopped waiting.
 	held.stop()
+	// A note may still be on the speakers, and this function's own
+	// cancellation follows it out of here: every path below either speaks the
+	// answer — which waits for the floor anyway — or returns, and returning
+	// cuts the line mid-word. Waiting costs nothing on the paths that were
+	// going to wait, and on the ones that were not it is the difference
+	// between a sentence and half of one. A barge-in has already cancelled
+	// the speaking, so this returns at once where it should.
+	notes.Wait()
 	if ctx.Err() != nil {
 		// Barged in on — the next utterance owns the conversation — or cut
 		// short by the room filling up, which the caller reads off the flag.
