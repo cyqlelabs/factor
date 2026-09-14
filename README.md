@@ -119,8 +119,10 @@ gracefully (empty recalls, dropped writes) when it's down. Point
 `factor upgrade` downloads the release for this machine, verifies it against the
 published `SHA256SUMS`, and swaps the binary in place (`--check` only reports). A
 running gateway restarts into it once the turn in flight is answered, keeping its
-pid so systemd never sees it stop. Factor checks daily and tells you, never
-installing unasked.
+pid so systemd never sees it stop. Windows has no signal that reaches a process it
+did not start, so the terminal asks over the gateway's own loopback endpoint
+instead and the replacement comes up as a new pid. Factor checks daily and tells
+you, never installing unasked.
 
 The same command brings smrti up to date however it runs here: a container is
 recreated on the newly published image, and a uv, pipx, pip or venv install is
@@ -317,6 +319,12 @@ Frames are capped at 1568px on the longest side (clicks still land at native
 resolution), only the two newest stay in context, and image bytes never touch
 session history. Non-vision models can disable both vision tools via
 `tools.disabled`.
+
+**On a Mac, grant Screen Recording first.** Without it `screencapture` does not
+fail — it exits 0 and returns the wallpaper with every window removed, so a
+desktop with six applications open reads as an empty one. `screen_view` says which
+permission produces that; it lives under System Settings → Privacy & Security →
+Screen Recording.
 
 ## Phone calls and SMS
 
@@ -569,6 +577,13 @@ A spoken turn is told it's being heard rather than read, so replies come out say
 — no markdown, no bullet lists, no spelled-out URLs. `voice_write` sends anything
 long or written to your terminal instead, or to the chat you last used when Factor
 runs as a daemon.
+
+Factor starts talking before the whole reply is rendered. The answer is cut at
+sentence boundaries with a short first piece, and each piece is synthesised while
+the one before it plays. A CPU voice renders at a few times real time, so waiting
+for a twenty-second answer in full used to cost several seconds of silence after
+every question; one sentence renders in a fraction of that, and the rest is in
+hand before the speakers need it.
 
 The local tier keeps to itself. Factor sets `ORT_DISABLE_TELEMETRY=1` in the speech
 process's environment before it starts, because onnxruntime otherwise uploads your
