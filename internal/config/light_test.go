@@ -23,8 +23,25 @@ func TestLightCandidatesDefaultToTheFastestReachableModel(t *testing.T) {
 	if len(got) != 1 || got[0].Model != "qwen3:8b" {
 		t.Fatalf("ollama light = %+v", got)
 	}
-	if got[0].Reasoning == nil || !got[0].Reasoning.IsZero() {
-		t.Errorf("a filler that thinks has missed the point: %+v", got[0].Reasoning)
+	if got[0].Reasoning == nil || got[0].Reasoning.Effort != DefaultLightEffort {
+		t.Errorf("light reasoning = %+v, want an explicit %s", got[0].Reasoning, DefaultLightEffort)
+	}
+}
+
+// Leaving the effort out is not the same as asking for none of it: the models
+// worth putting here reason by default, and on the OpenAI dialects the token
+// cap covers the thinking, so an unstated effort spends the whole cap on a
+// chain of thought and answers with no content at all.
+func TestLightCandidatesStateTheirEffortRatherThanOmittingIt(t *testing.T) {
+	got := ProviderConfig{Type: "openrouter", APIKey: "k", Model: "big"}.LightCandidates()[0]
+	if got.Reasoning == nil || got.Reasoning.IsZero() {
+		t.Fatalf("an omitted effort reaches the wire as no parameters at all: %+v", got.Reasoning)
+	}
+	// A user who asked for something else keeps it.
+	p := ProviderConfig{Type: "openrouter", Model: "big",
+		Light: &Candidate{Model: "vendor/tiny", Reasoning: &ReasoningConfig{Effort: "none"}}}
+	if got := p.LightCandidates()[0]; got.Reasoning.Effort != "none" {
+		t.Errorf("light reasoning = %+v, want the configured one", got.Reasoning)
 	}
 }
 

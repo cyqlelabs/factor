@@ -304,3 +304,46 @@ func TestSupportsReasoning(t *testing.T) {
 		}
 	}
 }
+
+// The filler's whole value is arriving quickly, and the models fast enough to
+// be worth putting there reason by default. Leaving the effort unstated is
+// how the parameter never reaches them: a chain built from an unconfigured
+// light section must carry an explicit one to a gateway that understands it,
+// and none at all to a local server that would reject the field.
+func TestLightChainStatesItsEffortWhereItIsUnderstood(t *testing.T) {
+	srv, got := captureBody(t, oaReply)
+	chain, err := BuildLightChain(config.ProviderConfig{
+		Type: "openrouter", APIKey: "k", APIBase: srv.URL, Model: "big"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chain.Chat(context.Background(), &Request{
+		Messages: []Message{{Role: "user", Content: "say what you are doing"}}}); err != nil {
+		t.Fatal(err)
+	}
+	reasoning, ok := (*got)["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("no reasoning parameters reached the model: %v", *got)
+	}
+	if reasoning["effort"] != config.DefaultLightEffort {
+		t.Errorf("effort = %v, want %q", reasoning["effort"], config.DefaultLightEffort)
+	}
+
+	// A local server is handed nothing: an unknown field there usually takes
+	// the whole request down with it.
+	local, got := captureBody(t, oaReply)
+	chain, err = BuildLightChain(config.ProviderConfig{Type: "ollama", APIBase: local.URL, Model: "qwen3:8b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chain.Chat(context.Background(), &Request{
+		Messages: []Message{{Role: "user", Content: "say what you are doing"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := (*got)["reasoning"]; present {
+		t.Errorf("a local server was handed reasoning parameters: %v", *got)
+	}
+	if _, present := (*got)["reasoning_effort"]; present {
+		t.Errorf("a local server was handed reasoning_effort: %v", *got)
+	}
+}

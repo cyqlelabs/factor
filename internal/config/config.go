@@ -158,6 +158,16 @@ type ProviderConfig struct {
 // most of what makes it slow.
 const DefaultLightModel = "deepseek/deepseek-v4-flash-0731"
 
+// DefaultLightEffort is how hard the filler is allowed to think, and it is
+// stated rather than left out. Leaving it out is not "off": the fast models
+// worth using here reason by default, and on the OpenAI dialects the token
+// cap covers the thinking as well as the answer — so an unstated effort
+// spends the whole cap on a chain of thought, comes back finish_reason
+// "length" with no content at all, and the turn runs silent. Low, not none:
+// a sentence about what is happening is worth a moment's thought, and "none"
+// on this dialect means send no parameters, which is where this started.
+const DefaultLightEffort = "low"
+
 // LightCandidates resolves the filler chain. Unlike the utility chain it
 // always names something: the line exists to keep a conversation from going
 // silent, and falling back to "no filler" would answer the complaint with the
@@ -172,6 +182,9 @@ func (p ProviderConfig) LightCandidates() []Candidate {
 		if p.Type == "openrouter" {
 			c.Model = DefaultLightModel
 		}
+	}
+	if c.Reasoning == nil {
+		c.Reasoning = &ReasoningConfig{Effort: DefaultLightEffort}
 	}
 	return p.inherit([]Candidate{c})
 }

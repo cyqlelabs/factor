@@ -105,7 +105,7 @@ func TestFillerIsSilentWithoutALightChain(t *testing.T) {
 // arguments are not: a second model has no business with the user's paths and
 // searches, and the shape of the work is all the sentence needs.
 func TestFillerStateCarriesToolNamesAndNotArguments(t *testing.T) {
-	state := fillerState("open the report", []string{"read_file", "exec"}, nil)
+	state := fillerState("open the report", []string{"read_file", "exec"}, nil, "")
 	if !strings.Contains(state, "read_file, exec") {
 		t.Errorf("tool names missing: %q", state)
 	}
@@ -118,12 +118,57 @@ func TestFillerStateCarriesToolNamesAndNotArguments(t *testing.T) {
 		many = append(many, "read_file")
 	}
 	many[0] = "first_call"
-	if got := fillerState("x", many, nil); strings.Contains(got, "first_call") {
+	if got := fillerState("x", many, nil, ""); strings.Contains(got, "first_call") {
 		t.Errorf("the oldest calls should fall off: %q", got)
 	}
 	// It repeats neither itself nor the assistant.
-	if got := fillerState("x", nil, []string{"Dame un momento."}); !strings.Contains(got, "Do not say it again") {
+	if got := fillerState("x", nil, []string{"Dame un momento."}, ""); !strings.Contains(got, "Dame un momento.") {
 		t.Errorf("said lines missing: %q", got)
+	}
+}
+
+// Recall is strongest at the two ends of a prompt, and the request is the one
+// thing here that pulls toward answering it. Ending on the request put the
+// temptation in the best seat in the house and the rule against it in the
+// worst, so the state block closes on the instruction instead.
+func TestFillerStateEndsOnTheInstructionRatherThanTheRequest(t *testing.T) {
+	state := fillerState("¿cuánto gasté este mes?", []string{"read_file"}, nil, "es")
+	tail := state[len(state)/2:]
+	if !strings.Contains(tail, "not the answer") {
+		t.Errorf("the closing constraint is missing: %q", tail)
+	}
+	if strings.HasSuffix(strings.TrimSpace(state), "¿cuánto gasté este mes?") {
+		t.Error("the prompt ends on the request it must not answer")
+	}
+	if !strings.Contains(tail, `"es"`) {
+		t.Errorf("the language is not restated where it is read: %q", tail)
+	}
+}
+
+// A request runs as long as the user felt like talking; the filler needs its
+// subject, not all of it.
+func TestFillerStateClipsALongRequest(t *testing.T) {
+	long := strings.Repeat("palabra ", 200)
+	if got := fillerState(long, nil, nil, ""); len(got) > fillerRequestChars+600 {
+		t.Errorf("state grew to %d bytes on a long request", len(got))
+	}
+}
+
+// A model this size follows a worked example further than a paragraph about
+// one, and an example in the wrong language pulls the answer with it.
+func TestFillerExamplesAreWrittenInTheLineSLanguage(t *testing.T) {
+	if !strings.Contains(fillerExamples("es"), "Estoy mirando el pronóstico.") {
+		t.Error("a Spanish line needs Spanish demonstrations")
+	}
+	if !strings.Contains(fillerExamples("en"), "I'm checking the forecast.") {
+		t.Error("English demonstrations missing")
+	}
+	// Each one pairs a request with a line that conspicuously does not answer
+	// it, which is the whole thing being demonstrated.
+	for _, lang := range []string{"es", "en"} {
+		if strings.Count(fillerExamples(lang), "Request:") < 3 {
+			t.Errorf("%s: too few demonstrations to set a pattern", lang)
+		}
 	}
 }
 
@@ -140,8 +185,8 @@ func TestFillerRulesNameTheSpokenLanguage(t *testing.T) {
 	if !strings.Contains(fillerRules("es"), `"es"`) {
 		t.Error("the language code should reach the filler's brief")
 	}
-	if !strings.Contains(fillerRules(""), "same language the user used") {
-		t.Error("with no code set, the filler follows the user")
+	if !strings.Contains(fillerRules(""), "same language as the request") {
+		t.Error("with no code set, the filler follows the request")
 	}
 }
 

@@ -53,13 +53,22 @@ const (
 	// answer, and saying nothing is better.
 	fillerDeadline = 6 * time.Second
 
-	// fillerMaxTokens is a dozen words and the punctuation around them.
-	fillerMaxTokens = 64
+	// fillerMaxTokens is a dozen words, the punctuation around them, and room
+	// for a model to think first. The sentence itself is twenty tokens; the
+	// rest is headroom, because on the OpenAI dialects this cap covers the
+	// reasoning too and a cap spent thinking returns finish_reason "length"
+	// with no content at all. Sized at a dozen words it did exactly that on
+	// every call, which is a filler that never spoke.
+	fillerMaxTokens = 512
 
 	// fillerToolsShown bounds what the prompt says has happened so far.
 	// Twenty iterations of a long turn is a list nobody reads and the model
 	// only needs the shape of.
 	fillerToolsShown = 6
+
+	// fillerRequestChars bounds how much of the request travels. A minute of
+	// talking is one subject and the filler needs the subject.
+	fillerRequestChars = 240
 )
 
 // filler tracks one turn's silence and breaks it. Every field behind mu is
@@ -211,7 +220,7 @@ func (f *filler) compose(ctx context.Context) string {
 	resp, err := chat.Chat(ctx, &provider.Request{
 		Messages: []provider.Message{
 			{Role: "system", Content: fillerRules(f.in.toolCtx.Language)},
-			{Role: "user", Content: fillerState(f.in.content, done, said)},
+			{Role: "user", Content: fillerState(f.in.content, done, said, f.in.toolCtx.Language)},
 		},
 		MaxTokens: fillerMaxTokens,
 	})
@@ -226,42 +235,107 @@ func (f *filler) compose(ctx context.Context) string {
 	return firstLine(resp.Content)
 }
 
-// fillerRules is the whole of the filler's brief. Every clause of it is a
-// refusal: the one failure that matters here is a fast model guessing at the
-// answer the slow one is still working out, and having that guess spoken as
-// though it were the reply.
+// fillerRules is the filler's brief, built the way a brief for a small fast
+// model has to be: the job, the handful of rules that decide whether the line
+// is usable at all, and then demonstrations — a model this size follows a
+// worked example much further than it follows a paragraph about one.
+//
+// The one failure that matters here is a fast model guessing at the answer
+// the slow one is still working out, and having that guess spoken as though
+// it were the reply. Saying so is worth a line; showing it three times is
+// what actually holds, which is why the examples pair a request with a line
+// that conspicuously does not answer it.
+//
+// The rules are stated in the positive. "Never do X" leaves a small model
+// holding X, and the prohibitions this replaced were five of the eight
+// clauses in the brief.
 func fillerRules(language string) string {
-	rules := "You are the voice of an assistant that is in the middle of working on something for the user. " +
-		"Say one short sentence — under twelve words — telling them what you are doing right now. " +
-		"You are not answering: you do not know the answer, nobody is asking you for it, and the assistant will give it itself in a moment. " +
-		"Never answer or guess at the request. Never greet, apologise, or say how long anything will take. " +
-		"Never use markdown, lists or quotation marks. Reply with the sentence and nothing else."
-	if language != "" {
-		return rules + fmt.Sprintf(" Write it in the language with code %q, whatever language this request is in.", language)
+	var b strings.Builder
+	b.WriteString("<role>\n" +
+		"You are the voice of an assistant in the middle of a task, for someone who is waiting and has heard nothing yet. " +
+		"Your whole job is one short sentence saying what is happening right now.\n" +
+		"</role>\n\n<rules>\n" +
+		"- One sentence, under twelve words, spoken plainly as the assistant would say it out loud.\n" +
+		"- Say what is being done. The answer belongs to the assistant, who will give it in a moment: you do not know it and nobody is asking you for it.\n" +
+		"- Reply with the sentence and nothing else — no quotation marks, no markdown, no preamble.\n")
+	b.WriteString("- " + fillerLanguageRule(language) + "\n</rules>\n\n<examples>\n")
+	b.WriteString(fillerExamples(language))
+	b.WriteString("</examples>")
+	return b.String()
+}
+
+// fillerLanguageRule fixes the language of the line. A spoken outlet names
+// one and means it: the voice reading the reply speaks that language and
+// nothing else, so a line in the wrong one is noise in an accent.
+func fillerLanguageRule(language string) string {
+	if language == "" {
+		return "Write it in the same language as the request."
 	}
-	return rules + " Write it in the same language the user used."
+	return fmt.Sprintf("Write it in the language with code %q, whatever language the request is in.", language)
+}
+
+// fillerExamples demonstrates the shape: a request, what is under way, and a
+// line about the second that leaves the first alone. They are written in the
+// language the line has to come out in, since an example is the strongest
+// thing in the prompt and one in the wrong language pulls the answer with it.
+func fillerExamples(language string) string {
+	if strings.HasPrefix(strings.ToLower(language), "es") {
+		return "" +
+			"Request: ¿cómo está el clima en Rosario? · running: web_search\n" +
+			"Estoy mirando el pronóstico.\n\n" +
+			"Request: ¿qué decía el informe que te pasé? · running: read_file\n" +
+			"Estoy abriendo el informe.\n\n" +
+			"Request: fijate si hay pasajes para el viernes · running: browser_navigate, browser_read\n" +
+			"Estoy revisando la página.\n"
+	}
+	return "" +
+		"Request: what is the weather in Rosario? · running: web_search\n" +
+		"I'm checking the forecast.\n\n" +
+		"Request: what did the report I sent you say? · running: read_file\n" +
+		"I'm opening the report.\n\n" +
+		"Request: see if there are flights on Friday · running: browser_navigate, browser_read\n" +
+		"I'm going through the page.\n"
 }
 
 // fillerState is what the filler knows: what was asked, what has been done
 // about it, and what has already been said out loud. Tool names travel, their
-// arguments do not — the user's paths and searches are no business of a
-// second model, and the shape of the work is all the sentence needs.
-func fillerState(request string, done, said []string) string {
+// arguments do not — a second model has no business with the user's paths and
+// searches, and the shape of the work is all the sentence needs.
+//
+// It closes with the instruction rather than with the request. Recall is
+// strongest at the two ends of a prompt, and the request is the one thing
+// here that pulls toward answering: ending on it put the temptation in the
+// best seat in the house and the rule against it in the worst.
+func fillerState(request string, done, said []string, language string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "The user said: %q\n", firstLine(request))
+	fmt.Fprintf(&b, "<request>\n%s\n</request>\n\n", clipLine(request, fillerRequestChars))
 	if len(done) > fillerToolsShown {
 		done = done[len(done)-fillerToolsShown:]
 	}
+	b.WriteString("<progress>\n")
 	if len(done) > 0 {
 		fmt.Fprintf(&b, "Tools run so far, oldest first: %s\n", strings.Join(done, ", "))
 	} else {
 		b.WriteString("No tool has run yet; the assistant is still working out what to do.\n")
 	}
+	b.WriteString("</progress>\n\n")
 	if len(said) > 0 {
-		fmt.Fprintf(&b, "You have already said: %q. Do not say it again.\n", strings.Join(said, " / "))
+		fmt.Fprintf(&b, "<already_said>\n%s\n</already_said>\nSay something else.\n\n", strings.Join(said, "\n"))
 	}
-	b.WriteString("Say the next line.")
+	fmt.Fprintf(&b, "Write the line now: one sentence, under twelve words, about what is happening — not the answer. %s",
+		fillerLanguageRule(language))
 	return b.String()
+}
+
+// clipLine bounds one line of somebody else's text. A request runs as long as
+// the user felt like talking, and the filler needs its subject rather than
+// all of it.
+func clipLine(s string, limit int) string {
+	s = firstLine(s)
+	if len(s) <= limit {
+		return s
+	}
+	return strings.TrimSpace(s[:limit]) + "…"
 }
 
 // firstLine trims a reply to one spoken sentence's worth of text. A model
