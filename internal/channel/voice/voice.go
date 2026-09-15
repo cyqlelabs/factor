@@ -74,11 +74,11 @@ const (
 	//
 	// So the grace sits past the point where those two have failed rather
 	// than past an ordinary answer: three seconds for the filler to fire,
-	// six more for its call to time out, and room after that for a line the
-	// turn outran and dropped. What is left over is a chain that is down or
-	// a Factor with no provider at all, and there a word nobody wrote still
-	// beats the room going quiet.
-	holdingGrace    = 20 * time.Second
+	// fifteen more for its call to give up, and room after that so a line
+	// that lands at the edge of its deadline is not chased by this one. What
+	// is left over is a chain that is down or a Factor with no provider at
+	// all, and there a word nobody wrote still beats the room going quiet.
+	holdingGrace    = 25 * time.Second
 	holdingInterval = 45 * time.Second
 )
 

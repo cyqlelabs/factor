@@ -48,10 +48,15 @@ const (
 	fillerGrace    = 3 * time.Second
 	fillerInterval = 30 * time.Second
 
-	// fillerDeadline bounds the call. A filler is worth having only while the
-	// user is still wondering; past this it is noise arriving on top of the
-	// answer, and saying nothing is better.
-	fillerDeadline = 6 * time.Second
+	// fillerDeadline bounds the call, and only against a request that hangs.
+	// It was six seconds when it also had to keep a late line off the
+	// answer; that is now done by dropping a line the turn has outrun and
+	// cancelling the call the moment the answer lands, so the deadline can
+	// afford to be honest about the model. Measured on the default route the
+	// call takes four to six seconds and more, and at six the deadline was
+	// cancelling every other filler two seconds before it would have spoken
+	// — into turns that then ran another thirty seconds in silence.
+	fillerDeadline = 15 * time.Second
 
 	// fillerMaxTokens is a dozen words, the punctuation around them, and room
 	// for a model to think first. The sentence itself is twenty tokens; the
@@ -228,7 +233,7 @@ func (f *filler) compose(ctx context.Context) string {
 		slog.Debug("filler line unavailable", "session", f.in.sessionKey, "error", err)
 		f.loop.lightFault.Do(func() {
 			slog.Warn("the fast model could not write a line while a turn worked; turns will run quiet",
-				"error", err, "fix", "set provider.light.model to a model this account can reach")
+				"error", err, "chain", "provider.light")
 		})
 		return ""
 	}
