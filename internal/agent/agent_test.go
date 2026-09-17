@@ -1257,6 +1257,9 @@ func TestTriggerOfNamesWhatStartedTheTurn(t *testing.T) {
 		{bus.InboundMessage{Channel: "cron", ChatID: "cron-1"}, "cron"},
 		{bus.InboundMessage{Channel: "system", ChatID: "heartbeat"}, "system"},
 		{bus.InboundMessage{Channel: "telegram", ChatID: "1", System: true}, "job"},
+		// The job's own turn is the work itself, held by nobody — not a
+		// user's turn, whatever the flag says.
+		{bus.InboundMessage{Channel: "job", ChatID: "j1-79065e4a"}, "job"},
 		{bus.InboundMessage{Channel: "telegram", ChatID: "1"}, "user"},
 		{bus.InboundMessage{Channel: "voice", ChatID: "local"}, "user"},
 		// A machine-authored message on cron is still cron: the channel

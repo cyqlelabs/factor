@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/tools"
@@ -48,6 +49,18 @@ const (
 	fillerGrace    = 3 * time.Second
 	fillerInterval = 30 * time.Second
 
+	// fillerGraceWritten and fillerIntervalWritten are the same two numbers
+	// for a written chat, where each line is a message that stays in the
+	// thread and, on a phone, a notification. A written channel is not
+	// silent while a turn works — Telegram shows the typing indicator the
+	// whole time — so the filler there is not the difference between alive
+	// and dead, only between busy and busy-at-what. At the spoken cadence
+	// one fifteen-minute Telegram turn produced twenty of them, three
+	// between each line the model wrote itself, which read as noise rather
+	// than company.
+	fillerGraceWritten    = 20 * time.Second
+	fillerIntervalWritten = 2 * time.Minute
+
 	// fillerDeadline bounds the call, and only against a request that hangs.
 	// It was six seconds when it also had to keep a late line off the
 	// answer; that is now done by dropping a line the turn has outrun and
@@ -74,6 +87,13 @@ const (
 	// fillerRequestChars bounds how much of the request travels. A minute of
 	// talking is one subject and the filler needs the subject.
 	fillerRequestChars = 240
+
+	// fillerLanguageSample is how many of the user's recent messages decide
+	// the language of a line on a channel that names none. One is not
+	// enough: "y?" says nothing about what language it was asked in, and the
+	// fifteen minutes of English lines that followed it were spoken into a
+	// Spanish conversation.
+	fillerLanguageSample = 5
 )
 
 // filler tracks one turn's silence and breaks it. Every field behind mu is
@@ -86,10 +106,13 @@ type filler struct {
 	done chan struct{}
 	once sync.Once
 
-	mu     sync.Mutex
-	tools  []string // the tool calls this turn has finished, in order
-	flight []string // the batch running right now
-	lines  []string // what the filler has already said, so it does not repeat
+	grace, every time.Duration
+
+	mu       sync.Mutex
+	tools    []string // the tool calls this turn has finished, in order
+	flight   []string // the batch running right now
+	lines    []string // what the filler has already said, so it does not repeat
+	language string   // the language the line comes out in; blank means the request's
 }
 
 // fill starts the filler for one turn. It says nothing until the turn has been
@@ -100,10 +123,16 @@ type filler struct {
 // published to whichever chat the user last used — so a filler there is not
 // company, it is the machine interrupting an empty room to say it is busy.
 func (l *Loop) fill(ctx context.Context, in turnInput) *filler {
-	f := &filler{loop: l, in: in, said: make(chan struct{}, 1), done: make(chan struct{})}
+	f := &filler{loop: l, in: in, said: make(chan struct{}, 1), done: make(chan struct{}),
+		grace: l.fillGrace, every: l.fillEvery, language: in.toolCtx.Language}
 	if in.ephemeral || in.trigger != "user" {
 		f.stop()
 		return f
+	}
+	// A turn with nowhere to hand its notices to is a written chat, read off
+	// the bus: its lines are messages rather than a voice in a room.
+	if in.notice == nil {
+		f.grace, f.every = l.fillGraceWritten, l.fillEveryWritten
 	}
 	l.wg.Add(1)
 	go func() {
@@ -138,12 +167,28 @@ func (f *filler) finished() {
 	f.mu.Unlock()
 }
 
+// learn reads the language the conversation is held in off what the user
+// has written so far, for a channel that does not name one. The rule
+// "write it in the language of the request" fails on exactly the requests a
+// person sends mid-task — "y?", "ok", "dale" — and the examples in the brief
+// then decide, which is how a Spanish conversation got fifteen minutes of
+// English. A channel that names a language keeps it: the voice reading the
+// line speaks that one whatever the user typed.
+func (f *filler) learn(history []provider.Message) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.language != "" {
+		return
+	}
+	f.language = conversationLanguage(f.in.content, history)
+}
+
 // stop ends the filler, and is called once: the turn's own cancellation ends
 // the goroutine on every other path out.
 func (f *filler) stop() { f.once.Do(func() { close(f.done) }) }
 
 func (f *filler) run(ctx context.Context) {
-	wait := f.loop.fillGrace
+	wait := f.grace
 	for {
 		timer := time.NewTimer(wait)
 		select {
@@ -158,7 +203,7 @@ func (f *filler) run(ctx context.Context) {
 		case <-timer.C:
 			f.speak(ctx)
 		}
-		wait = f.loop.fillEvery
+		wait = f.every
 	}
 }
 
@@ -203,6 +248,7 @@ func (f *filler) compose(ctx context.Context) string {
 	f.mu.Lock()
 	done := append(append([]string(nil), f.tools...), f.flight...)
 	said, waiting := append([]string(nil), f.lines...), slices.Contains(f.flight, tools.AskToolName)
+	language := f.language
 	f.mu.Unlock()
 	// The turn has asked the user something and is waiting on them. The
 	// silence is theirs to break, and filling it is talking over an answer.
@@ -224,8 +270,8 @@ func (f *filler) compose(ctx context.Context) string {
 	}()
 	resp, err := chat.Chat(ctx, &provider.Request{
 		Messages: []provider.Message{
-			{Role: "system", Content: fillerRules(f.in.toolCtx.Language)},
-			{Role: "user", Content: fillerState(f.in.content, done, said, f.in.toolCtx.Language)},
+			{Role: "system", Content: fillerRules(language)},
+			{Role: "user", Content: fillerState(f.in.content, done, said, language)},
 		},
 		MaxTokens: fillerMaxTokens,
 	})
@@ -330,6 +376,68 @@ func fillerState(request string, done, said []string, language string) string {
 	fmt.Fprintf(&b, "Write the line now: one sentence, under twelve words, about what is happening — not the answer. %s",
 		fillerLanguageRule(language))
 	return b.String()
+}
+
+// conversationLanguage guesses the language a written conversation is held
+// in from the request and the user's last few messages, for the one
+// distinction the brief can act on: Spanish, or not. It counts function
+// words that belong to one language and not the other — "the" and "que" do
+// not cross over — and the characters Spanish has and English lacks, so a
+// two-letter request is read in the light of the sentences before it. It
+// is a guess and says so by returning nothing rather than a wrong code:
+// unknown gets the request's own language and the English examples, which
+// is what every conversation got before.
+func conversationLanguage(request string, history []provider.Message) string {
+	texts := []string{request}
+	for i := len(history) - 1; i >= 0 && len(texts) <= fillerLanguageSample; i-- {
+		m := history[i]
+		// A job's completion is filed as the user speaking and is not: it
+		// is machinery, and it is written in English.
+		if m.Role != "user" || strings.HasPrefix(m.Content, "[system]") {
+			continue
+		}
+		texts = append(texts, m.Content)
+	}
+	es, en := 0, 0
+	for _, t := range texts {
+		for _, r := range t {
+			if strings.ContainsRune("¿¡ñáéíóúÁÉÍÓÚÑ", r) {
+				es++
+			}
+		}
+		for _, w := range strings.FieldsFunc(strings.ToLower(t), func(r rune) bool { return !unicode.IsLetter(r) }) {
+			switch {
+			case spanishWords[w]:
+				es++
+			case englishWords[w]:
+				en++
+			}
+		}
+	}
+	if es > en {
+		return "es"
+	}
+	return ""
+}
+
+// spanishWords and englishWords are function words that occur in one of the
+// two languages and not the other. Words both use — "no", "me", "a" — are
+// left out on purpose, since they would vote for both sides at once.
+var (
+	spanishWords = wordSet("el la los las de del que qué y en un una es está están para con por pero " +
+		"cómo más hay se lo al te ya muy también esto eso esta este ese esa porque cuando dónde donde " +
+		"todo nada bien ahora sí acá ahí dale sigue fijate")
+	englishWords = wordSet("the and is are was were what how with for this that these those you your it " +
+		"to of in on do does did can could please check my not be have has from at by there here when " +
+		"where why which if then also just now all")
+)
+
+func wordSet(words string) map[string]bool {
+	set := map[string]bool{}
+	for _, w := range strings.Fields(words) {
+		set[w] = true
+	}
+	return set
 }
 
 // clipLine bounds one line of somebody else's text. A request runs as long as

@@ -78,9 +78,12 @@ type Loop struct {
 	// all has.
 	light ChatProvider
 	// How long a turn may run in silence before the filler speaks, and how
-	// often it speaks after that. See fillerGrace.
-	fillGrace time.Duration
-	fillEvery time.Duration
+	// often it speaks after that: one pair for a spoken turn and one for a
+	// written chat. See fillerGrace.
+	fillGrace        time.Duration
+	fillEvery        time.Duration
+	fillGraceWritten time.Duration
+	fillEveryWritten time.Duration
 	// lightFault reports the filler chain failing once rather than on every
 	// turn. A model name that does not exist on this account fails the same
 	// way a timeout does and is the far likelier of the two, so a dead
@@ -135,20 +138,22 @@ type Loop struct {
 func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry *tools.Registry,
 	sessions *session.Store, builder *ContextBuilder, ambient *memory.Ambient) *Loop {
 	return &Loop{
-		cfg:           cfg,
-		bus:           b,
-		chat:          chat,
-		registry:      registry,
-		sessions:      sessions,
-		builder:       builder,
-		ambient:       ambient,
-		active:        map[string]*turn{},
-		seen:          map[string]tools.ToolContext{},
-		pendingInduce: map[string]induceCandidate{},
-		sem:           make(chan struct{}, cfg.Agent.MaxConcurrentTurns),
-		lastChannel:   loadLastChannel(),
-		fillGrace:     fillerGrace,
-		fillEvery:     fillerInterval,
+		cfg:              cfg,
+		bus:              b,
+		chat:             chat,
+		registry:         registry,
+		sessions:         sessions,
+		builder:          builder,
+		ambient:          ambient,
+		active:           map[string]*turn{},
+		seen:             map[string]tools.ToolContext{},
+		pendingInduce:    map[string]induceCandidate{},
+		sem:              make(chan struct{}, cfg.Agent.MaxConcurrentTurns),
+		lastChannel:      loadLastChannel(),
+		fillGrace:        fillerGrace,
+		fillEvery:        fillerInterval,
+		fillGraceWritten: fillerGraceWritten,
+		fillEveryWritten: fillerIntervalWritten,
 	}
 }
 
@@ -667,6 +672,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 			return "", fmt.Errorf("load history: %w", err)
 		}
 		l.noteSession(in)
+		fill.learn(history)
 	}
 
 	systemPrompt := l.builder.SystemPrompt()
@@ -853,7 +859,12 @@ func triggerOf(msg bus.InboundMessage) string {
 		return "cron"
 	case msg.Channel == "system":
 		return "system"
-	case msg.System:
+	// A job's own turn — the work, running under job:<id> — and the
+	// completion re-entering the chat that asked are both work nobody is
+	// holding the line for. The first used to read as "user" because the
+	// channel is "job" and the flag is unset, which is how a delegated task
+	// spent half an hour paying a filler to talk to an empty room.
+	case msg.Channel == "job", msg.System:
 		return "job"
 	}
 	return "user"

@@ -263,3 +263,115 @@ func TestFillerDropsALineTheAnswerHasOutrun(t *testing.T) {
 	default:
 	}
 }
+
+// A channel that names no language leaves it to the request, and the request
+// a person sends mid-task is "y?". Read alone it is nothing, the English
+// examples decide, and a Spanish conversation gets fifteen minutes of English
+// lines. The conversation so far is what settles it.
+func TestFillerLearnsTheConversationsLanguage(t *testing.T) {
+	spanish := []provider.Message{
+		{Role: "user", Content: "buscame departamentos en Concordia"},
+		{Role: "assistant", Content: "Listo, arranco con Argenprop."},
+		{Role: "user", Content: "detene el navegador y reinicia la búsqueda"},
+		{Role: "user", Content: "[system] Background job j1 finished with state done. Report the outcome to the user concisely."},
+	}
+	if got := conversationLanguage("y?", spanish); got != "es" {
+		t.Errorf("language = %q for a Spanish conversation asked \"y?\"", got)
+	}
+	english := []provider.Message{
+		{Role: "user", Content: "find me the flights for Friday and check the prices"},
+		{Role: "user", Content: "what did you find?"},
+	}
+	if got := conversationLanguage("and?", english); got != "" {
+		t.Errorf("language = %q for an English conversation", got)
+	}
+	if got := conversationLanguage("ok", nil); got != "" {
+		t.Errorf("language = %q with nothing to read", got)
+	}
+
+	// The turn hands the history over once it is loaded; a channel that
+	// names a language keeps it.
+	h := newHarness(t)
+	f := h.loop.fill(context.Background(), turnInput{sessionKey: "telegram:1", content: "y?", trigger: "user"})
+	t.Cleanup(f.stop)
+	f.learn(spanish)
+	if f.language != "es" {
+		t.Errorf("learned %q", f.language)
+	}
+	spoken := h.loop.fill(context.Background(), turnInput{sessionKey: "voice:local", content: "y?", trigger: "user",
+		toolCtx: tools.ToolContext{Language: "en"}})
+	t.Cleanup(spoken.stop)
+	spoken.learn(spanish)
+	if spoken.language != "en" {
+		t.Errorf("a channel's language was overridden: %q", spoken.language)
+	}
+}
+
+// The language it learned is the language the brief is written in — the
+// rule and, above all, the examples, since an example in the wrong language
+// pulls the line with it.
+func TestFillerBriefFollowsTheLearnedLanguage(t *testing.T) {
+	h := newHarness(t, toolCall("probe", map[string]any{"value": "abc"}), final("listo"))
+	h.tool.block = make(chan struct{})
+	light := &scriptedChat{script: []func(*provider.Request) (*provider.Response, error){
+		final("Estoy mirando eso."),
+	}}
+	h.loop.WithLight(light)
+	h.loop.fillGrace, h.loop.fillEvery = 20*time.Millisecond, time.Hour
+	for _, m := range []provider.Message{
+		{Role: "user", Content: "buscame departamentos en Concordia"},
+		{Role: "assistant", Content: "Listo, arranco."},
+	} {
+		if err := h.store.Append("cli:test", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	lines := make(chan string, 4)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = h.loop.ProcessDirectNotice(context.Background(), "y?", "cli:test", "", "",
+			func(line string) { lines <- line })
+	}()
+	select {
+	case <-lines:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the turn ran in silence")
+	}
+	close(h.tool.block)
+	<-done
+
+	light.mu.Lock()
+	req := light.requests[0]
+	light.mu.Unlock()
+	if !strings.Contains(req.Messages[0].Content, "Estoy mirando el pronóstico.") {
+		t.Errorf("the examples are not in the conversation's language:\n%s", req.Messages[0].Content)
+	}
+	if !strings.Contains(req.Messages[1].Content, `code "es"`) {
+		t.Errorf("the instruction does not name the language:\n%s", req.Messages[1].Content)
+	}
+}
+
+// A written chat is not silent while a turn works — the typing indicator is
+// on the whole time — and every line there is a message that stays in the
+// thread. So it waits longer before the first one and longer between them
+// than a voice in a room does.
+func TestFillerWaitsLongerOnAWrittenChat(t *testing.T) {
+	h := newHarness(t)
+	h.loop.WithLight(&scriptedChat{})
+	h.loop.fillGrace, h.loop.fillEvery = time.Millisecond, time.Millisecond
+	h.loop.fillGraceWritten, h.loop.fillEveryWritten = time.Hour, time.Hour
+
+	written := h.loop.fill(context.Background(), turnInput{sessionKey: "telegram:1", content: "y?", trigger: "user"})
+	t.Cleanup(written.stop)
+	spoken := h.loop.fill(context.Background(), turnInput{sessionKey: "voice:local", content: "y?", trigger: "user",
+		notice: func(string) {}})
+	t.Cleanup(spoken.stop)
+	if written.grace != time.Hour || written.every != time.Hour {
+		t.Errorf("written chat waits %v/%v", written.grace, written.every)
+	}
+	if spoken.grace != time.Millisecond || spoken.every != time.Millisecond {
+		t.Errorf("spoken turn waits %v/%v", spoken.grace, spoken.every)
+	}
+}
