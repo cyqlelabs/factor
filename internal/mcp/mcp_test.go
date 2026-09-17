@@ -219,3 +219,24 @@ func TestNoStrayFiles(t *testing.T) {
 		t.Error("test created stray memory.db")
 	}
 }
+
+// Close returns once the server has been waited on. Returning earlier left a
+// defunct node process per reload on the live box: the gateway execs itself
+// in place and the child it told to exit was inherited, unreaped, by the new
+// image, which had no handle to wait on it with.
+func TestCloseWaitsForTheServerToExit(t *testing.T) {
+	cmd, args, env := selfServer()
+	client, err := Connect(context.Background(), "fake", cmd, args, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if client.cmd.ProcessState == nil {
+		t.Fatal("Close returned before the server was reaped")
+	}
+	if client.Alive() {
+		t.Error("a closed client reports itself alive")
+	}
+}

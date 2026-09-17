@@ -117,7 +117,9 @@ func (m *Manager) Status() map[string]int {
 	return out
 }
 
-// CloseAll disconnects everything (shutdown).
+// CloseAll disconnects everything (shutdown). The servers are closed side by
+// side: each Close waits for its process to exit, and a shutdown should not
+// cost the sum of those waits.
 func (m *Manager) CloseAll() {
 	m.mu.Lock()
 	names := make([]string, 0, len(m.clients))
@@ -125,9 +127,15 @@ func (m *Manager) CloseAll() {
 		names = append(names, n)
 	}
 	m.mu.Unlock()
+	var wg sync.WaitGroup
 	for _, n := range names {
-		_ = m.Disconnect(n)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = m.Disconnect(n)
+		}()
 	}
+	wg.Wait()
 }
 
 // mcpTool adapts one remote tool to the tools.Tool seam.

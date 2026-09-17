@@ -53,6 +53,7 @@ type Client struct {
 	pending   map[int64]chan *rpcResponse
 
 	closed chan struct{}
+	exited chan struct{} // closed once the server process has been waited on
 	once   sync.Once
 }
 
@@ -83,10 +84,12 @@ func Connect(ctx context.Context, name, command string, args []string, env map[s
 		stdin:   stdin,
 		pending: map[int64]chan *rpcResponse{},
 		closed:  make(chan struct{}),
+		exited:  make(chan struct{}),
 	}
 	go c.readLoop(stdout)
 	go func() {
 		_ = cmd.Wait()
+		close(c.exited)
 		c.shutdown()
 	}()
 
@@ -235,17 +238,30 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	return text, out.IsError, nil
 }
 
-// Close terminates the server process.
+// closeGrace is how long a server gets to exit on its own once its stdin is
+// closed before it is killed.
+const closeGrace = 3 * time.Second
+
+// Close terminates the server process and returns once it has been waited
+// on. Returning earlier is how the live box collected a defunct node process
+// per reload: the gateway execs itself in place, and a child the old image
+// had told to exit but not yet reaped is inherited by the new one, which has
+// no handle to wait on it with.
 func (c *Client) Close() error {
 	c.shutdown()
 	_ = c.stdin.Close()
-	if c.cmd.Process != nil {
-		go func() {
-			timer := time.NewTimer(3 * time.Second)
-			defer timer.Stop()
-			<-timer.C
-			_ = c.cmd.Process.Kill()
-		}()
+	if c.cmd.Process == nil {
+		return nil
+	}
+	select {
+	case <-c.exited:
+		return nil
+	case <-time.After(closeGrace):
+	}
+	_ = c.cmd.Process.Kill()
+	select {
+	case <-c.exited:
+	case <-time.After(closeGrace):
 	}
 	return nil
 }
