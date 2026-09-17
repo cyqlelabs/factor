@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/cpu"
 )
@@ -578,5 +579,31 @@ func TestPipCommandRejectsAStub(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(f.log, " | "), "/usr/bin/pip3 --version") {
 		t.Errorf("the stub was never probed: %v", f.log)
+	}
+}
+
+// A probe that does not finish is a slow machine, not a broken install:
+// SIGILL is instant, and the moment the supervisor re-probes is right after
+// the engine was killed for size, when the box is swapping hardest. On the
+// live box the timeout reinstalled a working smrti over itself.
+func TestRunnableAssumesASlowProbeRuns(t *testing.T) {
+	oldRun, oldTimeout := runCmd, runnableTimeout
+	runnableTimeout = 10 * time.Millisecond
+	runCmd = func(ctx context.Context, argv []string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	t.Cleanup(func() { runCmd, runnableTimeout = oldRun, oldTimeout })
+
+	if ok, detail := Runnable(context.Background(), "/opt/smrti"); !ok || detail != "" {
+		t.Errorf("Runnable = %v %q for a probe that timed out; a slow machine is not a broken install", ok, detail)
+	}
+
+	// A probe that fails is still a verdict, with the traceback attached.
+	runCmd = func(ctx context.Context, argv []string) (string, error) {
+		return "Traceback\nIllegal instruction", errors.New("exit status 132")
+	}
+	if ok, detail := Runnable(context.Background(), "/opt/smrti"); ok || !strings.Contains(detail, "Illegal instruction") {
+		t.Errorf("Runnable = %v %q for a probe that died", ok, detail)
 	}
 }

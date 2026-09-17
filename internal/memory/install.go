@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,7 +164,7 @@ func FindSmrti(command, home string) (string, bool) {
 // hardware — it is one Python import chain — but a cold page cache on a busy
 // machine can take considerably longer, and a timeout that fires early would
 // condemn a working install.
-const runnableTimeout = 60 * time.Second
+var runnableTimeout = 60 * time.Second
 
 // Runnable reports whether the smrti at path can actually execute. Finding the
 // file is not the same as being able to run it: an install can carry wheels
@@ -182,6 +183,16 @@ func Runnable(ctx context.Context, path string) (ok bool, detail string) {
 	defer cancel()
 	out, err := runCmd(ctx, []string{path, "--help"})
 	if err == nil {
+		return true, ""
+	}
+	// A probe that did not finish is not a verdict. SIGILL is instant; what
+	// takes a minute is a machine that is swapping — and the moment this
+	// runs on a supervisor restart is right after the engine was killed for
+	// eating the memory, which is the one moment the box is slowest. Read as
+	// "cannot run", the timeout reinstalled a working smrti over itself on
+	// the live box while the user waited.
+	if ctx.Err() != nil {
+		slog.Warn("the smrti probe did not finish; assuming the install runs", "path", path, "timeout", runnableTimeout)
 		return true, ""
 	}
 	return false, strings.TrimSpace(lastLines(out, 6))
