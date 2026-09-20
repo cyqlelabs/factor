@@ -11,7 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,7 +27,7 @@ import (
 
 func TestMain(m *testing.M) {
 	switch os.Getenv("FACTOR_TEST_LAYA_MODE") {
-	case "serve":
+	case "serve", "wedge":
 		fakeLayaServer()
 		os.Exit(0)
 	case "exit":
@@ -49,8 +51,19 @@ func fakeLayaServer() {
 		os.Exit(4)
 	}
 	maxLen := 1024
+	// A server that answers for a while and then stops, without exiting:
+	// the shape a model takes when it wedges rather than dies, which the
+	// supervisor has to notice by asking rather than by waiting on the
+	// process.
+	wedgeAfter, _ := strconv.Atoi(os.Getenv("FACTOR_TEST_LAYA_WEDGE"))
+	var probes atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		if n := probes.Add(1); wedgeAfter > 0 && int(n) > wedgeAfter {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "wedged"})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": true, "max_len": maxLen, "head_max_len": 192,
 		})
@@ -563,24 +576,28 @@ func TestServerEnvironmentSwitchesOffTelemetry(t *testing.T) {
 	}
 }
 
-// A healthy model is re-probed, and noticing that it stopped answering is
-// what turns the supervisor back to restarting it.
-func TestAHealthyModelThatStopsAnsweringIsNoticed(t *testing.T) {
-	b := backendFor(t, "serve")
+// A model that wedges — its process alive, its answers gone — has to be
+// noticed by asking, because waiting on the process would wait forever. It
+// is stopped and started again, and while it is down every decision falls
+// back instead of spending its whole timeout.
+func TestAWedgedModelIsNoticedAndRestarted(t *testing.T) {
+	t.Setenv("FACTOR_TEST_LAYA_WEDGE", "2")
+	b := backendFor(t, "wedge")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	b.Start(ctx)
 	waitFor(t, "the model to become healthy", b.Healthy)
-	if b.reprobeInterval() != 50*time.Millisecond {
-		t.Errorf("reprobeInterval = %s", b.reprobeInterval())
-	}
 
-	// Take the server away underneath it.
-	b.client = newClient("http://127.0.0.1:1")
-	b.cfg.Port = 1
-	waitFor(t, "the model to be noticed gone", func() bool { return !b.Healthy() })
-	if b.Down() == "" {
-		t.Error("a model that stopped answering reports no reason")
+	waitFor(t, "the wedge to be noticed", func() bool { return !b.Healthy() })
+	if !strings.Contains(b.Down(), "stopped answering") && !strings.Contains(b.Down(), "exited") {
+		t.Errorf("Down() = %q", b.Down())
+	}
+	// And a decision asked while it is down is an immediate fallback.
+	_, err := b.Decide(ctx, &decision.Request{
+		Questions: map[string]decision.Question{"x": {Criteria: map[string]any{"a": 1, "b": 2}}},
+	})
+	if !errors.Is(err, decision.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
 	}
 }
 
