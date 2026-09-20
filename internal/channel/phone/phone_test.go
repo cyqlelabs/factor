@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -241,16 +242,39 @@ func TestShellConfigOnTheCloudTier(t *testing.T) {
 // A managed local tier whose server never comes up must not hang the gateway:
 // it degrades to the cloud tier and says so, rather than failing every call.
 func TestShellConfigFallsBackWhenTheSpeechServerNeverStarts(t *testing.T) {
-	p, _, _ := newTestPhone(t, func(c *Config) {
-		c.STT.Provider = providerLocalOpenAI
+	var c Config
+	p, _, _ := newTestPhone(t, func(cfg *Config) {
+		cfg.STT.Provider = providerLocalOpenAI
 		// The speech server is a third listener in the same config, and
 		// validate() rejects it landing on any of the other two.
-		c.SpeechServer.Port = portsApart(t, 1, c.SidecarPort, c.BridgePort)[0]
+		cfg.SpeechServer.Port = portsApart(t, 1, cfg.SidecarPort, cfg.BridgePort)[0]
+		c = *cfg
 	})
 	if p.speech == nil {
 		t.Fatal("a managed local tier should supervise a speech server")
 	}
-	// Nothing is listening and nothing will start: the wait has to give up.
+	// Nothing will ever answer on that port, and the test owns it rather
+	// than assuming it: picking a free port and closing the listener leaves
+	// a number any concurrent test in any package may bind a moment later,
+	// which is exactly what makes a probe succeed that was supposed to fail.
+	// This holds the port and hangs up on every connection, so the health
+	// probe fails for the reason the test is about instead of waiting out a
+	// timeout or, worse, reaching somebody else's server.
+	refuse, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", c.SpeechServer.Port))
+	if err != nil {
+		t.Skipf("the chosen port was taken before the test could hold it: %v", err)
+	}
+	t.Cleanup(func() { _ = refuse.Close() })
+	go func() {
+		for {
+			conn, err := refuse.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
 	p.speech.probeInterval = 20 * time.Millisecond
 	p.speechWait = 200 * time.Millisecond
 

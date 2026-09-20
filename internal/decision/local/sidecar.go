@@ -373,14 +373,28 @@ func (b *Backend) spawnAndWait(ctx context.Context) error {
 		}
 	}
 
-	// Healthy: stay with the child until it exits or the context ends.
-	select {
-	case err := <-waitCh:
-		b.healthy.Store(false)
-		b.setDown("the local decision model exited: %v", err)
-		return err
-	case <-ctx.Done():
-		return childproc.StopAndWait(cmd.Process, waitCh, stopGrace)
+	// Healthy: stay with the child, and keep asking. Waiting on the process
+	// alone is not enough — a model that wedges (a deadlock, a machine
+	// thrashing) keeps its process and would stay marked healthy forever,
+	// which costs every decision its whole timeout instead of an immediate
+	// fallback. So the probe continues for as long as the child runs, and a
+	// model that stops answering is stopped and started again.
+	for {
+		select {
+		case err := <-waitCh:
+			b.healthy.Store(false)
+			b.setDown("the local decision model exited: %v", err)
+			return err
+		case <-ctx.Done():
+			return childproc.StopAndWait(cmd.Process, waitCh, stopGrace)
+		case <-time.After(b.reprobeInterval()):
+			if b.probe(ctx) != nil {
+				b.healthy.Store(false)
+				b.setDown("the local decision model stopped answering; restarting it")
+				slog.Warn("the local decision model stopped answering; restarting it")
+				return childproc.StopAndWait(cmd.Process, waitCh, stopGrace)
+			}
+		}
 	}
 }
 
