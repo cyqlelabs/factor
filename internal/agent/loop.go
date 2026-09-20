@@ -13,6 +13,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/cost"
+	"github.com/cyqlelabs/factor/internal/decision"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/session"
@@ -133,6 +134,12 @@ type Loop struct {
 	// versioner records a change the agent made to its own workspace. Nil
 	// when the workspace is not under version control.
 	versioner func(what string)
+
+	// decider answers the typed judgements in policy.go — is this reply
+	// backed by its trajectory, what kind of stall is this, is this turn
+	// worth a skill. Nil leaves every policy on its deterministic half.
+	decider  *decision.Decider
+	policies Policies
 }
 
 func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry *tools.Registry,
@@ -650,6 +657,11 @@ func (l *Loop) WaitBackground(timeout time.Duration) {
 // execute is the turn state machine: assemble → chat → tools → steer → repeat.
 func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string, err error) {
 	ctx = tools.WithToolContext(ctx, in.toolCtx)
+	// A tool that runs many steps of its own asks this between them, so a
+	// message the user sends mid-call ends the call rather than waiting it
+	// out. The queue is read, not drained: the steering itself is folded in
+	// where it always was, after the batch returns.
+	ctx = tools.WithInterrupt(ctx, func() bool { return len(t.steering) > 0 })
 	l.emit(in.sessionKey, PhaseContext, "")
 	defer l.emit(in.sessionKey, PhaseDone, "")
 
@@ -707,6 +719,13 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 	// nothing about the answer and everything about whether the trajectory
 	// is worth learning from.
 	steered := 0
+
+	// What the policies watch: the same call coming back the same way, how
+	// many tools the turn has used, and whether its answer has already been
+	// checked once — a second check is a loop of its own.
+	stalls := newStallTracker()
+	toolCalls := 0
+	verified := false
 
 	budget := l.cfg.Agent.MaxToolIterations
 	checkpointed := 0
@@ -779,6 +798,19 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 				if strings.TrimSpace(resp.Content) == "" {
 					return "", errEmptyAnswer
 				}
+				// A reply after tool use is a claim about what those tools
+				// did, and it is checked against them once before it stands.
+				if toolCalls > 0 && !verified && !in.ephemeral {
+					verified = true
+					if nudge := l.verifyCompletion(ctx, tr, in.content, messages[len(messages)-thisTurn:], resp.Content); nudge != "" {
+						held := provider.Message{Role: "user", Content: nudge}
+						if err := record(held); err != nil {
+							return "", err
+						}
+						messages = append(messages, held)
+						continue
+					}
+				}
 				l.noteInduceCandidate(in, messages, thisTurn, resp.Content, steered > 0)
 				l.maybeCompactAsync(in)
 				return resp.Content, nil
@@ -812,6 +844,16 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 		fill.running(toolNames(resp.ToolCalls)...)
 		outcomes := l.runTools(ctx, in.sessionKey, tr, resp.ToolCalls, summaryTruncated(resp.FinishReason))
 		fill.finished()
+		toolCalls += len(resp.ToolCalls)
+		// A call that has come back the same way for the third time is a
+		// stall, and the turn is told so after this batch's results — with
+		// what kind of stall it is, where something can judge that.
+		var nudges []string
+		for i, call := range resp.ToolCalls {
+			if ctx.Err() == nil && stalls.note(call, outcomes[i].content) {
+				nudges = append(nudges, l.recoveryNudge(ctx, tr, in.content, call, outcomes[i].content))
+			}
+		}
 		for i, call := range resp.ToolCalls {
 			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: outcomes[i].content}
 			if err := record(toolMsg); err != nil {
@@ -838,6 +880,13 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 		}
 		if ctx.Err() != nil {
 			return "", ctx.Err()
+		}
+		for _, nudge := range nudges {
+			note := provider.Message{Role: "user", Content: nudge}
+			if err := record(note); err != nil {
+				return "", err
+			}
+			messages = append(messages, note)
 		}
 		if injected := l.drainSteering(in, t, record); len(injected) > 0 {
 			steered++

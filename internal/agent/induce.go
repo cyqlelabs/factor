@@ -199,10 +199,28 @@ func (l *Loop) induce(ctx context.Context, sessionKey string, cand induceCandida
 	if l.builder != nil {
 		catalog = l.builder.SkillsCatalog()
 	}
+	// The screening: a typed verdict on whether this is worth the model
+	// that writes skills, asked before that model is paid. Most trajectories
+	// are SKIP, and a SKIP here costs a fraction of a cent rather than a
+	// utility call that answers the same word.
+	input := induceInput(cand, catalog, learned, atCap)
+	switch l.screenInduction(ctx, cand, learned, catalog, atCap) {
+	case inductSkip:
+		slog.Debug("skill induction screened out", "session", sessionKey)
+		return nil
+	case inductCreate:
+		if atCap {
+			slog.Debug("skill induction screened out: the learned library is full", "session", sessionKey)
+			return nil
+		}
+		input += "\nA screening judged this trajectory worth a new skill; write it unless you find it already covered.\n"
+	case inductUpdate:
+		input += "\nA screening judged this trajectory a refinement of one of the learned skills; update that one rather than minting another.\n"
+	}
 	resp, err := l.utilityChat().Chat(ctx, &provider.Request{
 		Messages: []provider.Message{
 			{Role: "system", Content: inducePrompt},
-			{Role: "user", Content: induceInput(cand, catalog, learned, atCap)},
+			{Role: "user", Content: input},
 		},
 		MaxTokens:   induceMaxTokens,
 		NoReasoning: true,
