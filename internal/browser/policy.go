@@ -106,9 +106,23 @@ type TextWriter interface {
 	Chat(ctx context.Context, req *provider.Request) (*provider.Response, error)
 }
 
+// pageDriver is what the executor does to a page: the Session's own methods,
+// which are also the step tools' bodies, so nothing here can do what a tool
+// could not. It is a seam so the loop can be run against a scripted page.
+type pageDriver interface {
+	readPage(ctx context.Context, filter string, limit int) (*pageRead, error)
+	probe(ctx context.Context) (pageProbe, bool)
+	click(ctx context.Context, target string) (*pageRead, bool, error)
+	fill(ctx context.Context, target, text string, submit bool) (string, error)
+	scroll(ctx context.Context, to, filter string) (string, *pageRead, error)
+	back(ctx context.Context) (*pageRead, error)
+	awaitChange(ctx context.Context, before pageProbe, bound time.Duration) (pageProbe, bool)
+}
+
 // runTool is browser_run.
 type runTool struct {
 	s       *Session
+	drive   pageDriver
 	decider *decision.Decider
 	text    TextWriter
 }
@@ -117,7 +131,7 @@ type runTool struct {
 // only when a decider is active: a tool that cannot decide anything is
 // prompt weight.
 func NewRunTool(s *Session, d *decision.Decider, text TextWriter) tools.Tool {
-	return &runTool{s: s, decider: d, text: text}
+	return &runTool{s: s, drive: s, decider: d, text: text}
 }
 
 func (t *runTool) Name() string { return "browser_run" }
@@ -309,11 +323,11 @@ type observation struct {
 // observe reads the page and fingerprints it in the same breath, so a
 // decision can be bound to exactly what was read.
 func (r *browserRun) observe(ctx context.Context) (*observation, error) {
-	page, err := r.tool.s.readPage(ctx, "", runElementLimit)
+	page, err := r.tool.drive.readPage(ctx, "", runElementLimit)
 	if err != nil {
 		return nil, err
 	}
-	probe, _ := r.tool.s.probe(ctx)
+	probe, _ := r.tool.drive.probe(ctx)
 	return &observation{page: page, probe: probe,
 		space: buildActionSpace(page, r.allowSubmit, r.tool.text != nil)}, nil
 }
@@ -446,7 +460,7 @@ func (r *browserRun) execute(ctx context.Context) *tools.Result {
 		// — a DONE decided over a page that has since changed is a DONE
 		// about nothing — re-checked immediately before input and again
 		// after text generation, which is the slow part.
-		if now, ok := r.tool.s.probe(ctx); ok && now != o.probe {
+		if now, ok := r.tool.drive.probe(ctx); ok && now != o.probe {
 			slog.Debug("browser_run: page changed under the decision; re-observing")
 			var halt *stop
 			if o, halt = r.reobserve(ctx); halt != nil {
@@ -470,7 +484,7 @@ func (r *browserRun) execute(ctx context.Context) *tools.Result {
 				break
 			}
 			text = value
-			if now, ok := r.tool.s.probe(ctx); ok && now != o.probe {
+			if now, ok := r.tool.drive.probe(ctx); ok && now != o.probe {
 				var halt *stop
 				if o, halt = r.reobserve(ctx); halt != nil {
 					end = *halt
@@ -505,14 +519,18 @@ func (r *browserRun) execute(ctx context.Context) *tools.Result {
 			r.history[len(r.history)-1].PageChanged = &changed
 			continue
 		}
+		// Whether the page moved is judged from the probe, not from the
+		// action's own report: a fill changes a field's value and a wait may
+		// see a load finish, and neither path reads the page itself.
+		before := o.probe
 		if page != nil {
-			probe, _ := r.tool.s.probe(ctx)
-			changed = changed || probe != o.probe
+			probe, _ := r.tool.drive.probe(ctx)
 			o = &observation{page: page, probe: probe, space: buildActionSpace(page, r.allowSubmit, r.tool.text != nil)}
 		} else if o, err = r.observe(ctx); err != nil {
 			end = stop{how: "error", note: err.Error()}
 			continue
 		}
+		changed = changed || o.probe != before
 		r.history[len(r.history)-1].PageChanged = &changed
 		if changed || op == opWait {
 			stalled = 0
@@ -531,7 +549,7 @@ func (r *browserRun) execute(ctx context.Context) *tools.Result {
 // tool could not. It returns the page where the path reads one, and whether
 // it saw the page change.
 func (r *browserRun) act(ctx context.Context, op string, target *candidate, text string, o *observation) (*pageRead, bool, error) {
-	s := r.tool.s
+	s := r.tool.drive
 	switch op {
 	case opClick:
 		return s.click(ctx, target.ref)

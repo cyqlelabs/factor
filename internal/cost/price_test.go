@@ -338,3 +338,22 @@ func TestWatchKeepsGoingWhenTheFetchFails(t *testing.T) {
 	c.after = func(time.Duration) <-chan time.Time { return make(chan time.Time) }
 	c.Watch(ctx) // returns rather than hanging or panicking
 }
+
+// A model priced by hand after the catalog was built — the decision model,
+// which answers under a release name the config never spelled — is priced
+// from then on rather than listed as unpriced, and a blank name is ignored.
+func TestAddOverridePricesAModelTheCatalogNeverHeardOf(t *testing.T) {
+	c := NewCatalog(config.CostConfig{Track: true}, nil, filepath.Join(t.TempDir(), "pricing.json"))
+	if _, ok := c.Price("jev-1.13.0"); ok {
+		t.Fatal("an unknown model was priced before the override")
+	}
+	c.AddOverride(" Jev-1.13.0 ", Price{Input: 0.042})
+	c.AddOverride("", Price{Input: 9})
+	p, ok := c.Price("jev-1.13.0")
+	if !ok || p.Input != 0.042 || p.Output != 0 {
+		t.Errorf("price = %+v ok=%v", p, ok)
+	}
+	if _, ok := c.Price(""); ok {
+		t.Error("a blank name was priced")
+	}
+}
