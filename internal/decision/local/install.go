@@ -59,9 +59,24 @@ const (
 	// the phone bridge and the voice control endpoint (8730).
 	DefaultPort = 8731
 
+	// TorchCPUIndex is where the CPU-only build of torch lives.
+	//
+	// This matters more than it looks. Laya declares nothing but
+	// "torch>=2.0.0", and on Linux and Windows pip resolves that to the CUDA
+	// build: measured here, a plain `pip install laya` lays down 5.6 GB, of
+	// which 3.2 GB is NVIDIA runtime libraries and 897 MB is triton — on a
+	// machine that may well have no GPU at all. Factor runs on boxes with a
+	// couple of slow cores and a few gigabytes of disk, so the CPU wheel is
+	// installed first and Laya then finds its dependency already satisfied,
+	// which brings the whole virtualenv to about 600 MB.
+	//
+	// Someone who has asked for CUDA gets the default resolution instead:
+	// they have the hardware and they said so.
+	TorchCPUIndex = "https://download.pytorch.org/whl/cpu"
+
 	// InstallTimeout bounds one install. Laya is a small wheel, but it pulls
-	// torch and transformers behind it, which on a slow connection is the
-	// better part of a gigabyte.
+	// torch and transformers behind it, which on a slow connection is a few
+	// hundred megabytes.
 	InstallTimeout = 30 * time.Minute
 
 	// LoadTimeout is how long the server may take to build its checkpoint
@@ -157,9 +172,20 @@ func hasLaya(python string) bool {
 	return err == nil
 }
 
+// wantsCUDA reports whether the default (GPU) resolution of torch is what
+// this machine asked for. On macOS the published wheels are CPU-only anyway,
+// so the separate index is neither needed nor always available there.
+func wantsCUDA(device string) bool {
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		return true // leave the resolution alone
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(device)), "cuda")
+}
+
 // Install builds the virtualenv and installs Laya into it, returning the
-// interpreter to run the server with.
-func Install(ctx context.Context, home string, progress func(format string, args ...any)) (string, error) {
+// interpreter to run the server with. device is what the model will run on,
+// and decides which build of torch is worth fetching.
+func Install(ctx context.Context, home, device string, progress func(format string, args ...any)) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, InstallTimeout)
 	defer cancel()
 	emit := func(format string, args ...any) {
@@ -178,7 +204,21 @@ func Install(ctx context.Context, home string, progress func(format string, args
 			return "", fmt.Errorf("could not create %s: %v\n%s", VenvDir(home), err, lastLines(out, 8))
 		}
 	}
-	emit("installing %s (this pulls torch, so it is a few hundred megabytes)…", PackageSpec)
+	// torch first, and deliberately from the CPU index: see TorchCPUIndex.
+	// Laya's own install then finds the dependency satisfied and leaves it
+	// alone, instead of pulling several gigabytes of GPU runtime onto a
+	// machine that cannot use it.
+	if !wantsCUDA(device) {
+		emit("installing the CPU build of torch (about 200 MB)…")
+		if out, err := runCmd(ctx, []string{venvPip(home), "install", "--index-url", TorchCPUIndex, "torch"}); err != nil {
+			// Not fatal: the next step resolves torch the ordinary way, which
+			// works, just larger. A machine that cannot reach this index can
+			// still have a decision model.
+			emit("the CPU build could not be fetched (%v); falling back to the default, which is larger", err)
+			_ = out
+		}
+	}
+	emit("installing %s…", PackageSpec)
 	if out, err := runCmd(ctx, []string{venvPip(home), "install", "--upgrade", PackageSpec}); err != nil {
 		return "", fmt.Errorf("could not install %s: %v\n%s", PackageSpec, err, lastLines(out, 12))
 	}
@@ -192,7 +232,7 @@ func Install(ctx context.Context, home string, progress func(format string, args
 
 // EnsureLaya returns the interpreter to run the server with, installing Laya
 // when it is missing and allowed. installed reports whether this call did it.
-func EnsureLaya(ctx context.Context, home string, autoInstall bool,
+func EnsureLaya(ctx context.Context, home, device string, autoInstall bool,
 	progress func(format string, args ...any)) (path string, installed bool, err error) {
 	if p, ok := FindPython(home); ok {
 		return p, false, nil
@@ -200,7 +240,7 @@ func EnsureLaya(ctx context.Context, home string, autoInstall bool,
 	if !autoInstall {
 		return "", false, fmt.Errorf("the local decision model is not installed and decision.auto_install is off — %s", InstallHint())
 	}
-	p, err := Install(ctx, home, progress)
+	p, err := Install(ctx, home, device, progress)
 	if err != nil {
 		return "", false, err
 	}
@@ -210,9 +250,11 @@ func EnsureLaya(ctx context.Context, home string, autoInstall bool,
 // InstallHint is the command a user runs to do it by hand.
 func InstallHint() string {
 	if runtime.GOOS == "windows" {
-		return `py -m venv %USERPROFILE%\.factor\decision-venv && %USERPROFILE%\.factor\decision-venv\Scripts\pip install ` + PackageSpec
+		return `py -m venv %USERPROFILE%\.factor\decision-venv && %USERPROFILE%\.factor\decision-venv\Scripts\pip install --index-url ` +
+			TorchCPUIndex + ` torch && %USERPROFILE%\.factor\decision-venv\Scripts\pip install ` + PackageSpec
 	}
-	return "python3 -m venv ~/.factor/decision-venv && ~/.factor/decision-venv/bin/pip install " + PackageSpec
+	return "python3 -m venv ~/.factor/decision-venv && ~/.factor/decision-venv/bin/pip install --index-url " +
+		TorchCPUIndex + " torch && ~/.factor/decision-venv/bin/pip install " + PackageSpec
 }
 
 // resolveInterpreter accepts a configured command as either a path or a name

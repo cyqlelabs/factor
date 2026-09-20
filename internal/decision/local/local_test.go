@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -382,4 +383,32 @@ func TestTheInstallIsNotStartedUnasked(t *testing.T) {
 	}
 	var none *Backend
 	none.Provision(context.Background()) // nil-safe like the rest
+}
+
+// Laya asks only for "torch>=2.0.0", and on Linux and Windows pip answers
+// that with the CUDA build: measured here, a plain install lays down 5.6 GB,
+// 3.2 GB of it NVIDIA runtime, on a machine that may have no GPU. The CPU
+// wheel is fetched first so the dependency is already satisfied — unless the
+// user asked for CUDA, in which case they have the hardware and said so.
+func TestTheCPUBuildIsPreferredUnlessCUDAWasAskedFor(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("the published wheels are CPU-only on this platform")
+	}
+	for device, want := range map[string]bool{
+		"":       false,
+		"cpu":    false,
+		"cuda":   true,
+		" CUDA ": true,
+		"cuda:0": true,
+		"mps":    false,
+	} {
+		if got := wantsCUDA(device); got != want {
+			t.Errorf("wantsCUDA(%q) = %v, want %v", device, got, want)
+		}
+	}
+	// The hint a user follows by hand installs the same thing Factor does.
+	hint := InstallHint()
+	if !strings.Contains(hint, TorchCPUIndex) || !strings.Contains(hint, PackageSpec) {
+		t.Errorf("hint = %q", hint)
+	}
 }

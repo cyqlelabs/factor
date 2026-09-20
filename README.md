@@ -321,11 +321,13 @@ Those choices go to a decision model instead, and it runs **on your machine**:
 Apache-2.0, which answers a typed question with a probability per candidate and
 a confidence in one forward pass. There is nothing to sign up for, nothing to
 pay and nothing to configure — no key, no endpoint, no provider, no model name.
-Factor installs it into a private virtualenv and supervises it the same way it
-does the memory engine and the browser. The download runs in the background
-when the gateway starts, or on the first decision a terminal session actually
-asks for — never from a one-shot command that would kill it halfway — and
-until it answers, everything falls back to the path it already had.
+Factor installs it into a private virtualenv (about 600 MB: the CPU build of
+torch, not the 5.6 GB CUDA one pip reaches for by default — set
+`decision.device` to `cuda` if you do have the hardware) and supervises it the
+same way it does the memory engine and the browser. The download runs in the
+background when the gateway starts, or on the first decision a terminal session
+actually asks for — never from a one-shot command that would kill it halfway —
+and until it answers, everything falls back to the path it already had.
 
 Every answer is validated against the candidates it was offered and judged
 against a confidence bar before anything acts on it. Under the bar, or with two
