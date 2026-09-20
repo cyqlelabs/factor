@@ -27,6 +27,15 @@ const (
 	probeEvery = 15 * time.Second
 	// stopGrace is how long the child gets to exit on its own.
 	stopGrace = 5 * time.Second
+	// maxBackoff is how far apart the restarts get. It is minutes rather
+	// than the usual seconds because of what a permanent failure costs here:
+	// a machine that cannot reach the weights fails on every attempt, and
+	// each attempt spawns a Python process that imports torch before it can
+	// find that out. Observed against a blocked download, a one-minute
+	// ceiling meant thirty-six of those in half an hour. Backing off to a
+	// quarter of an hour keeps the feature self-healing — the network may
+	// come back — without spending the machine on finding out.
+	maxBackoff = 15 * time.Minute
 	// charsPerToken converts the server's token budgets into the character
 	// budgets a caller can actually measure. Deliberately conservative:
 	// three is about right for English prose and pessimistic for the
@@ -150,7 +159,7 @@ func (b *Backend) Provision(ctx context.Context) {
 		return // already here; the supervisor starts it
 	}
 	go func() {
-		if _, _, err := EnsureLaya(ctx, b.home, true, func(format string, args ...any) {
+		if _, _, err := EnsureLaya(ctx, b.home, b.cfg.Device, true, func(format string, args ...any) {
 			slog.Info("decision model: " + fmt.Sprintf(format, args...))
 		}); err != nil {
 			slog.Warn("the local decision model could not be installed; decisions fall back to the agent's own path until it is",
@@ -211,8 +220,8 @@ func (b *Backend) run(ctx context.Context) {
 		}
 		slog.Warn("the local decision model exited; restarting", "error", err, "backoff", backoff)
 		sleepCtx(ctx, backoff)
-		if backoff *= 2; backoff > time.Minute {
-			backoff = time.Minute
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
 		}
 	}
 }
@@ -397,7 +406,7 @@ func (b *Backend) resolveCommand(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("the local decision model is not installed and the automatic install already failed this run")
 	}
 	slog.Info("the local decision model is missing; installing it", "spec", PackageSpec)
-	path, _, err := EnsureLaya(ctx, b.home, true, func(format string, args ...any) {
+	path, _, err := EnsureLaya(ctx, b.home, b.cfg.Device, true, func(format string, args ...any) {
 		slog.Info("decision install: " + fmt.Sprintf(format, args...))
 	})
 	return path, err
