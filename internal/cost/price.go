@@ -185,6 +185,20 @@ func NewCatalog(cfg config.CostConfig, candidates []config.Candidate, cachePath 
 	return c
 }
 
+// AddOverride prices one more model by hand, for a model no catalog carries
+// and no config line named — the decision model answers under its release
+// name, which is not the alias the config asked for, and a call priced by
+// the caller must not then be listed as unpriced.
+func (c *Catalog) AddOverride(model string, p Price) {
+	key := strings.ToLower(strings.TrimSpace(model))
+	if key == "" {
+		return
+	}
+	c.mu.Lock()
+	c.override[key] = p
+	c.mu.Unlock()
+}
+
 // Paid reports whether any configured candidate bills per token — the answer
 // to "is this machine spending money when it thinks?".
 func (c *Catalog) Paid() bool { return c.paid }
@@ -196,14 +210,14 @@ func (c *Catalog) Price(model string) (Price, bool) {
 	if key == "" {
 		return Price{}, false
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if p, ok := c.override[key]; ok {
 		return p, true
 	}
 	if c.free[key] {
 		return Price{}, true
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	if m, ok := c.byID[key]; ok {
 		return m.Price, true
 	}

@@ -46,6 +46,11 @@ type Record struct {
 	Models []ModelCall `json:"models,omitempty"`
 	Tools  []ToolCall  `json:"tools,omitempty"`
 	Events []Event     `json:"events,omitempty"`
+	// Decisions are the typed judgements asked of the decision model on the
+	// turn's behalf: what was asked, what it answered, whether the answer
+	// was acted on, held back as unsure, recorded in shadow, or fallen back
+	// from. In shadow mode this list is the calibration data.
+	Decisions []Decision `json:"decisions,omitempty"`
 
 	// Outcome is how the turn ended: "ok", "error", "interrupted", "budget".
 	Outcome string `json:"outcome"`
@@ -87,6 +92,19 @@ type ToolCall struct {
 	Args string `json:"args,omitempty"`
 }
 
+// Decision is one typed judgement: the kind of question, the candidate it
+// chose, what became of it, and how long the answer took. The spend rides
+// Models like every other priced call.
+type Decision struct {
+	Kind   string `json:"kind"`
+	Choice string `json:"choice,omitempty"`
+	// Result is acted, unsure, shadow, or fallback.
+	Result   string  `json:"result"`
+	Reason   string  `json:"reason,omitempty"`
+	Model    string  `json:"model,omitempty"`
+	Duration float64 `json:"duration_s,omitempty"`
+}
+
 // Event is something that happened to the turn rather than in it: a provider
 // failover, a compaction, a message steered in mid-flight, a budget refusal,
 // a user correcting the answer.
@@ -113,6 +131,13 @@ const (
 	// best-effort by design, so the failure is a log line and the reply
 	// reads as if there had been nothing to remember.
 	EventRecallFailed = "recall_failed"
+	// EventStall is the same tool call returning the same result for the
+	// third time in one turn, detected in code; the detail names the tool.
+	EventStall = "stall"
+	// EventOverclaim is a final reply the completion check judged to report
+	// work the trajectory does not show, and which the turn was asked to
+	// finish or restate.
+	EventOverclaim = "overclaim"
 )
 
 // maxArgChars bounds a recorded argument blob. Enough to tell one call from
@@ -238,6 +263,29 @@ func (t *Turn) Event(kind, detail string) {
 		Kind:   kind,
 		Detail: detail,
 	})
+	t.mu.Unlock()
+}
+
+// Decision records one typed judgement against the turn running on a
+// session, or as a record of its own when no turn is open — an induction
+// screening runs on the idle sweep, and a decision nobody was waiting on is
+// still one the calibration needs.
+func (r *Recorder) Decision(sessionKey string, d Decision) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	t := r.open[sessionKey]
+	r.mu.Unlock()
+	if t == nil {
+		r.write(Record{
+			ID: fmt.Sprintf("%d-housekeeping", time.Now().UnixNano()), Started: time.Now(),
+			Session: sessionKey, Trigger: "housekeeping", Outcome: "ok", Decisions: []Decision{d},
+		})
+		return
+	}
+	t.mu.Lock()
+	t.data.Decisions = append(t.data.Decisions, d)
 	t.mu.Unlock()
 }
 

@@ -18,6 +18,8 @@ import (
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/cost"
 	"github.com/cyqlelabs/factor/internal/cron"
+	"github.com/cyqlelabs/factor/internal/decision"
+	"github.com/cyqlelabs/factor/internal/decision/jev"
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/jobs"
 	"github.com/cyqlelabs/factor/internal/mcp"
@@ -179,6 +181,42 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		lightChain.OnFailover(failover)
 	}
 
+	// The typed-decision model, where one is configured. It is billed through
+	// the same ledger as every chat call — at the price the config states,
+	// since no catalog carries it — and every verdict lands on the trace,
+	// which in shadow mode is the whole point of asking.
+	var decider *decision.Decider
+	if cfg.Decision.On() {
+		client := jev.New(cfg.Decision.APIKey, cfg.Decision.APIBase, cfg.Decision.Model)
+		price := cost.Price{Input: cfg.Decision.InputPricePerMillion}
+		catalog.AddOverride(cfg.Decision.Model, price)
+		decider = decision.New(client, decision.Options{
+			Mode:          cfg.Decision.Mode,
+			Timeout:       time.Duration(cfg.Decision.TimeoutMS) * time.Millisecond,
+			MinConfidence: cfg.Decision.MinConfidence,
+			Thresholds:    cfg.Decision.Thresholds,
+		}).OnOutcome(func(ctx context.Context, o decision.Outcome) {
+			key := tools.ToolContextFrom(ctx).SessionKey
+			tracer.Decision(key, trace.Decision{Kind: o.Kind, Choice: o.Choice, Result: o.Result,
+				Reason: o.Reason, Model: o.Model, Duration: o.Latency.Seconds()})
+			if o.Usage.InputTokens == 0 && o.Usage.OutputTokens == 0 {
+				return
+			}
+			// The reply names the release that answered, not the alias the
+			// config asked for; both are priced the same and the usage report
+			// must not list the one it has not heard of as unpriced.
+			if _, known := catalog.Price(o.Model); !known {
+				catalog.AddOverride(o.Model, price)
+			}
+			usd := price.Input * float64(o.Usage.InputTokens) / 1e6
+			t := cost.Totals{Input: o.Usage.InputTokens, Output: o.Usage.OutputTokens, USD: usd, Calls: 1}
+			ledger.Record(key, o.Model, t)
+			tracer.Charge(key, trace.ModelCall{Model: o.Model, Input: t.Input, Output: t.Output, USD: usd,
+				Duration: o.Latency.Seconds()})
+		})
+		slog.Info("typed decisions on", "mode", cfg.Decision.Mode, "model", cfg.Decision.Model)
+	}
+
 	extract := memory.DeriveExtract(cfg.Memory, cfg.Provider)
 	engine, err := memory.NewEngine(ctx, cfg.Memory, extract, filepath.Join(config.Home(), "logs"))
 	if err != nil {
@@ -260,8 +298,17 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	closeBrowser := func() {}
 	if cfg.Browser.Enabled {
 		var browserTools []tools.Tool
-		browserTools, closeBrowser = browser.NewTools(cfg.Browser, ws, guard)
+		var browserSession *browser.Session
+		browserSession, browserTools, closeBrowser = browser.NewSuite(cfg.Browser, ws, guard)
 		registry.Register(browserTools...)
+		// The bounded executor is mounted only where it can decide: an
+		// active decider, and the light chain to write field text with (a
+		// nil light chain leaves it able to click but not to type).
+		if cfg.Decision.BrowserOn() && cfg.Decision.Active() && browser.Available() {
+			if run := browser.NewRunTool(browserSession, decider, lightMeter); run != nil {
+				registry.Register(run)
+			}
+		}
 	}
 
 	mcpManager := mcp.NewManager(registry, cfg)
@@ -274,7 +321,12 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		WithUtility(utilityMeter).
 		WithLight(lightMeter).
 		WithTracer(tracer).
-		WithVersioner(repo.Committer("skill"))
+		WithVersioner(repo.Committer("skill")).
+		WithDecider(decider, agent.Policies{
+			Verify:  cfg.Decision.VerifyOn(),
+			Recover: cfg.Decision.RecoverOn(),
+			Induce:  cfg.Decision.InduceOn(),
+		})
 	// A turn that arrived from a chat asks its questions there — the user the
 	// question is for is by definition looking at that chat, not necessarily
 	// at this machine's screen. The dialog stays for every turn without one.

@@ -170,6 +170,34 @@ func Specs() []Spec {
 			},
 		},
 		{
+			// A decision the typed model could not answer, and the turn
+			// worked around. A rising rate is the backend or the key going
+			// bad, which nothing else reports as a number.
+			Name: "decision fallbacks", Unit: "per turn", Dir: Above,
+			Of: func(r trace.Record) (float64, bool) {
+				if len(r.Decisions) == 0 {
+					return 0, false
+				}
+				return float64(r.DecisionFallbacks()), true
+			},
+		},
+		{
+			// A reply that claimed work the trajectory did not show. Rare by
+			// design; a rise says either the model is overclaiming more or the
+			// completion check's bar has drifted.
+			Name: "overclaimed replies", Unit: "per turn", Dir: Above,
+			Of: func(r trace.Record) (float64, bool) {
+				return float64(r.Count(trace.EventOverclaim)), true
+			},
+		},
+		{
+			// The same call returning the same result for the third time.
+			Name: "stalled calls", Unit: "per turn", Dir: Above,
+			Of: func(r trace.Record) (float64, bool) {
+				return float64(r.Count(trace.EventStall)), true
+			},
+		},
+		{
 			// The one that only falls. Everything that keeps the request
 			// prefix stable fails silently; this ratio is what moves.
 			Name: "cache hit rate", Unit: "of input", Dir: Below,

@@ -400,3 +400,35 @@ func TestFailedCallsKeepTheirFirstLineScrubbedAndBounded(t *testing.T) {
 		t.Errorf("recorded %d chars of a failure, want it bounded near %d", got, maxFaultChars)
 	}
 }
+
+// A decision rides the turn it was asked on, and one asked with no turn open
+// — an induction screening on the idle sweep — is a record of its own.
+func TestDecisionsRideTheTurnOrStandAlone(t *testing.T) {
+	r, dir := newTestRecorder(t, Config{})
+	turn := r.Begin("cli:d", "user", "")
+	r.Decision("cli:d", Decision{Kind: "completion", Choice: "verified", Result: "acted", Model: "jev", Duration: 0.2})
+	r.Decision("cli:d", Decision{Kind: "recovery", Result: "fallback", Reason: "unavailable"})
+	turn.End("ok", nil)
+	r.Decision("cli:idle", Decision{Kind: "induction", Choice: "SKIP", Result: "acted"})
+
+	recs, err := Since(dir, time.Now().Add(-time.Minute))
+	if err != nil || len(recs) != 2 {
+		t.Fatalf("recs = %d err = %v", len(recs), err)
+	}
+	var onTurn, alone Record
+	for _, rec := range recs {
+		if rec.Session == "cli:d" {
+			onTurn = rec
+		} else {
+			alone = rec
+		}
+	}
+	if len(onTurn.Decisions) != 2 || onTurn.Decisions[0].Choice != "verified" || onTurn.DecisionFallbacks() != 1 {
+		t.Errorf("turn decisions = %+v", onTurn.Decisions)
+	}
+	if alone.Trigger != "housekeeping" || len(alone.Decisions) != 1 || alone.Decisions[0].Kind != "induction" {
+		t.Errorf("standalone record = %+v", alone)
+	}
+	var nilRec *Recorder
+	nilRec.Decision("x", Decision{}) // nil-safe like everything else here
+}

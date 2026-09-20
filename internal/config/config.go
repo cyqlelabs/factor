@@ -34,6 +34,7 @@ type Config struct {
 	Cost          CostConfig                 `json:"cost"`
 	Proxy         ProxyConfig                `json:"proxy"`
 	Trace         TraceConfig                `json:"trace"`
+	Decision      DecisionConfig             `json:"decision"`
 
 	// LogLevel is the lowest severity that reaches the log: "debug", "info"
 	// (the default), "warn", or "error". Debug is where the per-decision
@@ -455,6 +456,70 @@ type TraceConfig struct {
 	KeepDays   int  `json:"keep_days"`
 }
 
+// DecisionConfig wires a typed-decision model — TypeSafe's Jev — beside the
+// conversation's chain, for the judgements that are a choice among candidates
+// the code already enumerated rather than something to reason toward: which
+// observed control the bounded browser executor clicks next, whether a
+// reply's "done" is backed by a tool result, what to do when the same call
+// has come back the same three times, whether a trajectory is worth paying a
+// model to write a skill from. Each is answered in a few hundred milliseconds
+// for a fraction of a cent, and each falls back to the path the agent already
+// had when the answer is missing, malformed, or not confident enough to act on.
+//
+// Mode is the rollout dial. "off" is the default and changes nothing.
+// "shadow" asks every question, records the answer on the trace and acts on
+// none of them — the stage that calibrates the confidence bars against this
+// machine's own tasks. "active" acts on the ones that clear the bar.
+type DecisionConfig struct {
+	Mode    string `json:"mode"` // off | shadow | active
+	APIKey  string `json:"api_key,omitempty" env:"FACTOR_DECISION_API_KEY"`
+	APIBase string `json:"api_base,omitempty"`
+	Model   string `json:"model"`
+	// TimeoutMS bounds one request. A decision is worth having while the
+	// caller is still waiting on it; a slow one delays the generative path
+	// it was meant to spare.
+	TimeoutMS int `json:"timeout_ms"`
+	// MinConfidence is the bar a verdict has to clear to be acted on, and
+	// Thresholds raises or lowers it per decision kind (operation, target,
+	// completion, recovery, induction), because a wrong click and a wrong
+	// completion verdict are not the same size of mistake.
+	MinConfidence float64            `json:"min_confidence"`
+	Thresholds    map[string]float64 `json:"thresholds,omitempty"`
+	// The scenarios, each switchable on its own so a pilot can enable the
+	// browser executor alone. All on when the mode is; nil means on.
+	Browser *bool `json:"browser,omitempty"`
+	Verify  *bool `json:"verify,omitempty"`
+	Recover *bool `json:"recover,omitempty"`
+	Induce  *bool `json:"induce,omitempty"`
+	// InputPricePerMillion is what the decision model charges per million
+	// input tokens, in USD; output is free on this endpoint. The model
+	// catalog does not carry it, so the price is stated here and every
+	// decision is billed through the same ledger the chat calls are.
+	InputPricePerMillion float64 `json:"input_price_per_million"`
+}
+
+// DefaultDecisionInputPrice is TypeSafe's advertised input price for Jev,
+// USD per million tokens, as checked on 20 September 2026.
+const DefaultDecisionInputPrice = 0.042
+
+// On reports whether decisions are asked at all: shadow or active with a key.
+func (d DecisionConfig) On() bool {
+	return (d.Mode == "shadow" || d.Mode == "active") && d.APIKey != ""
+}
+
+// Active reports whether decisions may change what the agent does.
+func (d DecisionConfig) Active() bool { return d.On() && d.Mode == "active" }
+
+func enabled(b *bool) bool { return b == nil || *b }
+
+// BrowserOn, VerifyOn, RecoverOn and InduceOn are the per-scenario switches
+// read against the mode: a scenario is on when decisions are and it was not
+// switched off by name.
+func (d DecisionConfig) BrowserOn() bool { return d.On() && enabled(d.Browser) }
+func (d DecisionConfig) VerifyOn() bool  { return d.On() && enabled(d.Verify) }
+func (d DecisionConfig) RecoverOn() bool { return d.On() && enabled(d.Recover) }
+func (d DecisionConfig) InduceOn() bool  { return d.On() && enabled(d.Induce) }
+
 // CostConfig turns token counts into money. Tracking is on by default
 // because it costs nothing — every provider already reports the counts, and
 // a spend you cannot see is one you find out about on an invoice. Prices are
@@ -556,6 +621,13 @@ func Default() *Config {
 		Gateway:   GatewayConfig{Host: "127.0.0.1", Port: 8720},
 		Upgrade:   UpgradeConfig{Check: true, CheckIntervalHours: 24},
 		Cost:      CostConfig{Track: true, Budget: BudgetConfig{Period: "month"}, RefreshHours: 24},
+		Decision: DecisionConfig{
+			Mode:                 "off",
+			Model:                "jev-latest",
+			TimeoutMS:            4000,
+			MinConfidence:        0.6,
+			InputPricePerMillion: DefaultDecisionInputPrice,
+		},
 	}
 }
 
@@ -706,6 +778,23 @@ func (c *Config) normalize() {
 	default:
 		c.Cost.Budget.Period = "month"
 	}
+	switch c.Decision.Mode {
+	case "shadow", "active":
+	default:
+		c.Decision.Mode = "off"
+	}
+	if c.Decision.Model == "" {
+		c.Decision.Model = "jev-latest"
+	}
+	if c.Decision.TimeoutMS <= 0 {
+		c.Decision.TimeoutMS = 4000
+	}
+	if c.Decision.MinConfidence <= 0 || c.Decision.MinConfidence > 1 {
+		c.Decision.MinConfidence = 0.6
+	}
+	if c.Decision.InputPricePerMillion < 0 {
+		c.Decision.InputPricePerMillion = DefaultDecisionInputPrice
+	}
 }
 
 // minSecretLen is the floor for treating a configured value as a secret.
@@ -716,7 +805,7 @@ const minSecretLen = 8
 
 // SecretValues returns every configured secret worth filtering out of output.
 func (c *Config) SecretValues() []string {
-	secrets := []string{c.Provider.APIKey, c.Memory.APIKey, c.Memory.ExtractAPIKey}
+	secrets := []string{c.Provider.APIKey, c.Memory.APIKey, c.Memory.ExtractAPIKey, c.Decision.APIKey}
 	for _, f := range c.Provider.Fallbacks {
 		secrets = append(secrets, f.APIKey)
 	}
