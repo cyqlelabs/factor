@@ -4,7 +4,6 @@ package browser
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/decision"
-	"github.com/cyqlelabs/factor/internal/decision/jev"
 	"github.com/cyqlelabs/factor/internal/tools"
 )
 
@@ -54,53 +52,53 @@ func serveHTML(t *testing.T, html string) *httptest.Server {
 	return srv
 }
 
-// wireQuestions is the request as the fake TypeSafe sees it.
+// wireQuestions is one request as the decision model sees it.
 type wireQuestions struct {
-	State     map[string]any               `json:"state"`
-	Questions map[string]decision.Question `json:"questions"`
+	State     map[string]any
+	Questions map[string]decision.Question
 }
 
-// chooser plays the decision model: handed the questions exactly as they
-// crossed the wire, it answers them, which makes these tests end to end from
-// the page's DOM to the candidate ids the executor validates.
+// chooser plays the decision model: handed the questions exactly as the
+// executor built them, it answers them. That is what makes these tests end
+// to end from the page's DOM to the candidate ids the executor validates.
 type chooser func(step int, req wireQuestions) map[string]decision.Answer
 
-// fakeJev serves /v1/systemone from a chooser and keeps every request.
-type fakeJev struct {
+// fakeModel stands in for the local model, recording every request.
+type fakeModel struct {
 	mu       sync.Mutex
 	requests []wireQuestions
 	choose   chooser
-	status   int
+	fail     bool
 	// delay is how long an answer takes, for a test whose page must change
 	// under the decision.
 	delay time.Duration
 }
 
-func (f *fakeJev) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var req wireQuestions
-	_ = json.NewDecoder(r.Body).Decode(&req)
+func (f *fakeModel) Name() string { return "fake-laya" }
+
+func (f *fakeModel) Decide(_ context.Context, req *decision.Request) (*decision.Response, error) {
+	state, _ := req.State.(map[string]any)
+	seen := wireQuestions{State: state, Questions: req.Questions}
 	f.mu.Lock()
-	f.requests = append(f.requests, req)
+	f.requests = append(f.requests, seen)
 	step := len(f.requests) - 1
-	status, delay := f.status, f.delay
+	fail, delay, choose := f.fail, f.delay, f.choose
 	f.mu.Unlock()
 	time.Sleep(delay)
-	if status != 0 {
-		w.WriteHeader(status)
-		return
+	if fail {
+		return nil, fmt.Errorf("%w: the model is not running", decision.ErrUnavailable)
 	}
-	answers := f.choose(step, req)
-	_ = json.NewEncoder(w).Encode(map[string]any{"answers": answers, "model": "jev-test",
-		"usage": map[string]any{"input_tokens": 100, "output_tokens": 4}})
+	return &decision.Response{Answers: choose(step, seen), Model: "laya-multilingual",
+		Usage: decision.Usage{InputTokens: 100}}, nil
 }
 
-func (f *fakeJev) seen() []wireQuestions {
+func (f *fakeModel) seen() []wireQuestions {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]wireQuestions(nil), f.requests...)
 }
 
-// pick answers one question with a valid distribution favouring choice.
+// answerWith answers one question with a valid distribution favouring choice.
 func answerWith(q decision.Question, choice string, conf float64) decision.Answer {
 	ids := decision.Candidates(q)
 	probs := map[string]float64{}
@@ -146,19 +144,17 @@ func choose(req wireQuestions, op, target string, conf float64) map[string]decis
 type runFixture struct {
 	tool     tools.Tool
 	session  *Session
-	jev      *fakeJev
+	model    *fakeModel
 	outcomes *[]decision.Outcome
 }
 
 func newRunFixture(t *testing.T, url string, ch chooser, text TextWriter) *runFixture {
 	t.Helper()
 	requireBrowser(t)
-	fake := &fakeJev{choose: ch}
-	srv := httptest.NewServer(fake)
-	t.Cleanup(srv.Close)
+	model := &fakeModel{choose: ch}
 	var outcomes []decision.Outcome
 	var mu sync.Mutex
-	d := decision.New(jev.New("k", srv.URL, ""), decision.Options{Mode: decision.ModeActive, Timeout: 5 * time.Second}).
+	d := decision.New(model, decision.Options{Mode: decision.ModeActive, Timeout: 5 * time.Second}).
 		OnOutcome(func(_ context.Context, o decision.Outcome) {
 			mu.Lock()
 			outcomes = append(outcomes, o)
@@ -172,7 +168,7 @@ func newRunFixture(t *testing.T, url string, ch chooser, text TextWriter) *runFi
 		}
 		t.Fatalf("navigate: %s", res.ForLLM)
 	}
-	return &runFixture{tool: NewRunTool(s, d, text), session: s, jev: fake, outcomes: &outcomes}
+	return &runFixture{tool: NewRunTool(s, d, text), session: s, model: model, outcomes: &outcomes}
 }
 
 // The whole path: the page is read into candidates, the fake model types a
@@ -213,7 +209,7 @@ func TestBrowserRunCompletesASearchEndToEnd(t *testing.T) {
 			t.Errorf("result lacks %q:\n%s", want, res.ForLLM)
 		}
 	}
-	reqs := f.jev.seen()
+	reqs := f.model.seen()
 	if len(reqs) != 3 {
 		t.Fatalf("expected 3 decision requests, got %d", len(reqs))
 	}
@@ -245,7 +241,7 @@ func TestBrowserRunOffersCommittingControlsOnlyWhenAllowed(t *testing.T) {
 	if res.IsError || !strings.Contains(res.ForLLM, "BLOCKED") {
 		t.Fatalf("result: %+v", res)
 	}
-	req := f.jev.seen()[0]
+	req := f.model.seen()[0]
 	if indexOf(req.Questions["click_target"], "Book now") == "" {
 		t.Error("allow_submit did not offer the booking control")
 	}
@@ -280,8 +276,8 @@ func TestBrowserRunHandsBackWhenUnsure(t *testing.T) {
 	if res.IsError || !strings.Contains(res.ForLLM, "not confident") || !strings.Contains(res.ForLLM, "Steps: none taken") {
 		t.Fatalf("result: %+v", res)
 	}
-	if len(f.jev.seen()) != runUnsureLimit {
-		t.Errorf("%d requests, want %d", len(f.jev.seen()), runUnsureLimit)
+	if len(f.model.seen()) != runUnsureLimit {
+		t.Errorf("%d requests, want %d", len(f.model.seen()), runUnsureLimit)
 	}
 	unsure := 0
 	for _, o := range *f.outcomes {
@@ -304,7 +300,7 @@ func TestBrowserRunPausesForSteering(t *testing.T) {
 	if res.IsError || !strings.Contains(res.ForLLM, "paused") || !strings.Contains(res.ForLLM, "new message") {
 		t.Fatalf("result: %+v", res)
 	}
-	if len(f.jev.seen()) != 0 {
+	if len(f.model.seen()) != 0 {
 		t.Error("a paused run still asked for a decision")
 	}
 	// Steering that arrives after the first action stops before the second.
@@ -319,7 +315,7 @@ func TestBrowserRunPausesForSteering(t *testing.T) {
 func TestBrowserRunYieldsWhenTheBackendIsDown(t *testing.T) {
 	srv := serveHTML(t, flightsPage)
 	f := newRunFixture(t, srv.URL, nil, nil)
-	f.jev.status = http.StatusInternalServerError
+	f.model.fail = true
 	res := f.tool.Execute(context.Background(), map[string]any{"goal": "g"})
 	if res.IsError || !strings.Contains(res.ForLLM, "did not answer") || !strings.Contains(res.ForLLM, "Page now:") {
 		t.Fatalf("result: %+v", res)
@@ -392,15 +388,15 @@ func TestBrowserRunWaitsScrollsAndGoesBack(t *testing.T) {
 	if res := (&navigateTool{f.session}).Execute(context.Background(), map[string]any{"url": second.URL}); res.IsError {
 		t.Fatal(res.ForLLM)
 	}
-	f.jev.mu.Lock()
-	f.jev.requests = nil
-	f.jev.choose = func(step int, req wireQuestions) map[string]decision.Answer {
+	f.model.mu.Lock()
+	f.model.requests = nil
+	f.model.choose = func(step int, req wireQuestions) map[string]decision.Answer {
 		if step == 0 {
 			return choose(req, opBack, "", 0.9)
 		}
 		return choose(req, opDone, "", 0.9)
 	}
-	f.jev.mu.Unlock()
+	f.model.mu.Unlock()
 	res = f.tool.Execute(context.Background(), map[string]any{"goal": "g"})
 	if res.IsError || !strings.Contains(res.ForLLM, "1. BACK → page changed") || !strings.Contains(res.ForLLM, "Flight search") {
 		t.Fatalf("back result: %s", res.ForLLM)
@@ -414,12 +410,12 @@ func TestBrowserRunGivesUpOnAPageThatWillNotHoldStill(t *testing.T) {
 	}, nil)
 	// A decision slower than the page's redraw, so the gate always finds
 	// the page moved on from the observation it was decided over.
-	f.jev.delay = 250 * time.Millisecond
+	f.model.delay = 250 * time.Millisecond
 	res := f.tool.Execute(context.Background(), map[string]any{"goal": "g"})
 	if res.IsError || !strings.Contains(res.ForLLM, "kept changing") {
 		t.Fatalf("result: %+v", res)
 	}
-	if len(f.jev.seen()) > runStaleLimit {
-		t.Errorf("%d decisions spent on a page that never held still", len(f.jev.seen()))
+	if len(f.model.seen()) > runStaleLimit {
+		t.Errorf("%d decisions spent on a page that never held still", len(f.model.seen()))
 	}
 }

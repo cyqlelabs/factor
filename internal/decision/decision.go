@@ -1,14 +1,19 @@
 // Package decision is the seam for typed, bounded judgements — the kind a
-// System One model like Jev answers in a couple of hundred milliseconds
-// rather than the kind a chat model reasons its way to.
+// System One model answers in one forward pass rather than the kind a chat
+// model reasons its way to.
 //
 // The loop's ChatProvider is generative: it plans, writes, and recovers by
 // thinking. Most of what it is asked mid-turn is not that. Which of these six
-// controls to click next, whether a reply's "done" is backed by a tool result,
-// whether a trajectory is worth a skill, what to do when the same call has
-// returned the same page three times — every one of those is a choice among
-// candidates the code already enumerated, and asking a frontier model to
-// pick one costs a whole request against the conversation's context.
+// controls to click next, whether a reply's "done" is backed by a tool
+// result, whether a trajectory is worth a skill, what to do when the same
+// call has returned the same page three times — every one of those is a
+// choice among candidates the code already enumerated, and asking a frontier
+// model to pick one costs a whole request against the conversation's context.
+//
+// The model that answers them runs on the user's own machine (see
+// decision/local), which is what makes asking cheap enough to be worth doing
+// at all: no key, no network, no bill, and an answer in the time a hosted
+// round trip would have spent on DNS.
 //
 // A Question here is a typed choice over named candidates, answered with a
 // probability per candidate and a confidence. The answer is validated, not
@@ -17,9 +22,10 @@
 // response, and a refused response executes nothing. On top of validation
 // sits abstention: a decision under its kind's confidence bar, or one whose
 // winner is not clear of the runner-up, is reported as unsure so the caller
-// yields to the generative path it already had. Jev never gains authority
-// over anything: it cannot widen a tool's allow-list, a memory scope or a
-// budget, and its "DONE" is a completion candidate for the code to verify.
+// yields to the generative path it already had. The model never gains
+// authority over anything: it cannot widen a tool's allow-list, a memory
+// scope or a budget, and its "DONE" is a completion candidate for the code to
+// verify.
 //
 // Two modes matter operationally. Active decisions are acted on. Shadow
 // decisions are asked, recorded on the trace, and then ignored, which is how
@@ -109,10 +115,57 @@ func (r *Response) usageOnce() Usage {
 	return r.Usage
 }
 
-// Backend answers requests. The Jev client is one; tests script another.
+// Backend answers requests: the managed local model is the one Factor runs,
+// and tests script others.
 type Backend interface {
 	Decide(ctx context.Context, req *Request) (*Response, error)
 	Name() string
+}
+
+// Limits is what one backend can be asked in a single request. A hosted
+// frontier-scale model has no practical limit and reports none; a 322M
+// encoder running on the user's own machine has a fixed window and a fixed
+// budget for a question's options, and exceeding either is not a slightly
+// worse answer but a refused request or a state truncated inside the model
+// where the caller cannot see it happen.
+//
+// Zero means unknown, which every caller reads as "no limit": that is the
+// hosted case, and it is also what a local backend reports before its first
+// health probe has answered.
+type Limits struct {
+	// MaxCandidates is how many options one question may offer.
+	MaxCandidates int
+	// MaxStateChars is how much state may ride one request.
+	MaxStateChars int
+}
+
+// Candidates bounds a candidate count against the limit, returning n when
+// nothing is known.
+func (l Limits) Candidates(n int) int {
+	if l.MaxCandidates <= 0 {
+		return n
+	}
+	return min(n, l.MaxCandidates)
+}
+
+// ClipState bounds a rendered state against the limit, taking the caller's
+// own budget when it is the tighter of the two.
+func (l Limits) ClipState(s string, want int) string {
+	limit := want
+	if l.MaxStateChars > 0 && (limit <= 0 || l.MaxStateChars < limit) {
+		limit = l.MaxStateChars
+	}
+	if limit <= 0 {
+		return s
+	}
+	return Clip(s, limit)
+}
+
+// Limited is the optional capability a backend declares when its window
+// bounds what may be asked of it. A backend that does not implement it is
+// unbounded as far as any caller is concerned.
+type Limited interface {
+	Limits() Limits
 }
 
 // ErrInvalid is a backend reply that failed validation. Nothing executes on
@@ -285,6 +338,30 @@ func (d *Decider) Mode() string {
 		return ModeOff
 	}
 	return d.mode
+}
+
+// Limits reports what the backend behind this decider can be asked in one
+// request, so a caller can size what it offers instead of finding out from a
+// refusal. A nil decider and a backend that declares nothing both answer the
+// zero value, which means no limit.
+func (d *Decider) Limits() Limits {
+	if d == nil {
+		return Limits{}
+	}
+	limited, ok := d.backend.(Limited)
+	if !ok {
+		return Limits{}
+	}
+	return limited.Limits()
+}
+
+// Backend names what answers this decider's questions, for the log and the
+// status line. A nil decider names nothing.
+func (d *Decider) Backend() string {
+	if d == nil || d.backend == nil {
+		return ""
+	}
+	return d.backend.Name()
 }
 
 // Threshold is the confidence bar for one kind.

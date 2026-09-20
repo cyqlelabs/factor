@@ -19,7 +19,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/cost"
 	"github.com/cyqlelabs/factor/internal/cron"
 	"github.com/cyqlelabs/factor/internal/decision"
-	"github.com/cyqlelabs/factor/internal/decision/jev"
+	"github.com/cyqlelabs/factor/internal/decision/local"
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/jobs"
 	"github.com/cyqlelabs/factor/internal/mcp"
@@ -67,6 +67,11 @@ type App struct {
 	// Tracer keeps the local record of what each turn did; the control bands
 	// read it. Nil when tracing is off.
 	Tracer *trace.Recorder
+
+	// Decisions is the typed-decision model Factor runs itself, and is nil
+	// on every other backend — a hosted endpoint and a server somebody else
+	// runs are not this process's to supervise.
+	Decisions *local.Backend
 
 	closeBrowser func()
 
@@ -181,40 +186,41 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		lightChain.OnFailover(failover)
 	}
 
-	// The typed-decision model, where one is configured. It is billed through
-	// the same ledger as every chat call — at the price the config states,
-	// since no catalog carries it — and every verdict lands on the trace,
-	// which in shadow mode is the whole point of asking.
+	// The typed-decision model. It runs on this machine, so there is nothing
+	// to configure and nothing to authenticate: what the loop and the
+	// browser executor ask it — which control to click, whether a reply is
+	// backed by its tools — is answered in one forward pass of a small
+	// encoder, and every verdict lands on the trace. It is started below,
+	// once there is a context outliving this function.
 	var decider *decision.Decider
+	var decisionModel *local.Backend
 	if cfg.Decision.On() {
-		client := jev.New(cfg.Decision.APIKey, cfg.Decision.APIBase, cfg.Decision.Model)
-		price := cost.Price{Input: cfg.Decision.InputPricePerMillion}
-		catalog.AddOverride(cfg.Decision.Model, price)
-		decider = decision.New(client, decision.Options{
+		decisionModel = local.New(local.Config{
+			Port:        cfg.Decision.Port,
+			Device:      cfg.Decision.Device,
+			Command:     cfg.Decision.Command,
+			AutoInstall: cfg.Decision.AutoInstall,
+		}, config.Home())
+		// A decision is nearly a pure function of its inputs, and the
+		// repeats are the expensive kind: a page an action did not change,
+		// a retried call, a re-verified reply. The memo answers those
+		// without a round trip.
+		backend := decision.Cached(decisionModel, cfg.Decision.CacheEntries)
+		decider = decision.New(backend, decision.Options{
 			Mode:          cfg.Decision.Mode,
 			Timeout:       time.Duration(cfg.Decision.TimeoutMS) * time.Millisecond,
 			MinConfidence: cfg.Decision.MinConfidence,
 			Thresholds:    cfg.Decision.Thresholds,
 		}).OnOutcome(func(ctx context.Context, o decision.Outcome) {
-			key := tools.ToolContextFrom(ctx).SessionKey
-			tracer.Decision(key, trace.Decision{Kind: o.Kind, Choice: o.Choice, Result: o.Result,
-				Reason: o.Reason, Model: o.Model, Duration: o.Latency.Seconds()})
-			if o.Usage.InputTokens == 0 && o.Usage.OutputTokens == 0 {
-				return
-			}
-			// The reply names the release that answered, not the alias the
-			// config asked for; both are priced the same and the usage report
-			// must not list the one it has not heard of as unpriced.
-			if _, known := catalog.Price(o.Model); !known {
-				catalog.AddOverride(o.Model, price)
-			}
-			usd := price.Input * float64(o.Usage.InputTokens) / 1e6
-			t := cost.Totals{Input: o.Usage.InputTokens, Output: o.Usage.OutputTokens, USD: usd, Calls: 1}
-			ledger.Record(key, o.Model, t)
-			tracer.Charge(key, trace.ModelCall{Model: o.Model, Input: t.Input, Output: t.Output, USD: usd,
-				Duration: o.Latency.Seconds()})
+			// The trace is the whole record: there is no money to count for
+			// a model that runs here, and in shadow mode these lines are
+			// the calibration data.
+			tracer.Decision(tools.ToolContextFrom(ctx).SessionKey, trace.Decision{
+				Kind: o.Kind, Choice: o.Choice, Result: o.Result,
+				Reason: o.Reason, Model: o.Model, Duration: o.Latency.Seconds(),
+			})
 		})
-		slog.Info("typed decisions on", "mode", cfg.Decision.Mode, "model", cfg.Decision.Model)
+		slog.Info("typed decisions on", "mode", cfg.Decision.Mode, "model", decider.Backend())
 	}
 
 	extract := memory.DeriveExtract(cfg.Memory, cfg.Provider)
@@ -424,7 +430,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 
 		closeBrowser: closeBrowser,
 		bgCancel:     bgCancel,
+		Decisions:    decisionModel,
 	}
+	// The decision model is supervised for as long as the App lives: it is
+	// spawned, health-probed and restarted on the background context, so a
+	// checkpoint that takes a minute to load costs the turns in that minute
+	// their fallback rather than costing them the wait.
+	decisionModel.Start(bgCtx)
 	// The price catalog refreshes on a daily tick for as long as the App
 	// lives. Started here rather than where the catalog is built so Close
 	// owns it: it is the one background task that writes to disk on its own
@@ -479,6 +491,9 @@ func (a *App) Close() {
 		a.bgCancel()
 		a.bg.Wait()
 	}
+	// After the background context is cancelled, because that is what tells
+	// the supervisor to stop respawning; this waits for the child to go.
+	a.Decisions.Stop()
 	a.closeBrowser()
 	if a.MCP != nil {
 		a.MCP.CloseAll()
