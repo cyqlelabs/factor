@@ -111,14 +111,19 @@ func (m *e2eModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// e2eJudge plays TypeSafe: the browser's operation and target heads are
-// answered from the candidates it was sent, the completion check is passed.
+// e2eJudge plays the local decision model: the browser's operation and
+// target heads are answered from the candidates it was sent, and the
+// completion check is passed.
 type e2eJudge struct {
 	mu    sync.Mutex
 	kinds []string
 }
 
 func (j *e2eJudge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/health" {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "max_len": 1024, "head_max_len": 192})
+		return
+	}
 	var req struct {
 		State     map[string]any               `json:"state"`
 		Questions map[string]decision.Question `json:"questions"`
@@ -183,7 +188,7 @@ func (j *e2eJudge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"answers": answers, "model": "jev-test",
+	_ = json.NewEncoder(w).Encode(map[string]any{"answers": answers, "model": "laya-multilingual",
 		"usage": map[string]any{"input_tokens": 400, "output_tokens": 6}})
 }
 
@@ -213,8 +218,6 @@ func TestFlightSearchEndToEndThroughTheWholeApp(t *testing.T) {
 	llm := httptest.NewServer(model)
 	defer llm.Close()
 	judge := &e2eJudge{}
-	typesafe := httptest.NewServer(judge)
-	defer typesafe.Close()
 
 	cfg := testConfig(t)
 	cfg.Provider.Type = "openai"
@@ -232,9 +235,9 @@ func TestFlightSearchEndToEndThroughTheWholeApp(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(profile) })
 	cfg.Browser.UserDataDir = profile
 	cfg.Decision.Mode = "active"
-	cfg.Decision.APIKey = "ts-e2e-key-12345"
-	cfg.Decision.APIBase = typesafe.URL
+	cfg.Decision.Port = serveDecisions(t, judge)
 	a := newTestApp(t, cfg)
+	waitHealthy(t, a)
 	if _, ok := a.Registry.Get("browser_run"); !ok {
 		t.Fatal("browser_run not mounted")
 	}
@@ -276,18 +279,11 @@ func TestFlightSearchEndToEndThroughTheWholeApp(t *testing.T) {
 		}
 	}
 
-	// Money and record: the decisions are billed to the session under the
-	// model that answered, priced rather than listed as unpriced, and the
-	// trace carries every verdict beside the tools.
+	// The record: every verdict lands on the turn's trace, and none of it
+	// reaches the money ledger, because none of it cost anything.
 	snap := a.Cost.Snapshot("cli:e2e")
-	if _, ok := snap.Models["jev-test"]; !ok {
-		t.Errorf("the decision model is not in the session's ledger: %v", snap.Models)
-	}
-	if unpriced := a.Cost.Unpriced(snap); len(unpriced) != 0 {
-		t.Errorf("models left unpriced: %v", unpriced)
-	}
-	if snap.Session.USD <= 0 {
-		t.Error("nothing was billed for the decisions")
+	if _, counted := snap.Models["laya-multilingual"]; counted {
+		t.Errorf("the decision model reached the money ledger: %v", snap.Models)
 	}
 	recs, err := trace.Since(a.Traces(), time.Now().Add(-time.Minute))
 	if err != nil || len(recs) == 0 {
@@ -299,7 +295,7 @@ func TestFlightSearchEndToEndThroughTheWholeApp(t *testing.T) {
 			turn = r
 		}
 	}
-	acted, completion, jevUSD := 0, 0, 0.0
+	acted, completion := 0, 0
 	for _, d := range turn.Decisions {
 		if d.Result == "acted" {
 			acted++
@@ -307,14 +303,15 @@ func TestFlightSearchEndToEndThroughTheWholeApp(t *testing.T) {
 		if d.Kind == decision.KindCompletion {
 			completion++
 		}
-	}
-	for _, m := range turn.Models {
-		if m.Model == "jev-test" {
-			jevUSD += m.USD
+		if d.Model != "laya-multilingual" {
+			t.Errorf("a decision names the wrong model: %+v", d)
 		}
 	}
-	if acted < 5 || completion != 1 || jevUSD <= 0 {
-		t.Errorf("trace: acted=%d completion=%d jevUSD=%v decisions=%+v", acted, completion, jevUSD, turn.Decisions)
+	if acted < 5 || completion != 1 {
+		t.Errorf("trace: acted=%d completion=%d decisions=%+v", acted, completion, turn.Decisions)
+	}
+	if turn.USD != 0 {
+		t.Errorf("the turn was billed %v for decisions that run here", turn.USD)
 	}
 	tools := map[string]bool{}
 	for _, tc := range turn.Tools {

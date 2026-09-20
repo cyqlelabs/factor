@@ -4,6 +4,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -48,7 +49,7 @@ func has(ss []string, want string) bool {
 // what is left out of it is the policy: passwords never, committing controls
 // only when allowed, fields only when something can write their text.
 func TestActionSpaceAppliesThePolicy(t *testing.T) {
-	space := buildActionSpace(formPage(), false, true)
+	space := buildActionSpace(formPage(), false, true, 0)
 	clicks := labels(space.targets[opClick])
 	types := labels(space.targets[opType])
 	for _, want := range []string{"Search", "Non-stop", "Results"} {
@@ -84,11 +85,11 @@ func TestActionSpaceAppliesThePolicy(t *testing.T) {
 		t.Errorf("the field's current value did not ride the candidate: %+v", c)
 	}
 
-	allowed := buildActionSpace(formPage(), true, true)
+	allowed := buildActionSpace(formPage(), true, true, 0)
 	if !has(labels(allowed.targets[opClick]), "Book now") || len(allowed.withheld) != 0 {
 		t.Errorf("allow_submit did not offer the committing controls: %v", labels(allowed.targets[opClick]))
 	}
-	noText := buildActionSpace(formPage(), false, false)
+	noText := buildActionSpace(formPage(), false, false, 0)
 	if _, offered := noText.targets[opType]; offered {
 		t.Error("TYPE_TEXT offered with nothing to write the text")
 	}
@@ -98,9 +99,17 @@ func itoa(i int) string {
 	return strings.TrimSpace(strings.Repeat(" ", 0) + string(rune('0'+i)))
 }
 
+// runFor builds a run whose decider declares no limits, which is the hosted
+// case and the one these tests are about.
+func runFor(goal string) *browserRun {
+	return &browserRun{goal: goal, tool: &runTool{
+		decider: decision.New(nilBackend{}, decision.Options{Mode: decision.ModeActive}),
+	}}
+}
+
 func TestRequestOffersOnlySupportedOperationsAndATargetHeadPerOperation(t *testing.T) {
-	r := &browserRun{goal: "search flights", allowSubmit: false}
-	o := &observation{page: formPage(), space: buildActionSpace(formPage(), false, true)}
+	r := runFor("search flights")
+	o := &observation{page: formPage(), space: buildActionSpace(formPage(), false, true, 0)}
 	req := r.request(o)
 	op := req.Questions["operation"]
 	for _, want := range []string{opClick, opType, opScrollDn, opScrollUp, opBack, opWait, opDone, opBlocked} {
@@ -123,7 +132,7 @@ func TestRequestOffersOnlySupportedOperationsAndATargetHeadPerOperation(t *testi
 	}
 	// A page with nothing to type into offers no TYPE_TEXT head or operation.
 	bare := &pageRead{Elements: []pageElement{{Ref: "e1", Tag: "a", Label: "Home"}}}
-	req = r.request(&observation{page: bare, space: buildActionSpace(bare, false, true)})
+	req = r.request(&observation{page: bare, space: buildActionSpace(bare, false, true, 0)})
 	if _, ok := req.Questions["operation"].Criteria[opType]; ok {
 		t.Error("TYPE_TEXT offered on a page with no fields")
 	}
@@ -271,5 +280,73 @@ func TestFieldTextNeedsAWriter(t *testing.T) {
 	got, ok, err := r.fieldText(context.Background(), &candidate{Label: "x"}, &observation{page: &pageRead{}})
 	if err != nil || !ok || got != "Paris" {
 		t.Errorf("got %q ok=%v err=%v", got, ok, err)
+	}
+}
+
+// A page offers far more controls than a local decision model can be asked
+// about in one question, so the space is capped — and what is dropped is said
+// out loud, because a short list reads to a model as a short page.
+func TestActionSpaceCapsWhatOneQuestionOffers(t *testing.T) {
+	page := &pageRead{Title: "Listing", URL: "http://x/", Text: "results"}
+	for i := 1; i <= 40; i++ {
+		page.Elements = append(page.Elements, pageElement{
+			Ref: fmt.Sprintf("e%d", i), Tag: "a", Label: fmt.Sprintf("Result %d", i), Href: "/r",
+		})
+	}
+	page.Elements = append(page.Elements,
+		pageElement{Ref: "f1", Tag: "input", Type: "text", Label: "Search"},
+		pageElement{Ref: "f2", Tag: "input", Type: "text", Label: "Filter"},
+	)
+
+	space := buildActionSpace(page, false, true, 12)
+	if got := len(space.targets[opClick]); got != 12 {
+		t.Errorf("CLICK offered %d targets, want the cap of 12", got)
+	}
+	// The cap is per operation, so a page's two fields are not crowded out
+	// by its forty links.
+	if got := len(space.targets[opType]); got != 2 {
+		t.Errorf("TYPE_TEXT offered %d targets, want 2", got)
+	}
+	if space.crowded != 28 {
+		t.Errorf("crowded = %d, want the 28 links left out", space.crowded)
+	}
+	// What survives is the front of the list, which the read already ordered
+	// content first.
+	if c := space.targets[opClick]["1"]; c == nil || c.Label != "Result 1" {
+		t.Errorf("the first candidate is not the first element: %+v", c)
+	}
+	// Indices stay dense across the elements that were kept, so nothing
+	// points at a candidate the question does not carry.
+	for i, el := range space.elements {
+		if el.Index != fmt.Sprint(i+1) {
+			t.Fatalf("element %d has index %q", i, el.Index)
+		}
+	}
+	if uncapped := buildActionSpace(page, false, true, 0); uncapped.crowded != 0 || len(uncapped.targets[opClick]) != 40 {
+		t.Errorf("an uncapped space dropped something: crowded=%d clicks=%d",
+			uncapped.crowded, len(uncapped.targets[opClick]))
+	}
+}
+
+// The state says what was left out, for the same reason a truncated page read
+// does: a model that cannot see the cut reads the short list as the whole page.
+func TestRequestSaysWhatDidNotFit(t *testing.T) {
+	page := &pageRead{Title: "Listing", URL: "http://x/", Text: strings.Repeat("page text ", 500)}
+	for i := 1; i <= 20; i++ {
+		page.Elements = append(page.Elements, pageElement{Ref: fmt.Sprintf("e%d", i), Tag: "button", Label: fmt.Sprintf("Item %d", i)})
+	}
+	r := runFor("g")
+	space := buildActionSpace(page, false, true, 8)
+	state := r.request(&observation{page: page, space: space}).State.(map[string]any)
+	if state["unlisted_controls"] != 12 {
+		t.Errorf("unlisted_controls = %v, want 12", state["unlisted_controls"])
+	}
+	if note, _ := state["unlisted_note"].(string); !strings.Contains(note, "BLOCKED") {
+		t.Errorf("the note does not say what to do about it: %q", note)
+	}
+	// And the summary repeats it to the parent agent.
+	out := r.summary(&observation{page: page, space: space}, stop{how: "blocked"}).ForLLM
+	if !strings.Contains(out, "Not offered (more controls than fit one decision): 12") {
+		t.Errorf("summary does not report the cap:\n%s", out)
 	}
 }

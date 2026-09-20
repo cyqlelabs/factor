@@ -278,6 +278,10 @@ func serve(configPath string) (bool, error) {
 	// stays up to finish, and it is what an upgraded install runs first. A
 	// terminal session leaves that to the first page it is asked for.
 	browser.ProvisionInBackground(ctx, cfg.Browser, config.Home())
+	// The decision model is provisioned here for the same reason the browser
+	// engine is: this process lives long enough to finish the download, and
+	// a terminal one-shot does not.
+	a.Decisions.Provision(ctx)
 
 	reloading := false
 	select {

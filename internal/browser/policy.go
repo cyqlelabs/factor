@@ -211,12 +211,25 @@ type actionSpace struct {
 	// withheld names the controls the submit policy kept out, so the
 	// decision knows a "Book" button exists and is not being offered.
 	withheld []string
+	// crowded counts the controls left out for room rather than for policy:
+	// a decision model has a fixed budget for one question's options, and a
+	// listing page offers far more controls than fit it. They are dropped
+	// from the back, which the read has already ordered as site furniture
+	// behind the page's own content.
+	crowded int
 }
 
 // buildActionSpace reads the observation into candidates. Passwords are never
 // offered; controls that commit something are withheld unless allowed; a
-// field is a typing target only when something can write its text.
-func buildActionSpace(r *pageRead, allowSubmit, canType bool) actionSpace {
+// field is a typing target only when something can write its text; and each
+// operation offers at most perOp targets, which is what keeps a page with
+// sixty controls from being a question no model can be asked.
+//
+// Capping is not only a size rule. A typed decision over many near-identical
+// options is the case these models are measurably worst at, so the narrower
+// question is also the better-answered one — and what is dropped is dropped
+// from the end of a list the read put in content-first order.
+func buildActionSpace(r *pageRead, allowSubmit, canType bool, perOp int) actionSpace {
 	space := actionSpace{targets: map[string]map[string]*candidate{}}
 	for _, el := range r.Elements {
 		op := operationFor(el)
@@ -228,6 +241,10 @@ func buildActionSpace(r *pageRead, allowSubmit, canType bool) actionSpace {
 			continue
 		}
 		if op == opType && !canType {
+			continue
+		}
+		if perOp > 0 && len(space.targets[op]) >= perOp {
+			space.crowded++
 			continue
 		}
 		c := candidate{
@@ -328,8 +345,14 @@ func (r *browserRun) observe(ctx context.Context) (*observation, error) {
 		return nil, err
 	}
 	probe, _ := r.tool.drive.probe(ctx)
-	return &observation{page: page, probe: probe,
-		space: buildActionSpace(page, r.allowSubmit, r.tool.text != nil)}, nil
+	return &observation{page: page, probe: probe, space: r.space(page)}, nil
+}
+
+// space builds the candidate set this run may choose from, against what the
+// decision model behind it can actually be asked in one question.
+func (r *browserRun) space(page *pageRead) actionSpace {
+	limits := r.tool.decider.Limits()
+	return buildActionSpace(page, r.allowSubmit, r.tool.text != nil, limits.MaxCandidates)
 }
 
 // reobserve reads the page again after it changed under a decision, and
@@ -379,16 +402,27 @@ func (r *browserRun) request(o *observation) *decision.Request {
 	if len(recent) > runHistory {
 		recent = recent[len(recent)-runHistory:]
 	}
+	// The page text rides the request under whichever budget is tighter,
+	// this tool's or the model's own window: a state truncated inside the
+	// model is a state the caller never learns was cut.
+	limits := r.tool.decider.Limits()
 	state := map[string]any{
 		"goal": r.goal,
 		"page": map[string]any{"url": o.page.URL, "title": o.page.Title,
-			"text": decision.Clip(o.page.Text, runTextChars)},
+			"text": limits.ClipState(o.page.Text, runTextChars)},
 		"elements":       o.space.elements,
 		"recent_actions": recent,
 	}
 	if len(o.space.withheld) > 0 {
 		state["withheld_controls"] = o.space.withheld
 		state["withheld_note"] = "these controls commit something and are not offered; if the goal needs one, answer BLOCKED"
+	}
+	if o.space.crowded > 0 {
+		// Said out loud for the same reason a truncated page read is: the
+		// alternative is a model concluding from a short list that the
+		// control it needs is not on the page.
+		state["unlisted_controls"] = o.space.crowded
+		state["unlisted_note"] = "more controls exist than fit one question; scroll or answer BLOCKED if what the goal needs is not offered"
 	}
 	return &decision.Request{State: state, Questions: questions}
 }
@@ -525,7 +559,7 @@ func (r *browserRun) execute(ctx context.Context) *tools.Result {
 		before := o.probe
 		if page != nil {
 			probe, _ := r.tool.drive.probe(ctx)
-			o = &observation{page: page, probe: probe, space: buildActionSpace(page, r.allowSubmit, r.tool.text != nil)}
+			o = &observation{page: page, probe: probe, space: r.space(page)}
 		} else if o, err = r.observe(ctx); err != nil {
 			end = stop{how: "error", note: err.Error()}
 			continue
@@ -687,6 +721,9 @@ func (r *browserRun) summary(o *observation, end stop) *tools.Result {
 	}
 	if o != nil && len(o.space.withheld) > 0 {
 		fmt.Fprintf(&b, "Withheld (allow_submit is false): %s\n", quoteAll(o.space.withheld))
+	}
+	if o != nil && o.space.crowded > 0 {
+		fmt.Fprintf(&b, "Not offered (more controls than fit one decision): %d\n", o.space.crowded)
 	}
 	if o != nil && o.page != nil {
 		page := *o.page

@@ -1,0 +1,413 @@
+package local
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/cyqlelabs/factor/internal/childproc"
+	"github.com/cyqlelabs/factor/internal/decision"
+)
+
+// The server is supervised the way the memory engine and the speech server
+// are — spawn, health-poll, restart with a backoff — and its absence is never
+// fatal: a decision that cannot be had is a decision the caller falls back
+// from, which is the contract every caller of this package already honours.
+
+const (
+	// probeEvery is how often a healthy server is re-checked.
+	probeEvery = 15 * time.Second
+	// stopGrace is how long the child gets to exit on its own.
+	stopGrace = 5 * time.Second
+	// charsPerToken converts the server's token budgets into the character
+	// budgets a caller can actually measure. Deliberately conservative:
+	// three is about right for English prose and pessimistic for the
+	// languages that tokenize worse, and the cost of guessing low is a
+	// shorter state rather than a silent truncation inside the model.
+	charsPerToken = 3
+	// tokensPerOption is what one offered candidate costs in the question
+	// head: an index, a label, and the punctuation between them. A browser
+	// control's label runs to a dozen tokens, and the head budget is shared
+	// by every option in the question.
+	tokensPerOption = 12
+	// maxOfferedCandidates caps what any one question offers, under what the
+	// token budget alone would allow. Laya's own benchmarks put it behind
+	// the hosted model once a question carries more than about twenty
+	// options (Banking77, 77 labels: 0.425 against 0.870), so this is an
+	// accuracy bound as much as a size one.
+	maxOfferedCandidates = 16
+)
+
+// Backend is the managed local decision model: a supervised child that
+// answers the same /v1/systemone contract the hosted model does, and the
+// client that talks to it.
+type Backend struct {
+	cfg    Config
+	home   string
+	client *client
+
+	script string
+
+	healthy atomic.Bool
+	down    atomic.Value // string
+	limits  atomic.Value // decision.Limits
+
+	installTried atomic.Bool
+	// installOK gates the install itself. Building the virtualenv pulls
+	// torch behind it, which is a few hundred megabytes, and a one-shot
+	// `factor "what time is it"` that starts that download and is then killed
+	// halfway helps nobody. So it is permitted by the gateway, which is long
+	// enough lived to finish it, or by the first decision actually asked for
+	// on this machine — the same rule the browser engine follows.
+	installOK atomic.Bool
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+
+	// probeInterval lets a test shrink the poll.
+	probeInterval time.Duration
+	// httpClient is the health probe's; the decision client has its own.
+	httpClient *http.Client
+}
+
+// New builds the backend. It starts nothing: Start does that, so a caller can
+// construct one and decide later whether this install wants it running.
+func New(cfg Config, home string) *Backend {
+	b := &Backend{
+		cfg:        cfg,
+		home:       home,
+		script:     ScriptPath(home),
+		client:     newClient(cfg.BaseURL()),
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+	}
+	b.down.Store("not started")
+	b.limits.Store(decision.Limits{})
+	return b
+}
+
+// Name implements decision.Backend.
+func (b *Backend) Name() string { return "laya-" + Checkpoint }
+
+// Healthy reports whether the server is answering right now.
+func (b *Backend) Healthy() bool { return b != nil && b.healthy.Load() }
+
+// Down says why it is not, or "" when it is fine.
+func (b *Backend) Down() string {
+	if b == nil {
+		return "not configured"
+	}
+	reason, _ := b.down.Load().(string)
+	return reason
+}
+
+func (b *Backend) setDown(format string, args ...any) {
+	b.down.Store(fmt.Sprintf(format, args...))
+}
+
+// Limits implements decision.Limited: what the checkpoint that actually
+// loaded can be asked in one request. Zero until the first health probe
+// answers, which every caller reads as "no limit known".
+func (b *Backend) Limits() decision.Limits {
+	if b == nil {
+		return decision.Limits{}
+	}
+	l, _ := b.limits.Load().(decision.Limits)
+	return l
+}
+
+// Decide implements decision.Backend. A server that is not up is reported as
+// unavailable rather than dialled: the caller's fallback is the point, and a
+// connection refused on every decision is a slow way to reach it.
+func (b *Backend) Decide(ctx context.Context, req *decision.Request) (*decision.Response, error) {
+	// A decision was actually asked for, which is what makes the model worth
+	// installing on a machine that has not got it yet. This one falls back;
+	// the supervisor picks the permission up on its next attempt.
+	b.installOK.Store(true)
+	if !b.healthy.Load() {
+		return nil, fmt.Errorf("%w: the local decision model is not running (%s)", decision.ErrUnavailable, b.Down())
+	}
+	return b.client.decide(ctx, req)
+}
+
+// Provision permits the install and starts it now rather than on the first
+// decision, so a gateway coming up on a fresh machine has the model ready
+// before anything asks — the same thing browser.ProvisionInBackground does
+// for the headless engine, and for the same reason: a daemon is long enough
+// lived to finish a download that a one-shot command would kill.
+func (b *Backend) Provision(ctx context.Context) {
+	if b == nil || !b.cfg.autoInstall() || b.cfg.Command != "" {
+		return
+	}
+	b.installOK.Store(true)
+	if _, ok := FindPython(b.home); ok {
+		return // already here; the supervisor starts it
+	}
+	go func() {
+		if _, _, err := EnsureLaya(ctx, b.home, true, func(format string, args ...any) {
+			slog.Info("decision model: " + fmt.Sprintf(format, args...))
+		}); err != nil {
+			slog.Warn("the local decision model could not be installed; decisions fall back to the agent's own path until it is",
+				"error", err)
+			return
+		}
+		slog.Info("the local decision model is installed")
+	}()
+}
+
+// Start brings the supervisor up. It returns immediately; the first decisions
+// while the checkpoint loads fall back, which is what fallback is for.
+func (b *Backend) Start(parent context.Context) {
+	if b == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	b.cancel = cancel
+	b.wg.Add(1)
+	go b.run(ctx)
+}
+
+// Stop ends the supervisor and waits for the child to go.
+func (b *Backend) Stop() {
+	if b == nil {
+		return
+	}
+	if b.cancel != nil {
+		b.cancel()
+	}
+	b.wg.Wait()
+}
+
+func (b *Backend) run(ctx context.Context) {
+	defer b.wg.Done()
+	// A stopped supervisor is not a healthy model. Without this the flag
+	// outlives the child, and the next decision dials a port nothing is
+	// listening on instead of falling back the way it should.
+	defer func() {
+		b.healthy.Store(false)
+		if ctx.Err() != nil {
+			b.setDown("the local decision model was stopped")
+		}
+	}()
+	backoff := 5 * time.Second
+	for ctx.Err() == nil {
+		if b.probe(ctx) == nil {
+			b.healthy.Store(true)
+			b.down.Store("")
+			backoff = 5 * time.Second
+			b.pollWhileHealthy(ctx)
+			continue
+		}
+		b.healthy.Store(false)
+		err := b.spawnAndWait(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Warn("the local decision model exited; restarting", "error", err, "backoff", backoff)
+		sleepCtx(ctx, backoff)
+		if backoff *= 2; backoff > time.Minute {
+			backoff = time.Minute
+		}
+	}
+}
+
+func (b *Backend) pollWhileHealthy(ctx context.Context) {
+	for ctx.Err() == nil {
+		sleepCtx(ctx, b.reprobeInterval())
+		if ctx.Err() != nil {
+			return
+		}
+		if b.probe(ctx) != nil {
+			b.healthy.Store(false)
+			b.setDown("the local decision model stopped answering")
+			return
+		}
+	}
+}
+
+func (b *Backend) reprobeInterval() time.Duration {
+	if b.probeInterval > 0 {
+		return b.probeInterval
+	}
+	return probeEvery
+}
+
+// health is what the server reports about itself.
+type health struct {
+	OK         bool   `json:"ok"`
+	Error      string `json:"error"`
+	MaxLen     int    `json:"max_len"`
+	HeadMaxLen int    `json:"head_max_len"`
+}
+
+// probe asks the server whether it is up, and records the limits it reports.
+func (b *Backend) probe(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.BaseURL()+"/health", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var h health
+	if err := json.NewDecoder(resp.Body).Decode(&h); err != nil {
+		return err
+	}
+	if !h.OK {
+		if h.Error != "" {
+			return fmt.Errorf("the local decision model is not ready: %s", h.Error)
+		}
+		return fmt.Errorf("the local decision model is still loading")
+	}
+	b.limits.Store(limitsOf(h))
+	return nil
+}
+
+// limitsOf turns the server's token budgets into the character and candidate
+// budgets a caller can size a request against. Both are estimates and are
+// meant to be: what they replace is a request that is silently truncated
+// inside the model, or refused outright for a question head that does not
+// fit, neither of which the caller can see.
+func limitsOf(h health) decision.Limits {
+	l := decision.Limits{}
+	if h.MaxLen > 0 && h.HeadMaxLen > 0 && h.MaxLen > h.HeadMaxLen {
+		l.MaxStateChars = (h.MaxLen - h.HeadMaxLen) * charsPerToken
+	}
+	if h.HeadMaxLen > 0 {
+		l.MaxCandidates = min(h.HeadMaxLen/tokensPerOption, maxOfferedCandidates)
+	}
+	return l
+}
+
+// serverEnv is the environment the server is born with. Hugging Face's hub
+// reports usage as it resolves a repository, which a personal agent's sidecar
+// has no business doing; the switch has to be in the environment before the
+// interpreter starts, which is why it lives here rather than in the script.
+func serverEnv() []string {
+	return append(os.Environ(), "HF_HUB_DISABLE_TELEMETRY=1", "TRANSFORMERS_NO_ADVISORY_WARNINGS=1")
+}
+
+func (b *Backend) spawnAndWait(ctx context.Context) error {
+	command, err := b.resolveCommand(ctx)
+	if err != nil {
+		b.setDown("%v", err)
+		return err
+	}
+	if err := WriteScript(b.script); err != nil {
+		b.setDown("%v", err)
+		return err
+	}
+	blob, err := json.Marshal(map[string]any{
+		"device": b.cfg.Device,
+		"port":   b.cfg.port(),
+		"host":   "127.0.0.1",
+	})
+	if err != nil {
+		return err
+	}
+	b.down.Store("")
+
+	cmd := exec.CommandContext(ctx, command, b.script)
+	cmd.Env = append(serverEnv(), "FACTOR_DECISION_CONFIG="+string(blob))
+	cmd.WaitDelay = 5 * time.Second
+	cmd.Cancel = func() error { childproc.Stop(cmd.Process); return nil }
+
+	logDir := filepath.Join(b.home, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err == nil {
+		if f, ferr := os.OpenFile(filepath.Join(logDir, "layaserve.log"),
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); ferr == nil {
+			defer f.Close()
+			cmd.Stdout, cmd.Stderr = f, f
+		}
+	}
+
+	if err := cmd.Start(); err != nil {
+		b.setDown("could not start the local decision model: %v", err)
+		return err
+	}
+	slog.Info("local decision model starting", "port", b.cfg.port(), "pid", cmd.Process.Pid)
+
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	// The first run downloads the weights, so the wait for a first health
+	// answer is long; every run after it is seconds.
+	deadline := time.Now().Add(LoadTimeout)
+	for {
+		select {
+		case err := <-waitCh:
+			b.setDown("the local decision model exited: %v (see %s)", err, filepath.Join(logDir, "layaserve.log"))
+			return err
+		case <-ctx.Done():
+			return childproc.StopAndWait(cmd.Process, waitCh, stopGrace)
+		case <-time.After(time.Second):
+		}
+		if b.probe(ctx) == nil {
+			b.healthy.Store(true)
+			b.down.Store("")
+			slog.Info("local decision model ready", "limits", b.Limits())
+			break
+		}
+		if time.Now().After(deadline) {
+			b.setDown("the local decision model did not become ready within %s", LoadTimeout)
+			return childproc.StopAndWait(cmd.Process, waitCh, stopGrace)
+		}
+	}
+
+	// Healthy: stay with the child until it exits or the context ends.
+	select {
+	case err := <-waitCh:
+		b.healthy.Store(false)
+		b.setDown("the local decision model exited: %v", err)
+		return err
+	case <-ctx.Done():
+		return childproc.StopAndWait(cmd.Process, waitCh, stopGrace)
+	}
+}
+
+// resolveCommand locates the interpreter, installing Laya when it is missing.
+// The install is attempted at most once per process: a machine that cannot
+// install must not re-run a long download on every restart.
+func (b *Backend) resolveCommand(ctx context.Context) (string, error) {
+	if b.cfg.Command != "" {
+		return resolveInterpreter(b.cfg.Command)
+	}
+	if path, ok := FindPython(b.home); ok {
+		return path, nil
+	}
+	if !b.cfg.autoInstall() {
+		return "", fmt.Errorf("the local decision model is not installed and decision.auto_install is off — %s", InstallHint())
+	}
+	if !b.installOK.Load() {
+		// Nothing has asked for a decision yet and no gateway has said it
+		// will wait for the download. Reported rather than begun.
+		return "", fmt.Errorf("the local decision model is not installed yet; the gateway installs it in the background, as does the first decision asked for")
+	}
+	if b.installTried.Swap(true) {
+		return "", fmt.Errorf("the local decision model is not installed and the automatic install already failed this run")
+	}
+	slog.Info("the local decision model is missing; installing it", "spec", PackageSpec)
+	path, _, err := EnsureLaya(ctx, b.home, true, func(format string, args ...any) {
+		slog.Info("decision install: " + fmt.Sprintf(format, args...))
+	})
+	return path, err
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}

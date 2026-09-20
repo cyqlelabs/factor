@@ -456,25 +456,30 @@ type TraceConfig struct {
 	KeepDays   int  `json:"keep_days"`
 }
 
-// DecisionConfig wires a typed-decision model — TypeSafe's Jev — beside the
-// conversation's chain, for the judgements that are a choice among candidates
-// the code already enumerated rather than something to reason toward: which
-// observed control the bounded browser executor clicks next, whether a
-// reply's "done" is backed by a tool result, what to do when the same call
-// has come back the same three times, whether a trajectory is worth paying a
-// model to write a skill from. Each is answered in a few hundred milliseconds
-// for a fraction of a cent, and each falls back to the path the agent already
-// had when the answer is missing, malformed, or not confident enough to act on.
+// DecisionConfig is the typed-decision model: the thing that answers Factor's
+// small judgements — which observed control the browser executor clicks next,
+// whether a reply's "done" is backed by a tool result, what to do when the
+// same call has come back the same three times, whether a trajectory is worth
+// paying a model to write a skill from.
 //
-// Mode is the rollout dial. "off" is the default and changes nothing.
-// "shadow" asks every question, records the answer on the trace and acts on
-// none of them — the stage that calibrates the confidence bars against this
-// machine's own tasks. "active" acts on the ones that clear the bar.
+// None of those is a question for a chat model. Each is a choice among
+// candidates the code already enumerated, and sending one to a frontier model
+// costs a whole request against the conversation's context to pick an item
+// from a list. A 322M-parameter encoder answers it here, on this machine, in
+// one forward pass — no key, no network, no bill, nothing to sign up for.
+//
+// So there is deliberately almost nothing here. There is no model to choose
+// (there is one, and it is multilingual because the alternative fails badly
+// in every language but English), no endpoint to name, no credential to hold
+// and no provider to pick. Mode is the only knob most people would ever
+// touch, and the rest exist for the machine that needs them: a port that is
+// already taken, a GPU to pin to, an interpreter of one's own.
 type DecisionConfig struct {
-	Mode    string `json:"mode"` // off | shadow | active
-	APIKey  string `json:"api_key,omitempty" env:"FACTOR_DECISION_API_KEY"`
-	APIBase string `json:"api_base,omitempty"`
-	Model   string `json:"model"`
+	// Mode is the dial. "active" is the default: the decisions are acted on
+	// where they clear their confidence bar. "shadow" asks every question,
+	// records the answer on the trace and acts on none of them, which is how
+	// the bars get calibrated against a machine's own work. "off" is off.
+	Mode string `json:"mode"` // active | shadow | off
 	// TimeoutMS bounds one request. A decision is worth having while the
 	// caller is still waiting on it; a slow one delays the generative path
 	// it was meant to spare.
@@ -485,30 +490,40 @@ type DecisionConfig struct {
 	// completion verdict are not the same size of mistake.
 	MinConfidence float64            `json:"min_confidence"`
 	Thresholds    map[string]float64 `json:"thresholds,omitempty"`
-	// The scenarios, each switchable on its own so a pilot can enable the
-	// browser executor alone. All on when the mode is; nil means on.
+	// The scenarios, each switchable on its own so one can be turned off
+	// without losing the rest. All on when the mode is; nil means on.
 	Browser *bool `json:"browser,omitempty"`
 	Verify  *bool `json:"verify,omitempty"`
 	Recover *bool `json:"recover,omitempty"`
 	Induce  *bool `json:"induce,omitempty"`
-	// InputPricePerMillion is what the decision model charges per million
-	// input tokens, in USD; output is free on this endpoint. The model
-	// catalog does not carry it, so the price is stated here and every
-	// decision is billed through the same ledger the chat calls are.
-	InputPricePerMillion float64 `json:"input_price_per_million"`
+	// CacheEntries memoizes answers, since a decision is very nearly a pure
+	// function of the model, the questions and the state: a page an action
+	// did not change, a retried call and a re-verified reply all ask
+	// something that has been asked. 0 turns it off.
+	CacheEntries int `json:"cache_entries"`
+
+	// Port is where the managed model listens. One already answering there
+	// is adopted rather than started again, which is how a model somebody
+	// runs themselves is used instead of a second copy.
+	Port int `json:"port,omitempty"`
+	// Device is what torch runs on: blank lets the model choose, "cpu" and
+	// "cuda" force one.
+	Device string `json:"device,omitempty"`
+	// Command runs the model on an interpreter of your choosing instead of
+	// the private virtualenv Factor builds.
+	Command string `json:"command,omitempty"`
+	// AutoInstall lets Factor build that virtualenv when it is missing, the
+	// way it installs the memory engine and the browser. Nil means yes.
+	AutoInstall *bool `json:"auto_install,omitempty"`
 }
 
-// DefaultDecisionInputPrice is TypeSafe's advertised input price for Jev,
-// USD per million tokens, as checked on 20 September 2026.
-const DefaultDecisionInputPrice = 0.042
-
-// On reports whether decisions are asked at all: shadow or active with a key.
-func (d DecisionConfig) On() bool {
-	return (d.Mode == "shadow" || d.Mode == "active") && d.APIKey != ""
-}
+// On reports whether decisions are asked at all. There is nothing to
+// configure before they can be: the model is local, so a mode is the whole
+// of it.
+func (d DecisionConfig) On() bool { return d.Mode == "active" || d.Mode == "shadow" }
 
 // Active reports whether decisions may change what the agent does.
-func (d DecisionConfig) Active() bool { return d.On() && d.Mode == "active" }
+func (d DecisionConfig) Active() bool { return d.Mode == "active" }
 
 func enabled(b *bool) bool { return b == nil || *b }
 
@@ -622,11 +637,10 @@ func Default() *Config {
 		Upgrade:   UpgradeConfig{Check: true, CheckIntervalHours: 24},
 		Cost:      CostConfig{Track: true, Budget: BudgetConfig{Period: "month"}, RefreshHours: 24},
 		Decision: DecisionConfig{
-			Mode:                 "off",
-			Model:                "jev-latest",
-			TimeoutMS:            4000,
-			MinConfidence:        0.6,
-			InputPricePerMillion: DefaultDecisionInputPrice,
+			Mode:          "active",
+			TimeoutMS:     4000,
+			MinConfidence: 0.6,
+			CacheEntries:  512,
 		},
 	}
 }
@@ -779,21 +793,18 @@ func (c *Config) normalize() {
 		c.Cost.Budget.Period = "month"
 	}
 	switch c.Decision.Mode {
-	case "shadow", "active":
+	case "shadow", "active", "off":
 	default:
-		c.Decision.Mode = "off"
+		c.Decision.Mode = "active"
 	}
-	if c.Decision.Model == "" {
-		c.Decision.Model = "jev-latest"
+	if c.Decision.CacheEntries < 0 {
+		c.Decision.CacheEntries = 0
 	}
 	if c.Decision.TimeoutMS <= 0 {
 		c.Decision.TimeoutMS = 4000
 	}
 	if c.Decision.MinConfidence <= 0 || c.Decision.MinConfidence > 1 {
 		c.Decision.MinConfidence = 0.6
-	}
-	if c.Decision.InputPricePerMillion < 0 {
-		c.Decision.InputPricePerMillion = DefaultDecisionInputPrice
 	}
 }
 
@@ -805,7 +816,7 @@ const minSecretLen = 8
 
 // SecretValues returns every configured secret worth filtering out of output.
 func (c *Config) SecretValues() []string {
-	secrets := []string{c.Provider.APIKey, c.Memory.APIKey, c.Memory.ExtractAPIKey, c.Decision.APIKey}
+	secrets := []string{c.Provider.APIKey, c.Memory.APIKey, c.Memory.ExtractAPIKey}
 	for _, f := range c.Provider.Fallbacks {
 		secrets = append(secrets, f.APIKey)
 	}

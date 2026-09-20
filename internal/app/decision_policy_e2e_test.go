@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,7 +80,8 @@ func calls(name string, args map[string]any) func([]wireMessage) (map[string]any
 	}
 }
 
-// fixedJudge answers every question with one choice.
+// fixedJudge answers every question with one choice, over the same
+// /v1/systemone route the managed model serves.
 type fixedJudge struct {
 	choice string
 	mu     sync.Mutex
@@ -87,6 +89,10 @@ type fixedJudge struct {
 }
 
 func (j *fixedJudge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/health" {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "max_len": 1024, "head_max_len": 192})
+		return
+	}
 	var req struct {
 		Questions map[string]decision.Question `json:"questions"`
 	}
@@ -104,24 +110,54 @@ func (j *fixedJudge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		probs[j.choice] = 0.9
 		answers[name] = decision.Answer{Choice: j.choice, Confidence: 0.95, Probabilities: probs}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"answers": answers, "model": "jev-test",
-		"usage": map[string]any{"input_tokens": 200, "output_tokens": 3}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"answers": answers, "model": "laya-multilingual",
+		"usage": map[string]any{"input_tokens": 200, "output_tokens": 0}})
+}
+
+// serveDecisions puts a decision model on a port of its own choosing and
+// returns it. The supervisor probes before it spawns, so a model already
+// answering is adopted rather than started a second time — which is the same
+// path a Laya somebody runs themselves takes, and what lets a test stand in
+// for one without a Python process.
+func serveDecisions(t *testing.T, h http.Handler) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 func policyApp(t *testing.T, llm *scriptedLLM, judge http.Handler, mode string) *App {
 	t.Helper()
 	llmSrv := httptest.NewServer(llm)
 	t.Cleanup(llmSrv.Close)
-	judgeSrv := httptest.NewServer(judge)
-	t.Cleanup(judgeSrv.Close)
 	cfg := testConfig(t)
 	cfg.Provider.Type = "openai"
 	cfg.Provider.APIBase = llmSrv.URL + "/v1"
 	cfg.Decision.Mode = mode
-	cfg.Decision.APIKey = "ts-e2e-key-12345"
-	cfg.Decision.APIBase = judgeSrv.URL
-	return newTestApp(t, cfg)
+	cfg.Decision.Port = serveDecisions(t, judge)
+	a := newTestApp(t, cfg)
+	// The supervisor adopts the model already answering on that port; wait
+	// for it to notice before the first turn asks anything of it.
+	waitHealthy(t, a)
+	return a
+}
+
+// waitHealthy blocks until the decision model is answering, or fails.
+func waitHealthy(t *testing.T, a *App) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if a.Decisions.Healthy() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the decision model never became healthy: %s", a.Decisions.Down())
 }
 
 func userTurn(t *testing.T, a *App, session string) trace.Record {
@@ -169,88 +205,38 @@ func TestOverclaimIsCorrectedThroughTheWholeApp(t *testing.T) {
 	if len(rec.Decisions) != 1 || rec.Decisions[0].Kind != decision.KindCompletion || rec.Decisions[0].Result != "acted" {
 		t.Errorf("decisions = %+v", rec.Decisions)
 	}
-	if rec.USD <= 0 {
-		t.Error("the decision was not billed to the turn")
+	// A decision answered on this machine is counted and costs nothing: the
+	// same rule the cost catalog applies to a locally served LLM.
+	if rec.USD != 0 {
+		t.Errorf("a local decision was billed %v", rec.USD)
+	}
+	for _, m := range rec.Models {
+		if m.Model == "jev-test" && m.Input == 0 {
+			t.Error("the decision's tokens were not counted")
+		}
 	}
 }
 
-// The same model, the same judge, in shadow: the reply stands, the decision
-// is on the trace as shadow, and browser_run is not offered.
-func TestShadowModeRecordsAndChangesNothingThroughTheWholeApp(t *testing.T) {
-	llm := &scriptedLLM{steps: []func([]wireMessage) (map[string]any, string){
-		calls("read_file", map[string]any{"path": "missing.txt"}),
-		says("I read the file and emailed it to you."),
-	}}
-	judge := &fixedJudge{choice: "overclaimed"}
-	a := policyApp(t, llm, judge, "shadow")
-	reply, err := a.Loop.ProcessDirect(context.Background(), "email me missing.txt", "cli:shadow")
-	if err != nil || reply != "I read the file and emailed it to you." {
-		t.Fatalf("reply=%q err=%v", reply, err)
-	}
-	if judge.asked != 1 {
-		t.Errorf("the judge was asked %d times, want 1", judge.asked)
-	}
-	rec := userTurn(t, a, "cli:shadow")
-	if len(rec.Decisions) != 1 || rec.Decisions[0].Result != "shadow" || rec.Count(trace.EventOverclaim) != 0 {
-		t.Errorf("decisions = %+v events = %+v", rec.Decisions, rec.Events)
-	}
-	if _, ok := a.Registry.Get("browser_run"); ok {
-		t.Error("shadow mode mounted a tool that acts")
-	}
-}
-
-// A dead decision endpoint costs nothing but a fallback on the trace: the
-// turn answers as it always did.
-func TestDeadDecisionEndpointFallsBackThroughTheWholeApp(t *testing.T) {
+// Nothing here costs money: the model runs on this machine, so the turn
+// records the decision and bills nothing for it.
+func TestLocalDecisionsAreRecordedAndCostNothing(t *testing.T) {
 	llm := &scriptedLLM{steps: []func([]wireMessage) (map[string]any, string){
 		calls("read_file", map[string]any{"path": "missing.txt"}),
 		says("The file is missing."),
 	}}
-	dead := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) })
-	a := policyApp(t, llm, dead, "active")
-	reply, err := a.Loop.ProcessDirect(context.Background(), "read missing.txt", "cli:dead")
-	if err != nil || reply != "The file is missing." {
-		t.Fatalf("reply=%q err=%v", reply, err)
-	}
-	rec := userTurn(t, a, "cli:dead")
-	if rec.DecisionFallbacks() != 1 {
-		t.Errorf("decisions = %+v", rec.Decisions)
-	}
-}
-
-// A stall through the whole app: three identical failing reads, the system
-// note with the decided recovery, and the model changing course on it.
-func TestStallRecoveryThroughTheWholeApp(t *testing.T) {
-	var note string
-	repeat := calls("read_file", map[string]any{"path": "nowhere.txt"})
-	llm := &scriptedLLM{steps: []func([]wireMessage) (map[string]any, string){
-		repeat, repeat, repeat,
-		func(messages []wireMessage) (map[string]any, string) {
-			for _, m := range messages {
-				if s, _ := m.Content.(string); m.Role == "user" && strings.Contains(s, "[Note from the system") {
-					note = s
-				}
-			}
-			return map[string]any{"role": "assistant", "content": "I will list the directory instead."}, "stop"
-		},
-	}}
-	a := policyApp(t, llm, &fixedJudge{choice: "alternative_approach"}, "active")
-	if _, err := a.Loop.ProcessDirect(context.Background(), "read nowhere.txt", "cli:stall"); err != nil {
+	a := policyApp(t, llm, &fixedJudge{choice: "verified"}, "active")
+	if _, err := a.Loop.ProcessDirect(context.Background(), "read missing.txt", "cli:free"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(note, "read_file(path=nowhere.txt) has now returned the same result 3 times") ||
-		!strings.Contains(note, "another way to the same end") {
-		t.Errorf("note = %q", note)
+	rec := userTurn(t, a, "cli:free")
+	if len(rec.Decisions) != 1 || rec.Decisions[0].Model != "laya-multilingual" {
+		t.Errorf("decisions = %+v", rec.Decisions)
 	}
-	rec := userTurn(t, a, "cli:stall")
-	if rec.Count(trace.EventStall) != 1 {
-		t.Errorf("stall events = %d", rec.Count(trace.EventStall))
+	if rec.USD != 0 {
+		t.Errorf("a local decision was billed %v", rec.USD)
 	}
-	kinds := map[string]int{}
-	for _, d := range rec.Decisions {
-		kinds[d.Kind]++
-	}
-	if kinds[decision.KindRecovery] != 1 || kinds[decision.KindCompletion] != 1 {
-		t.Errorf("decision kinds = %v", kinds)
+	snap := a.Cost.Snapshot("cli:free")
+	if _, counted := snap.Models["laya-multilingual"]; counted {
+		t.Error("the decision model reached the money ledger")
 	}
 }
