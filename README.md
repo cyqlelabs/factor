@@ -227,6 +227,15 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "record_args": false,                    // the shape of a turn, not what was said to the tools
     "keep_days": 14
   },
+  "decision": {                              // typed decisions from TypeSafe's Jev; see "Typed decisions"
+    "mode": "off",                           // off | shadow (ask, record, act on nothing) | active
+    "api_key": "ts-...",                     // or FACTOR_DECISION_API_KEY
+    "model": "jev-latest",
+    "min_confidence": 0.6,                   // the bar a verdict clears to be acted on
+    "thresholds": { "completion": 0.75 },    // per kind: operation | target | completion | recovery | induction
+    "browser": true, "verify": true, "recover": true, "induce": true,  // the scenarios, each switchable
+    "input_price_per_million": 0.042         // USD; billed through the same ledger as chat calls
+  },
   "upgrade": { "check": true, "check_interval_hours": 24 },  // report new releases; never install one unasked
   "proxy": { "address": "", "ca": "" },      // "" = direct; host:port or a URL routes every call, sidecars included
   "cost": {
@@ -295,7 +304,46 @@ while. Its crash telemetry is switched off.
 `browser_read` says how much it withheld and takes `filter`/`limit`; on Camofox a page
 comes back as an accessibility snapshot with element refs, a tenth the size of the HTML,
 and `offset` reads on past a cut. `browser_scroll` reaches what only loads on the way
-down.
+down. With typed decisions active (below) a twelfth tool, `browser_run`, works a page
+toward a stated goal in one call on the Chromium engine.
+
+## Typed decisions
+
+Most of what the agent is asked mid-turn is not generation. Which of thirty
+controls to click next, whether a reply's "done" is backed by a tool result,
+whether a finished turn is worth a skill, what to do when the same call has
+returned the same page three times — each is a choice among candidates the code
+already enumerated, and each used to cost a whole request against the
+conversation's context to make. With `decision.mode` set and a TypeSafe key,
+those choices go to Jev, a System One model that answers a typed question with a
+probability per candidate and a confidence in a couple of hundred milliseconds,
+and every answer is validated against the candidates it was offered and judged
+against a confidence bar before anything acts on it. Under the bar, or with two
+candidates neck and neck, it is "unsure", and the agent does exactly what it did
+before the feature existed.
+
+| Scenario | Without a decider | With one |
+|---|---|---|
+| **`browser_run`** | — | one call works a page toward a goal: fields typed, search activated, results read, steps and the final page handed back. Never submits, books, pays or sends unless `allow_submit`, never presses Enter, stops when the user says something new |
+| **Stalls** | the same call returning the same result a third time is named to the model on a system note | the note says which kind of stall it is: wait, re-read, change route, or ask the user |
+| **Completion** | a reply after tool use stands as it is | it is checked once against the turn's own trajectory, and a reply that reports work the tool results do not show is handed back to finish or restate |
+| **Skill induction** | every qualifying turn pays a utility call whose usual answer is SKIP | SKIP, CREATE or UPDATE is decided first; only a trajectory worth keeping pays for the model that writes it |
+
+Roll it out in the order the config offers. `shadow` asks every question, records
+every verdict in the turn's trace (`decisions` on each record in `~/.factor/traces`)
+and acts on none of them, which is how `decision.thresholds` gets calibrated on
+your own tasks before any of it changes what the agent does. `active` acts on what
+clears the bar. Each scenario is a switch of its own, so a pilot can enable the
+browser executor alone. Decisions are billed through the same ledger as every
+chat call at the price the config states, the heartbeat's bands watch the
+fallback rate, and Jev holds no authority anywhere: it cannot widen a tool's
+allow-list, a memory scope or a budget, and its DONE is a candidate the code
+verifies against the page.
+
+Independent of all that, the browser suite no longer sleeps for a fixed time after
+a click, a submit, a scroll or a back: it probes the page before and after and reads
+as soon as the page has changed and held still, so a same-document toggle is read
+in a frame and a slow navigation is not read at its old URL.
 
 ## Desktop
 

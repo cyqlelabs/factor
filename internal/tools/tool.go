@@ -132,3 +132,28 @@ func BoolArg(args map[string]any, key string, def bool) bool {
 	}
 	return def
 }
+
+// Interrupt answers whether the turn running a tool has something newer to
+// attend to — a message the user sent while the tool was still working. A
+// tool that runs many steps internally (the bounded browser executor) checks
+// it between steps and stops early, so a change of direction from the user
+// does not wait out a minute of clicks made toward the old one. Unset, no
+// tool is ever interrupted this way; cancellation still ends the turn.
+type Interrupt func() bool
+
+type interruptKey struct{}
+
+// WithInterrupt puts the turn's steering check on a context.
+func WithInterrupt(ctx context.Context, fn Interrupt) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, interruptKey{}, fn)
+}
+
+// Interrupted reports whether the turn has been steered since it started the
+// current tool call, or false off a context that carries no check.
+func Interrupted(ctx context.Context) bool {
+	fn, _ := ctx.Value(interruptKey{}).(Interrupt)
+	return fn != nil && fn()
+}

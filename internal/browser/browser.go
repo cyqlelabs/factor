@@ -742,9 +742,33 @@ const readTemplate = `(() => {
     }
     return parts.join(' > ');
   };
-  const labelOf = (el) =>
-    (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.href || '')
-      .trim().replace(/\s+/g, ' ').slice(0, 80);
+  // A field is named by what a person reads beside it — its label, its
+  // placeholder, its accessible name — and not by what it happens to hold,
+  // which travels separately as value: a field labelled by its own contents
+  // reads as "Zurich" and says nothing about what it is for.
+  const fieldName = (el) => {
+    const lbl = el.labels && el.labels[0] ? el.labels[0].innerText : '';
+    return el.getAttribute('aria-label') || el.placeholder || lbl || el.title || el.name || '';
+  };
+  const labelOf = (el) => {
+    const tag = el.tagName;
+    const field = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    const raw = field
+      ? (fieldName(el) || el.value || '')
+      : (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.href || '');
+    return raw.trim().replace(/\s+/g, ' ').slice(0, 80);
+  };
+  // What a field currently holds, so a form can be read as filled or not
+  // without a second call — and never a password, which is the one value a
+  // page holds that must not travel anywhere.
+  const valueOf = (el) => {
+    const tag = el.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return '';
+    if (el.type === 'password') return '';
+    if (tag === 'SELECT') { const o = el.options[el.selectedIndex]; return (o ? o.text : '').trim().slice(0, 80); }
+    if (el.type === 'checkbox' || el.type === 'radio') return el.checked ? 'checked' : '';
+    return (el.value || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+  };
 
   const visible = [];
   for (const el of document.querySelectorAll(sel)) {
@@ -794,7 +818,7 @@ const readTemplate = `(() => {
   // can only be refused, not misread.
   const items = matched.slice(0, LIMIT).map(({el, tier}, i) => ({
     ref: 'e' + (START + i + 1), tag: el.tagName.toLowerCase(), type: el.type || '',
-    label: labelOf(el), href: tier === 0 ? hrefOf(el) : '', selector: cssPath(el),
+    label: labelOf(el), value: valueOf(el), href: tier === 0 ? hrefOf(el) : '', selector: cssPath(el),
   }));
 
   const region = main || document.body;
@@ -841,10 +865,14 @@ type pageRead struct {
 }
 
 type pageElement struct {
-	Ref      string `json:"ref"`
-	Tag      string `json:"tag"`
-	Type     string `json:"type"`
-	Label    string `json:"label"`
+	Ref   string `json:"ref"`
+	Tag   string `json:"tag"`
+	Type  string `json:"type"`
+	Label string `json:"label"`
+	// Value is what a field currently holds — a form read as filled or
+	// empty without a second call. Blank for anything that is not a field,
+	// and always blank for a password.
+	Value    string `json:"value"`
 	Href     string `json:"href"`
 	Selector string `json:"selector"`
 }
@@ -1009,9 +1037,12 @@ func formatRead(r *pageRead) string {
 		if el.Type != "" {
 			kind += ":" + el.Type
 		}
-		if el.Href != "" {
+		switch {
+		case el.Href != "":
 			fmt.Fprintf(&b, "  %s <%s> %q → %s\n", el.Ref, kind, el.Label, el.Href)
-		} else {
+		case el.Value != "" && el.Value != el.Label:
+			fmt.Fprintf(&b, "  %s <%s> %q = %q\n", el.Ref, kind, el.Label, el.Value)
+		default:
 			fmt.Fprintf(&b, "  %s <%s> %q\n", el.Ref, kind, el.Label)
 		}
 	}
@@ -1061,13 +1092,21 @@ func Verify(ctx context.Context, cfg config.BrowserConfig) error {
 
 // NewTools returns the browser tool suite sharing one session.
 func NewTools(cfg config.BrowserConfig, workspace string, guard *tools.PathGuard) ([]tools.Tool, func()) {
+	_, suite, closeFn := NewSuite(cfg, workspace, guard)
+	return suite, closeFn
+}
+
+// NewSuite is NewTools with the session handed back too, for a caller that
+// mounts more on it — the bounded executor drives the same session the step
+// tools do, so a run and a click never disagree about which tab is current.
+func NewSuite(cfg config.BrowserConfig, workspace string, guard *tools.PathGuard) (*Session, []tools.Tool, func()) {
 	s := NewSession(cfg, workspace, guard)
 	suite := []tools.Tool{
 		&navigateTool{s}, &readTool{s}, &scrollTool{s}, &clickTool{s}, &fillTool{s},
 		&screenshotTool{s}, &evalTool{s}, &backTool{s},
 		&tabsTool{s}, &uploadTool{s}, &keysTool{s},
 	}
-	return suite, s.Close
+	return s, suite, s.Close
 }
 
 type navigateTool struct{ s *Session }
@@ -1221,12 +1260,32 @@ func (t *clickTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 	if c := t.s.engine(ctx); c != nil {
 		return c.click(ctx, tools.StringArg(args, "target"))
 	}
-	target := tools.StringArg(args, "target")
-	if why := t.s.staleRef(ctx, target); why != "" {
-		return tools.Errorf("click refused: %s", why)
+	r, changed, err := t.s.click(ctx, tools.StringArg(args, "target"))
+	if err != nil {
+		return tools.Errorf("%v", err)
 	}
-	sel := t.s.selectorFor(target)
+	out := formatRead(r)
+	if !changed {
+		// Said out loud because the alternative is the same page handed back
+		// as if it were the result: a click that moved nothing is either a
+		// control that needs something else first or a page still working,
+		// and the model should know which question it is asking.
+		out = "The click changed nothing visible on the page within the wait — browser_read again if it may still be working.\n\n" + out
+	}
+	return tools.Text(out)
+}
+
+// click clicks the target, waits for the page to react, and reads it. It is
+// the whole of what browser_click does on the Chromium engine, factored out
+// so the bounded executor can take the same path and get the read back as
+// structure rather than text. changed reports whether the page moved at all.
+func (s *Session) click(ctx context.Context, target string) (*pageRead, bool, error) {
+	if why := s.staleRef(ctx, target); why != "" {
+		return nil, false, fmt.Errorf("click refused: %s", why)
+	}
+	sel := s.selectorFor(target)
 	selJSON, _ := json.Marshal(sel)
+	before, _ := s.probe(ctx)
 	// Native element.click() beats synthesized mouse events for reliability
 	// across headless modes and Chrome versions.
 	script := fmt.Sprintf(`(() => {
@@ -1237,18 +1296,18 @@ func (t *clickTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 		return "ok";
 	})()`, selJSON)
 	var outcome string
-	if err := t.s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &outcome)); err != nil {
-		return tools.Errorf("click %q failed: %v", sel, err)
+	if err := s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &outcome)); err != nil {
+		return nil, false, fmt.Errorf("click %q failed: %v", sel, err)
 	}
 	if outcome == "missing" {
-		return tools.Errorf("no element matches %q — run browser_read for fresh refs", sel)
+		return nil, false, fmt.Errorf("no element matches %q — run browser_read for fresh refs", sel)
 	}
-	time.Sleep(500 * time.Millisecond) // let navigations/XHR settle a beat
-	r, err := t.s.readSettled(ctx)
+	_, changed := s.awaitChange(ctx, before, settleAfterClick)
+	r, err := s.readSettled(ctx)
 	if err != nil {
-		return tools.Errorf("clicked, but read failed: %v", err)
+		return nil, changed, fmt.Errorf("clicked, but read failed: %v", err)
 	}
-	return tools.Text(formatRead(r))
+	return r, changed, nil
 }
 
 type fillTool struct{ s *Session }
@@ -1334,33 +1393,42 @@ func (t *fillTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 	if c := t.s.engine(ctx); c != nil {
 		return c.fill(ctx, tools.StringArg(args, "target"), tools.StringArg(args, "text"), tools.BoolArg(args, "submit", false))
 	}
-	target := tools.StringArg(args, "target")
-	if why := t.s.staleRef(ctx, target); why != "" {
-		return tools.Errorf("fill refused: %s", why)
+	msg, err := t.s.fill(ctx, tools.StringArg(args, "target"), tools.StringArg(args, "text"), tools.BoolArg(args, "submit", false))
+	if err != nil {
+		return tools.Errorf("%v", err)
 	}
-	sel := t.s.selectorFor(target)
-	text := tools.StringArg(args, "text")
+	return tools.Text(msg)
+}
+
+// fill types text into the target — or picks an option, when the target is a
+// dropdown — and says what the field ended up holding. It is browser_fill's
+// Chromium path, factored out for the bounded executor.
+func (s *Session) fill(ctx context.Context, target, text string, submit bool) (string, error) {
+	if why := s.staleRef(ctx, target); why != "" {
+		return "", fmt.Errorf("fill refused: %s", why)
+	}
+	sel := s.selectorFor(target)
 	selJSON, _ := json.Marshal(sel)
 	textJSON, _ := json.Marshal(text)
 	clearJSON, _ := json.Marshal(text == "")
 
 	var out fillOutcome
-	if err := t.s.run(ctx, 20*time.Second,
+	if err := s.run(ctx, 20*time.Second,
 		chromedp.Evaluate(fmt.Sprintf(focusScript, selJSON, clearJSON, clearJSON), &out)); err != nil {
-		return tools.Errorf("fill %q failed: %v", sel, err)
+		return "", fmt.Errorf("fill %q failed: %v", sel, err)
 	}
 	switch out.Kind {
 	case "missing":
-		return tools.Errorf("no element matches %q — run browser_read for fresh refs", sel)
+		return "", fmt.Errorf("no element matches %q — run browser_read for fresh refs", sel)
 	case "select":
-		if err := t.s.run(ctx, 20*time.Second,
+		if err := s.run(ctx, 20*time.Second,
 			chromedp.Evaluate(fmt.Sprintf(selectScript, selJSON, textJSON), &out)); err != nil {
-			return tools.Errorf("selecting in %q failed: %v", sel, err)
+			return "", fmt.Errorf("selecting in %q failed: %v", sel, err)
 		}
 		if out.Kind == "no-option" {
-			return tools.Errorf("no option in %s matches %q; it offers: %s", sel, text, strings.Join(out.Options, ", "))
+			return "", fmt.Errorf("no option in %s matches %q; it offers: %s", sel, text, strings.Join(out.Options, ", "))
 		}
-		return tools.Textf("Selected %q in %s.", out.Chosen, sel)
+		return fmt.Sprintf("Selected %q in %s.", out.Chosen, sel), nil
 	}
 
 	// Typed over the protocol rather than assigned: this goes through the
@@ -1368,26 +1436,27 @@ func (t *fillTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 	// order it expects — which is what a contenteditable body needs, and what
 	// turns a typed address into a recipient chip.
 	if text != "" {
-		if err := t.s.run(ctx, 20*time.Second, chromedp.ActionFunc(func(c context.Context) error {
+		if err := s.run(ctx, 20*time.Second, chromedp.ActionFunc(func(c context.Context) error {
 			return input.InsertText(text).Do(c)
 		})); err != nil {
-			return tools.Errorf("typing into %q failed: %v", sel, err)
+			return "", fmt.Errorf("typing into %q failed: %v", sel, err)
 		}
 	}
 
 	var actual string
-	if err := t.s.run(ctx, 15*time.Second,
+	if err := s.run(ctx, 15*time.Second,
 		chromedp.Evaluate(fmt.Sprintf(readBackScript, selJSON), &actual)); err != nil {
 		actual = text // reading back is a courtesy; a failure here is not a failed fill
 	}
 
-	if tools.BoolArg(args, "submit", false) {
-		if err := t.s.run(ctx, 20*time.Second, chromedp.ActionFunc(func(c context.Context) error {
+	if submit {
+		before, _ := s.probe(ctx)
+		if err := s.run(ctx, 20*time.Second, chromedp.ActionFunc(func(c context.Context) error {
 			return pressChord(c, 0, "Enter", "Enter", 13)
 		})); err != nil {
-			return tools.Errorf("typed into %s, but submitting failed: %v", sel, err)
+			return "", fmt.Errorf("typed into %s, but submitting failed: %v", sel, err)
 		}
-		time.Sleep(700 * time.Millisecond)
+		s.awaitChange(ctx, before, settleAfterSubmit)
 	}
 
 	msg := fmt.Sprintf("Filled %s with %q.", sel, text)
@@ -1397,7 +1466,7 @@ func (t *fillTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 		// judge, rather than reporting a success it cannot see.
 		msg += fmt.Sprintf(" The field now reads %q — the page may have reformatted, consumed or rejected it; check before continuing.", actual)
 	}
-	return tools.Text(msg)
+	return msg, nil
 }
 
 type screenshotTool struct{ s *Session }
@@ -1476,7 +1545,16 @@ func (t *scrollTool) Execute(ctx context.Context, args map[string]any) *tools.Re
 	if c := t.s.engine(ctx); c != nil {
 		return c.scroll(ctx, tools.StringArg(args, "to"), tools.StringArg(args, "filter"))
 	}
-	to := tools.StringArg(args, "to")
+	grew, r, err := t.s.scroll(ctx, tools.StringArg(args, "to"), tools.StringArg(args, "filter"))
+	if err != nil {
+		return tools.Errorf("%v", err)
+	}
+	return tools.Text(grew + formatRead(r))
+}
+
+// scroll moves the page, waits for anything the scroll pulls in, and reads
+// where it landed. grew is a line saying the page got taller, or blank.
+func (s *Session) scroll(ctx context.Context, to, filter string) (string, *pageRead, error) {
 	var move string
 	switch to {
 	case "top":
@@ -1492,23 +1570,19 @@ func (t *scrollTool) Execute(ctx context.Context, args map[string]any) *tools.Re
 	// anything in, which is what "repeat it" needs to be answerable.
 	script := fmt.Sprintf(`(() => { const before = document.body.scrollHeight; %s; return before; })()`, move)
 	var before float64
-	if err := t.s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &before)); err != nil {
-		return tools.Errorf("scroll failed: %v", err)
+	if err := s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &before)); err != nil {
+		return "", nil, fmt.Errorf("scroll failed: %v", err)
 	}
-	time.Sleep(900 * time.Millisecond) // let lazily loaded content arrive
-	var after float64
-	if err := t.s.run(ctx, 20*time.Second, chromedp.Evaluate(`document.body.scrollHeight`, &after)); err != nil {
-		return tools.Errorf("scrolled, but the page could not be measured: %v", err)
-	}
-	r, err := t.s.readPage(ctx, tools.StringArg(args, "filter"), defaultElementLimit)
+	after, _ := s.awaitGrowth(ctx, before, settleAfterScroll)
+	r, err := s.readPage(ctx, filter, defaultElementLimit)
 	if err != nil {
-		return tools.Errorf("scrolled, but read failed: %v", err)
+		return "", nil, fmt.Errorf("scrolled, but read failed: %v", err)
 	}
 	grew := ""
 	if after > before {
 		grew = fmt.Sprintf("Scrolling %s loaded more of the page (it grew from %.0f to %.0f pixels tall).\n", to, before, after)
 	}
-	return tools.Text(grew + formatRead(r))
+	return grew, r, nil
 }
 
 type backTool struct{ s *Session }
@@ -1522,6 +1596,15 @@ func (t *backTool) Execute(ctx context.Context, _ map[string]any) *tools.Result 
 	if c := t.s.engine(ctx); c != nil {
 		return c.back(ctx)
 	}
+	r, err := t.s.back(ctx)
+	if err != nil {
+		return tools.Errorf("%v", err)
+	}
+	return tools.Text(formatRead(r))
+}
+
+// back goes one page back in history and reads where it lands.
+func (s *Session) back(ctx context.Context) (*pageRead, error) {
 	// history.back() rather than chromedp.NavigateBack(): the latter waits
 	// for a lifecycle event that a back/forward-cache restore never fires,
 	// so it stalls until timeout on most real pages.
@@ -1535,16 +1618,17 @@ func (t *backTool) Execute(ctx context.Context, _ map[string]any) *tools.Result 
 		setTimeout(() => history.back(), 0);
 		return "ok";
 	})()`
-	if err := t.s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &outcome)); err != nil {
-		return tools.Errorf("back failed: %v", err)
+	before, _ := s.probe(ctx)
+	if err := s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &outcome)); err != nil {
+		return nil, fmt.Errorf("back failed: %v", err)
 	}
 	if outcome == "no-history" {
-		return tools.Errorf("back failed: this tab has no earlier page to return to")
+		return nil, fmt.Errorf("back failed: this tab has no earlier page to return to")
 	}
-	time.Sleep(600 * time.Millisecond) // let the restore or navigation settle
-	r, err := t.s.readSettled(ctx)
+	s.awaitChange(ctx, before, settleAfterBack)
+	r, err := s.readSettled(ctx)
 	if err != nil {
-		return tools.Errorf("went back, but read failed: %v", err)
+		return nil, fmt.Errorf("went back, but read failed: %v", err)
 	}
-	return tools.Text(formatRead(r))
+	return r, nil
 }

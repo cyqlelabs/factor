@@ -113,6 +113,18 @@ func (r Record) Count(kind string) int {
 	return n
 }
 
+// DecisionFallbacks counts the typed decisions the turn could not get an
+// answer to — a backend down, a malformed reply — and had to work around.
+func (r Record) DecisionFallbacks() int {
+	n := 0
+	for _, d := range r.Decisions {
+		if d.Result == "fallback" {
+			n++
+		}
+	}
+	return n
+}
+
 // CacheHitRate is the share of this turn's input that was served from cache.
 func (r Record) CacheHitRate() float64 {
 	if r.InputTokens <= 0 {

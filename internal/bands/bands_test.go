@@ -215,11 +215,49 @@ func TestSpecsSkipTurnsThatCarryNoReading(t *testing.T) {
 	for _, spec := range Specs() {
 		if _, ok := spec.Of(trace.Record{}); ok {
 			switch spec.Name {
-			case "turn failures", "provider failovers", "context overflows", "memory recall failures":
+			case "turn failures", "provider failovers", "context overflows", "memory recall failures",
+				"overclaimed replies", "stalled calls":
 				// These are true of every turn: a turn that failed over zero
 				// times, or had its memory, is a real reading of zero.
 			default:
 				t.Errorf("%q read a value off an empty turn", spec.Name)
+			}
+		}
+	}
+}
+
+// A turn that asked no decisions says nothing about the fallback rate; one
+// that asked some reads the count, and the fallbacks alone.
+func TestDecisionFallbacksReadOnlyOffTurnsThatDecided(t *testing.T) {
+	var spec Spec
+	for _, s := range Specs() {
+		if s.Name == "decision fallbacks" {
+			spec = s
+		}
+	}
+	if spec.Of == nil {
+		t.Fatal("no decision fallbacks spec")
+	}
+	if _, ok := spec.Of(trace.Record{}); ok {
+		t.Error("read a value off a turn with no decisions")
+	}
+	rec := trace.Record{Decisions: []trace.Decision{{Kind: "operation", Result: "acted"}, {Kind: "target", Result: "fallback"},
+		{Kind: "completion", Result: "unsure"}, {Kind: "recovery", Result: "fallback"}}}
+	if got, ok := spec.Of(rec); !ok || got != 2 {
+		t.Errorf("fallbacks = %v ok=%v, want 2", got, ok)
+	}
+	for _, name := range []string{"overclaimed replies", "stalled calls"} {
+		for _, s := range Specs() {
+			if s.Name != name {
+				continue
+			}
+			got, _ := s.Of(trace.Record{Events: []trace.Event{{Kind: trace.EventOverclaim}, {Kind: trace.EventStall}, {Kind: trace.EventStall}}})
+			want := 1.0
+			if name == "stalled calls" {
+				want = 2
+			}
+			if got != want {
+				t.Errorf("%s = %v, want %v", name, got, want)
 			}
 		}
 	}
