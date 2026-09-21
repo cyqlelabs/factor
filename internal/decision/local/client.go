@@ -54,9 +54,43 @@ func newClient(base string) *client {
 }
 
 type wireRequest struct {
-	Model     string                       `json:"model"`
-	State     any                          `json:"state"`
-	Questions map[string]decision.Question `json:"questions"`
+	Model     string                  `json:"model"`
+	State     any                     `json:"state"`
+	Questions map[string]wireQuestion `json:"questions"`
+}
+
+// wireQuestion is a question as the server wants it, which is not quite as
+// Factor holds it: both `type` and `instructions` are required there, and a
+// request missing either is refused before the model sees it. Factor's own
+// callers all state their instructions, so the defaults below are a floor
+// rather than a translation — what they prevent is a caller added later
+// losing a decision to a 400 nobody reads.
+type wireQuestion struct {
+	Type         string         `json:"type"`
+	Instructions any            `json:"instructions"`
+	Criteria     map[string]any `json:"criteria"`
+}
+
+// questionType is the primitive a question asks for. Every question Factor
+// asks is a choice over candidates the code enumerated — that is what the
+// decision package is for — so the type is stated rather than inferred.
+const questionType = "choice"
+
+// defaultInstructions is what a question with none of its own says. It is
+// deliberately plain: the criteria carry the meaning, and an invented
+// instruction would be a second, quieter prompt nobody wrote.
+const defaultInstructions = "Choose the candidate that best fits the state."
+
+func wireQuestions(qs map[string]decision.Question) map[string]wireQuestion {
+	out := make(map[string]wireQuestion, len(qs))
+	for name, q := range qs {
+		instructions := q.Instructions
+		if instructions == nil {
+			instructions = defaultInstructions
+		}
+		out[name] = wireQuestion{Type: questionType, Instructions: instructions, Criteria: q.Criteria}
+	}
+	return out
 }
 
 type wireResponse struct {
@@ -74,7 +108,7 @@ type wireResponse struct {
 // refused — a question whose options do not fit its head, a malformed body —
 // is decision.ErrInvalid, because re-sending it would be refused again.
 func (c *client) decide(ctx context.Context, req *decision.Request) (*decision.Response, error) {
-	body, err := json.Marshal(wireRequest{Model: "laya", State: req.State, Questions: req.Questions})
+	body, err := json.Marshal(wireRequest{Model: "laya", State: req.State, Questions: wireQuestions(req.Questions)})
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode request: %v", decision.ErrInvalid, err)
 	}

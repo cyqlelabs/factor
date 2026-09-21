@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,17 +46,16 @@ const (
 	// going to be the one that works.
 	loadAttempts = 3
 	// minAvailableMB is the memory the model needs to be handed before it is
-	// worth starting. Laya's checkpoint loads in float32 and transformers
-	// builds it twice on the way in: measured on the live box, resident size
-	// climbed to 2942 MB during the load and settled at about 2100 MB.
+	// worth starting. The int8 graph is memory-mapped rather than built in
+	// float32: measured serving the real artifact, resident size settles at
+	// 559 MB against the 2942 MB the torch runtime peaked at, which is the
+	// whole reason that runtime is gone.
 	//
-	// The floor is what that measurement says rather than the steady figure,
-	// because it is the load that has to fit. Below it the machine does not
-	// merely run slowly — on 3535 MB of RAM the same load took a shell
-	// command from 25 ms to 1061 ms and the box had to be power-cycled, which
-	// is a far worse outcome than a decision that falls back the way every
-	// caller here already expects it to.
-	minAvailableMB = 3072
+	// The floor is set well above the measurement because what it protects
+	// against is a machine with nothing to spare: on 3535 MB of RAM the old
+	// load took a shell command from 25 ms to 1061 ms and the box had to be
+	// power-cycled. A decision that falls back costs nothing by comparison.
+	minAvailableMB = 1024
 	// charsPerToken converts the server's token budgets into the character
 	// budgets a caller can actually measure. Deliberately conservative:
 	// three is about right for English prose and pessimistic for the
@@ -82,8 +82,6 @@ type Backend struct {
 	cfg    Config
 	home   string
 	client *client
-
-	script string
 
 	healthy atomic.Bool
 	down    atomic.Value // string
@@ -141,7 +139,6 @@ func New(cfg Config, home string) *Backend {
 	b := &Backend{
 		cfg:        cfg,
 		home:       home,
-		script:     ScriptPath(home),
 		client:     newClient(cfg.BaseURL()),
 		httpClient: &http.Client{Timeout: 5 * time.Second},
 	}
@@ -331,6 +328,35 @@ type health struct {
 }
 
 // probe asks the server whether it is up, and records the limits it reports.
+// serverCommand turns the interpreter the install resolved into the command
+// that serves. A configured decision.local.command is taken as the whole
+// thing — someone naming their own runtime means it, and it may not live in
+// a virtualenv with a console script beside it.
+func (b *Backend) serverCommand(resolved string) string {
+	if b.cfg.Command != "" {
+		return resolved
+	}
+	return ServerBin(b.home)
+}
+
+// serveArgs is how the runtime is told what to serve and how much of the
+// machine it may use. --threads is the runtime's own cap, set alongside the
+// environment's: onnxruntime reads one and the thread pool the other, and a
+// box with two slow cores needs both.
+func (b *Backend) serveArgs() []string {
+	args := []string{
+		"serve",
+		"--model", ModelDir(b.home),
+		"--host", "127.0.0.1",
+		"--port", strconv.Itoa(b.cfg.port()),
+		"--threads", strconv.Itoa(computeThreads()),
+	}
+	if provider := strings.TrimSpace(b.cfg.Device); provider != "" {
+		args = append(args, "--provider", provider)
+	}
+	return args
+}
+
 func (b *Backend) probe(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -353,8 +379,24 @@ func (b *Backend) probe(ctx context.Context) error {
 		}
 		return fmt.Errorf("the local decision model is still loading")
 	}
-	b.limits.Store(limitsOf(h))
+	b.limits.Store(b.windowLimits(h))
 	return nil
+}
+
+// windowLimits answers what a caller may send. The server reports whether it
+// is up but not the window it was built with, so the window comes from the
+// model's own metadata, which is on disk beside it and cannot disagree with
+// the graph that was unpacked with it. A health probe that does carry the
+// numbers is believed over the file, so a server that starts reporting them
+// needs no change here.
+func (b *Backend) windowLimits(h health) decision.Limits {
+	if h.MaxLen > 0 {
+		return limitsOf(h)
+	}
+	if cfg, ok := readModelConfig(b.home); ok {
+		return limitsOf(health{MaxLen: cfg.MaxLen, HeadMaxLen: cfg.HeadMaxLen})
+	}
+	return decision.Limits{}
 }
 
 // limitsOf turns the server's token budgets into the character and candidate
@@ -413,28 +455,16 @@ func (b *Backend) spawnAndWait(ctx context.Context) error {
 		b.setDown("%v", err)
 		return err
 	}
-	if err := WriteScript(b.script); err != nil {
-		b.setDown("%v", err)
-		return err
-	}
-	blob, err := json.Marshal(map[string]any{
-		"device": b.cfg.Device,
-		"port":   b.cfg.port(),
-		"host":   "127.0.0.1",
-	})
-	if err != nil {
-		return err
-	}
 	b.down.Store("")
 
-	cmd := exec.CommandContext(ctx, command, b.script)
-	cmd.Env = append(serverEnv(), "FACTOR_DECISION_CONFIG="+string(blob))
+	cmd := exec.CommandContext(ctx, b.serverCommand(command), b.serveArgs()...)
+	cmd.Env = serverEnv()
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Cancel = func() error { childproc.Stop(cmd.Process); return nil }
 
 	logDir := filepath.Join(b.home, "logs")
 	if err := os.MkdirAll(logDir, 0o755); err == nil {
-		if f, ferr := os.OpenFile(filepath.Join(logDir, "layaserve.log"),
+		if f, ferr := os.OpenFile(filepath.Join(logDir, "decision-server.log"),
 			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); ferr == nil {
 			defer f.Close()
 			cmd.Stdout, cmd.Stderr = f, f
@@ -460,7 +490,7 @@ func (b *Backend) spawnAndWait(ctx context.Context) error {
 	for {
 		select {
 		case err := <-waitCh:
-			b.setDown("the local decision model exited: %v (see %s)", err, filepath.Join(logDir, "layaserve.log"))
+			b.setDown("the local decision model exited: %v (see %s)", err, filepath.Join(logDir, "decision-server.log"))
 			return err
 		case <-ctx.Done():
 			return childproc.StopAndWait(cmd.Process, waitCh, stopGrace)

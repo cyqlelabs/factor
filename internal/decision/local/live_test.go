@@ -9,16 +9,16 @@ import (
 	"github.com/cyqlelabs/factor/internal/decision"
 )
 
-// The one test that runs the model Factor actually ships: it installs Laya
-// into a private virtualenv, starts the embedded server, loads the
-// multilingual checkpoint and asks it a real question.
+// The one test that runs the model Factor actually ships: it installs the
+// runtime into a private virtualenv, fetches the published weights, starts
+// the server and asks it a real question.
 //
 // It is behind an environment variable because it needs the network and a
-// few hundred megabytes of torch and weights, which no ordinary test run
-// should pay for. Everything else in this package stands in for the model;
-// this is what says the Python is right.
+// 250 MB artifact, which no ordinary test run should pay for. Everything
+// else in this package stands in for the model; this is what says the
+// install, the download and the wire shape are right.
 //
-//	FACTOR_TEST_LAYA=1 go test ./internal/decision/local -run TestLive -v -timeout 60m
+//	FACTOR_TEST_LAYA=1 go test ./internal/decision/local -run TestLive -v -timeout 30m
 func TestLiveModelInstallsLoadsAndAnswers(t *testing.T) {
 	if os.Getenv("FACTOR_TEST_LAYA") == "" {
 		t.Skip("set FACTOR_TEST_LAYA=1 to install and drive the real model")
@@ -28,13 +28,13 @@ func TestLiveModelInstallsLoadsAndAnswers(t *testing.T) {
 		home = t.TempDir()
 	}
 	b := New(Config{Port: freePort(t)}, home)
-	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
 	b.Provision(ctx)
 	b.Start(ctx)
 	t.Cleanup(b.Stop)
 
-	deadline := time.Now().Add(50 * time.Minute)
+	deadline := time.Now().Add(20 * time.Minute)
 	for !b.Healthy() && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Second)
 	}

@@ -1,12 +1,18 @@
 package local
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,13 +48,26 @@ func TestMain(m *testing.M) {
 // fakeLayaServer answers the two routes the real one does, off the same
 // configuration blob Factor hands the real one.
 func fakeLayaServer() {
+	// `serve --model DIR --host H --port N --threads T`, which is what the
+	// runtime's own CLI is spawned with.
 	var cfg struct {
-		Host   string `json:"host"`
-		Port   int    `json:"port"`
-		Device string `json:"device"`
+		Host string
+		Port int
 	}
-	if err := json.Unmarshal([]byte(os.Getenv("FACTOR_DECISION_CONFIG")), &cfg); err != nil {
-		fmt.Fprintln(os.Stderr, "fake laya: bad config:", err)
+	cfg.Host = "127.0.0.1"
+	for i, arg := range os.Args {
+		if i+1 >= len(os.Args) {
+			break
+		}
+		switch arg {
+		case "--host":
+			cfg.Host = os.Args[i+1]
+		case "--port":
+			cfg.Port, _ = strconv.Atoi(os.Args[i+1])
+		}
+	}
+	if cfg.Port == 0 {
+		fmt.Fprintln(os.Stderr, "fake server: no --port")
 		os.Exit(4)
 	}
 	maxLen := 1024
@@ -227,7 +246,7 @@ func TestBackendRestartsAChildThatDies(t *testing.T) {
 	if b.Healthy() {
 		t.Error("a model that exits at once reads as healthy")
 	}
-	if !strings.Contains(b.Down(), "layaserve.log") {
+	if !strings.Contains(b.Down(), "decision-server.log") {
 		t.Errorf("the failure does not say where to look: %q", b.Down())
 	}
 }
@@ -258,56 +277,6 @@ func TestConfigDefaults(t *testing.T) {
 	c.AutoInstall = &no
 	if c.autoInstall() {
 		t.Error("auto-install was not switched off")
-	}
-}
-
-func TestWriteScriptIsIdempotentAndCarriesTheServer(t *testing.T) {
-	home := t.TempDir()
-	path := ScriptPath(home)
-	if err := WriteScript(path); err != nil {
-		t.Fatal(err)
-	}
-	first, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"/v1/systemone", "/health", "system_one", "multilingual"} {
-		if !strings.Contains(string(body), want) {
-			t.Errorf("the embedded server lacks %q", want)
-		}
-	}
-	time.Sleep(10 * time.Millisecond)
-	if err := WriteScript(path); err != nil {
-		t.Fatal(err)
-	}
-	again, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !again.ModTime().Equal(first.ModTime()) {
-		t.Error("an unchanged script was rewritten, which disturbs a running child")
-	}
-}
-
-// The embedded server is Python that never runs in CI, so at minimum it must
-// be Python that parses.
-func TestEmbeddedServerIsValidPython(t *testing.T) {
-	python, err := systemPython()
-	if err != nil {
-		t.Skipf("no usable interpreter: %v", err)
-	}
-	path := ScriptPath(t.TempDir())
-	if err := WriteScript(path); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if out, err := exec.CommandContext(ctx, python, "-m", "py_compile", path).CombinedOutput(); err != nil {
-		t.Fatalf("the embedded server does not compile: %v\n%s", err, out)
 	}
 }
 
@@ -349,7 +318,7 @@ func TestResolveCommandRefusesWhenTheInstallIsOff(t *testing.T) {
 
 func TestInstallHintNamesTheVenvAndThePin(t *testing.T) {
 	hint := InstallHint()
-	if !strings.Contains(hint, "decision-venv") || !strings.Contains(hint, PackageSpec) {
+	if !strings.Contains(hint, ModelTag) || !strings.Contains(hint, PackageSpec) {
 		t.Errorf("hint = %q", hint)
 	}
 	if !strings.HasSuffix(VenvDir("/home/x/.factor"), filepath.Join(".factor", "decision-venv")) {
@@ -397,34 +366,6 @@ func TestTheInstallIsNotStartedUnasked(t *testing.T) {
 	}
 	var none *Backend
 	none.Provision(context.Background()) // nil-safe like the rest
-}
-
-// Laya asks only for "torch>=2.0.0", and on Linux and Windows pip answers
-// that with the CUDA build: measured here, a plain install lays down 5.6 GB,
-// 3.2 GB of it NVIDIA runtime, on a machine that may have no GPU. The CPU
-// wheel is fetched first so the dependency is already satisfied — unless the
-// user asked for CUDA, in which case they have the hardware and said so.
-func TestTheCPUBuildIsPreferredUnlessCUDAWasAskedFor(t *testing.T) {
-	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
-		t.Skip("the published wheels are CPU-only on this platform")
-	}
-	for device, want := range map[string]bool{
-		"":       false,
-		"cpu":    false,
-		"cuda":   true,
-		" CUDA ": true,
-		"cuda:0": true,
-		"mps":    false,
-	} {
-		if got := wantsCUDA(device); got != want {
-			t.Errorf("wantsCUDA(%q) = %v, want %v", device, got, want)
-		}
-	}
-	// The hint a user follows by hand installs the same thing Factor does.
-	hint := InstallHint()
-	if !strings.Contains(hint, TorchCPUIndex) || !strings.Contains(hint, PackageSpec) {
-		t.Errorf("hint = %q", hint)
-	}
 }
 
 // The install paths, without ever performing one. What they mostly have to
@@ -485,6 +426,22 @@ func plantVenv(t *testing.T, home string) {
 	if err := os.WriteFile(venvPython(home), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	plantModel(t, home)
+}
+
+// plantModel puts the two files ModelReady looks for where it looks.
+func plantModel(t *testing.T, home string) {
+	t.Helper()
+	if err := os.MkdirAll(ModelDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(modelConfigPath(home),
+		[]byte(`{"max_len":1024,"head_max_len":256,"onnx_file":"model.onnx"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ModelDir(home), "model.onnx"), []byte("graph"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestVenvPathsAndScriptFailures(t *testing.T) {
@@ -495,17 +452,11 @@ func TestVenvPathsAndScriptFailures(t *testing.T) {
 	if !strings.Contains(venvPython(home), "python") {
 		t.Errorf("venvPython = %q", venvPython(home))
 	}
-	if ScriptPath(home) != filepath.Join(home, "layaserve.py") {
-		t.Errorf("ScriptPath = %q", ScriptPath(home))
+	if ModelDir(home) != filepath.Join(home, "decision-model") {
+		t.Errorf("ModelDir = %q", ModelDir(home))
 	}
-	// A path that cannot be written is reported rather than swallowed: the
-	// supervisor turns it into the reason the model is down.
-	taken := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(taken, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteScript(filepath.Join(taken, "layaserve.py")); err == nil {
-		t.Error("writing into a file as if it were a directory succeeded")
+	if !strings.HasSuffix(ServerBin(home), PackageName) && !strings.Contains(ServerBin(home), PackageName) {
+		t.Errorf("ServerBin = %q, want the runtime's own command", ServerBin(home))
 	}
 }
 
@@ -745,6 +696,7 @@ exit ${FACTOR_TEST_UV_EXIT:-0}
 func TestUVSuppliesAnInterpreterTheMachineHasNot(t *testing.T) {
 	_, uvLog, pipLog := fakeOldPython(t)
 	home := t.TempDir()
+	serveFakeModel(t)
 	var said []string
 	path, err := Install(context.Background(), home, "cpu", func(format string, args ...any) {
 		said = append(said, fmt.Sprintf(format, args...))
@@ -764,15 +716,16 @@ func TestUVSuppliesAnInterpreterTheMachineHasNot(t *testing.T) {
 			t.Errorf("uv was asked %q, want it to carry %q", strings.TrimSpace(string(asked)), want)
 		}
 	}
-	// And the virtualenv uv built is the one the install then fills: torch
-	// first, Laya second, exactly as on a machine with its own interpreter.
+	// And the virtualenv uv built is the one the install then fills.
 	log, err := os.ReadFile(pipLog)
 	if err != nil {
 		t.Fatalf("nothing was installed into the virtualenv uv built: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], TorchCPUIndex) || !strings.Contains(lines[1], PackageSpec) {
+	if !strings.Contains(string(log), PackageSpec) {
 		t.Errorf("pip was asked for:\n%s", log)
+	}
+	if !ModelReady(home) {
+		t.Error("the runtime was installed without the weights it serves")
 	}
 	// The user is told why a Python is being downloaded, since it is the one
 	// step here that takes minutes on a slow line.
@@ -782,27 +735,26 @@ func TestUVSuppliesAnInterpreterTheMachineHasNot(t *testing.T) {
 }
 
 // numpy's wheels have targeted SSE4.2 since 2.0, and below that baseline
-// importing it is an illegal instruction rather than a slow import — measured
-// here, torch runs fine on such a box and Laya dies the moment its import
-// reaches numpy. The ceiling therefore rides the same pip command, on the
-// machines that need it and nowhere else.
+// importing it is an illegal instruction rather than a slow import. numpy
+// came in behind torch before and comes in behind onnxruntime now, so the
+// ceiling still rides the same pip command, on the machines that need it and
+// nowhere else.
 func TestNumpyIsCappedOnCPUsThatCannotRunItsWheels(t *testing.T) {
 	for _, old := range []bool{true, false} {
 		t.Run(fmt.Sprintf("old=%v", old), func(t *testing.T) {
 			_, pipLog, _ := fakePython(t)
+			serveFakeModel(t)
 			restore := needsNumpyPin
 			needsNumpyPin = func() bool { return old }
 			t.Cleanup(func() { needsNumpyPin = restore })
 
-			if _, err := Install(context.Background(), t.TempDir(), "cuda", nil); err != nil {
+			if _, err := Install(context.Background(), t.TempDir(), "cpu", nil); err != nil {
 				t.Fatalf("install: %v", err)
 			}
 			log, err := os.ReadFile(pipLog)
 			if err != nil {
 				t.Fatal(err)
 			}
-			// One line: the CUDA device skips the torch step, so what is left
-			// is the Laya install the constraint has to ride on.
 			line := strings.TrimSpace(string(log))
 			if !strings.Contains(line, PackageSpec) {
 				t.Fatalf("pip was asked %q", line)
@@ -818,6 +770,7 @@ func TestNumpyIsCappedOnCPUsThatCannotRunItsWheels(t *testing.T) {
 // surface as a missing file three commands later.
 func TestUVFailuresAreReportedWithWhatWasWrong(t *testing.T) {
 	_, _, _ = fakeOldPython(t)
+	serveFakeModel(t)
 	t.Setenv("FACTOR_TEST_UV_EXIT", "1")
 	_, err := Install(context.Background(), t.TempDir(), "cpu", nil)
 	// Both halves: the interpreter that was rejected, and uv's own failure.
@@ -834,61 +787,11 @@ func TestUVFailuresAreReportedWithWhatWasWrong(t *testing.T) {
 	}
 }
 
-// The install asks for the CPU build of torch before it asks for Laya, which
-// is the whole difference between a 600 MB virtualenv and a 5.6 GB one on a
-// machine with no GPU.
-func TestInstallTakesTheCPUWheelFirst(t *testing.T) {
-	_, pipLog, _ := fakePython(t)
-	home := t.TempDir()
-	var progress []string
-	path, err := Install(context.Background(), home, "", func(format string, args ...any) {
-		progress = append(progress, fmt.Sprintf(format, args...))
-	})
-	if err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	if path != venvPython(home) {
-		t.Errorf("path = %q", path)
-	}
-	log, err := os.ReadFile(pipLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("pip was called %d times:\n%s", len(lines), log)
-	}
-	if !strings.Contains(lines[0], TorchCPUIndex) || !strings.Contains(lines[0], "torch") {
-		t.Errorf("the first install was not the CPU build of torch: %q", lines[0])
-	}
-	if !strings.Contains(lines[1], PackageSpec) {
-		t.Errorf("the second install was not Laya: %q", lines[1])
-	}
-	if strings.Contains(lines[1], TorchCPUIndex) {
-		t.Errorf("Laya was fetched from the torch index: %q", lines[1])
-	}
-	if len(progress) == 0 {
-		t.Error("the install said nothing while it ran")
-	}
-
-	// Asking for a GPU leaves the resolution alone: that machine has the
-	// hardware and said so.
-	cuda := t.TempDir()
-	if _, err := Install(context.Background(), cuda, "cuda", nil); err != nil {
-		t.Fatal(err)
-	}
-	log, _ = os.ReadFile(pipLog)
-	for _, line := range strings.Split(strings.TrimSpace(string(log)), "\n")[2:] {
-		if strings.Contains(line, TorchCPUIndex) {
-			t.Errorf("a CUDA install still took the CPU index: %q", line)
-		}
-	}
-}
-
 // A pip that fails is reported with the tail of what it said, because that
 // is where the reason is.
 func TestInstallReportsWhatPipSaid(t *testing.T) {
 	_, _, _ = fakePython(t)
+	serveFakeModel(t)
 	t.Setenv("FACTOR_TEST_PIP_EXIT", "1")
 	_, err := Install(context.Background(), t.TempDir(), "cuda", nil)
 	if err == nil || !strings.Contains(err.Error(), PackageSpec) {
@@ -898,12 +801,13 @@ func TestInstallReportsWhatPipSaid(t *testing.T) {
 
 // An install that reports success but leaves nothing importable is a failure,
 // not a success: the interpreter probe is what decides.
-func TestInstallRefusesAVirtualenvWithoutLaya(t *testing.T) {
+func TestInstallRefusesAVirtualenvWithoutTheRuntime(t *testing.T) {
 	dir, _, tools := fakePython(t)
+	serveFakeModel(t)
 	// A python whose import probe fails, so FindPython says no afterwards.
 	broken := `#!/bin/sh
 case "$1" in
-  -c) [ "$2" = "import laya" ] && exit 1 ; exit 0 ;;
+  -c) [ "$2" = "import edgejev" ] && exit 1 ; exit 0 ;;
   -m) if [ "$2" = "venv" ]; then ` + tools.mkdir + ` -p "$3/bin"; ` + tools.cp + ` "$0" "$3/bin/python"; printf '#!/bin/sh\nexit 0\n' > "$3/bin/pip"; ` + tools.chmod + ` +x "$3/bin/pip"; exit 0; fi ;;
 esac
 exit 0
@@ -960,6 +864,7 @@ func TestAnAlreadyRunningModelIsAdoptedAndWatched(t *testing.T) {
 // the other takes what it built.
 func TestTwoInstallersDoNotRunAtOnce(t *testing.T) {
 	_, pipLog, _ := fakePython(t)
+	serveFakeModel(t)
 	// A virtualenv slow enough to build that both installers are certainly
 	// inside Install at once; without the lock each then runs its own pip.
 	t.Setenv("FACTOR_TEST_VENV_DELAY", "1")
@@ -984,9 +889,9 @@ func TestTwoInstallersDoNotRunAtOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Two pip calls: torch, then Laya. A second install would double them.
-	if lines := strings.Split(strings.TrimSpace(string(log)), "\n"); len(lines) != 2 {
-		t.Errorf("pip ran %d times, want 2 (one install):\n%s", len(lines), log)
+	// One pip call installs the runtime. A second installer would double it.
+	if lines := strings.Split(strings.TrimSpace(string(log)), "\n"); len(lines) != 1 {
+		t.Errorf("pip ran %d times, want 1 (one install):\n%s", len(lines), log)
 	}
 }
 
@@ -1083,5 +988,178 @@ func TestAMachineTooSmallIsRefusedRatherThanThrashed(t *testing.T) {
 	availableMB = func() (int, bool) { return 0, false }
 	if _, small := tooSmall(); small {
 		t.Error("a machine whose memory could not be read was refused")
+	}
+}
+
+// serveFakeModel stands a release asset in front of the install: a tarball
+// with the two files the runtime needs, served over loopback and checked
+// against its real checksum. The install path is then exercised whole —
+// download, verify, unpack — without a 250 MB artifact or a network.
+func serveFakeModel(t *testing.T) *httptest.Server {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	files := map[string]string{
+		"edgejev.json": `{"max_len":1024,"head_max_len":256,"onnx_file":"model.onnx","precision":"int8"}`,
+		"model.onnx":   "not a real graph, but the install only has to find it",
+	}
+	for name, body := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: "./" + name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	blob := buf.Bytes()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, ModelAsset) {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(blob)
+	}))
+	t.Cleanup(srv.Close)
+
+	sum := sha256.Sum256(blob)
+	oldBase, oldSum := modelBase, modelSum
+	modelBase, modelSum = srv.URL, hex.EncodeToString(sum[:])
+	t.Cleanup(func() { modelBase, modelSum = oldBase, oldSum })
+	return srv
+}
+
+// The weights are the half of the install that cannot come from pip, so the
+// three ways fetching them goes wrong are answers rather than crashes.
+func TestTheModelIsVerifiedBeforeItIsUnpacked(t *testing.T) {
+	// A body that is not what was published is refused, and nothing lands.
+	home := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("a different file entirely"))
+	}))
+	t.Cleanup(srv.Close)
+	oldBase := modelBase
+	modelBase = srv.URL
+	t.Cleanup(func() { modelBase = oldBase })
+
+	err := ensureModel(context.Background(), home, func(string, ...any) {})
+	if err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("err = %v, want the checksum refused", err)
+	}
+	if _, statErr := os.Stat(ModelDir(home)); statErr == nil {
+		t.Error("a model that failed its checksum was unpacked anyway")
+	}
+
+	// A release that is not there is reported with the status.
+	missing := httptest.NewServer(http.HandlerFunc(http.NotFound))
+	t.Cleanup(missing.Close)
+	modelBase = missing.URL
+	if err := ensureModel(context.Background(), t.TempDir(), func(string, ...any) {}); err == nil ||
+		!strings.Contains(err.Error(), "404") {
+		t.Fatalf("err = %v, want the status named", err)
+	}
+
+	// And the good path lands both files and is idempotent.
+	serveFakeModel(t)
+	ready := t.TempDir()
+	for i := range 2 {
+		if err := ensureModel(context.Background(), ready, func(string, ...any) {}); err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+	if !ModelReady(ready) {
+		t.Error("the model did not land")
+	}
+	if cfg, ok := readModelConfig(ready); !ok || cfg.MaxLen != 1024 || cfg.HeadMaxLen != 256 {
+		t.Errorf("model config = %+v ok=%v", cfg, ok)
+	}
+}
+
+// An archive entry that climbs out of the directory is refused. Factor
+// publishes this tarball, but an extractor that trusts its input is the bug
+// worth not having.
+func TestTheModelArchiveCannotEscapeItsDirectory(t *testing.T) {
+	for _, name := range []string{"../escaped", "/etc/passwd", "a/../../escaped"} {
+		if _, err := safeJoin(t.TempDir(), name); err == nil {
+			t.Errorf("%q was accepted", name)
+		}
+	}
+	if got, err := safeJoin("/base", "./model.onnx"); err != nil || got != filepath.Join("/base", "model.onnx") {
+		t.Errorf("safeJoin = %q, %v", got, err)
+	}
+
+	// A symlink is not a file or a directory, and is refused as such.
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "link", Linkname: "/etc/passwd", Typeflag: tar.TypeSymlink, Mode: 0o777}); err != nil {
+		t.Fatal(err)
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+	if err := untar(&buf, t.TempDir()); err == nil || !strings.Contains(err.Error(), "not a file or a directory") {
+		t.Errorf("err = %v, want the entry refused", err)
+	}
+}
+
+// The server reports that it is up but not the window it was built with, so
+// the window comes from the model's own metadata beside it. A server that
+// does report it is believed over the file.
+func TestTheWindowComesFromTheModelWhenTheServerIsSilentAboutIt(t *testing.T) {
+	home := t.TempDir()
+	b := New(Config{Port: freePort(t)}, home)
+
+	if got := b.windowLimits(health{OK: true}); got != (decision.Limits{}) {
+		t.Errorf("limits = %+v with no model and a silent server", got)
+	}
+	if err := os.MkdirAll(ModelDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(modelConfigPath(home),
+		[]byte(`{"max_len":1024,"head_max_len":256,"onnx_file":"model.onnx"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := limitsOf(health{MaxLen: 1024, HeadMaxLen: 256})
+	if got := b.windowLimits(health{OK: true}); got != want {
+		t.Errorf("limits = %+v, want %+v from the model's metadata", got, want)
+	}
+	// A server that carries the numbers wins: it is the thing actually serving.
+	reported := health{OK: true, MaxLen: 512, HeadMaxLen: 128}
+	if got := b.windowLimits(reported); got != limitsOf(reported) {
+		t.Errorf("limits = %+v, want the server's own", got)
+	}
+}
+
+// Every question Factor asks is a choice, and the server refuses a question
+// that does not say so or carries no instructions — measured against the real
+// runtime, which answers 400 for each. Both are stated on the way out.
+func TestQuestionsCarryTheTypeAndInstructionsTheServerRequires(t *testing.T) {
+	got := wireQuestions(map[string]decision.Question{
+		"stated": {Criteria: map[string]any{"A": 1, "B": 2}, Instructions: map[string]any{"rules": "pick one"}},
+		"bare":   {Criteria: map[string]any{"A": 1, "B": 2}},
+	})
+	for name, q := range got {
+		if q.Type != questionType {
+			t.Errorf("%s: type = %q", name, q.Type)
+		}
+		if q.Instructions == nil {
+			t.Errorf("%s: no instructions, which the server refuses", name)
+		}
+		if len(q.Criteria) != 2 {
+			t.Errorf("%s: criteria = %v", name, q.Criteria)
+		}
+	}
+	if got["bare"].Instructions != defaultInstructions {
+		t.Errorf("a question with none of its own said %v", got["bare"].Instructions)
+	}
+	if fmt.Sprint(got["stated"].Instructions) != fmt.Sprint(map[string]any{"rules": "pick one"}) {
+		t.Errorf("a caller's own instructions were replaced: %v", got["stated"].Instructions)
 	}
 }

@@ -18,9 +18,7 @@
 package local
 
 import (
-	"bytes"
 	"context"
-	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,18 +30,18 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-//go:embed layaserve.py
-var serverScript []byte
-
 const (
-	// PackageSpec is pinned because the embedded server is written against
-	// this API — laya.load, Router(preload=True), and system_one's reply
-	// shape. Bump it together with layaserve.py.
-	PackageSpec = "laya==0.3.4"
+	// PackageSpec is the runtime that serves the model, pinned because the
+	// CLI it is spawned with and the model directory it reads are this
+	// version's. It brings onnxruntime, tokenizers and numpy behind it, and
+	// deliberately not torch: the conversion that needs torch happened once,
+	// off this machine, and what ships is its output (see model.go).
+	PackageSpec = "edgejev==0.3.2"
 	// PackageName is what the venv is probed for.
-	PackageName = "laya"
+	PackageName = "edgejev"
 
-	// Checkpoint is the one this server loads, and it is a constant rather
+	// Checkpoint names the weights the artifact was built from, and it is a
+	// constant rather
 	// than a setting. Laya's English checkpoint scores higher on English and
 	// collapses on everything else while staying confident, which is the one
 	// failure shape a confidence gate cannot catch; the multilingual one is
@@ -78,31 +76,16 @@ const (
 	// The memory engine pins the same ceiling for the same reason.
 	NumpyConstraint = "numpy<2"
 
-	// TorchCPUIndex is where the CPU-only build of torch lives.
-	//
-	// This matters more than it looks. Laya declares nothing but
-	// "torch>=2.0.0", and on Linux and Windows pip resolves that to the CUDA
-	// build: measured here, a plain `pip install laya` lays down 5.6 GB, of
-	// which 3.2 GB is NVIDIA runtime libraries and 897 MB is triton — on a
-	// machine that may well have no GPU at all. Factor runs on boxes with a
-	// couple of slow cores and a few gigabytes of disk, so the CPU wheel is
-	// installed first and Laya then finds its dependency already satisfied,
-	// which brings the whole virtualenv to about 600 MB.
-	//
-	// Someone who has asked for CUDA gets the default resolution instead:
-	// they have the hardware and they said so.
-	TorchCPUIndex = "https://download.pytorch.org/whl/cpu"
-
-	// InstallTimeout bounds one install. Laya is a small wheel, but it pulls
-	// torch and transformers behind it, which on a slow connection is a few
-	// hundred megabytes.
+	// InstallTimeout bounds one install: the runtime wheels and then the
+	// model artifact, which is the long half at about 250 MB.
 	InstallTimeout = 30 * time.Minute
 
-	// LoadTimeout is how long the server may take to build its checkpoint
-	// before Factor gives up on this attempt and backs off. The first run
-	// downloads the weights — a few hundred megabytes — so it is generous;
-	// every run after that is seconds.
-	LoadTimeout = 20 * time.Minute
+	// LoadTimeout is how long the server may take to come up before Factor
+	// gives up on this attempt and backs off. There is nothing to download by
+	// the time it runs — the weights are on disk — so this is the memory-map
+	// and the first forward: measured at under 25 seconds here and a few
+	// minutes on the slowest box Factor targets.
+	LoadTimeout = 5 * time.Minute
 )
 
 // Config is what little the local model exposes. Every field is optional and
@@ -151,40 +134,24 @@ func venvBin(home, name string) string {
 func venvPython(home string) string { return venvBin(home, "python") }
 func venvPip(home string) string    { return venvBin(home, "pip") }
 
-// ScriptPath is where the embedded server is written. On disk rather than
-// piped in, so it is inspectable when a decision misbehaves.
-func ScriptPath(home string) string { return filepath.Join(home, "layaserve.py") }
-
-// WriteScript materializes the embedded server, leaving an unchanged file
-// alone so an upgrade does not disturb one a running child is reading.
-func WriteScript(path string) error {
-	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, serverScript) {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, serverScript, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
-	}
-	return nil
-}
-
-// FindPython returns the private virtualenv's interpreter once Laya is
-// actually importable in it. A virtualenv that exists but has no Laya is a
-// half-finished install, not an engine.
+// FindPython returns the private virtualenv's interpreter once the runtime
+// is importable in it and the weights are unpacked beside it. Either half
+// missing is a half-finished install, not an engine.
 func FindPython(home string) (string, bool) {
 	python := venvPython(home)
 	if _, err := os.Stat(python); err != nil {
 		return "", false
 	}
-	if !hasLaya(python) {
+	if !hasRuntime(python) || !ModelReady(home) {
 		return "", false
 	}
 	return python, true
 }
 
-func hasLaya(python string) bool {
+// ServerBin is the command that serves the model.
+func ServerBin(home string) string { return venvBin(home, PackageName) }
+
+func hasRuntime(python string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	_, err := runCmd(ctx, []string{python, "-c", "import " + PackageName})
@@ -205,20 +172,10 @@ var needsNumpyPin = func() bool {
 	}
 }
 
-// wantsCUDA reports whether the default (GPU) resolution of torch is what
-// this machine asked for. On macOS the published wheels are CPU-only anyway,
-// so the separate index is neither needed nor always available there.
-func wantsCUDA(device string) bool {
-	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
-		return true // leave the resolution alone
-	}
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(device)), "cuda")
-}
-
-// Install builds the virtualenv and installs Laya into it, returning the
-// interpreter to run the server with. device is what the model will run on,
-// and decides which build of torch is worth fetching.
+// Install builds the virtualenv, installs the runtime into it and puts the
+// weights beside it, returning the interpreter to run the server with.
 func Install(ctx context.Context, home, device string, progress func(format string, args ...any)) (string, error) {
+	_ = device // the model runs on CPU here; the server is told which provider at spawn
 	ctx, cancel := context.WithTimeout(ctx, InstallTimeout)
 	defer cancel()
 	emit := func(format string, args ...any) {
@@ -232,25 +189,11 @@ func Install(ctx context.Context, home, device string, progress func(format stri
 			return "", err
 		}
 	}
-	// torch first, and deliberately from the CPU index: see TorchCPUIndex.
-	// Laya's own install then finds the dependency satisfied and leaves it
-	// alone, instead of pulling several gigabytes of GPU runtime onto a
-	// machine that cannot use it.
-	if !wantsCUDA(device) {
-		emit("installing the CPU build of torch (about 200 MB)…")
-		if out, err := runCmd(ctx, []string{venvPip(home), "install", "--index-url", TorchCPUIndex, "torch"}); err != nil {
-			// Not fatal: the next step resolves torch the ordinary way, which
-			// works, just larger. A machine that cannot reach this index can
-			// still have a decision model.
-			emit("the CPU build could not be fetched (%v); falling back to the default, which is larger", err)
-			_ = out
-		}
-	}
 	emit("installing %s…", PackageSpec)
 	// The numpy ceiling goes in the same command rather than after it: pip
-	// resolves both at once, where installing Laya first and correcting it
-	// afterwards downloads the wheel that cannot run on this machine and then
-	// replaces it.
+	// resolves both at once, where installing the runtime first and
+	// correcting it afterwards downloads the wheel that cannot run on this
+	// machine and then replaces it.
 	install := []string{venvPip(home), "install", "--upgrade", PackageSpec}
 	if needsNumpyPin() {
 		install = append(install, NumpyConstraint)
@@ -258,9 +201,12 @@ func Install(ctx context.Context, home, device string, progress func(format stri
 	if out, err := runCmd(ctx, install); err != nil {
 		return "", fmt.Errorf("could not install %s: %v\n%s", PackageSpec, err, lastLines(out, 12))
 	}
+	if err := ensureModel(ctx, home, emit); err != nil {
+		return "", err
+	}
 	path, ok := FindPython(home)
 	if !ok {
-		return "", fmt.Errorf("pip reported success but %s is still not importable", PackageName)
+		return "", fmt.Errorf("the install finished but %s is not importable or the model is missing", PackageName)
 	}
 	emit("the local decision model is ready (%s)", path)
 	return path, nil
@@ -297,11 +243,11 @@ func EnsureLaya(ctx context.Context, home, device string, autoInstall bool,
 // InstallHint is the command a user runs to do it by hand.
 func InstallHint() string {
 	if runtime.GOOS == "windows" {
-		return `py -m venv %USERPROFILE%\.factor\decision-venv && %USERPROFILE%\.factor\decision-venv\Scripts\pip install --index-url ` +
-			TorchCPUIndex + ` torch && %USERPROFILE%\.factor\decision-venv\Scripts\pip install ` + PackageSpec
+		return `py -m venv %USERPROFILE%\.factor\decision-venv && %USERPROFILE%\.factor\decision-venv\Scripts\pip install ` +
+			PackageSpec + ` (the weights are fetched from the ` + ModelTag + ` release)`
 	}
-	return "python3 -m venv ~/.factor/decision-venv && ~/.factor/decision-venv/bin/pip install --index-url " +
-		TorchCPUIndex + " torch && ~/.factor/decision-venv/bin/pip install " + PackageSpec
+	return "python3 -m venv ~/.factor/decision-venv && ~/.factor/decision-venv/bin/pip install " +
+		PackageSpec + " (the weights are fetched from the " + ModelTag + " release)"
 }
 
 // resolveInterpreter accepts a configured command as either a path or a name
