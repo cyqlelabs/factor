@@ -2,11 +2,13 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUpgradeMethodReadsTheInstallLayout(t *testing.T) {
@@ -283,5 +285,29 @@ func TestToolRootsIgnoreAnUnsetBase(t *testing.T) {
 	}
 	if toolVenvThere(nil) || toolVenvThere([]string{""}) {
 		t.Error("a root that names nothing cannot hold an environment")
+	}
+}
+
+// "signal: killed" reads as a crash, and the agent that met it asked for the
+// same upgrade twice more inside one turn. A budget that ran out says so.
+func TestAStoppedInstallSaysWhyRatherThanWhichSignal(t *testing.T) {
+	killed := errors.New("signal: killed")
+
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if got := explainStop(expired, killed).Error(); !strings.Contains(got, InstallTimeout.String()) {
+		t.Errorf("a spent budget reported %q, want the budget named", got)
+	}
+
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	if got := explainStop(stopped, killed).Error(); !strings.Contains(got, "nothing was installed") {
+		t.Errorf("a cancelled install reported %q", got)
+	}
+
+	// A failure the context had nothing to do with is passed through: that is
+	// the installer's own message and it is the one worth reading.
+	if got := explainStop(context.Background(), killed); !errors.Is(got, killed) {
+		t.Errorf("err = %v, want the installer's own failure", got)
 	}
 }

@@ -14,6 +14,7 @@ package memory
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -157,9 +158,27 @@ func Upgrade(ctx context.Context, exe, home string, progress Progress) (method s
 		}
 	}
 	if runErr != nil {
-		return "", fmt.Errorf("upgrading %s with %s: %v\n%s", PackageName, method, runErr, lastLines(out, 12))
+		return "", fmt.Errorf("upgrading %s with %s: %v\n%s", PackageName, method, explainStop(ctx, runErr), lastLines(out, 12))
 	}
 	return method, nil
+}
+
+// explainStop says what ended an installer the context stopped, in place of
+// the signal that killed it.
+//
+// Without this the whole report is "signal: killed", which reads as a crash
+// rather than a budget spent. The first upgrade here to run past fifteen
+// minutes said exactly that, and the agent holding the turn — with nothing in
+// the message to suggest that waiting was the answer — asked for the same
+// upgrade again twice inside the same turn.
+func explainStop(ctx context.Context, err error) error {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return fmt.Errorf("it was still running after %s and was stopped; a slow line can need longer than one attempt allows", InstallTimeout)
+	case errors.Is(ctx.Err(), context.Canceled):
+		return fmt.Errorf("it was stopped before it finished, and nothing was installed")
+	}
+	return err
 }
 
 func strategyNamed(name string) (installStrategy, bool) {

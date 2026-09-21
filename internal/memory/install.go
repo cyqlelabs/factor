@@ -36,6 +36,7 @@ var (
 	runCmd   = func(ctx context.Context, argv []string) (string, error) {
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 		cmd.WaitDelay = 5 * time.Second
+		setProcessGroup(cmd)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
@@ -479,6 +480,7 @@ func Install(ctx context.Context, home string, progress Progress) (path, method 
 			}
 		}
 		if err != nil {
+			err = explainStop(ctx, err)
 			lastErr = fmt.Errorf("%s: %v\n%s", s.name, err, lastLines(out, 12))
 			progress.emit("%s failed: %v", s.name, err)
 			if ctx.Err() != nil {
