@@ -344,9 +344,13 @@ func pythonCandidates() []string {
 	return names
 }
 
-// runCmd runs a command to completion and returns its combined output.
+// runCmd runs a command to completion and returns its combined output. It is
+// born with quietEnv because one of the commands here imports the package to
+// find out whether it is installed, and the import is where onnxruntime
+// reports.
 func runCmd(ctx context.Context, argv []string) (string, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = quietEnv()
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

@@ -416,12 +416,25 @@ func limitsOf(h health) decision.Limits {
 	return l
 }
 
-// serverEnv is the environment the server is born with. Hugging Face's hub
-// reports usage as it resolves a repository, which a personal agent's sidecar
-// has no business doing; the switch has to be in the environment before the
-// interpreter starts, which is why it lives here rather than in the script.
+// quietEnv is the environment every process that loads this model is born
+// with — the server, and the `import edgejev` probe that decides whether it
+// can run. Hugging Face's hub reports usage as it resolves a repository,
+// which a personal agent's sidecar has no business doing, and onnxruntime
+// posts OS build, CPU model, memory, network type, a persistent device id and
+// the interpreter path (which holds the username) to Microsoft as it
+// initializes — logged while the environment is created, which here is the
+// import itself, so nothing the code does afterwards can stop it
+// (microsoft/onnxruntime#25573). Both switches have to be in the environment
+// before the interpreter starts, which is why they live here rather than in
+// anything the server runs.
+func quietEnv() []string {
+	return append(os.Environ(), "ORT_DISABLE_TELEMETRY=1", "HF_HUB_DISABLE_TELEMETRY=1",
+		"TRANSFORMERS_NO_ADVISORY_WARNINGS=1")
+}
+
+// serverEnv is quietEnv plus what the model is allowed to hold while it runs.
 func serverEnv() []string {
-	return append(os.Environ(), "HF_HUB_DISABLE_TELEMETRY=1", "TRANSFORMERS_NO_ADVISORY_WARNINGS=1",
+	return append(quietEnv(),
 		// onnxruntime runs its CPU kernels on one thread per core, and the
 		// warm-up holds every one of them for as long as the checkpoint takes
 		// to build. On a two-core box that is the whole machine: measured, a

@@ -514,17 +514,39 @@ func TestRunCmdReportsOutputAndFailure(t *testing.T) {
 }
 
 // The environment the server is born with says no to Hugging Face's usage
-// reporting, which a personal agent's sidecar has no business doing.
+// reporting, which a personal agent's sidecar has no business doing, and to
+// onnxruntime's, which posts this machine to Microsoft as it initializes.
 func TestServerEnvironmentSwitchesOffTelemetry(t *testing.T) {
-	env := serverEnv()
-	var found bool
-	for _, kv := range env {
-		if kv == "HF_HUB_DISABLE_TELEMETRY=1" {
-			found = true
+	want := map[string]string{
+		"HF_HUB_DISABLE_TELEMETRY": "the server would report usage to Hugging Face",
+		"ORT_DISABLE_TELEMETRY":    "the server would post this machine to Microsoft",
+	}
+	for key, complaint := range want {
+		var got string
+		for _, kv := range serverEnv() {
+			if v, ok := strings.CutPrefix(kv, key+"="); ok {
+				got = v
+			}
+		}
+		if got != "1" {
+			t.Errorf("%s = %q, want \"1\": %s", key, got, complaint)
 		}
 	}
-	if !found {
-		t.Error("the server would report usage to Hugging Face")
+}
+
+// The probe that decides whether the model can run imports it, and the import
+// is where onnxruntime reports, so the commands the installer runs carry the
+// same switches the server does.
+func TestInstallerCommandsSwitchOffTelemetry(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh here")
+	}
+	out, err := runCmd(context.Background(), []string{"/bin/sh", "-c", "echo $ORT_DISABLE_TELEMETRY"})
+	if err != nil {
+		t.Fatalf("runCmd: %v", err)
+	}
+	if strings.TrimSpace(out) != "1" {
+		t.Errorf("ORT_DISABLE_TELEMETRY = %q in an installer command, want \"1\"", strings.TrimSpace(out))
 	}
 }
 
