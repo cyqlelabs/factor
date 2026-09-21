@@ -106,6 +106,51 @@ func TestSet(t *testing.T) {
 	}
 }
 
+// config_set declares no type for its value, so a model sends numbers and
+// booleans quoted. A budget cap the tool refuses is a tool the agent works
+// around with a text editor.
+func TestSetReadsAQuotedScalar(t *testing.T) {
+	cfg := tempConfig(t)
+
+	if err := cfg.Set("cost.budget.global_usd", "100"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cost.Budget.GlobalUSD != 100 {
+		t.Errorf("global_usd = %v, want 100", cfg.Cost.Budget.GlobalUSD)
+	}
+	if err := cfg.Set("heartbeat.interval_minutes", "45"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Heartbeat.IntervalMinutes != 45 {
+		t.Errorf("interval_minutes = %d, want 45", cfg.Heartbeat.IntervalMinutes)
+	}
+	if err := cfg.Set("agent.learn_skills", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agent.LearnSkills {
+		t.Error("learn_skills = true, want the quoted false applied")
+	}
+	if err := cfg.Set("tools.disabled", `["exec"]`); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Tools.Disabled) != 1 || cfg.Tools.Disabled[0] != "exec" {
+		t.Errorf("disabled = %v", cfg.Tools.Disabled)
+	}
+
+	// A string key takes the string it was given: the re-read only happens
+	// where the value did not fit in the first place.
+	if err := cfg.Set("provider.model", `{"a":1}`); err != nil {
+		t.Fatalf("a JSON-looking string for a string key must stay a string: %v", err)
+	}
+	if cfg.Provider.Model != `{"a":1}` {
+		t.Errorf("model = %q, want the string kept verbatim", cfg.Provider.Model)
+	}
+	// A value that re-reads as JSON of the wrong type is still refused.
+	if err := cfg.Set("provider.max_tokens", `"still-not-a-number"`); err == nil {
+		t.Error("a quoted non-number accepted")
+	}
+}
+
 func TestUpdateAndReadFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FACTOR_HOME", dir)
