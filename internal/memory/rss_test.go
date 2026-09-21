@@ -120,10 +120,12 @@ func TestSizeRestartIsHeldBack(t *testing.T) {
 	saved := processRSS
 	processRSS = func(int) (int64, bool) { return 3 << 30, true }
 	t.Cleanup(func() { processRSS = saved })
-	t.Setenv("FACTOR_HOME", t.TempDir())
+	// sidecarConfig moves FACTOR_HOME, so the pid is written after it: a pid
+	// file left in the old home resolves to nothing, and every gate below
+	// would then pass for the wrong reason.
+	cfg := sidecarConfig(t, "serve")
 	writeEnginePid(os.Getpid())
 
-	cfg := sidecarConfig(t, "serve")
 	cfg.MaxRSSMB = -1
 	off := &Sidecar{client: NewClient("http://127.0.0.1:1", "", ""), cfg: cfg}
 	if off.restartForSize(context.Background()) {
@@ -142,5 +144,53 @@ func TestSizeRestartIsHeldBack(t *testing.T) {
 	done()
 	if busy.SizeRestarts() != 0 {
 		t.Error("counted a restart that did not happen")
+	}
+}
+
+// A graph that never goes quiet does not buy the engine an indefinite
+// reprieve. Every recall against a bloated engine runs long or times out, and
+// each one holds the in-flight count up while it does, so the wait for idle
+// gets longer exactly as the engine gets worse — observed on the live box as
+// twenty-seven minutes at six times the ceiling with the supervisor declining
+// at every probe. Past the grace the engine goes with a request still open.
+func TestSizeRestartStopsWaitingForAQuietGraph(t *testing.T) {
+	var rss atomic.Int64
+	rss.Store(3 << 30)
+	savedRSS, savedGap, savedGrace, savedStop := processRSS, sizeRestartGap, sizeBreachGrace, stopEngineIf
+	processRSS = func(int) (int64, bool) { return rss.Load(), true }
+	sizeRestartGap = time.Hour
+	sizeBreachGrace = 50 * time.Millisecond
+	var stops atomic.Int64
+	stopEngineIf = func(context.Context, int, int) (int, error) { stops.Add(1); return 1, nil }
+	t.Cleanup(func() {
+		processRSS, sizeRestartGap, sizeBreachGrace, stopEngineIf = savedRSS, savedGap, savedGrace, savedStop
+	})
+	cfg := sidecarConfig(t, "serve")
+	writeEnginePid(os.Getpid())
+	cfg.MaxRSSMB = 1024
+	s := &Sidecar{client: NewClient("http://127.0.0.1:1", "", ""), cfg: cfg}
+	defer s.client.activity()() // a request that never ends: the graph is never idle
+
+	if s.restartForSize(context.Background()) {
+		t.Fatal("restarted while the breach was still fresh")
+	}
+	time.Sleep(2 * sizeBreachGrace)
+	if !s.restartForSize(context.Background()) {
+		t.Fatal("a graph that never goes quiet held the engine past the grace")
+	}
+	if got := stops.Load(); got != 1 {
+		t.Errorf("stops = %d, want 1", got)
+	}
+
+	// The replacement starts its own clock: a breach is measured from when
+	// this engine crossed the ceiling, not from when some earlier one did.
+	sizeRestartGap = 0
+	rss.Store(100 << 20)
+	if s.restartForSize(context.Background()) {
+		t.Fatal("restarted an engine under the ceiling")
+	}
+	rss.Store(3 << 30)
+	if s.restartForSize(context.Background()) {
+		t.Error("the new breach inherited the old one's grace")
 	}
 }

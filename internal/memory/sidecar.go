@@ -102,6 +102,10 @@ type Sidecar struct {
 	// unix nanoseconds: the poll goroutine of a child that was just stopped
 	// may still be finishing when its replacement's begins.
 	lastSizeRestart atomic.Int64
+	// overSince is when the engine was first seen past its ceiling, as unix
+	// nanoseconds, and zero while it is under. It is what bounds the wait for
+	// a quiet graph: see restartForSize.
+	overSince atomic.Int64
 	// deliberateStop marks an engine this supervisor stopped on purpose, so
 	// the run loop starts its replacement rather than treating the exit as a
 	// crash and waiting out a backoff first.
@@ -264,6 +268,19 @@ func (s *Sidecar) pollWhileHealthy(ctx context.Context) {
 // probe: each restart costs the next recall its model load.
 var sizeRestartGap = 10 * time.Minute
 
+// sizeBreachGrace is how long an engine may sit past its ceiling waiting for
+// a quiet graph before it is stopped on a busy one. Waiting for idle is the
+// right courtesy while the breach is fresh, and a trap once it is not: every
+// recall against a bloated engine runs long or times out, each one holds the
+// in-flight count up for as long as it runs, and the graph therefore goes
+// quiet less often the worse the engine gets. Measured here, an engine six
+// times over a 4 GB ceiling held the machine for twenty-seven minutes with
+// the supervisor declining at every probe, because it never once saw fifteen
+// straight seconds of quiet. Four probes past the ceiling is enough to know
+// this is not a burst of work, and the request that gets cut off was being
+// served by an engine that was failing it anyway.
+var sizeBreachGrace = 2 * time.Minute
+
 // stopEngineIf is a seam, like processRSS above it: the branch where the
 // engine is already gone is reachable only by losing a race with it.
 var stopEngineIf = StopEngineIf
@@ -292,17 +309,25 @@ func (s *Sidecar) restartForSize(ctx context.Context) bool {
 	}
 	ceiling := int64(s.cfg.MaxRSSMB) << 20
 	if rss < ceiling {
+		s.overSince.Store(0)
 		return false
 	}
-	if !s.Idle(UpgradeQuiet) {
+	over := s.overSince.Load()
+	if over == 0 {
+		over = time.Now().UnixNano()
+		s.overSince.Store(over)
+	}
+	if !s.Idle(UpgradeQuiet) && time.Since(time.Unix(0, over)) < sizeBreachGrace {
 		return false // the turn in flight is using it; the next probe will ask again
 	}
 	if last := s.lastSizeRestart.Load(); last != 0 && time.Since(time.Unix(0, last)) < sizeRestartGap {
 		return false
 	}
 	slog.Warn("memory engine restarted for size; it comes back with every atom it had",
-		"rss_mb", rss>>20, "ceiling_mb", s.cfg.MaxRSSMB, "pid", pid)
+		"rss_mb", rss>>20, "ceiling_mb", s.cfg.MaxRSSMB, "pid", pid,
+		"over_ceiling_s", int(time.Since(time.Unix(0, over)).Seconds()))
 	s.lastSizeRestart.Store(time.Now().UnixNano())
+	s.overSince.Store(0)
 	// Only this engine: waiting for the graph to go quiet takes as long as it
 	// takes, and an engine that was replaced meanwhile is already the small
 	// one this wanted.
