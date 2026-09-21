@@ -989,3 +989,60 @@ func TestTwoInstallersDoNotRunAtOnce(t *testing.T) {
 		t.Errorf("pip ran %d times, want 2 (one install):\n%s", len(lines), log)
 	}
 }
+
+// The model holds the machine while it loads, so the two things that keep a
+// slow box usable are set before the interpreter starts: it gets all but one
+// core, and it is asked for by name in the environment rather than left to
+// torch's default of every core there is.
+func TestTheModelIsHeldToPartOfTheMachine(t *testing.T) {
+	env := strings.Join(serverEnv(), "\n")
+	want := strconv.Itoa(computeThreads())
+	for _, key := range []string{"OMP_NUM_THREADS=", "MKL_NUM_THREADS="} {
+		if !strings.Contains(env, key+want) {
+			t.Errorf("the model's environment does not carry %s%s", key, want)
+		}
+	}
+	// At least one core, and never the whole machine unless there is only one.
+	cores, got := runtime.NumCPU(), computeThreads()
+	if got < 1 || (cores > 1 && got >= cores) {
+		t.Errorf("computeThreads() = %d on a %d-core machine", got, cores)
+	}
+}
+
+// A model that starts, holds the machine for its whole load budget and never
+// answers is the failure that costs a box: three of those is an hour of a slow
+// machine's CPU. The supervisor stops asking and names the setting that keeps
+// it stopped — every other failure stays on the backoff, because those are
+// cheap and may well be temporary.
+func TestAModelThatNeverLoadsIsGivenUpOn(t *testing.T) {
+	b := New(Config{Port: freePort(t)}, t.TempDir())
+	neverReady := fmt.Errorf("%w within %s", errNeverReady, LoadTimeout)
+
+	for i := 1; i < loadAttempts; i++ {
+		if b.spent(neverReady) {
+			t.Fatalf("gave up after %d attempts, want %d", i, loadAttempts)
+		}
+	}
+	if !b.spent(neverReady) {
+		t.Fatalf("still trying after %d attempts", loadAttempts)
+	}
+	if down := b.Down(); !strings.Contains(down, "decision.mode: off") {
+		t.Errorf("Down() = %q, want the setting that stops it", down)
+	}
+
+	// A model that exits for any other reason is retried: that is the backoff's
+	// job, and the reason may be a download that comes back.
+	other := New(Config{Port: freePort(t)}, t.TempDir())
+	for i := 0; i < loadAttempts+2; i++ {
+		if other.spent(errors.New("exit status 3")) {
+			t.Fatal("an ordinary exit was treated as a machine that cannot load the model")
+		}
+	}
+	// And a run that loads clears what came before it — the supervisor zeroes
+	// the count on a healthy model — so old failures cannot add to new ones.
+	other.neverReady = loadAttempts - 1
+	other.neverReady = 0 // what run() does the moment the model answers
+	if other.spent(neverReady) {
+		t.Error("a model that loaded did not clear the failures before it")
+	}
+}

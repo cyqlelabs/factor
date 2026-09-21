@@ -3,12 +3,15 @@ package local
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +39,11 @@ const (
 	// quarter of an hour keeps the feature self-healing — the network may
 	// come back — without spending the machine on finding out.
 	maxBackoff = 15 * time.Minute
+	// loadAttempts is how many times a model that starts but never finishes
+	// loading is given another go before the supervisor stops asking. Three
+	// is already an hour of a slow machine's whole CPU; the fourth is not
+	// going to be the one that works.
+	loadAttempts = 3
 	// charsPerToken converts the server's token budgets into the character
 	// budgets a caller can actually measure. Deliberately conservative:
 	// three is about right for English prose and pessimistic for the
@@ -87,11 +95,19 @@ type Backend struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 
+	// neverReady counts the runs that started and never finished loading. It
+	// belongs to the supervisor goroutine.
+	neverReady int
+
 	// probeInterval lets a test shrink the poll.
 	probeInterval time.Duration
 	// httpClient is the health probe's; the decision client has its own.
 	httpClient *http.Client
 }
+
+// errNeverReady marks the one failure worth counting: a model that started,
+// held the machine for LoadTimeout, and never answered.
+var errNeverReady = errors.New("the local decision model did not become ready")
 
 // New builds the backend. It starts nothing: Start does that, so a caller can
 // construct one and decide later whether this install wants it running.
@@ -217,6 +233,7 @@ func (b *Backend) run(ctx context.Context) {
 			b.healthy.Store(true)
 			b.down.Store("")
 			backoff = 5 * time.Second
+			b.neverReady = 0
 			b.pollWhileHealthy(ctx)
 			continue
 		}
@@ -225,12 +242,37 @@ func (b *Backend) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if b.spent(err) {
+			return
+		}
 		slog.Warn("the local decision model exited; restarting", "error", err, "backoff", backoff)
 		sleepCtx(ctx, backoff)
 		if backoff *= 2; backoff > maxBackoff {
 			backoff = maxBackoff
 		}
 	}
+}
+
+// spent records one supervised run and reports whether this machine has
+// failed to load the model often enough to stop trying.
+//
+// A model that starts and then never finishes loading is the expensive
+// failure: each attempt is LoadTimeout of solid arithmetic, and on a machine
+// slow enough to hit it that is the whole machine. Retrying that forever is
+// how a box ends up being power-cycled — so the supervisor stops, says so,
+// and names the setting that keeps it stopped. Every other failure is cheap
+// to retry and is left to the backoff.
+func (b *Backend) spent(err error) bool {
+	if !errors.Is(err, errNeverReady) {
+		return false
+	}
+	if b.neverReady++; b.neverReady < loadAttempts {
+		return false
+	}
+	b.setDown("the local decision model could not finish loading on this machine in %d attempts; decisions fall back, and decision.mode: off stops it trying", loadAttempts)
+	slog.Warn("the local decision model could not finish loading on this machine; giving up for this run",
+		"attempts", loadAttempts, "remedy", "decision.mode: off")
+	return true
 }
 
 func (b *Backend) pollWhileHealthy(ctx context.Context) {
@@ -310,7 +352,27 @@ func limitsOf(h health) decision.Limits {
 // has no business doing; the switch has to be in the environment before the
 // interpreter starts, which is why it lives here rather than in the script.
 func serverEnv() []string {
-	return append(os.Environ(), "HF_HUB_DISABLE_TELEMETRY=1", "TRANSFORMERS_NO_ADVISORY_WARNINGS=1")
+	return append(os.Environ(), "HF_HUB_DISABLE_TELEMETRY=1", "TRANSFORMERS_NO_ADVISORY_WARNINGS=1",
+		// torch runs its CPU kernels on one thread per core, and the warm-up
+		// holds every one of them for as long as the checkpoint takes to
+		// build. On a two-core box that is the whole machine: measured, a
+		// Factor whose decision model was loading stopped answering ssh and
+		// then stopped answering at all. A core is left for everything else
+		// — Factor, the memory engine, and whoever is trying to log in and
+		// find out what is wrong. The variables have to be in the
+		// environment before the interpreter starts, which is why they are
+		// set here rather than in the script.
+		"OMP_NUM_THREADS="+strconv.Itoa(computeThreads()),
+		"MKL_NUM_THREADS="+strconv.Itoa(computeThreads()))
+}
+
+// computeThreads is how many cores the model may hold at once: all but one,
+// and at least one.
+func computeThreads() int {
+	if n := runtime.NumCPU() - 1; n > 0 {
+		return n
+	}
+	return 1
 }
 
 func (b *Backend) spawnAndWait(ctx context.Context) error {
@@ -351,6 +413,10 @@ func (b *Backend) spawnAndWait(ctx context.Context) error {
 		b.setDown("could not start the local decision model: %v", err)
 		return err
 	}
+	// Niced after the start, which is the only place pure Go can do it: even
+	// held to one core short of the machine, the warm-up is minutes of solid
+	// arithmetic, and nothing else here is worth making wait behind it.
+	lowerPriority(cmd.Process.Pid)
 	slog.Info("local decision model starting", "port", b.cfg.port(), "pid", cmd.Process.Pid)
 
 	waitCh := make(chan error, 1)
@@ -376,7 +442,8 @@ func (b *Backend) spawnAndWait(ctx context.Context) error {
 		}
 		if time.Now().After(deadline) {
 			b.setDown("the local decision model did not become ready within %s", LoadTimeout)
-			return childproc.StopAndWait(cmd.Process, waitCh, stopGrace)
+			_ = childproc.StopAndWait(cmd.Process, waitCh, stopGrace)
+			return fmt.Errorf("%w within %s", errNeverReady, LoadTimeout)
 		}
 	}
 
