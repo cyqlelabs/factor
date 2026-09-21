@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/cyqlelabs/factor/internal/decision"
 	"github.com/cyqlelabs/factor/internal/provider"
@@ -69,6 +70,101 @@ func withDecider(h *harness, b *fakeBackend, mode string, p Policies) *fakeBacke
 }
 
 var allPolicies = Policies{Verify: true, Recover: true, Induce: true}
+
+// limitedBackend is a decision model with a window, the way the local
+// checkpoint has one: what it is asked has to fit, and a state that does not
+// fit comes back not as a refusal but as an answer read off half the
+// evidence.
+type limitedBackend struct {
+	fakeBackend
+	limits decision.Limits
+}
+
+func (l *limitedBackend) Limits() decision.Limits { return l.limits }
+
+// The per-field budgets in policy.go are written for what makes a question
+// answerable. The window is what the backend can be asked at all, and it is
+// the smaller of the two on the model Factor actually runs.
+func TestPolicyStateIsSizedForTheBackendsWindow(t *testing.T) {
+	const window = 2400
+	// Multibyte on purpose: the checkpoint is the multilingual one, and a
+	// state bounded in bytes would be cut to half its budget and its last
+	// character cut in two.
+	long := strings.Repeat("ñandú ", 900)
+	h := newHarness(t,
+		toolCall("probe", map[string]any{"value": long}),
+		toolCall("probe", map[string]any{"value": "segundo " + long}),
+		final("Envié el informe y quedó entregado."),
+	)
+	b := &limitedBackend{limits: decision.Limits{MaxStateChars: window}}
+	b.choice, b.confidence = completionVerified, 0.9
+	h.loop.WithDecider(decision.New(b, decision.Options{Mode: decision.ModeActive}), allPolicies)
+	if _, err := h.loop.ProcessDirect(context.Background(), "«"+long+"» — enviá el informe", "cli:window"); err != nil {
+		t.Fatal(err)
+	}
+	if b.calls() != 1 {
+		t.Fatalf("%d completion checks, want one", b.calls())
+	}
+	state := b.requests[0].State.(map[string]any)
+	total := 0
+	for _, field := range []string{"task", "trajectory", "reply"} {
+		text, ok := state[field].(string)
+		if !ok {
+			t.Fatalf("no %s in the state", field)
+		}
+		if !utf8.ValidString(text) {
+			t.Errorf("%s was cut mid-character", field)
+		}
+		total += len([]rune(text))
+	}
+	if total > window {
+		t.Errorf("the state carries %d characters into a %d-character window", total, window)
+	}
+	if traj := state["trajectory"].(string); !strings.HasPrefix(traj, "…") {
+		t.Errorf("the trajectory was clipped from the wrong end: %.20q", traj)
+	}
+	// A backend that declares no window is asked the caller's own budget,
+	// which is far more than this one took.
+	plain := &fakeBackend{choice: completionVerified, confidence: 0.9}
+	h2 := newHarness(t,
+		toolCall("probe", map[string]any{"value": long}),
+		toolCall("probe", map[string]any{"value": "segundo " + long}),
+		final("Envié el informe y quedó entregado."),
+	)
+	h2.loop.WithDecider(decision.New(plain, decision.Options{Mode: decision.ModeActive}), allPolicies)
+	if _, err := h2.loop.ProcessDirect(context.Background(), "«"+long+"» — enviá el informe", "cli:nowindow"); err != nil {
+		t.Fatal(err)
+	}
+	wide := plain.requests[0].State.(map[string]any)["trajectory"].(string)
+	if strings.HasPrefix(wide, "…") || len([]rune(wide)) <= len([]rune(state["trajectory"].(string))) {
+		t.Errorf("an unbounded backend was asked a clipped trajectory: %d characters, %.20q", len([]rune(wide)), wide)
+	}
+}
+
+// The arithmetic on its own: the long field gets what the window has left,
+// and never less than the floor that keeps the question worth asking.
+func TestEvidenceRoomLeavesTheWindowToTheLongField(t *testing.T) {
+	h := newHarness(t, final("ok"))
+	room := func(window, want int, beside ...string) int {
+		b := &limitedBackend{limits: decision.Limits{MaxStateChars: window}}
+		b.choice, b.confidence = completionVerified, 0.9
+		h.loop.WithDecider(decision.New(b, decision.Options{Mode: decision.ModeActive}), allPolicies)
+		return h.loop.evidenceRoom(want, beside...)
+	}
+	if got := room(0, 5000, "anything"); got != 5000 {
+		t.Errorf("no window = the caller's own budget, got %d", got)
+	}
+	if got := room(9000, 5000, strings.Repeat("a", 100)); got != 5000 {
+		t.Errorf("a window with room to spare = the caller's own budget, got %d", got)
+	}
+	// Ten characters of a room measured in runes, not the twenty bytes.
+	if got := room(3000, 5000, strings.Repeat("ñ", 10)); got != 2989 {
+		t.Errorf("room = %d, want the window less the ten characters beside it", got)
+	}
+	if got := room(700, 5000, strings.Repeat("a", 699)); got != minPolicyEvidence {
+		t.Errorf("room = %d, want the floor", got)
+	}
+}
 
 func TestStallTrackerCountsIdenticalCallAndResultPairs(t *testing.T) {
 	s := newStallTracker()

@@ -324,7 +324,10 @@ func (b *Backend) spawnAndWait(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	b.down.Store("")
+	// Not "" — a blank reason reads back to a caller as an empty
+	// parenthetical where the reason should be, and a model that is starting
+	// is a different thing from one that failed.
+	b.setDown("the local decision model is starting")
 
 	cmd := exec.CommandContext(ctx, command, b.script)
 	cmd.Env = append(serverEnv(), "FACTOR_DECISION_CONFIG="+string(blob))

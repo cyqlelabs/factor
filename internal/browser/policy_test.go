@@ -4,9 +4,11 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/decision"
@@ -242,6 +244,69 @@ func (nilBackend) Decide(context.Context, *decision.Request) (*decision.Response
 	return nil, decision.ErrUnavailable
 }
 func (nilBackend) Name() string { return "nil" }
+
+// windowedBackend is the local model: it declares the window one request has
+// to fit into, the way decision/local does off the server's own health.
+type windowedBackend struct {
+	nilBackend
+	limits decision.Limits
+}
+
+func (w windowedBackend) Limits() decision.Limits { return w.limits }
+
+// The whole state has to fit the window, not the page text in it — and what
+// yields when it does not is the prose rather than the table of controls the
+// answer is chosen from.
+func TestRequestFitsTheBackendsWindow(t *testing.T) {
+	const window = 2400
+	// Multibyte on purpose: the checkpoint is the multilingual one, and a
+	// budget counted in bytes would cut this page to half the room it has.
+	page := &pageRead{Title: "Listado", URL: "http://x/", Text: strings.Repeat("ñandú vuela ", 400)}
+	for i := 1; i <= 6; i++ {
+		page.Elements = append(page.Elements, pageElement{Ref: fmt.Sprintf("e%d", i), Tag: "button",
+			Label: fmt.Sprintf("Botón número %d", i), Selector: fmt.Sprintf("#b%d", i)})
+	}
+	r := &browserRun{goal: "comprar el billete", tool: &runTool{
+		decider: decision.New(windowedBackend{limits: decision.Limits{MaxStateChars: window, MaxCandidates: 16}},
+			decision.Options{Mode: decision.ModeActive}),
+	}}
+	state := r.request(&observation{page: page, space: buildActionSpace(page, false, true, 16)}).State.(map[string]any)
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len([]rune(string(encoded))); n > window {
+		t.Errorf("the state carries %d characters into a %d-character window", n, window)
+	}
+	text := state["page"].(map[string]any)["text"].(string)
+	if !utf8.ValidString(text) {
+		t.Error("the page text was cut mid-character")
+	}
+	if !strings.HasSuffix(text, "…") {
+		t.Errorf("the page text was not clipped: %d characters", len([]rune(text)))
+	}
+	// The table is what the answer is read off, so it survives whole.
+	if !strings.Contains(string(encoded), "Botón número 6") {
+		t.Error("the control table yielded to the page text")
+	}
+	// A backend with no window is asked this tool's own budget.
+	wide := runFor("comprar el billete").request(&observation{page: page, space: buildActionSpace(page, false, true, 16)}).
+		State.(map[string]any)["page"].(map[string]any)["text"].(string)
+	if len([]rune(wide)) <= len([]rune(text)) {
+		t.Errorf("an unbounded backend was asked %d characters of page text", len([]rune(wide)))
+	}
+	// A window too small for the table and the prose together still carries
+	// prose: past the floor, yielding further buys nothing an answer needs.
+	tiny := &browserRun{goal: "comprar el billete", tool: &runTool{
+		decider: decision.New(windowedBackend{limits: decision.Limits{MaxStateChars: 300}},
+			decision.Options{Mode: decision.ModeActive}),
+	}}
+	floor := tiny.request(&observation{page: page, space: buildActionSpace(page, false, true, 16)}).
+		State.(map[string]any)["page"].(map[string]any)["text"].(string)
+	if n := len([]rune(floor)); n == 0 || n > 301 { // the window itself, plus the clip's marker
+		t.Errorf("the floor gave %d characters of page text", n)
+	}
+}
 
 func TestRunToolRefusesWithoutAnActiveDeciderOrAGoal(t *testing.T) {
 	s := NewSession(config.BrowserConfig{Engine: "chromium"}, t.TempDir(), nil)

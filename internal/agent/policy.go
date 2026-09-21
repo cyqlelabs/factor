@@ -56,6 +56,11 @@ const (
 	policyTaskChars = 1200
 	// stallResultChars bounds the repeated result a recovery decision sees.
 	stallResultChars = 1200
+	// minPolicyEvidence is the floor under every one of those budgets once
+	// the backend's own window has been taken into account. A question asked
+	// with less evidence than this is asked blind, and the answer to a
+	// question asked blind is worth less than the fallback it displaces.
+	minPolicyEvidence = 600
 )
 
 // Policies says which typed-decision scenarios the loop runs. Each falls
@@ -72,6 +77,34 @@ func (l *Loop) WithDecider(d *decision.Decider, p Policies) *Loop {
 	l.decider = d
 	l.policies = p
 	return l
+}
+
+// evidenceRoom is how much of a request's long field — a turn's trajectory,
+// a repeated tool result — may ride one policy request once the short fields
+// beside it have taken theirs.
+//
+// The per-field budgets above are written for what makes a question
+// answerable. The backend's window is what it can be asked at all, and the
+// local checkpoint's is a few thousand characters against the twelve
+// thousand a trajectory asks for. Overrunning it does not come back as a
+// refusal or a worse answer: the state is truncated inside the model, from
+// whichever end the tokenizer reaches last, and nothing here learns that the
+// evidence it thought it sent never arrived. So the long field is cut here
+// instead — but never below minPolicyEvidence, because a question is either
+// worth asking with something in it or not worth asking.
+func (l *Loop) evidenceRoom(want int, beside ...string) int {
+	window := l.decider.Limits().MaxStateChars
+	if window <= 0 {
+		return want // a backend that declares no window is asked the caller's own budget
+	}
+	window-- // the clip's own ellipsis rides the wire beside the text it marks
+	for _, s := range beside {
+		window -= len([]rune(s))
+	}
+	if window >= want {
+		return want
+	}
+	return max(window, minPolicyEvidence)
 }
 
 // stallTracker notices the same call returning the same result again and
@@ -145,11 +178,16 @@ func (l *Loop) recoveryNudge(ctx context.Context, tr *trace.Turn, task string, c
 
 	advice := "Change approach: another tool, another route to the same result, or say plainly what blocks you."
 	if l.decider.Enabled() && l.policies.Recover {
+		asked := decision.Clip(task, policyTaskChars)
+		repeated := call.Name + summarizeArgs(call.Args)
 		state := map[string]any{
-			"task":          decision.Clip(task, policyTaskChars),
-			"repeated_call": call.Name + summarizeArgs(call.Args),
-			"result":        decision.Clip(result, stallResultChars),
-			"failed":        strings.HasPrefix(result, "ERROR: "),
+			"task":          asked,
+			"repeated_call": repeated,
+			// The head of a result, not its tail: what a repeated call keeps
+			// returning is said at the top — the error, the empty listing,
+			// the same first line as last time.
+			"result": decision.Clip(result, l.evidenceRoom(stallResultChars, asked, repeated)),
+			"failed": strings.HasPrefix(result, "ERROR: "),
 		}
 		v, err := l.decider.Choose(ctx, decision.KindRecovery, state,
 			decision.Question{Criteria: recoveryCriteria, Instructions: map[string]any{"rules": recoveryRules}})
@@ -199,14 +237,12 @@ func (l *Loop) verifyCompletion(ctx context.Context, tr *trace.Turn, task string
 	if !l.decider.Enabled() || !l.policies.Verify {
 		return ""
 	}
-	trajectory := renderTurn(turn)
-	if len(trajectory) > verifyTrajectoryChars {
-		trajectory = trajectory[len(trajectory)-verifyTrajectoryChars:]
-	}
+	asked := decision.Clip(task, policyTaskChars)
+	claim := decision.Clip(reply, verifyReplyChars)
 	state := map[string]any{
-		"task":       decision.Clip(task, policyTaskChars),
-		"trajectory": trajectory,
-		"reply":      decision.Clip(reply, verifyReplyChars),
+		"task":       asked,
+		"trajectory": decision.ClipTail(renderTurn(turn), l.evidenceRoom(verifyTrajectoryChars, asked, claim)),
+		"reply":      claim,
 	}
 	v, err := l.decider.Choose(ctx, decision.KindCompletion, state,
 		decision.Question{Criteria: completionCriteria, Instructions: map[string]any{"rules": completionRules}})
@@ -253,9 +289,11 @@ func (l *Loop) screenInduction(ctx context.Context, cand induceCandidate, learne
 		}
 		return out
 	}
+	asked := decision.Clip(cand.task, policyTaskChars)
+	shown := append(names(learned), names(catalog)...)
 	state := map[string]any{
-		"task":           decision.Clip(cand.task, policyTaskChars),
-		"trajectory":     decision.Clip(cand.transcript, verifyTrajectoryChars),
+		"task":           asked,
+		"trajectory":     decision.ClipTail(cand.transcript, l.evidenceRoom(verifyTrajectoryChars, append(shown, asked)...)),
 		"corrected":      cand.corrected,
 		"learned_skills": names(learned),
 		"other_skills":   names(catalog),

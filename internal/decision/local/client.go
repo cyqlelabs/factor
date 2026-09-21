@@ -157,8 +157,5 @@ func intOf(m map[string]any, keys ...string) int {
 
 func firstLine(b []byte) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(string(b)), "\n")
-	if len(line) > 200 {
-		line = line[:200]
-	}
-	return line
+	return decision.Clip(line, 200)
 }

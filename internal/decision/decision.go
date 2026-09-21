@@ -495,13 +495,42 @@ func Candidates(q Question) []string {
 	return ids
 }
 
-// Clip bounds a piece of state before it rides a request. Decisions are
-// priced per input token and judged from the shape of a situation, not from
-// the whole page behind it.
+// Clip bounds a piece of state before it rides a request, keeping its head.
+// Decisions are judged from the shape of a situation, not from the whole page
+// behind it, and the model answering has a fixed window.
+//
+// The bound is in characters rather than bytes, which is the difference
+// between a budget and a lottery: the checkpoint here is the multilingual
+// one, so the state it is handed is as likely to be Spanish, Russian or
+// Khmer as English, and a byte bound cuts those to a half or a third of the
+// room they were given — and cuts the last character in two on the way,
+// leaving a rune the JSON encoder replaces with U+FFFD.
 func Clip(s string, limit int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= limit {
+	if limit <= 0 {
 		return s
 	}
-	return s[:limit] + "…"
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return string(r[:limit]) + "…"
+}
+
+// ClipTail is Clip from the other end: it keeps the last limit characters.
+// Which end to keep is a property of what is being clipped. A page is read
+// from the top, so Clip keeps its head; a trajectory is not — the claim
+// under judgement is the last thing in it and the calls that back it are the
+// ones just before, so a head-clipped trajectory is the part of the turn the
+// question is not about.
+func ClipTail(s string, limit int) string {
+	s = strings.TrimSpace(s)
+	if limit <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return "…" + string(r[len(r)-limit:])
 }

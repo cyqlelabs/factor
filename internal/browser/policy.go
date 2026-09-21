@@ -58,6 +58,10 @@ const (
 	runElementLimit = 60
 	// runTextChars bounds the page text that rides a decision request.
 	runTextChars = 4000
+	// runMinTextChars is the floor under that once the backend's own window
+	// has taken its share: a page state with no text in it at all is a
+	// control table with nothing to read it against.
+	runMinTextChars = 400
 	// runUnsureLimit is how many unsure decisions in a row end the run.
 	// One is noise; two says the page is not one this model can read.
 	runUnsureLimit = 2
@@ -404,12 +408,13 @@ func (r *browserRun) request(o *observation) *decision.Request {
 	}
 	// The page text rides the request under whichever budget is tighter,
 	// this tool's or the model's own window: a state truncated inside the
-	// model is a state the caller never learns was cut.
+	// model is a state the caller never learns was cut. It is also the part
+	// that yields, which is why it is added last — see textRoom.
 	limits := r.tool.decider.Limits()
+	page := map[string]any{"url": o.page.URL, "title": o.page.Title}
 	state := map[string]any{
-		"goal": r.goal,
-		"page": map[string]any{"url": o.page.URL, "title": o.page.Title,
-			"text": limits.ClipState(o.page.Text, runTextChars)},
+		"goal":           r.goal,
+		"page":           page,
 		"elements":       o.space.elements,
 		"recent_actions": recent,
 	}
@@ -424,7 +429,42 @@ func (r *browserRun) request(o *observation) *decision.Request {
 		state["unlisted_controls"] = o.space.crowded
 		state["unlisted_note"] = "more controls exist than fit one question; scroll or answer BLOCKED if what the goal needs is not offered"
 	}
+	fitText(limits, state, page, o.page.Text, runTextChars)
 	return &decision.Request{State: state, Questions: questions}
+}
+
+// fitText puts the page text into the state under whatever room is left.
+//
+// The window bounds the whole request and not the page inside it, and
+// everything else in this state — the goal, the control table, what has
+// already been tried — is what the answer is actually chosen from. Sizing
+// the text against the whole window on its own is how a state that fits on
+// paper arrives truncated at the model, with the table it was meant to
+// choose from cut off the end. So the text is the part that yields, down to
+// a floor: a page with a table and no prose can still be answered, a page
+// with prose and no table cannot.
+//
+// The measure is the state as it will actually be encoded rather than the
+// text's own length, because the difference is not a rounding error: the
+// key, its quotes and the comma are a dozen characters, and a page arguing
+// about "quotation marks" doubles every one of them on the wire.
+func fitText(limits decision.Limits, state, page map[string]any, text string, want int) {
+	room := want
+	for {
+		page["text"] = limits.ClipState(text, room)
+		if limits.MaxStateChars <= 0 || room <= runMinTextChars {
+			return
+		}
+		encoded, err := json.Marshal(state)
+		if err != nil {
+			return // an unencodable state is the request's problem, not the budget's
+		}
+		over := len([]rune(string(encoded))) - limits.MaxStateChars
+		if over <= 0 {
+			return
+		}
+		room = max(room-over, runMinTextChars)
+	}
 }
 
 func targetQuestion(op string) string { return strings.ToLower(op) + "_target" }
@@ -727,9 +767,10 @@ func (r *browserRun) summary(o *observation, end stop) *tools.Result {
 	}
 	if o != nil && o.page != nil {
 		page := *o.page
-		if len(page.Text) > runSummaryChars {
-			page.Text = page.Text[:runSummaryChars]
-		}
+		// decision.Clip rather than a byte slice: this text goes back to the
+		// model as the page it is now, and a page in any script but Latin
+		// would be cut both short and mid-character.
+		page.Text = decision.Clip(page.Text, runSummaryChars)
 		b.WriteString("\nPage now:\n")
 		b.WriteString(formatRead(&page))
 	}

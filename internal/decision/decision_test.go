@@ -6,6 +6,7 @@ import (
 	"math"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type scriptedBackend struct {
@@ -239,6 +240,47 @@ func TestCandidatesAndClip(t *testing.T) {
 	}
 	if got := Clip("short", 10); got != "short" {
 		t.Errorf("Clip = %q", got)
+	}
+}
+
+// The checkpoint is the multilingual one, so the state it is handed is as
+// often not English. A byte bound would hand it a third of the room it was
+// given and a half-written character at the seam.
+func TestClipCountsCharactersNotBytes(t *testing.T) {
+	// Ten characters, twenty bytes.
+	const ru = "проверка т"
+	if got := Clip(ru, 10); got != ru {
+		t.Errorf("a ten-character state was clipped at its ten-character budget: %q", got)
+	}
+	if got := Clip(ru, 4); got != "пров…" {
+		t.Errorf("Clip = %q, want the first four characters", got)
+	}
+	if !utf8.ValidString(Clip(ru, 5)) {
+		t.Error("Clip cut a character in half")
+	}
+	if got := Clip("whatever", 0); got != "whatever" {
+		t.Errorf("a zero budget is no budget, not an empty state: %q", got)
+	}
+}
+
+// A trajectory is judged from its end — the claim under check is the last
+// thing in it — so ClipTail keeps the tail, whole characters and all.
+func TestClipTailKeepsTheEnd(t *testing.T) {
+	if got := ClipTail("  hello world  ", 5); got != "…world" {
+		t.Errorf("ClipTail = %q", got)
+	}
+	if got := ClipTail("short", 10); got != "short" {
+		t.Errorf("ClipTail = %q", got)
+	}
+	if got := ClipTail("короткий текст", 0); got != "короткий текст" {
+		t.Errorf("a zero budget is no budget: %q", got)
+	}
+	got := ClipTail("аб вг де жз", 5)
+	if !utf8.ValidString(got) {
+		t.Errorf("ClipTail cut a character in half: %q", got)
+	}
+	if got != "…де жз" {
+		t.Errorf("ClipTail = %q, want the last five characters", got)
 	}
 }
 

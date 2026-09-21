@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/cost"
+	"github.com/cyqlelabs/factor/internal/decision"
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/skills"
 	"github.com/cyqlelabs/factor/internal/tools"
@@ -302,9 +303,7 @@ func appendClipped(b *strings.Builder, prefix, text string, limit int) {
 	if text == "" {
 		return
 	}
-	if len(text) > limit {
-		text = text[:limit] + "…"
-	}
+	text = decision.Clip(text, limit)
 	b.WriteString(prefix)
 	b.WriteString(text)
 	b.WriteByte('\n')
