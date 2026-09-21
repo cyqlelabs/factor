@@ -248,3 +248,46 @@ func TestStopEngineReapsAnEngineItInherited(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// Every caller decides to stop an engine seconds before it can act — the
+// size restart waits for a quiet graph, an upgrade installs a package first
+// — and in those seconds a supervisor can replace the engine. Resolving the
+// pid again at the moment of the stop is how the decision lands on the wrong
+// process: measured on the live box, one ceiling breach became two restarts
+// and twice the window in which every recall fails.
+func TestStopEngineLeavesAnEngineThatAlreadyReplacedTheOneMeasured(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	prev := engineStopWait
+	engineStopWait = 5 * time.Second
+	t.Cleanup(func() { engineStopWait = prev })
+
+	// The engine the caller measured is gone; this is its replacement.
+	replacement := hangingEngine(t)
+	measured := replacement + 1000000 // a pid that is not the one running
+
+	stopped, err := StopEngineIf(context.Background(), 0, measured)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if stopped != 0 {
+		t.Errorf("stopped = %d, want 0: the engine had already been replaced", stopped)
+	}
+	if runtime.GOOS != "windows" && !pidAlive(replacement) {
+		t.Fatal("the replacement engine was stopped; one ceiling breach just cost two restarts")
+	}
+
+	// Naming the engine that is actually there stops it, and so does asking
+	// for whichever one is serving.
+	stopped, err = StopEngineIf(context.Background(), 0, replacement)
+	if stopped != replacement || err != nil {
+		t.Fatalf("stopped = %v, want %d, err = %v", stopped, replacement, err)
+	}
+	if runtime.GOOS != "windows" && pidAlive(replacement) {
+		t.Error("the engine it was told to stop is still running")
+	}
+
+	next := hangingEngine(t)
+	if stopped, err := StopEngineIf(context.Background(), 0, AnyEngine); stopped != next || err != nil {
+		t.Fatalf("stopped = %v, want %d, err = %v", stopped, next, err)
+	}
+}

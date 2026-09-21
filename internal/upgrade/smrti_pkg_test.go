@@ -68,7 +68,7 @@ func fakeInstaller(t *testing.T, stopped int, supervised bool, err error) *[]str
 		calls = append(calls, "upgrade "+exe)
 		return "pipx", err
 	}
-	stopEngine = func(context.Context, int) (int, error) {
+	stopEngine = func(context.Context, int, int) (int, error) {
 		calls = append(calls, "stop")
 		return stopped, nil
 	}
@@ -382,7 +382,7 @@ func TestSmrtiApplyPackageReportsAnEngineItCannotStop(t *testing.T) {
 	fakePyPI(t, "0.13.0")
 	fakeInstaller(t, 4242, true, nil)
 	prev := stopEngine
-	stopEngine = func(context.Context, int) (int, error) { return 0, fmt.Errorf("operation not permitted") }
+	stopEngine = func(context.Context, int, int) (int, error) { return 0, fmt.Errorf("operation not permitted") }
 	defer func() { stopEngine = prev }()
 
 	s := NewSmrti(engineConfig(t, true), nil)

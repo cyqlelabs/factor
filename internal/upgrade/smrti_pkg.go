@@ -28,7 +28,7 @@ var (
 	findSmrti        = memory.FindSmrti
 	installedVersion = memory.InstalledVersion
 	upgradePackage   = memory.Upgrade
-	stopEngine       = memory.StopEngine
+	stopEngine       = memory.StopEngineIf
 	enginePid        = memory.EnginePid
 
 	// How long a supervisor gets to put a new engine in place of the one that
@@ -136,15 +136,25 @@ func (s *Smrti) Restart(ctx context.Context, progress Progress) (string, error) 
 // and waits for its supervisor to bring it back, reporting in one clause what
 // became of it.
 func (s *Smrti) restartEngine(ctx context.Context, progress Progress) (string, error) {
+	// Which engine is running the old code, read before the wait rather than
+	// after it: waiting for a quiet graph can take minutes, and an engine
+	// that restarted during them started after the install and is already on
+	// the new code. Stopping that one is downtime for nothing.
+	before, _ := enginePid()
 	if err := s.waitIdle(ctx, progress); err != nil {
 		return "", err
 	}
 	progress("restarting the memory engine")
-	stopped, err := stopEngine(ctx, s.port())
+	stopped, err := stopEngine(ctx, s.port(), before)
 	if err != nil {
 		return "", fmt.Errorf("the engine running here could not be stopped: %w", err)
 	}
 	if stopped == 0 {
+		if before != 0 {
+			// It was replaced while the graph was being waited on, which is
+			// the restart this was going to perform.
+			return "the engine restarted while the graph was settling, so it is already on the new code", nil
+		}
 		return "no engine is running here, so it loads the next time the engine starts", nil
 	}
 	respawned := s.waitRespawn(ctx, stopped)

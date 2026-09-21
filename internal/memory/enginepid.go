@@ -72,11 +72,35 @@ func clearEnginePid(pid int) {
 // with the environment it needs. A zero pid is an answer rather than a
 // failure: nothing is running, and the next start loads what is installed.
 func StopEngine(ctx context.Context, port int) (int, error) {
+	return StopEngineIf(ctx, port, AnyEngine)
+}
+
+// AnyEngine stops whichever engine is serving, whatever its pid.
+const AnyEngine = 0
+
+// StopEngineIf stops the engine only while it is still the one the caller
+// measured, and reports which process it stopped — zero when the engine had
+// already been replaced.
+//
+// Every caller here decides to stop an engine some seconds before it can act:
+// the size restart reads an RSS and then waits for the graph to go quiet, and
+// an upgrade installs a package first. Resolving the pid again at the moment
+// of the stop is how that decision lands on the wrong process. Measured on
+// the live box: a size restart stopped the engine, the supervisor spawned a
+// replacement nineteen seconds later, and a second stop arrived one second
+// after that and killed it — one ceiling breach, two restarts, and twice the
+// window in which every recall fails. An engine that has already been
+// replaced is the outcome both callers wanted, so finding one is success
+// rather than a reason to stop it too.
+func StopEngineIf(ctx context.Context, port, want int) (int, error) {
 	pid, ok := readEnginePid()
 	if !ok {
 		if pid, ok = ListenerPid(port); !ok {
 			return 0, nil
 		}
+	}
+	if want != AnyEngine && pid != want {
+		return 0, nil
 	}
 	if err := terminateProcess(pid); err != nil {
 		return 0, fmt.Errorf("stopping the memory engine (pid %d): %w", pid, err)

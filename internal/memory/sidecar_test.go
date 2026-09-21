@@ -532,3 +532,25 @@ func TestResolveCommandRemembersTheInstalledPath(t *testing.T) {
 		t.Errorf("second resolve = %q, want the installed %q", second, first)
 	}
 }
+
+// A stop the supervisor asked for is not a crash. Treating it as one costs
+// the replacement a backoff on top of the stop — measured on the live box,
+// a size restart took thirty seconds to be noticed and then waited five more
+// before spawning, with every recall failing for the whole of it.
+func TestADeliberateStopSkipsTheCrashBackoff(t *testing.T) {
+	s := &Sidecar{}
+
+	// Nothing claimed: an ordinary exit still reads as one.
+	if s.deliberateStop.Swap(false) {
+		t.Fatal("an unmarked exit read as deliberate")
+	}
+
+	// restartForSize marks it, and the run loop consumes the mark once.
+	s.deliberateStop.Store(true)
+	if !s.deliberateStop.Swap(false) {
+		t.Error("a stop this supervisor asked for read as a crash")
+	}
+	if s.deliberateStop.Swap(false) {
+		t.Error("the mark outlived the restart it belonged to; the next real crash would skip its backoff")
+	}
+}

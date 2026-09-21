@@ -102,7 +102,11 @@ type Sidecar struct {
 	// unix nanoseconds: the poll goroutine of a child that was just stopped
 	// may still be finishing when its replacement's begins.
 	lastSizeRestart atomic.Int64
-	sizeRestarts    atomic.Int64
+	// deliberateStop marks an engine this supervisor stopped on purpose, so
+	// the run loop starts its replacement rather than treating the exit as a
+	// crash and waiting out a backoff first.
+	deliberateStop atomic.Bool
+	sizeRestarts   atomic.Int64
 }
 
 func (s *Sidecar) reprobeInterval() time.Duration {
@@ -216,6 +220,15 @@ func (s *Sidecar) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// A stop this supervisor asked for is not a crash: it knows why the
+		// engine went and the replacement is the point, so it is spawned at
+		// once. Backing off there costs the restart its own delay on top of
+		// the stop, with every recall failing for the whole of it.
+		if s.deliberateStop.Swap(false) {
+			slog.Info("memory engine stopped on purpose; starting its replacement")
+			backoff = 5 * time.Second
+			continue
+		}
 		slog.Warn("smrti sidecar exited; restarting", "error", err, "backoff", backoff)
 		sleepCtx(ctx, backoff)
 		if backoff *= 2; backoff > time.Minute {
@@ -286,11 +299,19 @@ func (s *Sidecar) restartForSize(ctx context.Context) bool {
 	slog.Warn("memory engine restarted for size; it comes back with every atom it had",
 		"rss_mb", rss>>20, "ceiling_mb", s.cfg.MaxRSSMB, "pid", pid)
 	s.lastSizeRestart.Store(time.Now().UnixNano())
-	if _, err := StopEngine(ctx, s.cfg.Port); err != nil {
+	// Only this engine: waiting for the graph to go quiet takes as long as it
+	// takes, and an engine that was replaced meanwhile is already the small
+	// one this wanted.
+	stopped, err := StopEngineIf(ctx, s.cfg.Port, pid)
+	if err != nil {
 		slog.Warn("memory engine could not be stopped for size", "error", err)
 		return false
 	}
+	if stopped == 0 {
+		return false // something else restarted it first; nothing to do
+	}
 	s.sizeRestarts.Add(1)
+	s.deliberateStop.Store(true)
 	return true
 }
 
