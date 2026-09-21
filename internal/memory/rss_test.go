@@ -148,11 +148,10 @@ func TestSizeRestartIsHeldBack(t *testing.T) {
 }
 
 // A graph that never goes quiet does not buy the engine an indefinite
-// reprieve. Every recall against a bloated engine runs long or times out, and
-// each one holds the in-flight count up while it does, so the wait for idle
-// gets longer exactly as the engine gets worse — observed on the live box as
-// twenty-seven minutes at six times the ceiling with the supervisor declining
-// at every probe. Past the grace the engine goes with a request still open.
+// reprieve. A bloated engine answers slowly, a slow answer holds the
+// in-flight count up while it runs, and the wait for idle therefore gets
+// longer exactly as the engine gets worse. Past the grace the engine goes
+// with a request still open.
 func TestSizeRestartStopsWaitingForAQuietGraph(t *testing.T) {
 	var rss atomic.Int64
 	rss.Store(3 << 30)

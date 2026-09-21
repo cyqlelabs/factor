@@ -270,15 +270,17 @@ var sizeRestartGap = 10 * time.Minute
 
 // sizeBreachGrace is how long an engine may sit past its ceiling waiting for
 // a quiet graph before it is stopped on a busy one. Waiting for idle is the
-// right courtesy while the breach is fresh, and a trap once it is not: every
-// recall against a bloated engine runs long or times out, each one holds the
-// in-flight count up for as long as it runs, and the graph therefore goes
-// quiet less often the worse the engine gets. Measured here, an engine six
-// times over a 4 GB ceiling held the machine for twenty-seven minutes with
-// the supervisor declining at every probe, because it never once saw fifteen
-// straight seconds of quiet. Four probes past the ceiling is enough to know
-// this is not a burst of work, and the request that gets cut off was being
-// served by an engine that was failing it anyway.
+// right courtesy while the breach is fresh and a hazard once it is not: a
+// bloated engine answers slowly, a slow answer holds the in-flight count up
+// for as long as it runs, and the graph therefore goes quiet less often the
+// worse the engine gets.
+//
+// No engine has been caught stuck in that loop. The breaches seen here were
+// allocation storms the next probe or two caught, so this bounds a
+// starvation the idle gate makes possible rather than repairing one that was
+// observed — which is why the grace is minutes and not seconds. Four probes
+// past the ceiling is enough to know a breach is not a burst of work, and a
+// request cut off then was being served by an engine already failing it.
 var sizeBreachGrace = 2 * time.Minute
 
 // stopEngineIf is a seam, like processRSS above it: the branch where the
