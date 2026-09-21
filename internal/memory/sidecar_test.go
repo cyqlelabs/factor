@@ -533,6 +533,34 @@ func TestResolveCommandRemembersTheInstalledPath(t *testing.T) {
 	}
 }
 
+// The ceiling breach is what SizeRestarts counts, not whose hand performed
+// the stop: an engine that went away while the graph was being waited on is
+// the restart this wanted, and under-reporting it would hide a leak that
+// keeps coming back.
+func TestAnEngineThatIsAlreadyGoneStillCountsAsASizeRestart(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	s := &Sidecar{cfg: config.MemoryConfig{MaxRSSMB: 1}, client: NewClient("http://127.0.0.1:1", "", "")}
+
+	saved, savedGap, savedStop := processRSS, sizeRestartGap, stopEngineIf
+	processRSS = func(int) (int64, bool) { return 3 << 30, true }
+	sizeRestartGap = time.Hour
+	// The engine went away between the measurement and the stop.
+	stopEngineIf = func(context.Context, int, int) (int, error) { return 0, nil }
+	t.Cleanup(func() { processRSS, sizeRestartGap, stopEngineIf = saved, savedGap, savedStop })
+
+	writeEnginePid(os.Getpid()) // something alive to measure
+	if !s.restartForSize(context.Background()) {
+		t.Fatal("an engine already gone was not reported as restarted; the loop would keep polling instead of spawning")
+	}
+	if s.SizeRestarts() != 1 {
+		t.Errorf("size restarts = %d, want the breach counted", s.SizeRestarts())
+	}
+	// Nothing was stopped, so nothing is owed a skipped backoff.
+	if s.deliberateStop.Load() {
+		t.Error("a stop that did not happen claimed the deliberate-stop mark")
+	}
+}
+
 // A stop the supervisor asked for is not a crash. Treating it as one costs
 // the replacement a backoff on top of the stop — measured on the live box,
 // a size restart took thirty seconds to be noticed and then waited five more

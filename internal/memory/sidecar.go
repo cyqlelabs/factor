@@ -264,6 +264,10 @@ func (s *Sidecar) pollWhileHealthy(ctx context.Context) {
 // probe: each restart costs the next recall its model load.
 var sizeRestartGap = 10 * time.Minute
 
+// stopEngineIf is a seam, like processRSS above it: the branch where the
+// engine is already gone is reachable only by losing a race with it.
+var stopEngineIf = StopEngineIf
+
 // restartForSize stops an engine that has grown past memory.max_rss_mb once
 // the graph is idle, and reports whether it did. The engine leaks under
 // sustained use — measured from 100 MB at start to 2 GB two hours later on
@@ -302,15 +306,21 @@ func (s *Sidecar) restartForSize(ctx context.Context) bool {
 	// Only this engine: waiting for the graph to go quiet takes as long as it
 	// takes, and an engine that was replaced meanwhile is already the small
 	// one this wanted.
-	stopped, err := StopEngineIf(ctx, s.cfg.Port, pid)
+	stopped, err := stopEngineIf(ctx, s.cfg.Port, pid)
 	if err != nil {
 		slog.Warn("memory engine could not be stopped for size", "error", err)
 		return false
 	}
-	if stopped == 0 {
-		return false // something else restarted it first; nothing to do
-	}
 	s.sizeRestarts.Add(1)
+	if stopped == 0 {
+		// The engine that was over the ceiling is already gone — it exited on
+		// its own, or something else replaced it while the graph was being
+		// waited on. That is the outcome this wanted, so the caller is told
+		// the restart happened and the count still reflects the breach: what
+		// SizeRestarts is read for is a leak that keeps coming back, and
+		// whose hand performed each restart does not change that.
+		return true
+	}
 	s.deliberateStop.Store(true)
 	return true
 }
