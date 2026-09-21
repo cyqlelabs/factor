@@ -266,12 +266,23 @@ func Install(ctx context.Context, home, device string, progress func(format stri
 	return path, nil
 }
 
+// ErrTooSmall is returned instead of an install or a spawn on a machine that
+// has not the memory to load the model. It is exported so a caller can tell
+// "this box cannot" from "this box has not yet".
+var ErrTooSmall = errTooSmall
+
 // EnsureLaya returns the interpreter to run the server with, installing Laya
 // when it is missing and allowed. installed reports whether this call did it.
 func EnsureLaya(ctx context.Context, home, device string, autoInstall bool,
 	progress func(format string, args ...any)) (path string, installed bool, err error) {
 	if p, ok := FindPython(home); ok {
 		return p, false, nil
+	}
+	// A gigabyte of wheels is not worth fetching onto a machine that cannot
+	// load what they install.
+	if have, small := tooSmall(); small {
+		return "", false, fmt.Errorf("%w: this machine has %d MB free and the model needs about %d MB to load",
+			errTooSmall, have, minAvailableMB)
 	}
 	if !autoInstall {
 		return "", false, fmt.Errorf("the local decision model is not installed and decision.auto_install is off — %s", InstallHint())

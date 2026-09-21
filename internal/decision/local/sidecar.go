@@ -44,6 +44,18 @@ const (
 	// is already an hour of a slow machine's whole CPU; the fourth is not
 	// going to be the one that works.
 	loadAttempts = 3
+	// minAvailableMB is the memory the model needs to be handed before it is
+	// worth starting. Laya's checkpoint loads in float32 and transformers
+	// builds it twice on the way in: measured on the live box, resident size
+	// climbed to 2942 MB during the load and settled at about 2100 MB.
+	//
+	// The floor is what that measurement says rather than the steady figure,
+	// because it is the load that has to fit. Below it the machine does not
+	// merely run slowly — on 3535 MB of RAM the same load took a shell
+	// command from 25 ms to 1061 ms and the box had to be power-cycled, which
+	// is a far worse outcome than a decision that falls back the way every
+	// caller here already expects it to.
+	minAvailableMB = 3072
 	// charsPerToken converts the server's token budgets into the character
 	// budgets a caller can actually measure. Deliberately conservative:
 	// three is about right for English prose and pessimistic for the
@@ -103,6 +115,20 @@ type Backend struct {
 	probeInterval time.Duration
 	// httpClient is the health probe's; the decision client has its own.
 	httpClient *http.Client
+}
+
+// errTooSmall is the refusal a machine gets when the model would not fit.
+var errTooSmall = errors.New("the local decision model needs more memory than this machine has")
+
+// tooSmall reports that this machine has not the memory to load the model,
+// and how little it has. A machine that cannot answer the question is never
+// refused: unknown is not the same as small.
+func tooSmall() (int, bool) {
+	have, ok := availableMB()
+	if !ok || have >= minAvailableMB {
+		return have, false
+	}
+	return have, true
 }
 
 // errNeverReady marks the one failure worth counting: a model that started,
@@ -376,6 +402,12 @@ func computeThreads() int {
 }
 
 func (b *Backend) spawnAndWait(ctx context.Context) error {
+	if have, small := tooSmall(); small {
+		err := fmt.Errorf("%w: this machine has %d MB free and the model needs about %d MB to load",
+			errTooSmall, have, minAvailableMB)
+		b.setDown("%v; decisions fall back, and decision.mode: off stops it trying", err)
+		return err
+	}
 	command, err := b.resolveCommand(ctx)
 	if err != nil {
 		b.setDown("%v", err)

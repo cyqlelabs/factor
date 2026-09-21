@@ -1046,3 +1046,42 @@ func TestAModelThatNeverLoadsIsGivenUpOn(t *testing.T) {
 		t.Error("a model that loaded did not clear the failures before it")
 	}
 }
+
+// A machine too small for the model is refused rather than thrashed. Measured
+// on the live box: the load climbed to 2942 MB on 3535 MB of RAM, a shell
+// command went from 25 ms to 1061 ms, and the machine had to be power-cycled.
+// A decision that falls back costs nothing by comparison.
+func TestAMachineTooSmallIsRefusedRatherThanThrashed(t *testing.T) {
+	restore := availableMB
+	t.Cleanup(func() { availableMB = restore })
+
+	// Nothing to spawn or install on a box that cannot hold it, and the
+	// refusal says how much it has against what it needs.
+	availableMB = func() (int, bool) { return minAvailableMB - 1, true }
+	if have, small := tooSmall(); !small || have != minAvailableMB-1 {
+		t.Errorf("tooSmall() = %d, %v on a machine one MB short", have, small)
+	}
+	_, _, err := EnsureLaya(context.Background(), t.TempDir(), "cpu", true, nil)
+	if !errors.Is(err, ErrTooSmall) {
+		t.Errorf("a gigabyte of wheels was fetched onto a machine that cannot load them: %v", err)
+	}
+	b := New(Config{Port: freePort(t)}, t.TempDir())
+	b.installOK.Store(true)
+	if err := b.spawnAndWait(context.Background()); !errors.Is(err, ErrTooSmall) {
+		t.Errorf("err = %v, want the refusal", err)
+	}
+	if down := b.Down(); !strings.Contains(down, "decision.mode: off") {
+		t.Errorf("Down() = %q, want the setting that stops it", down)
+	}
+
+	// Exactly enough is enough.
+	availableMB = func() (int, bool) { return minAvailableMB, true }
+	if _, small := tooSmall(); small {
+		t.Error("a machine with exactly the floor was refused")
+	}
+	// And a machine that cannot answer is never refused: unknown is not small.
+	availableMB = func() (int, bool) { return 0, false }
+	if _, small := tooSmall(); small {
+		t.Error("a machine whose memory could not be read was refused")
+	}
+}
