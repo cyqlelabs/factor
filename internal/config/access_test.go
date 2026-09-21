@@ -330,7 +330,7 @@ func TestNormalizeFloors(t *testing.T) {
 	}
 	// A config written before the ceiling existed gets it on the next load,
 	// which is what puts the leaking engine on a leash after an upgrade.
-	if cfg.Memory.MaxRSSMB != DefaultMemoryMaxRSSMB {
+	if cfg.Memory.MaxRSSMB != DefaultMemoryMaxRSSMB() {
 		t.Errorf("memory.max_rss_mb = %d, want the default filled in", cfg.Memory.MaxRSSMB)
 	}
 	if cfg.Agent.MaxToolIterations != 20 || cfg.Agent.MaxConcurrentTurns != 4 || cfg.Provider.MaxTokens != 16384 {

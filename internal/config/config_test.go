@@ -318,3 +318,39 @@ func TestApplyLogLevelReachesDebugAndKeepsTheFormat(t *testing.T) {
 		t.Error("an unknown log_level silenced the log")
 	}
 }
+
+// The ceiling is a fact about the machine. A flat value sized for a 3.5 GB
+// box was restarting a 1743 MB engine on a 64 GB desktop with 39 GB free,
+// where the restarts cost more than the leak did.
+func TestTheMemoryCeilingFollowsTheMachine(t *testing.T) {
+	saved := totalMemoryMB
+	t.Cleanup(func() { totalMemoryMB = saved })
+
+	for _, tc := range []struct {
+		name  string
+		total int
+		want  int
+	}{
+		{"unreadable falls back to the floor", 0, MinMemoryMaxRSSMB},
+		{"the live 3.5 GB box keeps the floor", 3535, MinMemoryMaxRSSMB},
+		{"a small VPS keeps the floor", 2048, MinMemoryMaxRSSMB},
+		{"6 GB is still under the floor", 6144, MinMemoryMaxRSSMB},
+		{"8 GB takes its own quarter, just above the floor", 8192, 2048},
+		{"16 GB takes its quarter", 16384, 4096},
+		{"a 64 GB desktop is capped", 64180, MaxMemoryMaxRSSMB},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			totalMemoryMB = func() int { return tc.total }
+			if got := DefaultMemoryMaxRSSMB(); got != tc.want {
+				t.Errorf("DefaultMemoryMaxRSSMB() = %d MB on a %d MB machine, want %d", got, tc.total, tc.want)
+			}
+		})
+	}
+
+	// The bounds themselves have to stay the right way round, and the floor
+	// has to stay what every box used to get — raising it silently would give
+	// a small machine a ceiling it cannot afford.
+	if MinMemoryMaxRSSMB != 1536 || MaxMemoryMaxRSSMB <= MinMemoryMaxRSSMB {
+		t.Errorf("bounds = [%d, %d]", MinMemoryMaxRSSMB, MaxMemoryMaxRSSMB)
+	}
+}

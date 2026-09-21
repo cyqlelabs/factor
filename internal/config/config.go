@@ -376,11 +376,42 @@ type CamofoxConfig struct {
 	Dir string `json:"dir,omitempty"`
 }
 
-// DefaultMemoryMaxRSSMB is where the engine is restarted for size. A healthy
-// engine with its embedding model loaded sits near 700 MB; a leaking one
-// crosses this within a couple of hours, and the boxes Factor runs on cannot
-// spare what it takes after that.
-const DefaultMemoryMaxRSSMB = 1536
+// The ceiling where the engine is restarted for size. A healthy engine with
+// its embedding model loaded sits near 700 MB; a leaking one climbs past that
+// within a couple of hours and has to be restarted before it takes the
+// machine with it.
+//
+// How much is too much is a fact about the machine, not about the engine. A
+// flat 1536 MB was sized for a 3.5 GB box and then applied to a 64 GB
+// desktop, where an engine at 1743 MB was restarted every few minutes with
+// 39 GB free — the restarts cost more than the leak did. So the ceiling is a
+// share of what the machine has, between two bounds that are each measured:
+// below the floor the engine cannot hold a real graph and restarts forever,
+// and past the cap there is no evidence it still behaves, while a box at its
+// limit is where recalls started timing out.
+const (
+	memoryCeilingShare = 4 // a quarter of the machine
+	// MinMemoryMaxRSSMB is the floor, and what every box used to get.
+	MinMemoryMaxRSSMB = 1536
+	// MaxMemoryMaxRSSMB is the cap.
+	MaxMemoryMaxRSSMB = 4096
+)
+
+// DefaultMemoryMaxRSSMB is the ceiling for this machine.
+func DefaultMemoryMaxRSSMB() int {
+	total := totalMemoryMB()
+	if total <= 0 {
+		return MinMemoryMaxRSSMB
+	}
+	switch share := total / memoryCeilingShare; {
+	case share < MinMemoryMaxRSSMB:
+		return MinMemoryMaxRSSMB
+	case share > MaxMemoryMaxRSSMB:
+		return MaxMemoryMaxRSSMB
+	default:
+		return share
+	}
+}
 
 // DefaultMemoryRequestTimeoutSecs bounds one call to the engine, and
 // DefaultMemoryRecallTimeoutSecs the ambient recall a turn waits on. The
@@ -611,7 +642,7 @@ func Default() *Config {
 			Mode:          "sidecar",
 			Command:       "smrti",
 			AutoInstall:   true,
-			MaxRSSMB:      DefaultMemoryMaxRSSMB,
+			MaxRSSMB:      DefaultMemoryMaxRSSMB(),
 			KeepAlive:     true,
 			Host:          "127.0.0.1",
 			Port:          8420,
@@ -799,7 +830,7 @@ func (c *Config) normalize() {
 		c.Provider.MaxTokens = 16384
 	}
 	if c.Memory.MaxRSSMB == 0 {
-		c.Memory.MaxRSSMB = DefaultMemoryMaxRSSMB
+		c.Memory.MaxRSSMB = DefaultMemoryMaxRSSMB()
 	}
 	if c.Memory.RequestTimeoutSecs <= 0 {
 		c.Memory.RequestTimeoutSecs = DefaultMemoryRequestTimeoutSecs
