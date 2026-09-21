@@ -421,3 +421,30 @@ func TestMemoryPromptSurvivesAFailedRecall(t *testing.T) {
 		t.Errorf("MemoryPrompt on a dead engine = %q, want the turn told", got)
 	}
 }
+
+// The per-turn recall budget is a setting, but a short one by default: a
+// turn that waits tens of seconds for its memory has already cost the user
+// more than the memory is worth, and it says so rather than waiting.
+func TestRecallTimeoutDefaultsShortAndIsSettable(t *testing.T) {
+	a := &Ambient{}
+	if got := a.recallTimeout(); got != defaultRecallTimeout {
+		t.Errorf("zero RecallTimeout = %v, want the %v default", got, defaultRecallTimeout)
+	}
+	a.RecallTimeout = 45 * time.Second
+	if got := a.recallTimeout(); got != 45*time.Second {
+		t.Errorf("RecallTimeout = %v, want it honoured", got)
+	}
+}
+
+func TestClientSetTimeout(t *testing.T) {
+	c := NewClient("http://127.0.0.1:1", "", "")
+	before := c.http.Timeout
+	c.SetTimeout(0) // a zero from an unset config must not remove the ceiling
+	if c.http.Timeout != before {
+		t.Errorf("SetTimeout(0) changed the ceiling to %v; want %v kept", c.http.Timeout, before)
+	}
+	c.SetTimeout(90 * time.Second)
+	if c.http.Timeout != 90*time.Second {
+		t.Errorf("timeout = %v, want 90s", c.http.Timeout)
+	}
+}

@@ -237,6 +237,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		cfg.Memory.RecallTopK, cfg.Memory.RecallMinConfidence,
 		cfg.Memory.QueryContextMsgs, cfg.Memory.QueryMaxChars, cfg.Memory.InjectMaxChars,
 		cfg.Memory.IgnorePatterns, spaces)
+	ambient.RecallTimeout = time.Duration(cfg.Memory.RecallTimeoutSecs) * time.Second
 
 	registry := tools.NewRegistry(cfg.Tools.IsToolEnabled, cfg.FilterSecrets)
 	guard := tools.NewPathGuard(ws, cfg.Tools.RestrictToWorkspace, cfg.Tools.AllowReadOutsideWorkspace, cfg.Tools.AllowPaths)

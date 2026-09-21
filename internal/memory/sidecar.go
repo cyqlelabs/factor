@@ -65,11 +65,13 @@ func NewEngine(ctx context.Context, cfg config.MemoryConfig, extract ExtractSett
 		return Noop{}, nil
 	case "external":
 		client := NewClient(cfg.BaseURL(), cfg.APIKey, extract.Key)
+		client.SetTimeout(time.Duration(cfg.RequestTimeoutSecs) * time.Second)
 		s := &Sidecar{client: client, cfg: cfg, extract: extract, external: true}
 		s.start(ctx)
 		return s, nil
 	case "sidecar", "":
 		client := NewClient(fmt.Sprintf("http://%s:%d", cfg.Host, cfg.Port), cfg.APIKey, extract.Key)
+		client.SetTimeout(time.Duration(cfg.RequestTimeoutSecs) * time.Second)
 		s := &Sidecar{client: client, cfg: cfg, extract: extract, logDir: logDir}
 		s.start(ctx)
 		return s, nil
