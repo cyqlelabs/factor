@@ -558,8 +558,9 @@ type DecisionConfig struct {
 	// is adopted rather than started again, which is how a model somebody
 	// runs themselves is used instead of a second copy.
 	Port int `json:"port,omitempty"`
-	// Device is what torch runs on: blank lets the model choose, "cpu" and
-	// "cuda" force one.
+	// Device names the onnxruntime execution provider the server is spawned
+	// with: blank lets the runtime choose, which is what everyone wants,
+	// since the wheels installed here carry the CPU provider alone.
 	Device string `json:"device,omitempty"`
 	// Command runs the model on an interpreter of your choosing instead of
 	// the private virtualenv Factor builds.

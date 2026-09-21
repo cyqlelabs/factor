@@ -50,16 +50,16 @@ const (
 	// of a user.
 	Checkpoint = "multilingual"
 
-	// MinPythonMinor is Laya's floor (it declares >=3.8); torch is the real
-	// constraint on old interpreters, and 3.9 is the oldest anything current
-	// publishes wheels for.
+	// MinPythonMinor is Laya's floor (it declares >=3.8); the wheels behind
+	// it are the real constraint on old interpreters, and 3.9 is the oldest
+	// anything current publishes for.
 	MinPythonMinor = 9
 
 	// UVPython is the interpreter uv is asked to supply when the machine has
 	// none of its own that is new enough. It is pinned rather than left open
-	// because torch publishes wheels a release or two behind the newest
-	// CPython, and a virtualenv built on a version nothing has built for is a
-	// long download that ends in "no matching distribution".
+	// because those wheels trail the newest CPython by a release or two, and
+	// a virtualenv built on a version nothing has built for is a long
+	// download that ends in "no matching distribution".
 	UVPython = "3.12"
 
 	// DefaultPort sits clear of the gateway (8720), the speech server (8726),
@@ -70,10 +70,12 @@ const (
 	// wheels cannot run on. Since 2.0 those wheels target the x86-64-v2
 	// baseline — SSE4.2 — and below it `import numpy` does not run slowly, it
 	// executes an illegal instruction and takes the interpreter with it.
-	// Measured on the oldest box here: torch imports and computes fine, and
-	// Laya then dies on SIGILL the moment its own import reaches numpy, which
-	// no supervisor can catch or retry because a signal is not an exception.
-	// The memory engine pins the same ceiling for the same reason.
+	// Measured on the oldest box here, under the runtime that served the
+	// model before: it imported and computed fine, and Laya then died on
+	// SIGILL the moment its own import reached numpy, which no supervisor can
+	// catch or retry because a signal is not an exception. Which runtime sits
+	// in front never mattered — numpy is the one importing. The memory engine
+	// pins the same ceiling for the same reason.
 	NumpyConstraint = "numpy<2"
 
 	// InstallTimeout bounds one install: the runtime wheels and then the
@@ -95,8 +97,8 @@ const (
 type Config struct {
 	// Port is where the managed server listens.
 	Port int `json:"port,omitempty"`
-	// Device is what torch runs on: blank lets the model choose, "cpu" and
-	// "cuda" force one.
+	// Device names the onnxruntime execution provider: blank lets the
+	// runtime choose, and the wheels installed here carry the CPU one alone.
 	Device string `json:"device,omitempty"`
 	// Command runs the server on an interpreter of your choosing instead of
 	// the private virtualenv.
@@ -119,9 +121,9 @@ func (c Config) autoInstall() bool { return c.AutoInstall == nil || *c.AutoInsta
 func (c Config) BaseURL() string { return fmt.Sprintf("http://127.0.0.1:%d", c.port()) }
 
 // VenvDir is the private virtualenv the decision model runs in, kept apart
-// from the voice and memory ones: torch is a large and opinionated
-// dependency, and an install that breaks must break one engine rather than
-// all of them.
+// from the voice and memory ones: onnxruntime and numpy are pinned here
+// against what this CPU can run, and an install that breaks must break one
+// engine rather than all of them.
 func VenvDir(home string) string { return filepath.Join(home, "decision-venv") }
 
 func venvBin(home, name string) string {

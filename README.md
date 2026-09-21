@@ -165,7 +165,7 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "utility": [{ "type": "ollama", "model": "qwen3:8b" }]  // cheaper chain for compaction summaries and skill verdicts; omit = the main one
   },
   "memory": {
-    "max_rss_mb": 1536,                      // restart the engine for size once idle; -1 turns it off
+    "max_rss_mb": 0,                         // restart the engine for size once idle; 0 sizes it to the machine, -1 turns it off
     "mode": "sidecar",                       // sidecar | external | off
     "auto_install": true,                    // install smrti when it is missing
     "personality": "balanced",               // analytical | curious | empathetic | maverick | deterministic
@@ -233,7 +233,7 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "thresholds": { "completion": 0.75 },    // per kind: operation | target | completion | recovery | induction
     "browser": true, "verify": true, "recover": true, "induce": true,  // the scenarios, each switchable
     "cache_entries": 512,                    // memoize repeated decisions; 0 turns it off
-    "device": "",                            // "" = let it choose; "cpu" or "cuda" to pin it
+    "device": "",                            // "" = let the runtime choose; a name pins the onnxruntime provider
     "auto_install": true                     // build the private virtualenv when it is missing
   },
   "upgrade": { "check": true, "check_interval_hours": 24 },  // report new releases; never install one unasked
@@ -319,7 +319,8 @@ results, whether a trajectory is worth a skill: choices among candidates the cod
 already enumerated, not generation. They go to
 [Laya](https://github.com/NandhaKishorM/laya), a 322M-parameter Apache-2.0 encoder
 running **on your machine** — nothing to sign up for, pay for or configure. Factor
-installs it (~600 MB) and supervises it like the memory engine.
+installs it (~350 MB on disk, an int8 graph served by onnxruntime) and supervises
+it like the memory engine, skipping it on a box with under a gigabyte free.
 
 | What it buys | |
 |---|---|

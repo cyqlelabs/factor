@@ -34,8 +34,8 @@ const (
 	// maxBackoff is how far apart the restarts get. It is minutes rather
 	// than the usual seconds because of what a permanent failure costs here:
 	// a machine that cannot reach the weights fails on every attempt, and
-	// each attempt spawns a Python process that imports torch before it can
-	// find that out. Observed against a blocked download, a one-minute
+	// each attempt spawns a Python process that imports the runtime before it
+	// can find that out. Observed against a blocked download, a one-minute
 	// ceiling meant thirty-six of those in half an hour. Backing off to a
 	// quarter of an hour keeps the feature self-healing — the network may
 	// come back — without spending the machine on finding out.
@@ -88,12 +88,13 @@ type Backend struct {
 	limits  atomic.Value // decision.Limits
 
 	installTried atomic.Bool
-	// installOK gates the install itself. Building the virtualenv pulls
-	// torch behind it, which is a few hundred megabytes, and a one-shot
-	// `factor "what time is it"` that starts that download and is then killed
-	// halfway helps nobody. So it is permitted by the gateway, which is long
-	// enough lived to finish it, or by the first decision actually asked for
-	// on this machine — the same rule the browser engine follows.
+	// installOK gates the install itself. Building the virtualenv pulls the
+	// runtime wheels and then the model artifact behind it, a few hundred
+	// megabytes together, and a one-shot `factor "what time is it"` that
+	// starts that download and is then killed halfway helps nobody. So it is
+	// permitted by the gateway, which is long enough lived to finish it, or
+	// by the first decision actually asked for on this machine — the same
+	// rule the browser engine follows.
 	installOK atomic.Bool
 	// installMu is what keeps the two callers that may install — the
 	// gateway's Provision and the supervisor's own resolveCommand — from
@@ -421,9 +422,9 @@ func limitsOf(h health) decision.Limits {
 // interpreter starts, which is why it lives here rather than in the script.
 func serverEnv() []string {
 	return append(os.Environ(), "HF_HUB_DISABLE_TELEMETRY=1", "TRANSFORMERS_NO_ADVISORY_WARNINGS=1",
-		// torch runs its CPU kernels on one thread per core, and the warm-up
-		// holds every one of them for as long as the checkpoint takes to
-		// build. On a two-core box that is the whole machine: measured, a
+		// onnxruntime runs its CPU kernels on one thread per core, and the
+		// warm-up holds every one of them for as long as the checkpoint takes
+		// to build. On a two-core box that is the whole machine: measured, a
 		// Factor whose decision model was loading stopped answering ssh and
 		// then stopped answering at all. A core is left for everything else
 		// — Factor, the memory engine, and whoever is trying to log in and
