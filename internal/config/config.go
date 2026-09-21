@@ -266,6 +266,16 @@ type MemoryConfig struct {
 	ExtractAPIKey       string   `json:"extract_api_key,omitempty" env:"FACTOR_MEMORY_EXTRACT_API_KEY"`
 	IgnorePatterns      []string `json:"ignore_patterns,omitempty"`
 	StartupTimeoutSecs  int      `json:"startup_timeout_secs"`
+	// RequestTimeoutSecs bounds one HTTP call to the engine, and
+	// RecallTimeoutSecs bounds the per-turn ambient recall inside it. Both
+	// keep their long-standing values by default; they are settings because
+	// an engine reached over a network is not the loopback sidecar these
+	// numbers were measured against, not because a slow engine should be
+	// waited out. A recall is work the user is sitting through: when one
+	// takes tens of seconds the engine is broken, and raising these buys a
+	// stall on every turn rather than the memory back. 0 means the default.
+	RequestTimeoutSecs int `json:"request_timeout_secs"`
+	RecallTimeoutSecs  int `json:"recall_timeout_secs"`
 	// MaxRSSMB is the memory the engine may hold before the supervisor
 	// restarts it, once the graph is idle. The engine leaks under sustained
 	// use — measured from 100 MB to 2 GB in two hours on a 3.5 GB box — and
@@ -371,6 +381,17 @@ type CamofoxConfig struct {
 // crosses this within a couple of hours, and the boxes Factor runs on cannot
 // spare what it takes after that.
 const DefaultMemoryMaxRSSMB = 1536
+
+// DefaultMemoryRequestTimeoutSecs bounds one call to the engine, and
+// DefaultMemoryRecallTimeoutSecs the ambient recall a turn waits on. The
+// second is the smaller because it is spent while the user waits for a
+// reply and the turn goes on without its memory when it runs out; the
+// first also covers the deliberate memory tools, which have a turn's
+// patience rather than a sentence's.
+const (
+	DefaultMemoryRequestTimeoutSecs = 30
+	DefaultMemoryRecallTimeoutSecs  = 10
+)
 
 type HeartbeatConfig struct {
 	Enabled         bool `json:"enabled"`
@@ -617,6 +638,8 @@ func Default() *Config {
 			ReflectIntervalSecs: 3600,
 			IgnorePatterns:      []string{"^HEARTBEAT_OK$", "^# Heartbeat"},
 			StartupTimeoutSecs:  90,
+			RequestTimeoutSecs:  DefaultMemoryRequestTimeoutSecs,
+			RecallTimeoutSecs:   DefaultMemoryRecallTimeoutSecs,
 		},
 		MCP: MCPConfig{Servers: map[string]MCPServer{}},
 		Tools: ToolsConfig{
@@ -777,6 +800,12 @@ func (c *Config) normalize() {
 	}
 	if c.Memory.MaxRSSMB == 0 {
 		c.Memory.MaxRSSMB = DefaultMemoryMaxRSSMB
+	}
+	if c.Memory.RequestTimeoutSecs <= 0 {
+		c.Memory.RequestTimeoutSecs = DefaultMemoryRequestTimeoutSecs
+	}
+	if c.Memory.RecallTimeoutSecs <= 0 {
+		c.Memory.RecallTimeoutSecs = DefaultMemoryRecallTimeoutSecs
 	}
 	if c.Browser.Engine == "" {
 		c.Browser.Engine = "auto"

@@ -49,6 +49,17 @@ func NewClient(baseURL, apiKey, extractKey string) *Client {
 	}
 }
 
+// SetTimeout bounds one HTTP call to the engine. The constructor's 30s is
+// what a loopback sidecar needs and then some; an engine reached over a
+// network may need more. It is not a dial for waiting out a slow recall —
+// a recall that takes tens of seconds is a broken recall, and the turn it
+// belongs to is one the user is sitting through.
+func (c *Client) SetTimeout(d time.Duration) {
+	if d > 0 {
+		c.http.Timeout = d
+	}
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader
 	if body != nil {

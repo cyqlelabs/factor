@@ -109,8 +109,11 @@ type Ambient struct {
 	QueryMaxChars  int
 	InjectMaxChars int
 	Spaces         SpacePolicy
-	ignore         []*regexp.Regexp
-	skewOnce       sync.Once
+	// RecallTimeout bounds the recall a turn waits on before going ahead
+	// without its memory. Zero means defaultRecallTimeout.
+	RecallTimeout time.Duration
+	ignore        []*regexp.Regexp
+	skewOnce      sync.Once
 	// sharedOnce keeps the "cannot isolate this audience" warning to one
 	// line: it would otherwise repeat on every turn a guest is present for.
 	sharedOnce sync.Once
@@ -198,7 +201,7 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 	if query == "" {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, a.recallTimeout())
 	defer cancel()
 	// The loop stamps the turn's ToolContext on ctx before building the
 	// system prompt, so the channel is already here — no signature change.
@@ -222,6 +225,20 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 		return memoryUnavailable
 	}
 	return FormatMemories(mems, a.InjectMaxChars)
+}
+
+// defaultRecallTimeout is how long a turn waits for its memory. It is short
+// on purpose: the reply is what the user is waiting for, and a turn that
+// runs without its memory says so (see memoryUnavailable) rather than
+// pretending nothing was ever learned. An engine that cannot answer inside
+// it is the thing to fix — raising this spends the difference on every turn.
+const defaultRecallTimeout = 10 * time.Second
+
+func (a *Ambient) recallTimeout() time.Duration {
+	if a.RecallTimeout > 0 {
+		return a.RecallTimeout
+	}
+	return defaultRecallTimeout
 }
 
 // memoryUnavailable is what the turn is told when the engine did not answer.
