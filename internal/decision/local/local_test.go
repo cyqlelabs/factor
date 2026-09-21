@@ -689,6 +689,149 @@ exit 0
 	return dir, pipLog, tools
 }
 
+// fakeOldPython plants the machine Factor's own live box actually is: a
+// python3 that is real but too old, and a uv that can fetch a current one.
+// uvLog records what uv was asked for; pipLog what the virtualenv it built
+// then installed.
+func fakeOldPython(t *testing.T) (pathDir, uvLog, pipLog string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the stubs are shell scripts")
+	}
+	tool := func(name string) string {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Skipf("%s is not on this machine: %v", name, err)
+		}
+		return path
+	}
+	mkdir, chmod := tool("mkdir"), tool("chmod")
+
+	dir := t.TempDir()
+	uvLog = filepath.Join(dir, "uv.log")
+	pipLog = filepath.Join(dir, "pip.log")
+	// Real, and too old: it answers the version probe with a refusal.
+	if err := os.WriteFile(filepath.Join(dir, "python3"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// uv builds the virtualenv the interpreter could not, seeding it with the
+	// pip everything downstream installs through.
+	uv := `#!/bin/sh
+echo "$@" >> ` + uvLog + `
+for arg in "$@"; do target="$arg"; done
+` + mkdir + ` -p "$target/bin"
+printf '#!/bin/sh\nexit 0\n' > "$target/bin/python"
+if [ "$FACTOR_TEST_UV_SEED" != "no" ]; then
+  printf '#!/bin/sh\necho "$@" >> %s\nexit 0\n' "` + pipLog + `" > "$target/bin/pip"
+  ` + chmod + ` +x "$target/bin/pip"
+fi
+` + chmod + ` +x "$target/bin/python"
+exit ${FACTOR_TEST_UV_EXIT:-0}
+`
+	if err := os.WriteFile(filepath.Join(dir, "uv"), []byte(uv), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	return dir, uvLog, pipLog
+}
+
+// A Python too old to build the virtualenv is not a machine that cannot run
+// the model. Factor's live box answers python3 with 3.8 and has no package
+// manager to raise that with, while uv is already there running the memory
+// engine on a 3.12 it fetched itself — so the install asks uv for an
+// interpreter rather than reporting that the machine is too old.
+func TestUVSuppliesAnInterpreterTheMachineHasNot(t *testing.T) {
+	_, uvLog, pipLog := fakeOldPython(t)
+	home := t.TempDir()
+	var said []string
+	path, err := Install(context.Background(), home, "cpu", func(format string, args ...any) {
+		said = append(said, fmt.Sprintf(format, args...))
+	})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if path != venvPython(home) {
+		t.Errorf("path = %q", path)
+	}
+	asked, err := os.ReadFile(uvLog)
+	if err != nil {
+		t.Fatalf("uv was never asked for an interpreter: %v", err)
+	}
+	for _, want := range []string{"venv", "--seed", "--python", UVPython, VenvDir(home)} {
+		if !strings.Contains(string(asked), want) {
+			t.Errorf("uv was asked %q, want it to carry %q", strings.TrimSpace(string(asked)), want)
+		}
+	}
+	// And the virtualenv uv built is the one the install then fills: torch
+	// first, Laya second, exactly as on a machine with its own interpreter.
+	log, err := os.ReadFile(pipLog)
+	if err != nil {
+		t.Fatalf("nothing was installed into the virtualenv uv built: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], TorchCPUIndex) || !strings.Contains(lines[1], PackageSpec) {
+		t.Errorf("pip was asked for:\n%s", log)
+	}
+	// The user is told why a Python is being downloaded, since it is the one
+	// step here that takes minutes on a slow line.
+	if !strings.Contains(strings.Join(said, "\n"), UVPython) {
+		t.Errorf("the install said %q, want the fetched interpreter named", said)
+	}
+}
+
+// numpy's wheels have targeted SSE4.2 since 2.0, and below that baseline
+// importing it is an illegal instruction rather than a slow import — measured
+// here, torch runs fine on such a box and Laya dies the moment its import
+// reaches numpy. The ceiling therefore rides the same pip command, on the
+// machines that need it and nowhere else.
+func TestNumpyIsCappedOnCPUsThatCannotRunItsWheels(t *testing.T) {
+	for _, old := range []bool{true, false} {
+		t.Run(fmt.Sprintf("old=%v", old), func(t *testing.T) {
+			_, pipLog, _ := fakePython(t)
+			restore := needsNumpyPin
+			needsNumpyPin = func() bool { return old }
+			t.Cleanup(func() { needsNumpyPin = restore })
+
+			if _, err := Install(context.Background(), t.TempDir(), "cuda", nil); err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			log, err := os.ReadFile(pipLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// One line: the CUDA device skips the torch step, so what is left
+			// is the Laya install the constraint has to ride on.
+			line := strings.TrimSpace(string(log))
+			if !strings.Contains(line, PackageSpec) {
+				t.Fatalf("pip was asked %q", line)
+			}
+			if got := strings.Contains(line, NumpyConstraint); got != old {
+				t.Errorf("pip was asked %q; numpy pinned = %v, want %v", line, got, old)
+			}
+		})
+	}
+}
+
+// The two ways the fallback itself fails are reported rather than left to
+// surface as a missing file three commands later.
+func TestUVFailuresAreReportedWithWhatWasWrong(t *testing.T) {
+	_, _, _ = fakeOldPython(t)
+	t.Setenv("FACTOR_TEST_UV_EXIT", "1")
+	_, err := Install(context.Background(), t.TempDir(), "cpu", nil)
+	// Both halves: the interpreter that was rejected, and uv's own failure.
+	if err == nil || !strings.Contains(err.Error(), "python3") || !strings.Contains(err.Error(), "uv could not supply one") {
+		t.Fatalf("err = %v, want both the rejected interpreter and uv's failure", err)
+	}
+
+	// A virtualenv with no pip in it cannot be filled, and says so.
+	t.Setenv("FACTOR_TEST_UV_EXIT", "0")
+	t.Setenv("FACTOR_TEST_UV_SEED", "no")
+	if _, err := Install(context.Background(), t.TempDir(), "cpu", nil); err == nil ||
+		!strings.Contains(err.Error(), "without a pip") {
+		t.Fatalf("err = %v, want the missing pip named", err)
+	}
+}
+
 // The install asks for the CPU build of torch before it asks for Laya, which
 // is the whole difference between a 600 MB virtualenv and a 5.6 GB one on a
 // machine with no GPU.

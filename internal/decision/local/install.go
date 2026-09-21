@@ -28,6 +28,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/cpu"
 )
 
 //go:embed layaserve.py
@@ -55,9 +57,26 @@ const (
 	// publishes wheels for.
 	MinPythonMinor = 9
 
+	// UVPython is the interpreter uv is asked to supply when the machine has
+	// none of its own that is new enough. It is pinned rather than left open
+	// because torch publishes wheels a release or two behind the newest
+	// CPython, and a virtualenv built on a version nothing has built for is a
+	// long download that ends in "no matching distribution".
+	UVPython = "3.12"
+
 	// DefaultPort sits clear of the gateway (8720), the speech server (8726),
 	// the phone bridge and the voice control endpoint (8730).
 	DefaultPort = 8731
+
+	// NumpyConstraint rides along with Laya on machines whose CPU numpy's own
+	// wheels cannot run on. Since 2.0 those wheels target the x86-64-v2
+	// baseline — SSE4.2 — and below it `import numpy` does not run slowly, it
+	// executes an illegal instruction and takes the interpreter with it.
+	// Measured on the oldest box here: torch imports and computes fine, and
+	// Laya then dies on SIGILL the moment its own import reaches numpy, which
+	// no supervisor can catch or retry because a signal is not an exception.
+	// The memory engine pins the same ceiling for the same reason.
+	NumpyConstraint = "numpy<2"
 
 	// TorchCPUIndex is where the CPU-only build of torch lives.
 	//
@@ -172,6 +191,20 @@ func hasLaya(python string) bool {
 	return err == nil
 }
 
+// needsNumpyPin reports whether this machine is one whose CPU cannot execute
+// numpy's current wheels. A var so a test can drive both paths on whatever CPU
+// it happens to run on.
+var needsNumpyPin = func() bool {
+	// Only x86 has the baseline problem, and cpu.X86 reads as all-false
+	// elsewhere, which would otherwise pin numpy on every arm64 machine.
+	switch runtime.GOARCH {
+	case "amd64", "386":
+		return !cpu.X86.HasSSE42
+	default:
+		return false
+	}
+}
+
 // wantsCUDA reports whether the default (GPU) resolution of torch is what
 // this machine asked for. On macOS the published wheels are CPU-only anyway,
 // so the separate index is neither needed nor always available there.
@@ -194,14 +227,9 @@ func Install(ctx context.Context, home, device string, progress func(format stri
 		}
 	}
 
-	python, err := systemPython()
-	if err != nil {
-		return "", err
-	}
 	if _, statErr := os.Stat(venvPython(home)); statErr != nil {
-		emit("creating the decision virtualenv at %s…", VenvDir(home))
-		if out, err := runCmd(ctx, []string{python, "-m", "venv", VenvDir(home)}); err != nil {
-			return "", fmt.Errorf("could not create %s: %v\n%s", VenvDir(home), err, lastLines(out, 8))
+		if err := createVenv(ctx, home, emit); err != nil {
+			return "", err
 		}
 	}
 	// torch first, and deliberately from the CPU index: see TorchCPUIndex.
@@ -219,7 +247,15 @@ func Install(ctx context.Context, home, device string, progress func(format stri
 		}
 	}
 	emit("installing %s…", PackageSpec)
-	if out, err := runCmd(ctx, []string{venvPip(home), "install", "--upgrade", PackageSpec}); err != nil {
+	// The numpy ceiling goes in the same command rather than after it: pip
+	// resolves both at once, where installing Laya first and correcting it
+	// afterwards downloads the wheel that cannot run on this machine and then
+	// replaces it.
+	install := []string{venvPip(home), "install", "--upgrade", PackageSpec}
+	if needsNumpyPin() {
+		install = append(install, NumpyConstraint)
+	}
+	if out, err := runCmd(ctx, install); err != nil {
 		return "", fmt.Errorf("could not install %s: %v\n%s", PackageSpec, err, lastLines(out, 12))
 	}
 	path, ok := FindPython(home)
@@ -271,6 +307,43 @@ func resolveInterpreter(command string) (string, error) {
 		return "", fmt.Errorf("decision.local.command %q is not on PATH", command)
 	}
 	return path, nil
+}
+
+// createVenv builds the private virtualenv, preferring an interpreter the
+// machine already has and falling back to uv, which can fetch one.
+//
+// That fallback is not a nicety. The oldest boxes Factor is meant to run on
+// are exactly the ones whose system Python is years behind — Factor's own
+// live box answers python3 with 3.8 and has no package manager to raise that
+// with — while uv is already installed there and already runs the memory
+// engine on a 3.12 it downloaded itself. Refusing the decision model on a
+// machine that demonstrably can run it is the wrong answer to a feature that
+// is supposed to need no setup.
+func createVenv(ctx context.Context, home string, emit func(string, ...any)) error {
+	python, err := systemPython()
+	if err == nil {
+		emit("creating the decision virtualenv at %s…", VenvDir(home))
+		if out, runErr := runCmd(ctx, []string{python, "-m", "venv", VenvDir(home)}); runErr != nil {
+			return fmt.Errorf("could not create %s: %v\n%s", VenvDir(home), runErr, lastLines(out, 8))
+		}
+		return nil
+	}
+	uv, lookErr := exec.LookPath("uv")
+	if lookErr != nil {
+		return err
+	}
+	emit("%v; letting uv fetch Python %s…", err, UVPython)
+	// --seed is what puts pip in the virtualenv: uv leaves it out by default
+	// and every step after this one installs through it.
+	out, runErr := runCmd(ctx, []string{uv, "venv", "--seed", "--python", UVPython, VenvDir(home)})
+	if runErr != nil {
+		return fmt.Errorf("%v, and uv could not supply one: %v\n%s", err, runErr, lastLines(out, 8))
+	}
+	if _, statErr := os.Stat(venvPip(home)); statErr != nil {
+		return fmt.Errorf("uv built %s without a pip to install into", VenvDir(home))
+	}
+	emit("uv supplied Python %s at %s", UVPython, VenvDir(home))
+	return nil
 }
 
 // systemPython returns the first interpreter new enough to build the venv,
