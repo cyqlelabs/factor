@@ -334,8 +334,12 @@ func createVenv(ctx context.Context, home string, emit func(string, ...any)) err
 	}
 	emit("%v; letting uv fetch Python %s…", err, UVPython)
 	// --seed is what puts pip in the virtualenv: uv leaves it out by default
-	// and every step after this one installs through it.
-	out, runErr := runCmd(ctx, []string{uv, "venv", "--seed", "--python", UVPython, VenvDir(home)})
+	// and every step after this one installs through it. --allow-existing is
+	// what makes this as idempotent as `python -m venv`, which is reached only
+	// when there is no interpreter in the directory: uv refuses outright when
+	// the directory is there at all, so a virtualenv an interrupted install
+	// left half-built would be a dead end rather than something to finish.
+	out, runErr := runCmd(ctx, []string{uv, "venv", "--seed", "--allow-existing", "--python", UVPython, VenvDir(home)})
 	if runErr != nil {
 		return fmt.Errorf("%v, and uv could not supply one: %v\n%s", err, runErr, lastLines(out, 8))
 	}

@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -671,6 +672,7 @@ case "$1" in
   -c) exit 0 ;;
   -m)
     if [ "$2" = "venv" ]; then
+      sleep ${FACTOR_TEST_VENV_DELAY:-0}
       ` + tools.mkdir + ` -p "$3/bin"
       ` + tools.cp + ` "$0" "$3/bin/python"
       printf '#!/bin/sh\necho "$@" >> %s\nexit %s\n' "` + pipLog + `" "$FACTOR_TEST_PIP_EXIT" > "$3/bin/pip"
@@ -949,4 +951,41 @@ func TestAnAlreadyRunningModelIsAdoptedAndWatched(t *testing.T) {
 	// Take it away: the poll notices, and the supervisor goes back to trying.
 	_ = srv.Close()
 	waitFor(t, "the model to be noticed gone", func() bool { return !b.Healthy() })
+}
+
+// The gateway provisions in the background and the supervisor installs when a
+// decision asks for one, and on a fresh box both fire within the same second.
+// Run together they collide on the virtualenv — measured on the live box, the
+// second died on the directory the first had just made — so one installs and
+// the other takes what it built.
+func TestTwoInstallersDoNotRunAtOnce(t *testing.T) {
+	_, pipLog, _ := fakePython(t)
+	// A virtualenv slow enough to build that both installers are certainly
+	// inside Install at once; without the lock each then runs its own pip.
+	t.Setenv("FACTOR_TEST_VENV_DELAY", "1")
+	b := New(Config{Port: freePort(t)}, t.TempDir())
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, errs[i] = b.ensureLaya(context.Background(), nil)
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("installer %d: %v", i, err)
+		}
+	}
+	log, err := os.ReadFile(pipLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two pip calls: torch, then Laya. A second install would double them.
+	if lines := strings.Split(strings.TrimSpace(string(log)), "\n"); len(lines) != 2 {
+		t.Errorf("pip ran %d times, want 2 (one install):\n%s", len(lines), log)
+	}
 }

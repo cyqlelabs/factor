@@ -77,6 +77,13 @@ type Backend struct {
 	// enough lived to finish it, or by the first decision actually asked for
 	// on this machine — the same rule the browser engine follows.
 	installOK atomic.Bool
+	// installMu is what keeps the two callers that may install — the
+	// gateway's Provision and the supervisor's own resolveCommand — from
+	// doing it at the same time. They ran together on a fresh box and the
+	// second one died on the virtualenv the first had just created; had they
+	// got past that, two pips would have been filling one directory.
+	// Whichever waits finds the install finished and takes it.
+	installMu sync.Mutex
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 
@@ -159,7 +166,7 @@ func (b *Backend) Provision(ctx context.Context) {
 		return // already here; the supervisor starts it
 	}
 	go func() {
-		if _, _, err := EnsureLaya(ctx, b.home, b.cfg.Device, true, func(format string, args ...any) {
+		if _, _, err := b.ensureLaya(ctx, func(format string, args ...any) {
 			slog.Info("decision model: " + fmt.Sprintf(format, args...))
 		}); err != nil {
 			slog.Warn("the local decision model could not be installed; decisions fall back to the agent's own path until it is",
@@ -420,10 +427,19 @@ func (b *Backend) resolveCommand(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("the local decision model is not installed and the automatic install already failed this run")
 	}
 	slog.Info("the local decision model is missing; installing it", "spec", PackageSpec)
-	path, _, err := EnsureLaya(ctx, b.home, b.cfg.Device, true, func(format string, args ...any) {
+	path, _, err := b.ensureLaya(ctx, func(format string, args ...any) {
 		slog.Info("decision install: " + fmt.Sprintf(format, args...))
 	})
 	return path, err
+}
+
+// ensureLaya installs the model, one caller at a time. EnsureLaya answers from
+// the virtualenv when there is one, so whoever waits here finds the work done
+// rather than repeating it.
+func (b *Backend) ensureLaya(ctx context.Context, progress func(string, ...any)) (string, bool, error) {
+	b.installMu.Lock()
+	defer b.installMu.Unlock()
+	return EnsureLaya(ctx, b.home, b.cfg.Device, true, progress)
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) {
