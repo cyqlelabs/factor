@@ -312,9 +312,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		// active decider, and the light chain to write field text with (a
 		// nil light chain leaves it able to click but not to type).
 		if cfg.Decision.BrowserOn() && cfg.Decision.Active() && browser.Available() {
-			if run := browser.NewRunTool(browserSession, decider, lightMeter); run != nil {
-				registry.Register(run)
-			}
+			registry.Register(browser.NewRunTool(browserSession, decider, lightMeter))
 		}
 	}
 

@@ -307,61 +307,31 @@ and `offset` reads on past a cut. `browser_scroll` reaches what only loads on th
 down. A twelfth tool, `browser_run`, works a page toward a stated goal in one call on
 the Chromium engine (see [Typed decisions](#typed-decisions)).
 
+No step in the suite sleeps for a fixed time after a click, a submit, a scroll or a
+back: it probes the page before and after, and reads as soon as the page has changed
+and held still, so a same-document toggle is read in a frame and a slow navigation is
+not read at its old URL.
+
 ## Typed decisions
 
-Most of what the agent is asked mid-turn is not generation. Which of thirty
-controls to click next, whether a reply's "done" is backed by a tool result,
-whether a finished turn is worth a skill, what to do when the same call has
-returned the same page three times — each is a choice among candidates the code
-already enumerated, and each used to cost a whole request against the
-conversation's context to make.
+Which of thirty controls to click, whether a reply's "done" is backed by its tool
+results, whether a trajectory is worth a skill: choices among candidates the code
+already enumerated, not generation. They go to
+[Laya](https://github.com/NandhaKishorM/laya), a 322M-parameter Apache-2.0 encoder
+running **on your machine** — nothing to sign up for, pay for or configure. Factor
+installs it (~600 MB) and supervises it like the memory engine.
 
-Those choices go to a decision model instead, and it runs **on your machine**:
-[Laya](https://github.com/NandhaKishorM/laya), a 322M-parameter encoder under
-Apache-2.0, which answers a typed question with a probability per candidate and
-a confidence in one forward pass. There is nothing to sign up for, nothing to
-pay and nothing to configure — no key, no endpoint, no provider, no model name.
-Factor installs it into a private virtualenv (about 600 MB: the CPU build of
-torch, not the 5.6 GB CUDA one pip reaches for by default — set
-`decision.device` to `cuda` if you do have the hardware) and supervises it the
-same way it does the memory engine and the browser. The download runs in the
-background when the gateway starts, or on the first decision a terminal session
-actually asks for — never from a one-shot command that would kill it halfway —
-and until it answers, everything falls back to the path it already had.
+| What it buys | |
+|---|---|
+| **`browser_run`** | one call works a page toward a goal; never submits, books, pays or sends without `allow_submit` |
+| **Stalls** | a call that keeps returning the same result is named as wait, re-read, change route or ask you |
+| **Completion** | a reply claiming work the tool results do not show is handed back |
+| **Skill induction** | SKIP is decided before the model that writes the skill is paid |
 
-Every answer is validated against the candidates it was offered and judged
-against a confidence bar before anything acts on it. Under the bar, or with two
-candidates neck and neck, it is "unsure", and the agent does exactly what it did
-before the feature existed — which is also what happens while the model is still
-loading, or if it is not running at all.
-
-| Scenario | Without the decision model | With it |
-|---|---|---|
-| **`browser_run`** | — | one call works a page toward a goal: fields typed, search activated, results read, steps and the final page handed back. Never submits, books, pays or sends unless `allow_submit`, never presses Enter, stops when you say something new |
-| **Stalls** | the same call returning the same result a third time is named to the model on a system note | the note says which kind of stall it is: wait, re-read, change route, or ask the user |
-| **Completion** | a reply after tool use stands as it is | it is checked once against the turn's own trajectory, and a reply that reports work the tool results do not show is handed back to finish or restate |
-| **Skill induction** | every qualifying turn pays a utility call whose usual answer is SKIP | SKIP, CREATE or UPDATE is decided first; only a trajectory worth keeping pays for the model that writes it |
-
-`decision.mode` is the dial. `active` is the default. `shadow` asks every
-question, records every verdict in the turn's trace (`decisions` on each record
-in `~/.factor/traces`) and acts on none of them, which is how
-`decision.thresholds` gets calibrated on your own tasks. `off` is off. Each
-scenario is a switch of its own, the heartbeat's bands watch the fallback rate,
-and the model holds no authority anywhere: it cannot widen a tool's allow-list,
-a memory scope or a budget, and its DONE is a candidate the code verifies
-against the page.
-
-**The checkpoint is the multilingual one, and that is not a setting.** Laya
-ships an English checkpoint that scores higher on English and collapses on
-everything else *while staying confident* — its authors measure Khmer at 0.000
-accuracy and 0.952 confidence — which is the one failure shape a confidence gate
-cannot catch. Factor answers in whatever language you speak. The multilingual
-checkpoint is also the smaller of the two and carries twice the context.
-
-Independent of all that, the browser suite no longer sleeps for a fixed time after
-a click, a submit, a scroll or a back: it probes the page before and after and reads
-as soon as the page has changed and held still, so a same-document toggle is read
-in a frame and a slow navigation is not read at its old URL.
+Answers are validated against the candidates offered and must clear a confidence
+bar; under it — or while the model is installing, or down — the agent does what it
+did before. `decision.mode` is `active`, `shadow` (records every verdict in
+`~/.factor/traces`, acts on none) or `off`.
 
 ## Desktop
 

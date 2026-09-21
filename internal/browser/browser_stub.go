@@ -29,7 +29,8 @@ func NewSuite(_ config.BrowserConfig, _ string, _ *tools.PathGuard) (*Session, [
 	return nil, nil, func() {}
 }
 
-// NewRunTool has no engine to run on; nil tells the caller to register nothing.
+// NewRunTool has no engine to run on; Available reports false, so the caller
+// never registers it in this build.
 func NewRunTool(*Session, *decision.Decider, TextWriter) tools.Tool { return nil }
 
 // Progress matches the real signature so the wizard compiles either way.
