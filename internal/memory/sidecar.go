@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -19,12 +20,20 @@ import (
 	"github.com/cyqlelabs/factor/internal/provider"
 )
 
-// ExtractSettings configure smrti's entity-extraction LLM calls.
+// ExtractSettings configure what smrti calls out to: the LLM its entity
+// extraction uses, and the decision server its own judgements ride.
 type ExtractSettings struct {
 	Mode  string // hybrid | llm | local
 	URL   string // upstream base WITHOUT /v1 (smrti appends /v1/chat/completions)
 	Model string
 	Key   string
+	// DecisionURL is Factor's own decision server, when it runs one. smrti
+	// decides with the same Laya checkpoint, and left to itself loads a
+	// second copy — 560 MB resident beside the one already answering on
+	// loopback, on the machines where that second copy is the difference
+	// between an engine that answers and one that swaps. Handed the address
+	// it loads nothing; an engine too old to read it loads its own as before.
+	DecisionURL string
 }
 
 // DeriveExtract picks extraction settings: explicit config wins, then the
@@ -397,6 +406,9 @@ func (s *Sidecar) buildEnv() []string {
 	if s.cfg.APIKey != "" {
 		env = append(env, "SMRTI_API_KEY="+s.cfg.APIKey)
 	}
+	if s.extract.DecisionURL != "" {
+		env = append(env, "SMRTI_DECISIONS_URL="+s.extract.DecisionURL)
+	}
 	return env
 }
 
@@ -457,12 +469,17 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 	go func() {
 		defer close(pollDone)
 		deadline := time.Now().Add(time.Duration(s.cfg.StartupTimeoutSecs) * time.Second)
-		warned := false
+		warned, warmed := false, false
 		for pollCtx.Err() == nil {
 			wasHealthy := s.client.Healthy()
 			if s.client.CheckHealth(pollCtx) == nil {
 				if !wasHealthy {
 					slog.Info("smrti sidecar healthy")
+				}
+				if !warmed {
+					// Once per spawn: the models are loaded once and stay.
+					warmed = true
+					go s.warm(pollCtx)
 				}
 				// The stop takes the child with it; cmd.Wait below sees
 				// it exit and the run loop respawns it after its backoff.
@@ -492,6 +509,27 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 		defer clearEnginePid(cmd.Process.Pid)
 		return childproc.StopAndWait(cmd.Process, waitCh, sidecarGrace)
 	}
+}
+
+// warmTimeout bounds the warm-up. A cold engine on a slow disk has been
+// measured at 29 s; one that takes minutes is not warming, it is stuck, and
+// the poll that follows will say so.
+const warmTimeout = 3 * time.Minute
+
+// warm loads a freshly started engine's models ahead of the first turn.
+// Failure is a log line: the turn's own recall carries its own deadline and
+// its own report.
+func (s *Sidecar) warm(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, warmTimeout)
+	defer cancel()
+	started := time.Now()
+	if err := s.client.Warm(ctx); err != nil {
+		if !errors.Is(ctx.Err(), context.Canceled) { // an engine stopped mid-warm-up owes no report
+			slog.Warn("memory engine warm-up failed", "error", err, "after", time.Since(started).Round(time.Millisecond))
+		}
+		return
+	}
+	slog.Info("memory engine warm", "took", time.Since(started).Round(time.Millisecond))
 }
 
 // sidecarGrace is how long a sidecar asked to stop is given to finish before

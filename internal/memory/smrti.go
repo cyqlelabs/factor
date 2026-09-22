@@ -61,6 +61,26 @@ func (c *Client) SetTimeout(d time.Duration) {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	return c.doWith(ctx, c.http, method, path, body, out)
+}
+
+// warmQuery is what the warm-up asks. Any text does: the point is the
+// embedding model it makes the engine load, not the answer.
+const warmQuery = "warm-up"
+
+// Warm makes a freshly started engine load its models now rather than on the
+// first turn. Measured on a 3.5 GB box, the first recall after a start took
+// 29 s — the embedding model coming off disk — against the 10 s a turn waits
+// for its memory, so every engine restart cost the next turn its recall. The
+// call is bounded by ctx alone rather than by the request timeout, which is
+// sized for a warm engine and is exactly what a cold one cannot meet.
+func (c *Client) Warm(ctx context.Context) error {
+	defer c.activity()()
+	body := map[string]any{"query": warmQuery, "top_k": 1}
+	return c.doWith(ctx, &http.Client{}, http.MethodPost, "/recall", body, nil)
+}
+
+func (c *Client) doWith(ctx context.Context, client *http.Client, method, path string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -80,7 +100,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if c.extractKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.extractKey)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		c.healthy.Store(false)
 		return fmt.Errorf("smrti unreachable: %w", err)

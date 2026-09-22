@@ -224,6 +224,11 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 
 	extract := memory.DeriveExtract(cfg.Memory, cfg.Provider)
+	if decisionModel != nil {
+		// One copy of the decision model on this machine: smrti asks
+		// Factor's server rather than loading its own.
+		extract.DecisionURL = decisionModel.BaseURL()
+	}
 	engine, err := memory.NewEngine(ctx, cfg.Memory, extract, filepath.Join(config.Home(), "logs"))
 	if err != nil {
 		return nil, fmt.Errorf("memory: %w", err)

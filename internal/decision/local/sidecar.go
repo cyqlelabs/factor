@@ -154,6 +154,11 @@ func (b *Backend) Name() string { return "laya-" + Checkpoint }
 // Healthy reports whether the server is answering right now.
 func (b *Backend) Healthy() bool { return b != nil && b.healthy.Load() }
 
+// BaseURL is where the server answers, for another process on this machine
+// that decides with the same model and should ask here rather than load a
+// second copy of it.
+func (b *Backend) BaseURL() string { return b.cfg.BaseURL() }
+
 // Down says why it is not, or "" when it is fine.
 func (b *Backend) Down() string {
 	if b == nil {

@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -374,5 +376,47 @@ func TestSidecarSpaceSupportComesFromTheClient(t *testing.T) {
 	}
 	if space != "" {
 		t.Errorf("engine space = %q; this engine names none", space)
+	}
+}
+
+func TestWarmOutlivesTheRequestTimeout(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/recall" {
+			t.Errorf("warm-up hit %s, want /recall", r.URL.Path)
+		}
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		queries = append(queries, body["query"])
+		mu.Unlock()
+		time.Sleep(60 * time.Millisecond) // a cold engine loading its model
+		_, _ = w.Write([]byte(`{"memories":[]}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "", "")
+	c.SetTimeout(10 * time.Millisecond) // sized for a warm engine
+
+	if _, err := c.Recall(context.Background(), "q", 1, 0, Scope{}); err == nil {
+		t.Fatal("a recall slower than the request timeout should fail; the warm-up is what must not")
+	}
+	if err := c.Warm(context.Background()); err != nil {
+		t.Fatalf("warm-up bound by the request timeout: %v", err)
+	}
+	mu.Lock()
+	seen := append([]string(nil), queries...)
+	mu.Unlock()
+	if want := []string{"q", warmQuery}; !slices.Equal(seen, want) {
+		t.Errorf("recall queries = %q, want %q", seen, want)
+	}
+	if c.Idle(time.Hour) {
+		t.Error("a warm-up is graph activity; the engine must not read as idle right after it")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	if err := c.Warm(ctx); err == nil {
+		t.Error("the caller's context is the one bound the warm-up honours")
 	}
 }

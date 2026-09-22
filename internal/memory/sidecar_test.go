@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,19 +70,22 @@ func fakeSmrtiServe() {
 		}
 	}
 	mux := http.NewServeMux()
+	var recalls atomic.Int64 // what the supervisor's warm-up asks for
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		env := map[string]string{}
 		for _, key := range []string{
 			"SMRTI_DB", "SMRTI_TENANT_ID", "SMRTI_SPACE", "SMRTI_PERSONALITY",
 			"SMRTI_REFLECT_INTERVAL", "SMRTI_EXTRACT_MODE", "SMRTI_EXTRACT_URL",
 			"SMRTI_EXTRACT_MODEL", "SMRTI_IGNORE_PATTERNS", "SMRTI_API_KEY",
+			"SMRTI_DECISIONS_URL",
 		} {
 			env[key] = os.Getenv(key)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"total_atoms": 1, "env": env})
+		_ = json.NewEncoder(w).Encode(map[string]any{"total_atoms": 1, "env": env, "recalls": recalls.Load()})
 	})
 	mux.HandleFunc("/recall", func(w http.ResponseWriter, r *http.Request) {
+		recalls.Add(1)
 		_, _ = w.Write([]byte(`{"memories":[]}`))
 	})
 	mux.HandleFunc("/shutdown", func(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +152,8 @@ func TestSidecarSpawnsAndPassesEnvironment(t *testing.T) {
 	// open, and Windows will not remove a directory a live process is using.
 	cfg.KeepAlive = false
 	logDir := t.TempDir()
-	extract := ExtractSettings{Mode: "hybrid", URL: "http://127.0.0.1:11434", Model: "qwen3", Key: "llm-key"}
+	extract := ExtractSettings{Mode: "hybrid", URL: "http://127.0.0.1:11434", Model: "qwen3", Key: "llm-key",
+		DecisionURL: "http://127.0.0.1:8731"}
 
 	eng, err := NewEngine(context.Background(), cfg, extract, logDir)
 	if err != nil {
@@ -178,11 +183,25 @@ func TestSidecarSpawnsAndPassesEnvironment(t *testing.T) {
 		"SMRTI_EXTRACT_URL":      "http://127.0.0.1:11434",
 		"SMRTI_EXTRACT_MODEL":    "qwen3",
 		"SMRTI_IGNORE_PATTERNS":  "^HEARTBEAT_OK$",
+		"SMRTI_DECISIONS_URL":    "http://127.0.0.1:8731",
 	}
 	for key, expected := range want {
 		if got, _ := env[key].(string); got != expected {
 			t.Errorf("child env %s = %q, want %q", key, got, expected)
 		}
+	}
+	// A fresh engine is warmed: the supervisor asks it for a recall as soon
+	// as it is healthy, so the first turn does not pay the model load.
+	warmed := false
+	for wait := time.Now().Add(10 * time.Second); time.Now().Before(wait) && !warmed; time.Sleep(50 * time.Millisecond) {
+		status, err = eng.Status(context.Background())
+		if err == nil {
+			n, _ := status["recalls"].(float64)
+			warmed = n >= 1
+		}
+	}
+	if !warmed {
+		t.Error("the supervisor never warmed the engine it spawned")
 	}
 	// the sidecar's own log file is created next to the other logs
 	if _, err := os.Stat(filepath.Join(logDir, "smrti.log")); err != nil {
@@ -210,6 +229,9 @@ func TestSidecarBuildEnvOptionalFields(t *testing.T) {
 	}
 	if strings.Contains(env, "SMRTI_IGNORE_PATTERNS=") {
 		t.Error("empty ignore patterns should be omitted entirely")
+	}
+	if strings.Contains(env, "SMRTI_DECISIONS_URL=") {
+		t.Error("no decision server, yet its address was passed")
 	}
 	if strings.Contains(env, "SMRTI_EXTRACT_URL=") || strings.Contains(env, "SMRTI_EXTRACT_MODEL=") {
 		t.Error("local extraction must not set an extraction endpoint")
