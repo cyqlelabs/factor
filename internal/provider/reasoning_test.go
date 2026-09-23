@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -345,5 +346,89 @@ func TestLightChainStatesItsEffortWhereItIsUnderstood(t *testing.T) {
 	}
 	if _, present := (*got)["reasoning_effort"]; present {
 		t.Errorf("a local server was handed reasoning_effort: %v", *got)
+	}
+}
+
+// Some endpoints refuse the off switch outright — z-ai/glm-5.3-flash answers
+// `reasoning: {enabled: false}` with a 400 "Reasoning is mandatory for this
+// endpoint and cannot be disabled" — and a compaction summary that fails on
+// it fails on every attempt after. The dialect is expected to notice, ask for
+// the least thinking the endpoint allows, and remember not to try the switch
+// again.
+func TestMandatoryReasoningIsDetected(t *testing.T) {
+	const refusal = `{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled.","code":400}}`
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got := map[string]any{}
+		_ = json.Unmarshal(raw, &got)
+		bodies = append(bodies, got)
+		if reasoning, _ := got["reasoning"].(map[string]any); reasoning["enabled"] == false {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(refusal))
+			return
+		}
+		_, _ = w.Write([]byte(oaReply))
+	}))
+	t.Cleanup(srv.Close)
+	p, err := New(config.Candidate{
+		Type: "openrouter", APIBase: srv.URL, APIKey: "k", Model: "z-ai/glm-5.3-flash",
+		Reasoning: &config.ReasoningConfig{Effort: "xhigh"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &Request{Messages: []Message{{Role: "user", Content: "summarize"}}, MaxTokens: 1024, NoReasoning: true}
+	resp, err := p.Chat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("the refusal must be retried, got %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Errorf("content = %q, want the retry's answer", resp.Content)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("%d requests sent, want the refused one and its retry", len(bodies))
+	}
+	retry := bodies[1]["reasoning"].(map[string]any)
+	if retry["effort"] != "low" || retry["exclude"] != true {
+		t.Errorf("retry reasoning = %v, want the smallest effort, excluded", retry)
+	}
+	if _, present := retry["enabled"]; present {
+		t.Errorf("retry reasoning = %v, still carries the off switch", retry)
+	}
+	if mt := bodies[1]["max_tokens"].(float64); mt != 1024 {
+		t.Errorf("retry max_tokens = %v, want the caller's cap kept", mt)
+	}
+
+	if _, err := p.Chat(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("%d requests after the second call, want one: the refusal is remembered", len(bodies))
+	}
+	if again := bodies[2]["reasoning"].(map[string]any); again["effort"] != "low" {
+		t.Errorf("second call reasoning = %v, want the remembered low effort", again)
+	}
+
+	if _, err := p.Chat(context.Background(), &Request{Messages: []Message{{Role: "user", Content: "hi"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if conv := bodies[3]["reasoning"].(map[string]any); conv["effort"] != "xhigh" {
+		t.Errorf("conversation reasoning = %v, want the configured effort untouched", conv)
+	}
+}
+
+func TestReasoningRefusedMatchesOnlyTheRefusal(t *testing.T) {
+	cases := map[error]bool{
+		ClassifyStatus("p", 400, `{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled."}}`): true,
+		ClassifyStatus("p", 400, `{"error":{"message":"reasoning cannot be disabled on this model"}}`):                       true,
+		ClassifyStatus("p", 400, `{"error":{"message":"invalid model"}}`):                                                    false,
+		ClassifyStatus("p", 500, `reasoning is mandatory`):                                                                   false,
+		errors.New("reasoning is mandatory"):                                                                                 false,
+	}
+	for err, want := range cases {
+		if got := reasoningRefused(err); got != want {
+			t.Errorf("reasoningRefused(%v) = %v, want %v", err, got, want)
+		}
 	}
 }

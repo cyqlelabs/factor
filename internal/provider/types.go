@@ -60,7 +60,9 @@ type Request struct {
 	// caps reasoning and content together, so a reasoning model handed a small
 	// cap spends all of it thinking and returns nothing: measured against
 	// qwen3.7-plus at effort xhigh, 1024 tokens bought 1024 reasoning tokens
-	// and a null summary, which then replaced a session's whole history.
+	// and a null summary, which then replaced a session's whole history. An
+	// endpoint that refuses to switch reasoning off is asked for the least
+	// of it instead, and remembered as such (see OpenAI.reasoningMandatory).
 	NoReasoning bool
 }
 

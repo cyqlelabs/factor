@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,6 +23,11 @@ type OpenAI struct {
 
 	reasoning *Reasoning
 	dialect   string // "object" | "effort" | "" (send nothing)
+
+	// reasoningMandatory is set once the endpoint has refused to switch
+	// reasoning off, so every later housekeeping call is sent the smallest
+	// effort instead of the off switch and the 400 is paid once per process.
+	reasoningMandatory atomic.Bool
 }
 
 // WithReasoning attaches reasoning parameters in the dialect the given
@@ -177,15 +184,39 @@ func answerOf(msg oaRespMessage, finishReason string) string {
 	return strings.TrimSpace(msg.Reasoning)
 }
 
+// mandatoryReasoning is what a housekeeping call sends to an endpoint that
+// will not switch reasoning off: the smallest effort OpenRouter maps to a
+// share of max_tokens, so most of the cap still reaches the answer.
+var mandatoryReasoning = map[string]any{"effort": "low", "exclude": true}
+
+// reasoningRefused reports a 400 that says reasoning cannot be turned off —
+// observed on z-ai/glm-5.3-flash: "Reasoning is mandatory for this endpoint
+// and cannot be disabled."
+func reasoningRefused(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 400 {
+		return false
+	}
+	lower := strings.ToLower(apiErr.Body)
+	return strings.Contains(lower, "reasoning") &&
+		(strings.Contains(lower, "mandatory") || strings.Contains(lower, "cannot be disabled"))
+}
+
 func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 	body := oaRequest{Model: p.model, MaxTokens: req.MaxTokens}
+	disabled := false
 	switch {
 	case req.NoReasoning:
 		// Silence is not enough for a gateway that was going to reason anyway,
 		// so an object-dialect one is told to stop outright. The effort dialect
 		// has no "off" to send, and leaving the field out is all it takes.
 		if p.dialect == "object" && p.reasoning != nil {
-			body.Reasoning = map[string]any{"enabled": false}
+			if p.reasoningMandatory.Load() {
+				body.Reasoning = mandatoryReasoning
+			} else {
+				body.Reasoning = map[string]any{"enabled": false}
+				disabled = true
+			}
 		}
 	case p.dialect == "object":
 		body.Reasoning = p.reasoning.object()
@@ -221,6 +252,18 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 		body.Tools = append(body.Tools, ot)
 	}
 
+	resp, err := p.send(ctx, body)
+	if err != nil && disabled && reasoningRefused(err) {
+		// The endpoint has said it cannot stop thinking, so it is asked to
+		// think as little as it can instead, and remembered as such.
+		p.reasoningMandatory.Store(true)
+		body.Reasoning = mandatoryReasoning
+		return p.send(ctx, body)
+	}
+	return resp, err
+}
+
+func (p *OpenAI) send(ctx context.Context, body oaRequest) (*Response, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
