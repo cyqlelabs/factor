@@ -386,11 +386,14 @@ func TestWarmOutlivesTheRequestTimeout(t *testing.T) {
 		if r.URL.Path != "/recall" {
 			t.Errorf("warm-up hit %s, want /recall", r.URL.Path)
 		}
-		var body map[string]string
+		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		mu.Lock()
-		queries = append(queries, body["query"])
+		queries = append(queries, body["query"].(string))
 		mu.Unlock()
+		if body["query"] == warmQuery && (body["boost"] != false || body["rerank"] != false) {
+			t.Errorf("warm-up body = %v; it must neither boost nor judge", body)
+		}
 		time.Sleep(60 * time.Millisecond) // a cold engine loading its model
 		_, _ = w.Write([]byte(`{"memories":[]}`))
 	}))

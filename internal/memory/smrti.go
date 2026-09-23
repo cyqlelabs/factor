@@ -76,7 +76,11 @@ const warmQuery = "warm-up"
 // sized for a warm engine and is exactly what a cold one cannot meet.
 func (c *Client) Warm(ctx context.Context) error {
 	defer c.activity()()
-	body := map[string]any{"query": warmQuery, "top_k": 1}
+	// A read that leaves no trace: an ordinary recall raises the attention of
+	// whatever best matches "warm-up" on every engine start, and spends the
+	// decision deadline judging candidates for a question nobody asked. An
+	// engine too old to know the flags ignores them.
+	body := map[string]any{"query": warmQuery, "top_k": 1, "boost": false, "rerank": false}
 	return c.doWith(ctx, &http.Client{}, http.MethodPost, "/recall", body, nil)
 }
 
