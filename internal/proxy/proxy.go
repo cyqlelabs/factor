@@ -34,8 +34,8 @@ var proxyEnv = []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", 
 // alone whatever these say, but httpx and requests read HTTP_PROXY literally
 // and sent smrti's calls to Factor's own decision server (127.0.0.1:8731)
 // through the proxy — which, running in a container, has no such address
-// and refused every one of them, so the engine fell back to loading its own
-// copy of the model. Loopback is what a proxy can never usefully carry.
+// and refused every one of them, so the engine decided without a model at
+// all. Loopback is what a proxy can never usefully carry.
 var noProxyEnv = []string{"NO_PROXY", "no_proxy"}
 
 // loopbackHosts is what noProxyEnv names, on top of whatever it already held.
