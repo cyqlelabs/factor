@@ -25,7 +25,7 @@ func keepTransport(t *testing.T) {
 // and from what an earlier test's Use remembered.
 func clearProxyEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range append(append([]string{}, proxyEnv...), caEnv...) {
+	for _, key := range append(append(append([]string{}, proxyEnv...), noProxyEnv...), caEnv...) {
 		t.Setenv(key, "")
 	}
 	inherited = map[string]*string{}
@@ -170,6 +170,22 @@ func TestCheckAcceptsAProxyThatCarriesARequest(t *testing.T) {
 	}
 }
 
+// What the shell already excluded from the proxy stays excluded.
+func TestUseKeepsTheShellsOwnNoProxy(t *testing.T) {
+	keepTransport(t)
+	clearProxyEnv(t)
+	t.Setenv("NO_PROXY", "intranet.corp")
+	if _, err := Use("127.0.0.1:9", writeCA(t, caPEM)); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("NO_PROXY"); got != "intranet.corp,"+loopbackHosts {
+		t.Errorf("NO_PROXY = %q", got)
+	}
+	if got := withLoopback("intranet.corp," + loopbackHosts); got != "intranet.corp,"+loopbackHosts {
+		t.Errorf("a second write doubled the value: %q", got)
+	}
+}
+
 func TestUseRoutesTheProcessAndItsChildren(t *testing.T) {
 	keepTransport(t)
 	clearProxyEnv(t)
@@ -188,6 +204,13 @@ func TestUseRoutesTheProcessAndItsChildren(t *testing.T) {
 	for _, key := range caEnv {
 		if got := os.Getenv(key); got != ca {
 			t.Errorf("%s = %q, want %q", key, got, ca)
+		}
+	}
+	// A Python child reads HTTP_PROXY literally, so loopback has to be
+	// excluded by name or smrti's calls to the decision server ride the proxy.
+	for _, key := range noProxyEnv {
+		if got := os.Getenv(key); got != loopbackHosts {
+			t.Errorf("%s = %q, want %q", key, got, loopbackHosts)
 		}
 	}
 	if !strings.Contains(line, "trusting "+ca) || !strings.Contains(line, "loopback") {

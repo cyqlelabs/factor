@@ -76,7 +76,7 @@ func TestRelaunchDoesNotHandDownTheProxyItApplied(t *testing.T) {
 	startFrom(t, exe, nil)
 	original := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = original })
-	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy",
 		"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"} {
 		t.Setenv(key, "")
 	}

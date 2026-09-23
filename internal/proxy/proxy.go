@@ -5,10 +5,11 @@
 // Any proxy will do: an intercepting one (mitmproxy, Burp, ZAP, Charles), a
 // corporate egress proxy, a SOCKS5 listener. It works through the standard
 // proxy environment variables rather than by pinning a transport, for two
-// reasons: Go's own ProxyFromEnvironment already leaves loopback alone, so
-// the memory sidecar and the speech server keep talking directly, and every
-// child process Factor spawns — smrti, the voice shell — inherits the
-// setting and shows up in the same capture.
+// reasons: loopback is left alone, so the memory sidecar and the speech
+// server keep talking directly, and every child process Factor spawns —
+// smrti, the voice shell — inherits the setting and shows up in the same
+// capture. Go's own ProxyFromEnvironment skips loopback on its own; Python's
+// does not, so NO_PROXY says it for the children (see noProxyEnv).
 package proxy
 
 import (
@@ -28,6 +29,17 @@ import (
 // proxyEnv is what Go, curl, Python and most everything else read to find a
 // proxy. Both cases are written because both are read in the wild.
 var proxyEnv = []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"}
+
+// noProxyEnv is where a child is told what not to proxy. Go leaves loopback
+// alone whatever these say, but httpx and requests read HTTP_PROXY literally
+// and sent smrti's calls to Factor's own decision server (127.0.0.1:8731)
+// through the proxy — which, running in a container, has no such address
+// and refused every one of them, so the engine fell back to loading its own
+// copy of the model. Loopback is what a proxy can never usefully carry.
+var noProxyEnv = []string{"NO_PROXY", "no_proxy"}
+
+// loopbackHosts is what noProxyEnv names, on top of whatever it already held.
+const loopbackHosts = "localhost,127.0.0.1,::1"
 
 // caEnv is what a spawned child reads to find a certificate authority. This
 // process does not use any of them — it builds its own pool — so they exist
@@ -130,9 +142,15 @@ func Use(raw, caPath string) (string, error) {
 		return "", err
 	}
 	snapshot(proxyEnv)
+	snapshot(noProxyEnv)
 	snapshot(caEnv)
 	for _, key := range proxyEnv {
 		if err := os.Setenv(key, target); err != nil {
+			return "", err
+		}
+	}
+	for _, key := range noProxyEnv {
+		if err := os.Setenv(key, withLoopback(os.Getenv(key))); err != nil {
 			return "", err
 		}
 	}
@@ -153,6 +171,20 @@ func Use(raw, caPath string) (string, error) {
 		line += "\n" + hint
 	}
 	return line, nil
+}
+
+// withLoopback adds the loopback names to a NO_PROXY value, keeping what the
+// shell already excluded. A value already naming them is returned as it is:
+// Windows reads NO_PROXY and no_proxy as one variable, so the second write
+// sees the first.
+func withLoopback(prior string) string {
+	if strings.Contains(prior, loopbackHosts) {
+		return prior
+	}
+	if strings.TrimSpace(prior) == "" {
+		return loopbackHosts
+	}
+	return prior + "," + loopbackHosts
 }
 
 // trust adds the named authority to roots, or the first well-known one that
