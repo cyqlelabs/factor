@@ -184,10 +184,28 @@ func answerOf(msg oaRespMessage, finishReason string) string {
 	return strings.TrimSpace(msg.Reasoning)
 }
 
-// mandatoryReasoning is what a housekeeping call sends to an endpoint that
-// will not switch reasoning off: the smallest effort OpenRouter maps to a
-// share of max_tokens, so most of the cap still reaches the answer.
-var mandatoryReasoning = map[string]any{"effort": "low", "exclude": true}
+// mandatoryReasoningBudget is the thinking allowance a housekeeping call is
+// given by an endpoint that will not switch reasoning off. It is added on
+// top of the caller's cap rather than carved out of it: asked for effort
+// "low" under a 1024-token cap, glm-5.3-flash spent all 1024 on reasoning
+// and returned no content, so the cap has to cover the thinking as well.
+const mandatoryReasoningBudget = 8192
+
+// mandatoryReasoning is the reasoning object such a call is sent: a budget
+// rather than an effort, excluded from the reply.
+func mandatoryReasoning() map[string]any {
+	return map[string]any{"max_tokens": mandatoryReasoningBudget, "exclude": true}
+}
+
+// withMandatoryReasoning rewrites a body that carried the off switch into one
+// the endpoint will answer, with the cap raised so the answer still fits.
+func withMandatoryReasoning(body oaRequest, cap int) oaRequest {
+	body.Reasoning = mandatoryReasoning()
+	if cap > 0 {
+		body.MaxTokens = cap + mandatoryReasoningBudget
+	}
+	return body
+}
 
 // reasoningRefused reports a 400 that says reasoning cannot be turned off —
 // observed on z-ai/glm-5.3-flash: "Reasoning is mandatory for this endpoint
@@ -212,7 +230,7 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 		// has no "off" to send, and leaving the field out is all it takes.
 		if p.dialect == "object" && p.reasoning != nil {
 			if p.reasoningMandatory.Load() {
-				body.Reasoning = mandatoryReasoning
+				body = withMandatoryReasoning(body, req.MaxTokens)
 			} else {
 				body.Reasoning = map[string]any{"enabled": false}
 				disabled = true
@@ -257,8 +275,7 @@ func (p *OpenAI) Chat(ctx context.Context, req *Request) (*Response, error) {
 		// The endpoint has said it cannot stop thinking, so it is asked to
 		// think as little as it can instead, and remembered as such.
 		p.reasoningMandatory.Store(true)
-		body.Reasoning = mandatoryReasoning
-		return p.send(ctx, body)
+		return p.send(ctx, withMandatoryReasoning(body, req.MaxTokens))
 	}
 	return resp, err
 }

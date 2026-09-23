@@ -390,14 +390,16 @@ func TestMandatoryReasoningIsDetected(t *testing.T) {
 		t.Fatalf("%d requests sent, want the refused one and its retry", len(bodies))
 	}
 	retry := bodies[1]["reasoning"].(map[string]any)
-	if retry["effort"] != "low" || retry["exclude"] != true {
-		t.Errorf("retry reasoning = %v, want the smallest effort, excluded", retry)
+	if retry["max_tokens"] != float64(mandatoryReasoningBudget) || retry["exclude"] != true {
+		t.Errorf("retry reasoning = %v, want a thinking budget, excluded", retry)
 	}
 	if _, present := retry["enabled"]; present {
 		t.Errorf("retry reasoning = %v, still carries the off switch", retry)
 	}
-	if mt := bodies[1]["max_tokens"].(float64); mt != 1024 {
-		t.Errorf("retry max_tokens = %v, want the caller's cap kept", mt)
+	// The cap must cover the thinking as well as the answer: carved out of
+	// the caller's 1024 it bought 1024 reasoning tokens and no content.
+	if mt := bodies[1]["max_tokens"].(float64); mt != 1024+mandatoryReasoningBudget {
+		t.Errorf("retry max_tokens = %v, want the caller's cap plus the thinking budget", mt)
 	}
 
 	if _, err := p.Chat(context.Background(), req); err != nil {
@@ -406,8 +408,11 @@ func TestMandatoryReasoningIsDetected(t *testing.T) {
 	if len(bodies) != 3 {
 		t.Fatalf("%d requests after the second call, want one: the refusal is remembered", len(bodies))
 	}
-	if again := bodies[2]["reasoning"].(map[string]any); again["effort"] != "low" {
-		t.Errorf("second call reasoning = %v, want the remembered low effort", again)
+	if again := bodies[2]["reasoning"].(map[string]any); again["max_tokens"] != float64(mandatoryReasoningBudget) {
+		t.Errorf("second call reasoning = %v, want the remembered budget", again)
+	}
+	if mt := bodies[2]["max_tokens"].(float64); mt != 1024+mandatoryReasoningBudget {
+		t.Errorf("second call max_tokens = %v, want the raised cap remembered too", mt)
 	}
 
 	if _, err := p.Chat(context.Background(), &Request{Messages: []Message{{Role: "user", Content: "hi"}}}); err != nil {

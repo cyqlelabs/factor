@@ -288,8 +288,11 @@ func (l *Loop) compact(ctx context.Context, sessionKey string) error {
 	// A summary that hit the token cap is cut mid-sentence, and the cut falls
 	// on the newest facts — the part compaction exists to keep. Ask once for
 	// a version that fits; if that also overflows, salvage the draft at its
-	// last complete line so no half-written fact is stored as truth.
-	if summaryTruncated(resp.FinishReason) {
+	// last complete line so no half-written fact is stored as truth. A cap
+	// spent with no content at all leaves nothing to rewrite: asked to shorten
+	// a summary it never wrote, glm-5.3-flash answered with a stray tool call,
+	// which was then stored as a session's whole history.
+	if summaryTruncated(resp.FinishReason) && strings.TrimSpace(resp.Content) != "" {
 		req.Messages[0].Content = prompt + "\n\nYour summary was cut off by the length limit. Rewrite it at half the length: keep identifiers, decisions, and open tasks; drop everything else."
 		if retry, rerr := l.utilityChat().Chat(ctx, req); rerr == nil && strings.TrimSpace(retry.Content) != "" && !summaryTruncated(retry.FinishReason) {
 			resp = retry

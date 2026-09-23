@@ -509,13 +509,22 @@ func TestCompactKeepsHistoryWhenTheSummaryComesBackEmpty(t *testing.T) {
 	if err := h.store.SetSummaryAt(key, "what the session knew", 0); err != nil {
 		t.Fatal(err)
 	}
-	empty := func(req *provider.Request) (*provider.Response, error) {
-		if !req.NoReasoning {
-			t.Error("the summarize call must spend its budget on the summary, not on reasoning")
-		}
-		return &provider.Response{Content: "", FinishReason: "length"}, nil
+	// A cap spent entirely on reasoning is "length" with no content, and
+	// there is no draft to ask a shorter version of: the one time that
+	// rewrite was requested, the model answered it with a stray tool call
+	// that was then stored as the summary. One call, then give up.
+	h.chat.script = []func(*provider.Request) (*provider.Response, error){
+		func(req *provider.Request) (*provider.Response, error) {
+			if !req.NoReasoning {
+				t.Error("the summarize call must spend its budget on the summary, not on reasoning")
+			}
+			return &provider.Response{Content: "", FinishReason: "length"}, nil
+		},
+		func(*provider.Request) (*provider.Response, error) {
+			t.Error("a draft with no content was asked for a shorter version")
+			return &provider.Response{Content: "<tool_call>cron list</tool_call>"}, nil
+		},
 	}
-	h.chat.script = []func(*provider.Request) (*provider.Response, error){empty, empty}
 
 	if err := h.loop.compact(context.Background(), key); err == nil {
 		t.Fatal("want an error when the model returns no summary")
