@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -199,15 +200,7 @@ func (l *Loop) verifyCompletion(ctx context.Context, tr *trace.Turn, task string
 	if !l.decider.Enabled() || !l.policies.Verify {
 		return ""
 	}
-	trajectory := renderTurn(turn)
-	if len(trajectory) > verifyTrajectoryChars {
-		trajectory = trajectory[len(trajectory)-verifyTrajectoryChars:]
-	}
-	state := map[string]any{
-		"task":       decision.Clip(task, policyTaskChars),
-		"trajectory": trajectory,
-		"reply":      decision.Clip(reply, verifyReplyChars),
-	}
+	state := newCompletionState(l.decider.Limits(), task, renderTurn(turn), reply)
 	v, err := l.decider.Choose(ctx, decision.KindCompletion, state,
 		decision.Question{Criteria: completionCriteria, Instructions: map[string]any{"rules": completionRules}})
 	if err != nil || v.Choice != completionOverclaimed {
@@ -221,6 +214,70 @@ func (l *Loop) verifyCompletion(ctx context.Context, tr *trace.Turn, task string
 	slog.Info("completion check held the reply: it reports work the trajectory does not show", "confidence", v.Confidence)
 	return "[Verification from the system, not a message from the user.] Your reply reports work as done that this turn's tool results do not show happening. " +
 		"Either finish it now with the tool calls it needs and report only what you verified, or state plainly what was not done and why. Do not repeat the claim without the result behind it."
+}
+
+// completionState is what the completion check reads, in the order it reads
+// it: what was asked, what the tools did, what the reply claims. The order
+// is load-bearing. The model keeps the head of a state that outruns its
+// window, and a map marshals its keys sorted — reply, task, trajectory — so
+// the calls the reply is judged against were the part cut off: on the
+// 1024-token local model every check saw the reply and none of the tool
+// results, and answered "verified" at 0.03–0.44 or "insufficient evidence".
+type completionState struct {
+	Task       string `json:"task"`
+	Trajectory string `json:"trajectory"`
+	Reply      string `json:"reply"`
+}
+
+// newCompletionState sizes the three parts to the model's window: the task
+// and the reply take a bounded share, and the trajectory keeps whatever the
+// window leaves, from its tail — the latest results are what a final claim
+// rests on. With no window known the callers' own budgets hold.
+func newCompletionState(limits decision.Limits, task, trajectory, reply string) completionState {
+	s := completionState{
+		Task:  decision.Clip(task, share(limits, policyTaskChars, 6)),
+		Reply: decision.Clip(reply, share(limits, verifyReplyChars, 3)),
+	}
+	room := stateRoom(limits, s, verifyTrajectoryChars)
+	if len(trajectory) > room {
+		trajectory = trajectory[len(trajectory)-room:]
+	}
+	s.Trajectory = trajectory
+	return s
+}
+
+// inductionState is what the induction screen reads, the trajectory ahead
+// of the catalogs for the same reason completionState orders its fields.
+type inductionState struct {
+	Task          string   `json:"task"`
+	Trajectory    string   `json:"trajectory"`
+	Corrected     bool     `json:"corrected"`
+	LearnedSkills []string `json:"learned_skills"`
+	OtherSkills   []string `json:"other_skills"`
+	LibraryFull   bool     `json:"library_full"`
+}
+
+// share is a part's budget under the model's window: the caller's own bound,
+// or the window split in parts, whichever is tighter.
+func share(limits decision.Limits, want, parts int) int {
+	if limits.MaxStateChars <= 0 {
+		return want
+	}
+	return min(want, limits.MaxStateChars/parts)
+}
+
+// stateRoom is how much of the model's window is left for a trajectory once
+// the rest of the state rides the request, under the caller's own budget
+// when the window is unknown or wider.
+func stateRoom(limits decision.Limits, rest any, budget int) int {
+	if limits.MaxStateChars <= 0 {
+		return budget
+	}
+	used := 0
+	if b, err := json.Marshal(rest); err == nil {
+		used = len(b)
+	}
+	return max(0, min(budget, limits.MaxStateChars-used))
 }
 
 // Induction screening choices.
@@ -253,14 +310,15 @@ func (l *Loop) screenInduction(ctx context.Context, cand induceCandidate, learne
 		}
 		return out
 	}
-	state := map[string]any{
-		"task":           decision.Clip(cand.task, policyTaskChars),
-		"trajectory":     decision.Clip(cand.transcript, verifyTrajectoryChars),
-		"corrected":      cand.corrected,
-		"learned_skills": names(learned),
-		"other_skills":   names(catalog),
-		"library_full":   atCap,
+	limits := l.decider.Limits()
+	state := inductionState{
+		Task:          decision.Clip(cand.task, share(limits, policyTaskChars, 6)),
+		Corrected:     cand.corrected,
+		LearnedSkills: names(learned),
+		OtherSkills:   names(catalog),
+		LibraryFull:   atCap,
 	}
+	state.Trajectory = decision.Clip(cand.transcript, stateRoom(limits, state, verifyTrajectoryChars))
 	v, err := l.decider.Choose(ctx, decision.KindInduction, state,
 		decision.Question{Criteria: inductionCriteria, Instructions: map[string]any{"rules": inductionRules}})
 	if err != nil || !v.Actionable() {

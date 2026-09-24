@@ -2,6 +2,7 @@ package evals
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -87,7 +88,12 @@ func TestOverclaimedReplyIsHeldWithTheEvidence(t *testing.T) {
 	if j.questions() != 1 {
 		t.Fatalf("%d decisions asked, want one completion check", j.questions())
 	}
-	state := j.asked[0].State.(map[string]any)
+	// The state is read back the way the model reads it: as the JSON it
+	// rides the request in.
+	var state map[string]any
+	if raw, err := json.Marshal(j.asked[0].State); err != nil || json.Unmarshal(raw, &state) != nil {
+		t.Fatalf("completion state does not round-trip: %v", err)
+	}
 	if state["task"] != "email me the file" || !strings.Contains(state["reply"].(string), "emailed") {
 		t.Errorf("the check was not asked with the task and the reply: %+v", state)
 	}

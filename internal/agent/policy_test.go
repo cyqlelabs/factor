@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -247,9 +248,9 @@ func TestOverclaimedReplyIsHeldOnceAndCorrected(t *testing.T) {
 	if b.calls() != 1 {
 		t.Errorf("%d completion checks, want exactly one per turn", b.calls())
 	}
-	state := b.requests[0].State.(map[string]any)
-	if state["task"] != "send the report" || !strings.Contains(state["reply"].(string), "delivered") ||
-		!strings.Contains(state["trajectory"].(string), "tool call: probe") {
+	state := b.requests[0].State.(completionState)
+	if state.Task != "send the report" || !strings.Contains(state.Reply, "delivered") ||
+		!strings.Contains(state.Trajectory, "tool call: probe") {
 		t.Errorf("completion state = %+v", state)
 	}
 	history, _ := h.store.History("cli:v")
@@ -315,6 +316,34 @@ func TestCompletionCheckFallsBackQuietly(t *testing.T) {
 		if len(h.chat.requests) != 2 {
 			t.Errorf("%s: %d model requests, want 2 (no re-ask)", name, len(h.chat.requests))
 		}
+	}
+}
+
+// The state a completion check sends fits the model's window, keeps the tail
+// of the trajectory, and puts it ahead of the reply: a state the model cuts
+// at its head must lose the reply last.
+func TestCompletionStateFitsTheModelWindow(t *testing.T) {
+	limits := decision.Limits{MaxStateChars: 600}
+	trajectory := strings.Repeat("call ", 400) + "LAST RESULT"
+	s := newCompletionState(limits, strings.Repeat("task ", 100), trajectory, strings.Repeat("reply ", 100))
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) > limits.MaxStateChars {
+		t.Errorf("state is %d chars, window is %d", len(b), limits.MaxStateChars)
+	}
+	if !strings.HasSuffix(s.Trajectory, "LAST RESULT") || len(s.Trajectory) < 200 {
+		t.Errorf("trajectory tail lost or starved: %d chars ending %q", len(s.Trajectory), s.Trajectory[max(0, len(s.Trajectory)-20):])
+	}
+	body := string(b)
+	if strings.Index(body, `"trajectory"`) > strings.Index(body, `"reply"`) {
+		t.Error("reply rides ahead of the trajectory")
+	}
+
+	unbounded := newCompletionState(decision.Limits{}, "t", trajectory, "r")
+	if unbounded.Trajectory != trajectory {
+		t.Error("an unknown window clipped a trajectory under the caller's own budget")
 	}
 }
 
