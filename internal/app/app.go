@@ -196,10 +196,23 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	var decisionModel *local.Backend
 	if cfg.Decision.On() {
 		decisionModel = local.New(local.Config{
+			Engine:      cfg.Decision.Engine,
 			Port:        cfg.Decision.Port,
 			Device:      cfg.Decision.Device,
 			Command:     cfg.Decision.Command,
 			AutoInstall: cfg.Decision.AutoInstall,
+			// The student is served by smrti, found the way the memory
+			// engine's supervisor finds it.
+			Student: func(ctx context.Context) (string, error) {
+				path, ok := memory.FindSmrti(cfg.Memory.Command, config.Home())
+				if !ok {
+					return "", fmt.Errorf("smrti is not installed yet; the student decision model runs once it is")
+				}
+				if runnable, detail := memory.Runnable(ctx, path); !runnable {
+					return "", fmt.Errorf("the installed smrti cannot run on this machine: %s", detail)
+				}
+				return path, nil
+			},
 		}, config.Home())
 		// A decision is nearly a pure function of its inputs, and the
 		// repeats are the expensive kind: a page an action did not change,

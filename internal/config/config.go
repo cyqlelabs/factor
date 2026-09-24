@@ -554,6 +554,12 @@ type DecisionConfig struct {
 	// something that has been asked. 0 turns it off.
 	CacheEntries int `json:"cache_entries"`
 
+	// Engine picks the model: "laya" (the 300M multilingual checkpoint,
+	// answering anything), "student" (smrti's 6-layer distillation of it,
+	// answering the fixed questions, for a machine that cannot run Laya),
+	// or "auto" — the default — which runs the student where the CPU has
+	// no AVX2 or the memory is short, and Laya everywhere else.
+	Engine string `json:"engine,omitempty"`
 	// Port is where the managed model listens. One already answering there
 	// is adopted rather than started again, which is how a model somebody
 	// runs themselves is used instead of a second copy.
