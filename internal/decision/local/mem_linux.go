@@ -16,7 +16,14 @@ import (
 // reclaimable, which is the number that decides whether a 3 GB allocation
 // thrashes. MemFree on a healthy box is mostly page cache and reads as far
 // too little.
-var availableMB = func() (int, bool) {
+// totalMB is what the machine was built with, for the choice of engine:
+// a number that does not move with what is open right now.
+var totalMB = func() (int, bool) { return meminfo("MemTotal:") }
+
+var availableMB = func() (int, bool) { return meminfo("MemAvailable:") }
+
+// meminfo reads one /proc/meminfo line, in MB.
+func meminfo(prefix string) (int, bool) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
 		return 0, false
@@ -25,7 +32,7 @@ var availableMB = func() (int, bool) {
 	scan := bufio.NewScanner(f)
 	for scan.Scan() {
 		line := scan.Text()
-		if !strings.HasPrefix(line, "MemAvailable:") {
+		if !strings.HasPrefix(line, prefix) {
 			continue
 		}
 		fields := strings.Fields(line)

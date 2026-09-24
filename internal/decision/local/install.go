@@ -95,6 +95,11 @@ const (
 // no key to hold and no endpoint to name, because there is only one model and
 // it runs here.
 type Config struct {
+	// Engine is "laya", "student" or "auto" (see config.DecisionConfig).
+	Engine string `json:"engine,omitempty"`
+	// Student locates the smrti binary that serves the student model; nil
+	// means no student can be run here.
+	Student func(ctx context.Context) (string, error) `json:"-"`
 	// Port is where the managed server listens.
 	Port int `json:"port,omitempty"`
 	// Device names the onnxruntime execution provider: blank lets the

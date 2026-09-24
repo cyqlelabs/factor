@@ -86,6 +86,7 @@ type Backend struct {
 	healthy atomic.Bool
 	down    atomic.Value // string
 	limits  atomic.Value // decision.Limits
+	chosen  atomic.Value // string: the engine, once "auto" is decided
 
 	installTried atomic.Bool
 	// installOK gates the install itself. Building the virtualenv pulls the
@@ -149,7 +150,12 @@ func New(cfg Config, home string) *Backend {
 }
 
 // Name implements decision.Backend.
-func (b *Backend) Name() string { return "laya-" + Checkpoint }
+func (b *Backend) Name() string {
+	if b.engine() == EngineStudent {
+		return EngineStudent
+	}
+	return "laya-" + Checkpoint
+}
 
 // Healthy reports whether the server is answering right now.
 func (b *Backend) Healthy() bool { return b != nil && b.healthy.Load() }
@@ -203,7 +209,7 @@ func (b *Backend) Decide(ctx context.Context, req *decision.Request) (*decision.
 // for the headless engine, and for the same reason: a daemon is long enough
 // lived to finish a download that a one-shot command would kill.
 func (b *Backend) Provision(ctx context.Context) {
-	if b == nil || !b.cfg.autoInstall() || b.cfg.Command != "" {
+	if b == nil || !b.cfg.autoInstall() || b.cfg.Command != "" || b.engine() == EngineStudent {
 		return
 	}
 	b.installOK.Store(true)
@@ -329,6 +335,7 @@ func (b *Backend) reprobeInterval() time.Duration {
 type health struct {
 	OK         bool   `json:"ok"`
 	Error      string `json:"error"`
+	Backend    string `json:"backend"`
 	MaxLen     int    `json:"max_len"`
 	HeadMaxLen int    `json:"head_max_len"`
 }
@@ -339,7 +346,7 @@ type health struct {
 // thing — someone naming their own runtime means it, and it may not live in
 // a virtualenv with a console script beside it.
 func (b *Backend) serverCommand(resolved string) string {
-	if b.cfg.Command != "" {
+	if b.cfg.Command != "" || b.engine() == EngineStudent {
 		return resolved
 	}
 	return ServerBin(b.home)
@@ -350,6 +357,9 @@ func (b *Backend) serverCommand(resolved string) string {
 // environment's: onnxruntime reads one and the thread pool the other, and a
 // box with two slow cores needs both.
 func (b *Backend) serveArgs() []string {
+	if b.engine() == EngineStudent {
+		return b.studentArgs()
+	}
 	args := []string{
 		"serve",
 		"--model", ModelDir(b.home),
@@ -385,6 +395,7 @@ func (b *Backend) probe(ctx context.Context) error {
 		}
 		return fmt.Errorf("the local decision model is still loading")
 	}
+	b.adopt(h.Backend)
 	b.limits.Store(b.windowLimits(h))
 	return nil
 }
@@ -463,7 +474,7 @@ func computeThreads() int {
 }
 
 func (b *Backend) spawnAndWait(ctx context.Context) error {
-	if have, small := tooSmall(); small {
+	if have, small := tooSmall(); small && b.engine() != EngineStudent {
 		err := fmt.Errorf("%w: this machine has %d MB free and the model needs about %d MB to load",
 			errTooSmall, have, minAvailableMB)
 		b.setDown("%v; decisions fall back, and decision.mode: off stops it trying", err)
@@ -557,6 +568,9 @@ func (b *Backend) spawnAndWait(ctx context.Context) error {
 // The install is attempted at most once per process: a machine that cannot
 // install must not re-run a long download on every restart.
 func (b *Backend) resolveCommand(ctx context.Context) (string, error) {
+	if b.engine() == EngineStudent {
+		return b.studentCommand(ctx)
+	}
 	if b.cfg.Command != "" {
 		return resolveInterpreter(b.cfg.Command)
 	}

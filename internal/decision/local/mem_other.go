@@ -8,3 +8,5 @@ package local
 // package manager — run Linux. Unknown reads as "do not refuse", which leaves
 // those platforms exactly as they were.
 var availableMB = func() (int, bool) { return 0, false }
+
+var totalMB = func() (int, bool) { return 0, false }

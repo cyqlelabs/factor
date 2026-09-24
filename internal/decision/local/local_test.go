@@ -992,7 +992,8 @@ func TestAMachineTooSmallIsRefusedRatherThanThrashed(t *testing.T) {
 	if !errors.Is(err, ErrTooSmall) {
 		t.Errorf("a gigabyte of wheels was fetched onto a machine that cannot load them: %v", err)
 	}
-	b := New(Config{Port: freePort(t)}, t.TempDir())
+	// Laya asked for by name: "auto" would have chosen the student here.
+	b := New(Config{Port: freePort(t), Engine: EngineLaya}, t.TempDir())
 	b.installOK.Store(true)
 	if err := b.spawnAndWait(context.Background()); !errors.Is(err, ErrTooSmall) {
 		t.Errorf("err = %v, want the refusal", err)
