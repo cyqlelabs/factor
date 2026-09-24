@@ -8,6 +8,7 @@ flowchart TD
     MIC <-->|synchronous<br/>turns| LOOP
     LOOP["agent loop<br/>one live turn<br/>per session"] <-->|recall<br/>store| MEM[("smrti REST<br/>sidecar")]
     LOOP --> PROV["provider chain<br/>cost meter · failover<br/>cooldowns · compaction"]
+    LOOP -->|typed<br/>decisions| DEC["local decision model<br/>Laya · student"]
     LOOP --> REG[tool registry]
     REG --- SUITES["fs · exec · web<br/>browser · desktop<br/>memory · jobs · cron<br/>config · pkg · skills · MCP"]
     BG[jobs · cron<br/>heartbeat] -.->|proactive<br/>results| BUS

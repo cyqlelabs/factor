@@ -57,7 +57,7 @@ than logging, so past failures become constraints it doesn't repeat.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/cyqlelabs/factor/main/docs/assets/architecture.png" width="625"
-       alt="Telegram and the CLI reach the message bus, which feeds the agent loop. The phone reaches the loop through the voice shell sidecar and PC voice through the mic and speakers, both running turns directly. The loop recalls from and stores to the smrti REST sidecar, calls the provider chain, and drives the tool registry and its suites. Jobs, cron and the heartbeat publish proactive results onto the bus.">
+       alt="Telegram and the CLI reach the message bus, which feeds the agent loop. The phone reaches the loop through the voice shell sidecar and PC voice through the mic and speakers, both running turns directly. The loop recalls from and stores to the smrti REST sidecar, calls the provider chain, asks the local decision model for typed decisions, and drives the tool registry and its suites. Jobs, cron and the heartbeat publish proactive results onto the bus.">
 </p>
 
 Bus + bounded workers, mid-turn steering, narrow pluggable seams, CGO-free
@@ -162,7 +162,8 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "model": "google/gemini-3.1-pro-preview",
     "reasoning": { "effort": "xhigh" },      // or {"max_tokens": 12000}; "none" turns it off
     "fallbacks": [{ "type": "ollama", "model": "qwen3:8b" }],
-    "utility": [{ "type": "ollama", "model": "qwen3:8b" }]  // cheaper chain for compaction summaries and skill verdicts; omit = the main one
+    "utility": [{ "type": "ollama", "model": "qwen3:8b" }],  // cheaper chain for compaction summaries and skill verdicts; omit = the main one
+    "light": { "type": "openrouter", "model": "deepseek/deepseek-v4-flash-0731" }  // fast model for the progress notes of a long turn; omit = picked for you
   },
   "memory": {
     "max_rss_mb": 0,                         // restart the engine for size once idle; 0 sizes it to the machine, -1 turns it off
@@ -229,6 +230,7 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
   },
   "decision": {                              // typed decisions; see "Typed decisions"
     "mode": "active",                        // active | shadow (ask, record, act on nothing) | off
+    "engine": "auto",                        // auto | laya | student; auto picks the student without AVX2 or under 4 GB RAM
     "min_confidence": 0.6,                   // the bar a verdict clears to be acted on
     "thresholds": { "completion": 0.75 },    // per kind: operation | target | completion | recovery | induction
     "browser": true, "verify": true, "recover": true, "induce": true,  // the scenarios, each switchable
@@ -322,6 +324,12 @@ running **on your machine** — nothing to sign up for, pay for or configure. Fa
 installs it (~350 MB on disk, an int8 graph served by onnxruntime) and supervises
 it like the memory engine, skipping it on a box with under a gigabyte free.
 
+Laya is too slow on a CPU without AVX2 and too big for a machine with under 4 GB of
+RAM. On those machines a six-layer student distilled from it answers instead, served
+by the memory engine in about a seventh of the memory. `decision.engine` forces
+either model. `browser_run` still needs Laya: the student knows only the fixed
+questions it was trained on, and every page offers a new list of controls.
+
 | What it buys | |
 |---|---|
 | **`browser_run`** | one call works a page toward a goal; never submits, books, pays or sends without `allow_submit` |
@@ -332,7 +340,8 @@ it like the memory engine, skipping it on a box with under a gigabyte free.
 Answers are validated against the candidates offered and must clear a confidence
 bar; under it — or while the model is installing, or down — the agent does what it
 did before. `decision.mode` is `active`, `shadow` (records every verdict in
-`~/.factor/traces`, acts on none) or `off`.
+`~/.factor/traces`, acts on none) or `off`, which switches off the memory engine's
+decisions too.
 
 ## Desktop
 
