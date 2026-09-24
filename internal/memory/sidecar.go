@@ -34,6 +34,12 @@ type ExtractSettings struct {
 	// between an engine that answers and one that swaps. Handed the address
 	// it loads nothing; an engine too old to read it loads its own as before.
 	DecisionURL string
+	// DecisionsOff says the operator turned decisions off on this machine
+	// (`decision.mode: off`), which is a statement about the machine, not
+	// about Factor: left alone, smrti would fetch its own 343 MB checkpoint
+	// and run the same model in-process on the box that was just judged too
+	// slow or too small for it.
+	DecisionsOff bool
 }
 
 // DeriveExtract picks extraction settings: explicit config wins, then the
@@ -408,6 +414,9 @@ func (s *Sidecar) buildEnv() []string {
 	}
 	if s.extract.DecisionURL != "" {
 		env = append(env, "SMRTI_DECISIONS_URL="+s.extract.DecisionURL)
+	}
+	if s.extract.DecisionsOff {
+		env = append(env, "SMRTI_DECISIONS=off")
 	}
 	return env
 }

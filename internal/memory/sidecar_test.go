@@ -233,6 +233,9 @@ func TestSidecarBuildEnvOptionalFields(t *testing.T) {
 	if strings.Contains(env, "SMRTI_DECISIONS_URL=") {
 		t.Error("no decision server, yet its address was passed")
 	}
+	if strings.Contains(env, "SMRTI_DECISIONS=") {
+		t.Error("decisions were not turned off, yet the engine was told they were")
+	}
 	if strings.Contains(env, "SMRTI_EXTRACT_URL=") || strings.Contains(env, "SMRTI_EXTRACT_MODEL=") {
 		t.Error("local extraction must not set an extraction endpoint")
 	}
@@ -268,6 +271,16 @@ func TestSidecarBuildEnvSilencesOnnxruntimeTelemetry(t *testing.T) {
 	s := &Sidecar{cfg: config.Default().Memory, extract: ExtractSettings{Mode: "local"}}
 	if !slices.Contains(s.buildEnv(), "ORT_DISABLE_TELEMETRY=1") {
 		t.Error("ORT_DISABLE_TELEMETRY=1 missing: smrti will post this machine to Microsoft")
+	}
+}
+
+// An operator who turned decisions off on this machine turned them off for
+// the engine too: left to itself it fetches its own checkpoint and runs the
+// same model in-process on the box just judged unfit for it.
+func TestSidecarBuildEnvTurnsEngineDecisionsOffWithFactors(t *testing.T) {
+	s := &Sidecar{cfg: config.Default().Memory, extract: ExtractSettings{Mode: "local", DecisionsOff: true}}
+	if !slices.Contains(s.buildEnv(), "SMRTI_DECISIONS=off") {
+		t.Error("SMRTI_DECISIONS=off missing")
 	}
 }
 
