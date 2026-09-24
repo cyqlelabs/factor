@@ -19,11 +19,26 @@ const (
 	EngineAuto    = "auto"
 	EngineLaya    = "laya"
 	EngineStudent = "student"
+	// minTotalMB is the memory a machine needs to hold Laya beside an
+	// agent without swapping; the box this exists for has 3.5 GB.
+	minTotalMB = 4096
 )
+
+// Engine is the model this backend runs, for the wiring that depends on
+// it: the browser's decisions are Laya's alone.
+func (b *Backend) Engine() string {
+	if b == nil {
+		return EngineLaya
+	}
+	return b.engine()
+}
 
 // engine resolves the configured engine, deciding "auto" the first time and
 // keeping the answer: a model that changed underneath a running gateway
-// would change every threshold the traces were calibrated against.
+// would change every threshold the traces were calibrated against. "auto"
+// reads what the machine is — the CPU's flags and the memory it was built
+// with — rather than what is free at the moment, which a browser tab moves.
+// A configured command names Laya's interpreter, so it pins "auto" to Laya.
 func (b *Backend) engine() string {
 	if e, ok := b.chosen.Load().(string); ok && e != "" {
 		return e
@@ -33,16 +48,30 @@ func (b *Backend) engine() string {
 	case EngineLaya, EngineStudent:
 	default:
 		e = EngineLaya
-		if !hasAVX2() {
-			e = EngineStudent
-			slog.Info("decisions run on the student model: the CPU has no AVX2, which Laya's int8 kernels need")
-		} else if have, small := tooSmall(); small {
-			e = EngineStudent
-			slog.Info("decisions run on the student model: not enough memory for Laya", "available_mb", have)
+		if b.cfg.Command == "" {
+			if !hasAVX2() {
+				e = EngineStudent
+				slog.Info("decisions run on the student model: the CPU has no AVX2, which Laya's int8 kernels need")
+			} else if total, ok := totalMB(); ok && total < minTotalMB {
+				e = EngineStudent
+				slog.Info("decisions run on the student model: not enough memory for Laya beside an agent", "total_mb", total)
+			}
 		}
 	}
-	b.chosen.Store(e)
-	return e
+	// Whoever decided first wins; the others read that answer.
+	if b.chosen.CompareAndSwap(nil, e) {
+		return e
+	}
+	return b.chosen.Load().(string)
+}
+
+// adopt takes the engine from a server that already answers on the port —
+// the health probe says which model it is — so a student someone runs by
+// hand is named, cached and thresholded as one.
+func (b *Backend) adopt(backend string) {
+	if backend == EngineStudent || backend == EngineLaya {
+		b.chosen.CompareAndSwap(nil, backend)
+	}
 }
 
 // studentCommand is the smrti binary that serves the student, from the
@@ -52,7 +81,7 @@ func (b *Backend) studentCommand(ctx context.Context) (string, error) {
 		return resolveInterpreter(b.cfg.Command)
 	}
 	if b.cfg.Student == nil {
-		return "", fmt.Errorf("the student decision model needs smrti, and no smrti is configured here")
+		return "", fmt.Errorf("the student decision model is served by smrti, and this install runs no memory engine to serve it; decision.engine: laya runs Laya instead")
 	}
 	return b.cfg.Student(ctx)
 }

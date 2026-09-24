@@ -16,15 +16,15 @@ func TestAutoPicksTheStudentWhereLayaCannotRun(t *testing.T) {
 	}{
 		"modern machine": {true, 8000, true, EngineLaya},
 		"no avx2":        {false, 8000, true, EngineStudent},
-		"memory short":   {true, 512, true, EngineStudent},
+		"memory short":   {true, 3535, true, EngineStudent},
 		"memory unknown": {true, 0, false, EngineLaya},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			restoreCPU, restoreMem := hasAVX2, availableMB
-			defer func() { hasAVX2, availableMB = restoreCPU, restoreMem }()
+			restoreCPU, restoreMem := hasAVX2, totalMB
+			defer func() { hasAVX2, totalMB = restoreCPU, restoreMem }()
 			hasAVX2 = func() bool { return c.avx2 }
-			availableMB = func() (int, bool) { return c.available, c.known }
+			totalMB = func() (int, bool) { return c.available, c.known }
 			b := New(Config{}, t.TempDir())
 			if got := b.engine(); got != c.want {
 				t.Errorf("engine = %q, want %q", got, c.want)
@@ -35,6 +35,29 @@ func TestAutoPicksTheStudentWhereLayaCannotRun(t *testing.T) {
 				t.Errorf("engine moved to %q after being decided as %q", got, c.want)
 			}
 		})
+	}
+}
+
+func TestAConfiguredCommandPinsAutoToLaya(t *testing.T) {
+	restore := hasAVX2
+	defer func() { hasAVX2 = restore }()
+	hasAVX2 = func() bool { return false }
+	b := New(Config{Command: "python3"}, t.TempDir())
+	if b.engine() != EngineLaya {
+		t.Errorf("engine = %q, want Laya: the command is Laya's interpreter", b.engine())
+	}
+}
+
+func TestARunningServerNamesItsOwnEngine(t *testing.T) {
+	b := New(Config{}, t.TempDir())
+	b.adopt("student")
+	if b.Name() != EngineStudent {
+		t.Errorf("name = %q after adopting a student", b.Name())
+	}
+	b = New(Config{}, t.TempDir())
+	b.adopt("laya")
+	if b.engine() != EngineLaya {
+		t.Errorf("engine = %q after adopting Laya", b.engine())
 	}
 }
 

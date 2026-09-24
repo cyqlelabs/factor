@@ -330,7 +330,10 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		// The bounded executor is mounted only where it can decide: an
 		// active decider, and the light chain to write field text with (a
 		// nil light chain leaves it able to click but not to type).
-		if cfg.Decision.BrowserOn() && cfg.Decision.Active() && browser.Available() {
+		// The browser's questions offer the page's controls, a different
+		// list every time, which the student has no head for; its runs
+		// would stop on the first refusal, so they are Laya's alone.
+		if cfg.Decision.BrowserOn() && cfg.Decision.Active() && browser.Available() && decisionModel.Engine() != local.EngineStudent {
 			registry.Register(browser.NewRunTool(browserSession, decider, lightMeter))
 		}
 	}

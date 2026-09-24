@@ -335,6 +335,7 @@ func (b *Backend) reprobeInterval() time.Duration {
 type health struct {
 	OK         bool   `json:"ok"`
 	Error      string `json:"error"`
+	Backend    string `json:"backend"`
 	MaxLen     int    `json:"max_len"`
 	HeadMaxLen int    `json:"head_max_len"`
 }
@@ -394,6 +395,7 @@ func (b *Backend) probe(ctx context.Context) error {
 		}
 		return fmt.Errorf("the local decision model is still loading")
 	}
+	b.adopt(h.Backend)
 	b.limits.Store(b.windowLimits(h))
 	return nil
 }

@@ -864,6 +864,11 @@ func (c *Config) normalize() {
 	default:
 		c.Decision.Mode = "active"
 	}
+	switch c.Decision.Engine = strings.ToLower(strings.TrimSpace(c.Decision.Engine)); c.Decision.Engine {
+	case "laya", "student":
+	default:
+		c.Decision.Engine = "auto"
+	}
 	if c.Decision.CacheEntries < 0 {
 		c.Decision.CacheEntries = 0
 	}
