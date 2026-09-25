@@ -140,6 +140,8 @@ func policyApp(t *testing.T, llm *scriptedLLM, judge http.Handler, mode string) 
 	cfg.Provider.APIBase = llmSrv.URL + "/v1"
 	cfg.Decision.Mode = mode
 	cfg.Decision.Port = serveDecisions(t, judge)
+	verify := true // the completion check has to be asked for
+	cfg.Decision.Verify = &verify
 	a := newTestApp(t, cfg)
 	// The supervisor adopts the model already answering on that port; wait
 	// for it to notice before the first turn asks anything of it.

@@ -241,6 +241,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		// One copy of the decision model on this machine: smrti asks
 		// Factor's server rather than loading its own.
 		extract.DecisionURL = decisionModel.BaseURL()
+		extract.DecisionTimeout = time.Duration(cfg.Decision.TimeoutMS) * time.Millisecond
 	}
 	extract.DecisionsOff = !cfg.Decision.On()
 	engine, err := memory.NewEngine(ctx, cfg.Memory, extract, filepath.Join(config.Home(), "logs"))

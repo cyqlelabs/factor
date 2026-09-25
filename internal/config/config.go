@@ -543,7 +543,13 @@ type DecisionConfig struct {
 	MinConfidence float64            `json:"min_confidence"`
 	Thresholds    map[string]float64 `json:"thresholds,omitempty"`
 	// The scenarios, each switchable on its own so one can be turned off
-	// without losing the rest. All on when the mode is; nil means on.
+	// without losing the rest. Nil means on, except for Verify, which is
+	// off until it is asked for: replayed over real turns, the model could
+	// not tell a reply that asked a question from one that reported work
+	// nothing had done — it called the question overclaimed with 0.9 of the
+	// probability, and the fabricated report verified as often as not — so
+	// the bar held back every verdict but one in thirty-six, and each of
+	// them cost the turn a model call before its reply went out.
 	Browser *bool `json:"browser,omitempty"`
 	Verify  *bool `json:"verify,omitempty"`
 	Recover *bool `json:"recover,omitempty"`
@@ -588,9 +594,9 @@ func enabled(b *bool) bool { return b == nil || *b }
 
 // BrowserOn, VerifyOn, RecoverOn and InduceOn are the per-scenario switches
 // read against the mode: a scenario is on when decisions are and it was not
-// switched off by name.
+// switched off by name — or, for Verify, was switched on by name.
 func (d DecisionConfig) BrowserOn() bool { return d.On() && enabled(d.Browser) }
-func (d DecisionConfig) VerifyOn() bool  { return d.On() && enabled(d.Verify) }
+func (d DecisionConfig) VerifyOn() bool  { return d.On() && d.Verify != nil && *d.Verify }
 func (d DecisionConfig) RecoverOn() bool { return d.On() && enabled(d.Recover) }
 func (d DecisionConfig) InduceOn() bool  { return d.On() && enabled(d.Induce) }
 

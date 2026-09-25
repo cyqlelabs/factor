@@ -233,7 +233,7 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "engine": "auto",                        // auto | laya | student; auto picks the student without AVX2 or under 4 GB RAM
     "min_confidence": 0.6,                   // the bar a verdict clears to be acted on
     "thresholds": { "completion": 0.75 },    // per kind: operation | target | completion | recovery | induction
-    "browser": true, "verify": true, "recover": true, "induce": true,  // the scenarios, each switchable
+    "browser": true, "verify": false, "recover": true, "induce": true, // the scenarios, each switchable; verify is off until asked for
     "cache_entries": 512,                    // memoize repeated decisions; 0 turns it off
     "device": "",                            // "" = let the runtime choose; a name pins the onnxruntime provider
     "auto_install": true                     // build the private virtualenv when it is missing

@@ -34,6 +34,12 @@ type ExtractSettings struct {
 	// between an engine that answers and one that swaps. Handed the address
 	// it loads nothing; an engine too old to read it loads its own as before.
 	DecisionURL string
+	// DecisionTimeout is how long one decision may take, the same bound
+	// Factor holds its own decisions to. The engine has a deadline of its
+	// own and would keep it, but the two callers share one model on one
+	// machine, and a deadline that machine cannot meet is a fact about the
+	// machine: raising it in one place has to raise it for both.
+	DecisionTimeout time.Duration
 	// DecisionsOff says the operator turned decisions off on this machine
 	// (`decision.mode: off`), which is a statement about the machine, not
 	// about Factor: left alone, smrti would fetch its own 343 MB checkpoint
@@ -414,6 +420,9 @@ func (s *Sidecar) buildEnv() []string {
 	}
 	if s.extract.DecisionURL != "" {
 		env = append(env, "SMRTI_DECISIONS_URL="+s.extract.DecisionURL)
+	}
+	if s.extract.DecisionTimeout > 0 {
+		env = append(env, "SMRTI_DECISIONS_TIMEOUT="+strconv.FormatFloat(s.extract.DecisionTimeout.Seconds(), 'f', -1, 64))
 	}
 	if s.extract.DecisionsOff {
 		env = append(env, "SMRTI_DECISIONS=off")

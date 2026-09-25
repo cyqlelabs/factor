@@ -917,11 +917,12 @@ func TestTwoInstallersDoNotRunAtOnce(t *testing.T) {
 	}
 }
 
-// The model holds the machine while it loads, so the two things that keep a
-// slow box usable are set before the interpreter starts: it gets all but one
-// core, and it is asked for by name in the environment rather than left to
-// torch's default of every core there is.
-func TestTheModelIsHeldToPartOfTheMachine(t *testing.T) {
+// The model holds the machine while it loads, so the thread count is set
+// before the interpreter starts, by name in the environment rather than left
+// to the runtime's default. It is every core: the model is niced below the
+// rest of the machine, and on the two-core box this was written for a spared
+// core halved the model's speed against its deadline.
+func TestTheModelIsToldEveryCore(t *testing.T) {
 	env := strings.Join(serverEnv(), "\n")
 	want := strconv.Itoa(computeThreads())
 	for _, key := range []string{"OMP_NUM_THREADS=", "MKL_NUM_THREADS="} {
@@ -929,9 +930,7 @@ func TestTheModelIsHeldToPartOfTheMachine(t *testing.T) {
 			t.Errorf("the model's environment does not carry %s%s", key, want)
 		}
 	}
-	// At least one core, and never the whole machine unless there is only one.
-	cores, got := runtime.NumCPU(), computeThreads()
-	if got < 1 || (cores > 1 && got >= cores) {
+	if cores, got := runtime.NumCPU(), computeThreads(); got != cores {
 		t.Errorf("computeThreads() = %d on a %d-core machine", got, cores)
 	}
 }

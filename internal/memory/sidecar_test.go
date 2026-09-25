@@ -77,7 +77,7 @@ func fakeSmrtiServe() {
 			"SMRTI_DB", "SMRTI_TENANT_ID", "SMRTI_SPACE", "SMRTI_PERSONALITY",
 			"SMRTI_REFLECT_INTERVAL", "SMRTI_EXTRACT_MODE", "SMRTI_EXTRACT_URL",
 			"SMRTI_EXTRACT_MODEL", "SMRTI_IGNORE_PATTERNS", "SMRTI_API_KEY",
-			"SMRTI_DECISIONS_URL",
+			"SMRTI_DECISIONS_URL", "SMRTI_DECISIONS_TIMEOUT",
 		} {
 			env[key] = os.Getenv(key)
 		}
@@ -153,7 +153,7 @@ func TestSidecarSpawnsAndPassesEnvironment(t *testing.T) {
 	cfg.KeepAlive = false
 	logDir := t.TempDir()
 	extract := ExtractSettings{Mode: "hybrid", URL: "http://127.0.0.1:11434", Model: "qwen3", Key: "llm-key",
-		DecisionURL: "http://127.0.0.1:8731"}
+		DecisionURL: "http://127.0.0.1:8731", DecisionTimeout: 6 * time.Second}
 
 	eng, err := NewEngine(context.Background(), cfg, extract, logDir)
 	if err != nil {
@@ -174,16 +174,17 @@ func TestSidecarSpawnsAndPassesEnvironment(t *testing.T) {
 	}
 	env, _ := status["env"].(map[string]any)
 	want := map[string]string{
-		"SMRTI_DB":               cfg.DBPath,
-		"SMRTI_TENANT_ID":        "testtenant",
-		"SMRTI_SPACE":            "testspace",
-		"SMRTI_PERSONALITY":      cfg.Personality,
-		"SMRTI_REFLECT_INTERVAL": strconv.Itoa(cfg.ReflectIntervalSecs),
-		"SMRTI_EXTRACT_MODE":     "hybrid",
-		"SMRTI_EXTRACT_URL":      "http://127.0.0.1:11434",
-		"SMRTI_EXTRACT_MODEL":    "qwen3",
-		"SMRTI_IGNORE_PATTERNS":  "^HEARTBEAT_OK$",
-		"SMRTI_DECISIONS_URL":    "http://127.0.0.1:8731",
+		"SMRTI_DB":                cfg.DBPath,
+		"SMRTI_TENANT_ID":         "testtenant",
+		"SMRTI_SPACE":             "testspace",
+		"SMRTI_PERSONALITY":       cfg.Personality,
+		"SMRTI_REFLECT_INTERVAL":  strconv.Itoa(cfg.ReflectIntervalSecs),
+		"SMRTI_EXTRACT_MODE":      "hybrid",
+		"SMRTI_EXTRACT_URL":       "http://127.0.0.1:11434",
+		"SMRTI_EXTRACT_MODEL":     "qwen3",
+		"SMRTI_IGNORE_PATTERNS":   "^HEARTBEAT_OK$",
+		"SMRTI_DECISIONS_URL":     "http://127.0.0.1:8731",
+		"SMRTI_DECISIONS_TIMEOUT": "6",
 	}
 	for key, expected := range want {
 		if got, _ := env[key].(string); got != expected {

@@ -352,8 +352,8 @@ func (b *Backend) serverCommand(resolved string) string {
 	return ServerBin(b.home)
 }
 
-// serveArgs is how the runtime is told what to serve and how much of the
-// machine it may use. --threads is the runtime's own cap, set alongside the
+// serveArgs is how the runtime is told what to serve and how many cores it
+// may hold. --threads is the runtime's own cap, set alongside the
 // environment's: onnxruntime reads one and the thread pool the other, and a
 // box with two slow cores needs both.
 func (b *Backend) serveArgs() []string {
@@ -453,24 +453,23 @@ func serverEnv() []string {
 	return append(quietEnv(),
 		// onnxruntime runs its CPU kernels on one thread per core, and the
 		// warm-up holds every one of them for as long as the checkpoint takes
-		// to build. On a two-core box that is the whole machine: measured, a
-		// Factor whose decision model was loading stopped answering ssh and
-		// then stopped answering at all. A core is left for everything else
-		// — Factor, the memory engine, and whoever is trying to log in and
-		// find out what is wrong. The variables have to be in the
-		// environment before the interpreter starts, which is why they are
-		// set here rather than in the script.
+		// to build. The variables have to be in the environment before the
+		// interpreter starts, which is why they are set here rather than in
+		// the script.
 		"OMP_NUM_THREADS="+strconv.Itoa(computeThreads()),
 		"MKL_NUM_THREADS="+strconv.Itoa(computeThreads()))
 }
 
-// computeThreads is how many cores the model may hold at once: all but one,
-// and at least one.
+// computeThreads is how many cores the model may hold at once: every one,
+// because the model is niced below everything else on the machine and the
+// scheduler, not a spare core, is what keeps the box answering while it
+// works. Sparing a core was the guard before the nice existed, and on the
+// two-core box it was written for it cost half the model's speed: measured
+// there, a completion-sized state took 3.4 s on one thread and 1.8 s on
+// two, against a 4 s deadline, which is the difference between a decision
+// and a timeout on every call.
 func computeThreads() int {
-	if n := runtime.NumCPU() - 1; n > 0 {
-		return n
-	}
-	return 1
+	return runtime.NumCPU()
 }
 
 func (b *Backend) spawnAndWait(ctx context.Context) error {

@@ -236,6 +236,8 @@ func TestFlightSearchEndToEndThroughTheWholeApp(t *testing.T) {
 	cfg.Browser.UserDataDir = profile
 	cfg.Decision.Mode = "active"
 	cfg.Decision.Port = serveDecisions(t, judge)
+	verify := true // the completion check has to be asked for
+	cfg.Decision.Verify = &verify
 	a := newTestApp(t, cfg)
 	waitHealthy(t, a)
 	if _, ok := a.Registry.Get("browser_run"); !ok {

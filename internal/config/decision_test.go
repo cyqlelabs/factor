@@ -16,8 +16,13 @@ func TestDecisionsAreOnWithNothingConfigured(t *testing.T) {
 	if d.TimeoutMS != 4000 || d.MinConfidence != 0.6 || d.CacheEntries <= 0 {
 		t.Errorf("defaults = %+v", d)
 	}
-	if !d.BrowserOn() || !d.VerifyOn() || !d.RecoverOn() || !d.InduceOn() {
+	if !d.BrowserOn() || !d.RecoverOn() || !d.InduceOn() {
 		t.Error("the scenarios should follow the mode")
+	}
+	// The completion check is the one scenario that has to be asked for:
+	// measured on real turns, its verdicts were noise held back by the bar.
+	if d.VerifyOn() {
+		t.Error("the completion check ran unasked")
 	}
 	// Nothing about it is a credential, so nothing about it is in the
 	// config's secret list.
@@ -40,9 +45,9 @@ func TestDecisionModes(t *testing.T) {
 		}
 	}
 	// A scenario switched off by name stays off while the rest follow.
-	off := false
-	d := DecisionConfig{Mode: "active", Browser: &off, Verify: &off}
-	if d.BrowserOn() || d.VerifyOn() || !d.RecoverOn() || !d.InduceOn() {
+	off, on := false, true
+	d := DecisionConfig{Mode: "active", Browser: &off, Verify: &on}
+	if d.BrowserOn() || !d.VerifyOn() || !d.RecoverOn() || !d.InduceOn() {
 		t.Error("per-scenario switches did not apply")
 	}
 	if (DecisionConfig{Mode: "off", Browser: &off}).RecoverOn() {
