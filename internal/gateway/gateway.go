@@ -197,6 +197,9 @@ func serve(configPath string) (bool, error) {
 	// lands in, and only the connector knows what that room is.
 	a.Loop.SetAudience(manager.Audience)
 	manager.Start(ctx)
+	// Only the process that lives long enough to see an adopted engine
+	// through an upgrade restarts it on stale settings.
+	memory.WatchSettings(a.Memory)
 
 	// The tray's overview reads from here for as long as serve runs; the
 	// deferred nil runs before a.Close, so a late ask never reaches a closed

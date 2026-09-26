@@ -93,8 +93,11 @@ const AnyEngine = 0
 // replaced is the outcome both callers wanted, so finding one is success
 // rather than a reason to stop it too.
 func StopEngineIf(ctx context.Context, port, want int) (int, error) {
+	// The file names the engine a supervisor spawned; when it does not name
+	// the one wanted, the port decides, since a stale file can name a pid
+	// reissued to something else while the real engine keeps serving.
 	pid, ok := readEnginePid()
-	if !ok {
+	if !ok || (want != AnyEngine && pid != want) {
 		if pid, ok = ListenerPid(port); !ok {
 			return 0, nil
 		}

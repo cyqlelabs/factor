@@ -132,6 +132,14 @@ type Sidecar struct {
 	// crash and waiting out a backoff first.
 	deliberateStop atomic.Bool
 	sizeRestarts   atomic.Int64
+	// watchSettings is whether this supervisor restarts an engine on stale
+	// settings; see WatchSettings.
+	watchSettings atomic.Bool
+	// settingsChecked is the last engine pid whose environment was compared
+	// with this binary's, so an engine that cannot be read, or cannot be
+	// restarted, is asked about once rather than on every probe.
+	settingsChecked     atomic.Int64
+	lastSettingsRestart atomic.Int64
 }
 
 func (s *Sidecar) reprobeInterval() time.Duration {
@@ -278,9 +286,76 @@ func (s *Sidecar) pollWhileHealthy(ctx context.Context) {
 		if ctx.Err() != nil || s.client.CheckHealth(ctx) != nil {
 			return
 		}
-		if s.restartForSize(ctx) {
+		if s.restartForSettings(ctx) || s.restartForSize(ctx) {
 			return // the run loop finds the port free and spawns afresh
 		}
+	}
+}
+
+// settingsRestartGap is the least time between two restarts for settings
+// from one process: a backstop, since the check is once per engine pid.
+var settingsRestartGap = time.Hour
+
+// restartForSettings stops an engine that is running on settings this
+// binary would no longer hand it, once the graph is idle, and reports
+// whether it did. With keep_alive the engine outlives the Factor that
+// spawned it, and an upgrade spawns it before the reload: the package is
+// installed and the engine respawned by the outgoing binary, then the new
+// one execs and adopts it warm. Every environment variable the new binary
+// adds is therefore missing from the engine actually serving, on every box,
+// until something else restarts it — measured on two machines, the decision
+// deadline the previous release began sharing had reached neither engine a
+// day later. Only the gateway does this (WatchSettings): a terminal session
+// built from another checkout would otherwise trade restarts with it, each
+// a cold model load. The engine is the one answering on the port, not the
+// one a pid file names, since a stale file can name a reissued pid; only
+// its own settings are compared, by name; and an engine whose environment
+// cannot be read is left alone.
+func (s *Sidecar) restartForSettings(ctx context.Context) bool {
+	if s.external || !s.watchSettings.Load() {
+		return false
+	}
+	pid, ok := ListenerPid(s.cfg.Port)
+	if !ok || int64(pid) == s.settingsChecked.Load() {
+		return false
+	}
+	have, ok := processEnv(pid)
+	if !ok {
+		s.settingsChecked.Store(int64(pid))
+		return false
+	}
+	changed := settingsDrift(engineSettings(parseEnviron(s.buildEnv())), engineSettings(have))
+	if len(changed) == 0 {
+		s.settingsChecked.Store(int64(pid))
+		return false
+	}
+	if !s.Idle(UpgradeQuiet) {
+		return false // a turn is using it; the next probe will ask again
+	}
+	if last := s.lastSettingsRestart.Load(); last != 0 && time.Since(time.Unix(0, last)) < settingsRestartGap {
+		return false
+	}
+	s.settingsChecked.Store(int64(pid))
+	stopped, err := stopEngineIf(ctx, s.cfg.Port, pid)
+	if err != nil {
+		slog.Warn("memory engine could not be restarted for its settings", "changed", changed, "error", err)
+		return false
+	}
+	s.lastSettingsRestart.Store(time.Now().UnixNano())
+	slog.Info("memory engine restarted for its settings; it was started with different ones",
+		"changed", changed, "pid", pid)
+	if stopped == 0 {
+		return true // already replaced by something else, which is the outcome this wanted
+	}
+	s.deliberateStop.Store(true)
+	return true
+}
+
+// WatchSettings turns on the settings check for the one supervisor that
+// should run it, the gateway. Any other engine is left as it is.
+func WatchSettings(e Engine) {
+	if s, ok := e.(*Sidecar); ok {
+		s.watchSettings.Store(true)
 	}
 }
 
