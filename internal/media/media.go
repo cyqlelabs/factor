@@ -178,7 +178,8 @@ func NewPlayer(home string, notify Notifier) *Player {
 
 // helper describes the one program this needs, in the shape the wizard and
 // pkg_install provision from.
-var helper = desktop.Helper{Bin: "mpv", Purpose: "playing music and audio streams"}
+var helper = desktop.Helper{Bin: "mpv", Purpose: "playing music and audio streams",
+	Packages: map[string]string{"winget": "shinchiro.mpv"}}
 
 // MissingHelpers is the programs the player needs that the machine lacks.
 func MissingHelpers(has func(string) bool) []desktop.Helper {
@@ -188,12 +189,8 @@ func MissingHelpers(has func(string) bool) []desktop.Helper {
 	return []desktop.Helper{helper}
 }
 
-// Available reports whether a player can run here at all: the binary is
-// installed and the platform has an IPC transport.
+// Available reports whether a player can run here at all: mpv is installed.
 func (p *Player) Available() error {
-	if ipcAddress(p.home) == "" {
-		return errors.New("the media player is not available on Windows yet")
-	}
 	if _, err := exec.LookPath(p.argv[0]); err != nil {
 		return fmt.Errorf("%s is not installed on this machine, so nothing can be played yet; "+
 			"install it with pkg_install (package %q) and try again", helper.Bin, helper.Bin)

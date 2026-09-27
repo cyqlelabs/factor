@@ -259,7 +259,8 @@ func TestToolResolvesSourcesAndGuardsFiles(t *testing.T) {
 	if res := tool.Execute(context.Background(), map[string]any{"action": "play"}); !res.IsError || !strings.Contains(res.ForLLM, "source is required") {
 		t.Errorf("play without source = %+v", res)
 	}
-	if res := tool.Execute(context.Background(), map[string]any{"action": "play", "source": "/etc/passwd"}); !res.IsError || !strings.Contains(res.ForLLM, "outside workspace") {
+	outside := filepath.Join(t.TempDir(), "outside.mp3") // a sibling of the workspace, on every platform
+	if res := tool.Execute(context.Background(), map[string]any{"action": "play", "source": outside}); !res.IsError || !strings.Contains(res.ForLLM, "outside workspace") {
 		t.Errorf("a file outside the workspace = %+v", res)
 	}
 	if got, err := tool.resolve("ytsearch: Crown Lands Fearless"); err != nil || got != "ytdl://ytsearch1:Crown Lands Fearless" {

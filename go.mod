@@ -3,6 +3,8 @@ module github.com/cyqlelabs/factor
 go 1.25.13
 
 require (
+	fyne.io/systray v1.12.2
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/adhocore/gronx v1.20.1
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
@@ -15,7 +17,6 @@ require (
 )
 
 require (
-	fyne.io/systray v1.12.2 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect

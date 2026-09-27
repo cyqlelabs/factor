@@ -66,7 +66,7 @@ func fakeMPV() {
 		fmt.Fprintln(os.Stderr, "fake mpv: no --input-ipc-server")
 		os.Exit(4)
 	}
-	ln, err := net.Listen("unix", address)
+	ln, err := listenIPC(address)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake mpv:", err)
 		os.Exit(4)
