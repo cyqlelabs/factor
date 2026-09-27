@@ -61,7 +61,7 @@ func TestClientRememberRoutesBeliefs(t *testing.T) {
 		t.Fatalf("id=%q err=%v", id, err)
 	}
 	_, err = c.Remember(context.Background(), RememberRequest{
-		Content: "Python is best for ML", Type: "belief", Probability: 0.9, Evidence: "team survey",
+		Content: "Python is best for ML", Type: "belief", Probability: 0.9, Evidence: "team survey", Source: "agent",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +76,11 @@ func TestClientRememberRoutesBeliefs(t *testing.T) {
 	}
 	if second["_path"] != "/believe" || second["statement"] != "Python is best for ML" || second["evidence"] != "team survey" {
 		t.Errorf("belief with evidence must use /believe: %v", second)
+	}
+	// Who asserted it travels with the belief too: without it the engine
+	// gives an agent's own conclusion the standing of something the user said.
+	if second["source"] != "agent" {
+		t.Errorf("believe must carry source: %v", second)
 	}
 	// auth split: smrti key in X-Api-Key, LLM extraction key in Authorization
 	if first["_apikey"] != "smrti-key" || first["_auth"] != "Bearer llm-key" {

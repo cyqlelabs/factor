@@ -168,6 +168,12 @@ func (c *Client) Remember(ctx context.Context, req RememberRequest) (string, err
 	}
 	if req.Type == "belief" && req.Evidence != "" {
 		body := map[string]any{"statement": req.Content, "probability": req.Probability, "evidence": req.Evidence}
+		// Same rule as /remember below: sent only when set, so an engine too
+		// old to read it sees the payload it always saw. Without it a belief
+		// the agent asserted about its own work was filed with user standing.
+		if req.Source != "" {
+			body["source"] = req.Source
+		}
 		c.addSpace(body, req.Space)
 		if err := c.do(ctx, http.MethodPost, "/believe", body, &out); err != nil {
 			return "", err
