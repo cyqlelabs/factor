@@ -1062,6 +1062,9 @@ func (v *Voice) speak(ctx context.Context, text string) {
 		if len(next.pcm) == 0 {
 			continue
 		}
+		if v.cfg.clearVoice() {
+			clearSpeech(next.pcm)
+		}
 		scalePCM(next.pcm, v.cfg.OutputVolume)
 		v.echo.record(chunk)
 		done := v.player.play(ctx, next.pcm)

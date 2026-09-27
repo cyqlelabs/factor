@@ -596,7 +596,10 @@ func TestVoiceKeepsTheUserWordsBehindItsOwnEcho(t *testing.T) {
 // output_volume scales the synthesized voice on its way to the speakers — the
 // blunt lever against feedback when the room is loud.
 func TestVoiceOutputVolumeScalesTheReply(t *testing.T) {
-	h := newVoiceHarness(t, func(c *Config) { c.OutputVolume = 50 })
+	off := false
+	// A constant-level frame is what the clarity filter removes as DC, so
+	// the scaling is measured with the filter off.
+	h := newVoiceHarness(t, func(c *Config) { c.OutputVolume = 50; c.ClearVoice = &off })
 	h.setReplyPCM(toneFrame(1000))
 	h.start()
 	h.say()
@@ -1814,5 +1817,33 @@ func TestSaidRecentlyMatchesWordsNotPunctuation(t *testing.T) {
 	}
 	if len(v.recent) != recentKeep {
 		t.Errorf("kept %d utterances, want %d", len(v.recent), recentKeep)
+	}
+}
+
+// What reaches the speakers is the cleaned voice: a quiet synthesis comes
+// out at speaking level, and clear_voice=false hands the synthesis through
+// as it came.
+func TestSpeakClearsTheVoiceUnlessTurnedOff(t *testing.T) {
+	quiet := make([]byte, 2*playbackRate/2)
+	for i := 0; i < len(quiet)/2; i++ {
+		v := int16(800 * math.Sin(2*math.Pi*440*float64(i)/playbackRate))
+		binary.LittleEndian.PutUint16(quiet[2*i:], uint16(v))
+	}
+	for _, clear := range []bool{true, false} {
+		h := newVoiceHarness(t, func(c *Config) { c.ClearVoice = &clear })
+		h.setReplyPCM(quiet)
+		h.start()
+		if err := h.v.Send(context.Background(), bus.OutboundMessage{Content: "a spoken note"}); err != nil {
+			t.Fatal(err)
+		}
+		waitUntil(t, func() bool { return len(h.speaker.heard()) >= len(quiet) })
+		heard := rmsDB(toFloat(h.speaker.heard()[:len(quiet)]))
+		in := rmsDB(toFloat(quiet))
+		if clear && heard < in+6 {
+			t.Errorf("clear_voice on: the speakers got %.1f dBFS for a %.1f dBFS synthesis", heard, in)
+		}
+		if !clear && math.Abs(heard-in) > 0.1 {
+			t.Errorf("clear_voice off: the synthesis was changed from %.1f to %.1f dBFS", in, heard)
+		}
 	}
 }

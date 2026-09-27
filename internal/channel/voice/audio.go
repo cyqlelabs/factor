@@ -221,14 +221,23 @@ func playbackCommand(e Env, device string) ([]string, error) {
 		return windowsPlayback(e, device)
 	}
 	switch {
+	// The voice is its own stream in the mixer, named for Factor and opened
+	// at full volume every time: a stream volume the client states is one
+	// the sound server's stream-restore leaves alone, so a mixer slider
+	// dragged during yesterday's music does not come back on today's answer.
+	// It used to share paplay's own identity with anything else that ran
+	// paplay, which is how the music and the voice once fought over one
+	// slider.
 	case e.has("paplay"):
-		argv := []string{"paplay", "--raw", "--format=s16le", "--rate=24000", "--channels=1"}
+		argv := []string{"paplay", "--raw", "--format=s16le", "--rate=24000", "--channels=1",
+			"--client-name=Factor", "--stream-name=Factor voice", "--volume=65536"}
 		if device != "" {
 			argv = append(argv, "--device="+device)
 		}
 		return argv, nil
 	case e.has("pw-play"):
-		argv := []string{"pw-play", "--format=s16", "--rate=24000", "--channels=1"}
+		argv := []string{"pw-play", "--format=s16", "--rate=24000", "--channels=1",
+			"--volume=1.0", "-P", `{ application.name = "Factor", media.name = "Factor voice" }`}
 		if device != "" {
 			argv = append(argv, "--target", device)
 		}

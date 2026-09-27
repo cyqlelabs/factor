@@ -140,6 +140,11 @@ type Config struct {
 	// the other reading of a misheard wake word, and the two are worth
 	// telling apart. nil means on.
 	IgnoredChime *bool `json:"ignored_chime,omitempty"`
+	// ClearVoice cleans the synthesized voice before it reaches the speakers
+	// — rumble and hiss filtered out, every sentence brought to one loudness
+	// with its peaks held under full scale (clarity.go) — so it is clear over
+	// music and the same on every platform. On unless set to false.
+	ClearVoice *bool `json:"clear_voice,omitempty"`
 
 	// VADRatio is how far above the noise floor speech has to rise;
 	// BargeRatio is the same bar while the agent is speaking, set higher so
@@ -158,6 +163,8 @@ type Config struct {
 func (c Config) ignoredChime() bool {
 	return c.IgnoredChime == nil || *c.IgnoredChime
 }
+
+func (c Config) clearVoice() bool { return c.ClearVoice == nil || *c.ClearVoice }
 
 func (c Config) localAudioFallback() bool {
 	return c.LocalAudioFallback == nil || *c.LocalAudioFallback

@@ -498,3 +498,33 @@ func TestSoxHonoursANamedDeviceOnMacOS(t *testing.T) {
 		t.Errorf("capture with no device = %v", bare)
 	}
 }
+
+// The voice is its own stream in the mixer, opened at full volume every
+// time, so a slider the user moved during music never mutes an answer.
+func TestPlaybackStreamIsFactorsOwnAtFullVolume(t *testing.T) {
+	argv, err := playbackCommand(scriptedEnv("linux", "paplay"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--client-name=Factor", "--volume=65536"} {
+		if !hasArg(argv, want) {
+			t.Errorf("paplay argv %v lacks %s", argv, want)
+		}
+	}
+	argv, err = playbackCommand(scriptedEnv("linux", "pw-play"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasArg(argv, "--volume=1.0") || !hasArg(argv, `{ application.name = "Factor", media.name = "Factor voice" }`) {
+		t.Errorf("pw-play argv %v does not name the stream at full volume", argv)
+	}
+}
+
+func hasArg(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
