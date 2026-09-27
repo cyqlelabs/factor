@@ -172,9 +172,12 @@ func (t *roomTool) Description() string {
 	return "Report who else is within earshot, so replies and memory stay scoped to the room. " +
 		"Use action=company when someone joins or you learn a person is present who has not spoken " +
 		"(names optional); action=alone when the user says everyone has left; action=left with a name " +
-		"for one person leaving; action=status to check. While company is present the conversation " +
-		"runs in a shared session and only shared memory is recalled, so nothing said in private is " +
-		"repeated out loud. Call it as soon as you learn the room changed, not at the end of the turn."
+		"for one person leaving; action=status to check. alone and left take quote: the user's own " +
+		"words, said on the microphone just now, that say so — they are checked, and a room is never " +
+		"emptied on an inference or on something said earlier in the conversation. While company is " +
+		"present the conversation runs in a shared session and only shared memory is recalled, so " +
+		"nothing said in private is repeated out loud. Call it as soon as you learn the room changed, " +
+		"not at the end of the turn."
 }
 
 func (t *roomTool) Parameters() map[string]any {
@@ -190,6 +193,10 @@ func (t *roomTool) Parameters() map[string]any {
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
 				"description": "Who joined, for company; who left, for left",
+			},
+			"quote": map[string]any{
+				"type":        "string",
+				"description": "For alone and left: the user's words, from what they just said, that say the person is gone",
 			},
 		},
 		"required": []string{"action"},
@@ -213,11 +220,17 @@ func (t *roomTool) Execute(_ context.Context, args map[string]any) *tools.Result
 		// was about to say is spoken.
 		rescoped = t.voice.rescopeTurn()
 	case "alone":
+		if res := t.saidSo(args); res != nil {
+			return res
+		}
 		r.declare(false, nil, now)
 	case "left":
 		names := stringsArg(args, "names")
 		if len(names) == 0 {
 			return tools.Errorf("names is required for action=left; use action=alone if everyone has gone")
+		}
+		if res := t.saidSo(args); res != nil {
+			return res
 		}
 		for _, n := range names {
 			r.forget(n)
@@ -238,7 +251,25 @@ func (t *roomTool) Execute(_ context.Context, args map[string]any) *tools.Result
 	return tools.Textf("The room is shared with %s. Replies are audible to them, and only shared "+
 		"memory is being recalled. Nothing announces a departure to the microphone, so if the "+
 		"user says nobody else is here, they are right and this state is stale: correct it with "+
-		"action=alone, or action=left naming who went.", strings.Join(st.Present, ", "))
+		"action=alone, or action=left naming who went, quoting the words they just said.", strings.Join(st.Present, ", "))
+}
+
+// saidSo is the provenance check on emptying the room: the quoted words have
+// to be ones the user said on the microphone within the last couple of
+// minutes. Anything else — a model's inference, a line from earlier in the
+// history that still reads as fresh — is refused, because a room wrongly
+// called private says a secret to a guest, and on this machine the room was
+// once emptied on the strength of a "we're alone" said two requests before.
+func (t *roomTool) saidSo(args map[string]any) *tools.Result {
+	quote := tools.StringArg(args, "quote")
+	if strings.TrimSpace(quote) == "" {
+		return tools.Errorf("quote is required: the user's words, from what they just said, that say the room emptied")
+	}
+	if !t.voice.saidRecently(quote) {
+		return tools.Errorf("the user did not say %q on the microphone just now, so the room stays as it is; "+
+			"only their own words, said now, can empty it", quote)
+	}
+	return nil
 }
 
 // stringsArg reads a JSON array of strings, which arrives as []any.

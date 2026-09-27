@@ -156,6 +156,13 @@ type Voice struct {
 	// Factor is still somebody in the room.
 	room *room
 
+	// sound is what Factor is playing into the room besides its voice — the
+	// media player — nil where nothing was bound. Music on the speakers is
+	// sound the microphone hears like any other: it raises the detector's
+	// bar the way the agent's own voice does, it is held down while anybody
+	// talks, and audio it was in is never read for who is in the room.
+	sound channel.Sound
+
 	mu            sync.Mutex
 	stopped       bool
 	effective     Config
@@ -169,6 +176,76 @@ type Voice struct {
 	lastChime     time.Time
 	lastSpeaker   string
 	lastSpeakerAt time.Time
+	// recent is what the user said on the microphone lately, the evidence
+	// the room tool demands before it empties the room: an "everyone left"
+	// has to be quoted from something said now, not remembered from history.
+	recent []spokenLine
+}
+
+// spokenLine is one accepted utterance and when it was said.
+type spokenLine struct {
+	text string
+	at   time.Time
+}
+
+// recentWindow is how long an utterance counts as "just said" for the room
+// tool; recentKeep is how many are kept.
+const (
+	recentWindow = 2 * time.Minute
+	recentKeep   = 4
+)
+
+// BindSound tells the channel what Factor plays into the room besides its
+// own voice. Bound before Start.
+func (v *Voice) BindSound(s channel.Sound) { v.sound = s }
+
+// noteUtterance remembers something the user just said, for saidRecently.
+func (v *Voice) noteUtterance(text string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.recent = append(v.recent, spokenLine{text: text, at: time.Now()})
+	if len(v.recent) > recentKeep {
+		v.recent = v.recent[len(v.recent)-recentKeep:]
+	}
+}
+
+// saidRecently reports whether quote is a run of words the user said on the
+// microphone within recentWindow. Punctuation and case do not count; the
+// words do.
+func (v *Voice) saidRecently(quote string) bool {
+	want := normalizeWords(quote)
+	if want == "" {
+		return false
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for _, line := range v.recent {
+		if time.Since(line.at) > recentWindow {
+			continue
+		}
+		if strings.Contains(" "+normalizeWords(line.text)+" ", " "+want+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeWords lowercases text and keeps only its letters and digits,
+// single-spaced, so a quote survives a transcriber's punctuation.
+func normalizeWords(text string) string {
+	var b strings.Builder
+	space := true
+	for _, r := range strings.ToLower(text) {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			space = false
+		case !space:
+			b.WriteByte(' ')
+			space = true
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // New builds the connector from an already-decoded config section.
@@ -461,7 +538,7 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 
 	seg := newSegmenter(v.cfg.VADRatio, v.cfg.BargeRatio, v.cfg.SilenceMs)
 	frame := make([]byte, frameBytes)
-	barged, overlapped := false, false
+	barged, overlapped, musicIn, ducked := false, false, false, false
 	var utterStart time.Time
 	for {
 		if _, err := io.ReadFull(stream, frame); err != nil {
@@ -487,8 +564,21 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 		}
 
 		playing, speaking := v.player.sound()
+		// Music is sound in the room like the agent's voice is: the
+		// detector raises its bar against it rather than opening on every
+		// chorus, and the floor is not taught a level the speakers set.
+		music := v.sound != nil && v.sound.Sounding()
 		wasOpen := seg.inSpeech
-		started, ended, utterance := seg.push(frame, playing)
+		started, ended, utterance := seg.push(frame, playing || music)
+		if music && (wasOpen || started) {
+			musicIn = true
+		}
+		if started && v.sound != nil {
+			// Somebody is talking: hold the music down until they stop, so
+			// what the transcriber gets is the words and not the record.
+			v.sound.Duck(true)
+			ducked = true
+		}
 		if playing && (wasOpen || started) {
 			// The agent's voice was in the air while this segment was
 			// recording. That is the wider fact than a barge and the one
@@ -514,8 +604,12 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 		if !ended {
 			continue
 		}
-		wasBarge, wasOverlap := barged, overlapped
-		barged, overlapped = false, false
+		if ducked {
+			v.sound.Duck(false)
+			ducked = false
+		}
+		wasBarge, wasOverlap, wasMusic := barged, overlapped, musicIn
+		barged, overlapped, musicIn = false, false, false
 		if utterance == nil {
 			// Too short to hold a word — a cough. Let the reply go on.
 			slog.Debug("a sound opened the microphone but was too short to keep")
@@ -523,10 +617,10 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 			continue
 		}
 		slog.Debug("utterance captured", "ms", len(utterance)/2*1000/captureRate,
-			"barge", wasBarge, "overlap", wasOverlap)
+			"barge", wasBarge, "overlap", wasOverlap, "music", wasMusic)
 		select {
 		case v.utts <- capturedUtterance{pcm: utterance, started: utterStart,
-			barged: wasBarge, overlapped: wasOverlap}:
+			barged: wasBarge, overlapped: wasOverlap, music: wasMusic}:
 		default:
 			slog.Warn("dropping an utterance: transcription is falling behind")
 			v.player.resume(ctx)
@@ -568,6 +662,11 @@ type capturedUtterance struct {
 	// never learned as anybody's — a vector mixing the user with the agent
 	// belongs to neither.
 	overlapped bool
+	// music marks one the media player was sounding during. Its audio holds
+	// a record as well as a person and is not read for who is in the room —
+	// a song's vocals once read as two guests — and a sentence the gate turns
+	// away out of it is not chimed at, since it may well be the lyrics.
+	music bool
 }
 
 // utteranceWorker transcribes and dispatches off the capture goroutine, so a
@@ -594,7 +693,7 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		return
 	}
 	dec := v.gate(text, utterance.started, utterance.barged, utterance.overlapped)
-	if dec.noise && !utterance.overlapped {
+	if dec.noise && !utterance.overlapped && !utterance.music {
 		// A sound nobody spoke in is what the room sounds like, and the
 		// detector cannot learn that on its own — see segmenter.absorb. Not
 		// one the agent's own voice was in: that level is the speakers'.
@@ -649,6 +748,9 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		action = "noise"
 	}
 	fields := []any{"text", text, "action", action}
+	if utterance.music {
+		fields = append(fields, "music", true)
+	}
 	if v.speakers != nil && (dec.accept || who.via != "") {
 		fields = append(fields, who.logFields(sessionFor(who, st.Shared), dec.accept)...)
 	}
@@ -669,6 +771,7 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 	slog.Info("voice heard", fields...)
 	switch {
 	case dec.accept:
+		v.noteUtterance(text)
 		// The new utterance owns the floor: whatever was playing is over,
 		// and a turn still thinking answers a question nobody is waiting on.
 		v.player.stop()
@@ -678,7 +781,7 @@ func (v *Voice) handleUtterance(ctx context.Context, utterance capturedUtterance
 		v.player.stop()
 		v.spawn(func() { v.speak(ctx, ackLine(v.cfg.Language)) })
 	default:
-		if dec.turnedAway() {
+		if dec.turnedAway() && !utterance.music {
 			v.chime(ctx)
 		}
 		v.player.resume(ctx)
@@ -909,6 +1012,11 @@ func (v *Voice) speak(ctx context.Context, text string) {
 	defer v.speakMu.Unlock()
 	if ctx.Err() != nil {
 		return // the floor was taken while this waited its turn
+	}
+	if v.sound != nil {
+		// The music comes down for the answer and back up after it.
+		v.sound.Duck(true)
+		defer v.sound.Duck(false)
 	}
 	defer v.armWindow()
 	// However this reply ends — heard out, or cut off by a barge partway —

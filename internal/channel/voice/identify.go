@@ -101,6 +101,7 @@ const (
 	viaEnrolled    = "enrolled"    // nobody matched, so a profile was created
 	viaUnknown     = "unknown"     // nobody matched, and no profile was created
 	viaOverlap     = "overlap"     // recorded with the agent's voice in it: not read
+	viaMusic       = "music"       // recorded with the media player sounding: not read
 	viaShort       = "short"       // too little speech to identify
 	viaUnsure      = "unsure"      // over the threshold, under the bar this reading's length demands
 	viaAmbiguous   = "ambiguous"   // two profiles too close together to choose between
@@ -173,6 +174,12 @@ func (v *Voice) readVoices(ctx context.Context, utterance capturedUtterance, tea
 	// person and teaching from it would move a profile toward a machine.
 	if utterance.overlapped {
 		return v.unread(viaOverlap, teach)
+	}
+	// Music is the same problem with a record instead of a synthesizer: a
+	// song's vocals read as people, and on this machine once read as two
+	// guests and moved the whole conversation into the shared room.
+	if utterance.music {
+		return v.unread(viaMusic, teach)
 	}
 	readings, model, err := v.speechClient().voices(ctx, utterance.pcm)
 	if err != nil {

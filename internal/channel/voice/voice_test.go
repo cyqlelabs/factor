@@ -1680,3 +1680,139 @@ func TestVoiceLetsANoteFinishWhenTheTurnSaysNothing(t *testing.T) {
 	waitUntil(t, func() bool { return h.spoke(note) })
 	waitUntil(t, func() bool { return len(h.speaker.heard()) >= 64000 })
 }
+
+// fakeSound stands in for the media player: it says whether music is on and
+// counts who is holding it down.
+type fakeSound struct {
+	on    atomic.Bool
+	mu    sync.Mutex
+	holds int
+	peak  int
+	calls []bool
+}
+
+func (s *fakeSound) Sounding() bool { return s.on.Load() }
+
+func (s *fakeSound) Duck(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, on)
+	if on {
+		s.holds++
+		if s.holds > s.peak {
+			s.peak = s.holds
+		}
+	} else {
+		s.holds--
+	}
+}
+
+func (s *fakeSound) held() (holds, peak int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.holds, s.peak
+}
+
+// Music on the speakers is a record and a person in one recording: the
+// utterance still becomes a turn, but nobody is named or enrolled out of it,
+// the room does not fill up on the vocals, and the music is held down while
+// the person talks.
+func TestVoiceDoesNotReadPeopleOutOfMusic(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.enableSpeakerID(unknownEnroll)
+	h.enableRoom(time.Hour)
+	sound := &fakeSound{}
+	sound.on.Store(true)
+	h.v.BindSound(sound)
+	h.start()
+
+	h.setEmbedding([]float64{1, 0, 0})
+	h.setVoices(voiceReading{Seconds: 4, Embedding: []float64{1, 0, 0}}, voiceReading{Seconds: 3, Embedding: []float64{0, 1, 0}})
+	h.say()
+	call := h.turn(10 * time.Second)
+	if call.session != sessionKey || call.audience != "" {
+		t.Errorf("the turn ran as %+v; music must not fill the room", call)
+	}
+	if got := h.embedded(); len(got) != 0 {
+		t.Errorf("audio with music in it was embedded: %v", got)
+	}
+	if h.v.speakers.hasProfiles() {
+		t.Error("a profile was enrolled out of a recording with music in it")
+	}
+	if st := h.v.room.snapshot(time.Now()); st.Shared {
+		t.Errorf("the vocals filled the room: %+v", st)
+	}
+	waitUntil(t, func() bool { holds, _ := sound.held(); return holds == 0 })
+	if _, peak := sound.held(); peak == 0 {
+		t.Error("the music was never held down while the user talked")
+	}
+}
+
+// The music comes down for the answer and back up after it.
+func TestVoiceDucksTheMusicWhileItSpeaks(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	sound := &fakeSound{}
+	sound.on.Store(true)
+	h.v.BindSound(sound)
+	h.setReplyPCM(clip(48000))
+	h.start()
+
+	if err := h.v.Send(context.Background(), bus.OutboundMessage{Content: "a spoken note"}); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool { return len(h.speaker.heard()) > 0 })
+	waitUntil(t, func() bool { holds, _ := sound.held(); return holds == 0 })
+	if _, peak := sound.held(); peak != 1 {
+		t.Errorf("held %d deep while speaking, want exactly one hold", peak)
+	}
+}
+
+// A sentence the gate turns away while music plays may well be the lyrics:
+// answering it with the chime would chime at every chorus.
+func TestVoiceDoesNotChimeAtTheLyrics(t *testing.T) {
+	h := newVoiceHarness(t, func(c *Config) {
+		c.Activation = activationWakeWord
+		c.WakeWord = "factor"
+	})
+	sound := &fakeSound{}
+	sound.on.Store(true)
+	h.v.BindSound(sound)
+	h.setTranscript("we will we will rock you")
+	h.start()
+
+	h.say()
+	h.noTurn(2 * time.Second)
+	if heard := h.speaker.heard(); len(heard) != 0 {
+		t.Errorf("the lyrics were chimed at: %d bytes on the speakers", len(heard))
+	}
+}
+
+// The words the room tool checks survive the transcriber's punctuation and
+// the model's casing, but not a paraphrase.
+func TestSaidRecentlyMatchesWordsNotPunctuation(t *testing.T) {
+	v := &Voice{}
+	v.noteUtterance("¡Factor! Ya estamos solos, se fue Roxana.")
+	for quote, want := range map[string]bool{
+		"ya estamos solos":         true,
+		"YA ESTAMOS SOLOS":         true,
+		"se fue roxana":            true,
+		"estamos solos se fue":     true,
+		"estamos solas":            false,
+		"solos ya":                 false,
+		"":                         false,
+		"Ya estamos solos, se fue": true,
+	} {
+		if got := v.saidRecently(quote); got != want {
+			t.Errorf("saidRecently(%q) = %v, want %v", quote, got, want)
+		}
+	}
+	for i := 0; i < recentKeep+2; i++ {
+		v.noteUtterance(fmt.Sprintf("line %d", i))
+	}
+	if v.saidRecently("ya estamos solos") {
+		t.Error("an utterance older than the last few was still quotable")
+	}
+	if len(v.recent) != recentKeep {
+		t.Errorf("kept %d utterances, want %d", len(v.recent), recentKeep)
+	}
+}

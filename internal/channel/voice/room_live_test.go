@@ -290,19 +290,41 @@ func TestRoomToolDrivesTheRoom(t *testing.T) {
 		t.Errorf("a shared room never offered the correction: %+v", res)
 	}
 
-	res = tool.Execute(context.Background(), map[string]any{"action": "left", "names": []any{"Roxana"}})
+	// Emptying the room takes the user's own words, said now.
+	if res := tool.Execute(context.Background(), map[string]any{"action": "left", "names": []any{"Roxana"}}); !res.IsError {
+		t.Errorf("left with no quote was accepted: %+v", res)
+	}
+	h.v.noteUtterance("Roxana just left, it's the two of us.")
+	if res := tool.Execute(context.Background(), map[string]any{"action": "left", "names": []any{"Roxana"}, "quote": "she went home"}); !res.IsError {
+		t.Errorf("left on words the user never said was accepted: %+v", res)
+	}
+	res = tool.Execute(context.Background(), map[string]any{"action": "left", "names": []any{"Roxana"}, "quote": "Roxana just left"})
 	if res.IsError || !strings.Contains(res.ForLLM, "private") {
 		t.Errorf("left = %+v", res)
 	}
 
-	if res := tool.Execute(context.Background(), map[string]any{"action": "left"}); !res.IsError {
+	if res := tool.Execute(context.Background(), map[string]any{"action": "left", "quote": "Roxana just left"}); !res.IsError {
 		t.Error("left with nobody named was accepted")
 	}
 
 	tool.Execute(context.Background(), map[string]any{"action": "company"})
-	res = tool.Execute(context.Background(), map[string]any{"action": "alone"})
+	if res := tool.Execute(context.Background(), map[string]any{"action": "alone", "quote": "poné otra canción"}); !res.IsError {
+		t.Errorf("alone on a request for music was accepted: %+v", res)
+	}
+	h.v.noteUtterance("Bueno, ya estamos solos.")
+	res = tool.Execute(context.Background(), map[string]any{"action": "alone", "quote": "ya estamos solos"})
 	if res.IsError || !strings.Contains(res.ForLLM, "private") {
 		t.Errorf("alone = %+v", res)
+	}
+	// Said, but not now: a line from two minutes ago is history, not evidence.
+	tool.Execute(context.Background(), map[string]any{"action": "company"})
+	h.v.mu.Lock()
+	for i := range h.v.recent {
+		h.v.recent[i].at = h.v.recent[i].at.Add(-recentWindow - time.Second)
+	}
+	h.v.mu.Unlock()
+	if res := tool.Execute(context.Background(), map[string]any{"action": "alone", "quote": "ya estamos solos"}); !res.IsError {
+		t.Errorf("alone on stale words was accepted: %+v", res)
 	}
 
 	if res := tool.Execute(context.Background(), map[string]any{"action": "sideways"}); !res.IsError {
