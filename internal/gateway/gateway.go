@@ -171,6 +171,9 @@ func serve(configPath string) (bool, error) {
 		if addresser, ok := ch.(channel.Addresser); ok {
 			addresser.BindLastExternal(a.Loop.LastChannel)
 		}
+		if hearing, ok := ch.(channel.Hearing); ok {
+			hearing.BindSound(a.Media)
+		}
 		if provider, ok := ch.(channel.Toolset); ok {
 			a.Registry.Register(provider.Toolset()...)
 		}

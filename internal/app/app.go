@@ -23,6 +23,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/jobs"
 	"github.com/cyqlelabs/factor/internal/mcp"
+	"github.com/cyqlelabs/factor/internal/media"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/session"
@@ -57,6 +58,9 @@ type App struct {
 	Jobs *jobs.Engine
 	Cron *cron.Service
 	MCP  *mcp.Manager
+	// Media is the player the media tool drives; a listening connector is
+	// bound to it so the microphone knows what Factor is playing.
+	Media *media.Player
 	// Restart is how the upgrade tool reloads this process into the release
 	// it just installed. Only a daemon fills it in.
 	Restart *upgrade.Restarter
@@ -398,6 +402,21 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		})
 	registry.Register(jobs.NewTools(jobEngine)...)
 
+	// Music: one player the agent owns, whose "playing" means the source
+	// opened and the position is moving. When the queue runs out, the
+	// conversation that asked for it is told the way a job's completion is.
+	mediaPlayer := media.NewPlayer(config.Home(), func(origin media.Origin, text string) {
+		b.PublishInbound(bus.InboundMessage{
+			Channel:  origin.Channel,
+			ChatID:   origin.ChatID,
+			Content:  text,
+			Time:     time.Now(),
+			Audience: origin.Audience,
+			System:   true,
+		})
+	})
+	registry.Register(media.NewTool(mediaPlayer, guard))
+
 	cronService, err := cron.NewService(filepath.Join(ws, "cron"),
 		func(ctx context.Context, job cron.Job) (string, error) {
 			// Resolved before the turn as well as after it: the reply is
@@ -446,6 +465,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Jobs:     jobEngine,
 		Cron:     cronService,
 		MCP:      mcpManager,
+		Media:    mediaPlayer,
 		Restart:  restarter,
 
 		SmrtiUpgrade: smrtiUpgrade,
@@ -517,6 +537,8 @@ func (a *App) Close() {
 	// the supervisor to stop respawning; this waits for the child to go.
 	a.Decisions.Stop()
 	a.closeBrowser()
+	// Music does not outlive the process that can stop it.
+	a.Media.Close()
 	if a.MCP != nil {
 		a.MCP.CloseAll()
 	}

@@ -427,6 +427,9 @@ func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sess
 		// every outbound cli message.
 		addresser.BindLastExternal(func() (string, string, bool) { return "cli", sessionName, true })
 	}
+	if hearing, ok := ch.(channel.Hearing); ok {
+		hearing.BindSound(a.Media)
+	}
 	if provider, ok := ch.(channel.Toolset); ok {
 		a.Registry.Register(provider.Toolset()...)
 	}

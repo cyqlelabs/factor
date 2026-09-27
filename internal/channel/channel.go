@@ -87,6 +87,22 @@ type Toolset interface {
 	Toolset() []tools.Tool
 }
 
+// Sound is audio Factor itself is putting on the speakers besides its own
+// voice — the media player — as a connector with a microphone needs to know
+// it: whether it is sounding right now, and a way to hold it down while
+// somebody is talking or Factor is answering.
+type Sound interface {
+	Sounding() bool
+	Duck(on bool)
+}
+
+// Hearing is the optional capability of a connector that listens to the room
+// and so has to be told what Factor is playing into it, or a song's vocals
+// are read as a stranger and its lyrics as speech. Bound before Start.
+type Hearing interface {
+	BindSound(Sound)
+}
+
 // Guarded is the optional capability of a connector that reads or writes
 // files itself — sending a chat a local file, saving one it received — and so
 // must obey the same path rules as every file tool. Bound before Start.

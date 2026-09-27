@@ -547,11 +547,16 @@ func TestQuietRunInstallsAudioHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(installed) != 1 || installed[0] != "pulseaudio-utils" {
+	// The capture helpers for the microphone, then the player for the music
+	// the same machine will be asked for.
+	if strings.Join(installed, " ") != "pulseaudio-utils mpv" {
 		t.Errorf("installed = %v", installed)
 	}
 	if !strings.Contains(out.String(), "voice:") {
 		t.Errorf("the scriptable path said nothing about the voice helpers:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "media:     installed mpv") {
+		t.Errorf("the scriptable path said nothing about the player:\n%s", out.String())
 	}
 }
 

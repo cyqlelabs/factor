@@ -19,6 +19,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/channel/voice"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/desktop"
+	"github.com/cyqlelabs/factor/internal/media"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/tools"
@@ -252,6 +253,7 @@ func (w *wiz) runQuiet(ctx context.Context) error {
 	if !w.opts.NoInstall {
 		w.quietDesktopHelpers(ctx)
 		w.quietAudioHelpers(ctx)
+		w.quietMediaHelpers(ctx)
 	}
 	if w.cfg.Browser.Enabled && !w.opts.NoInstall && browser.Available() {
 		if err := w.quietBrowser(ctx); err != nil {
@@ -318,6 +320,31 @@ func (w *wiz) quietAudioHelpers(ctx context.Context) {
 		return
 	}
 	w.ui.printf("voice:     installed %s\n", strings.Join(packages, " "))
+}
+
+// quietMediaHelpers installs the music player on any machine with a sound
+// card: music was asked for on a machine that had no player the agent could
+// drive, and what it improvised instead is the reason internal/media exists.
+func (w *wiz) quietMediaHelpers(ctx context.Context) {
+	env := w.opts.Audio
+	if !voice.MachineHasAudio(env) {
+		return
+	}
+	missing := media.MissingHelpers(env.Has)
+	if len(missing) == 0 {
+		return
+	}
+	manager := tools.DetectSystemManager()
+	if manager == "" {
+		w.ui.printf("media:     missing %s and no package manager to install it\n", helperNames(missing))
+		return
+	}
+	packages := desktop.PackagesFor(missing, manager)
+	if _, err := w.opts.InstallPackages(ctx, packages); err != nil {
+		w.ui.printf("media:     %s NOT installed — %v\n", strings.Join(packages, " "), err)
+		return
+	}
+	w.ui.printf("media:     installed %s\n", strings.Join(packages, " "))
 }
 
 func helperNames(helpers []desktop.Helper) string {

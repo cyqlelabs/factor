@@ -87,6 +87,8 @@ func TestDefaultToolArsenal(t *testing.T) {
 		"mcp_add", "mcp_remove", "mcp_list",
 		// asking the user
 		"ask_user",
+		// music
+		"media",
 		// desktop control
 		"window_list", "window_control", "screenshot", "mouse", "type_text",
 		"press_key", "clipboard", "notify", "open", "desktop_info",
