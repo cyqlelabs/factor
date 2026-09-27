@@ -215,7 +215,7 @@ func (p *Player) ensureRunning(ctx context.Context) (*ipcConn, error) {
 	removeIPC(address)
 	args := append([]string{}, p.argv[1:]...)
 	args = append(args,
-		"--idle=yes", "--no-video", "--no-terminal", "--audio-display=no",
+		"--idle=yes", "--no-video", "--no-input-terminal", "--quiet", "--audio-display=no",
 		"--input-ipc-server="+address,
 		fmt.Sprintf("--volume=%d", p.volume),
 		"--msg-level=all=warn")
@@ -302,7 +302,9 @@ func (p *Player) handleEvent(ev ipcEvent) {
 	p.mu.Lock()
 	switch ev.Event {
 	case "file-loaded":
-		p.loaded, p.played, p.lastErr = true, true, ""
+		// stopping is cleared here rather than in Play, so the idle event a
+		// stop leaves in flight is not read as the new source running out.
+		p.loaded, p.played, p.stopping, p.lastErr = true, true, false, ""
 		if p.pending != nil {
 			p.pending <- nil
 			p.pending = nil
@@ -362,7 +364,6 @@ func (p *Player) Play(ctx context.Context, source string, queue bool, origin Ori
 	}
 	p.mu.Lock()
 	p.origin = origin
-	p.stopping = false
 	busy := p.loaded
 	mode := "replace"
 	var pending chan error
@@ -370,8 +371,11 @@ func (p *Player) Play(ctx context.Context, source string, queue bool, origin Ori
 		mode = "append-play"
 	} else {
 		// One waiter at a time: a play that lands on top of another takes
-		// over the slot, and the earlier caller hears its source was
-		// replaced through the status it gets back.
+		// over the slot, and the earlier caller is told so rather than left
+		// waiting out the whole start timeout.
+		if p.pending != nil {
+			p.pending <- errors.New("another source was asked for before this one opened")
+		}
 		pending = make(chan error, 1)
 		p.pending = pending
 	}
@@ -413,7 +417,13 @@ func (p *Player) awaitOpen(ctx context.Context, conn *ipcConn, source string, pe
 	_ = conn.property(ctx, "media-title", &title)
 	p.mu.Lock()
 	p.title = title
+	want, ducked := p.heldVolume(), p.duckers > 0
 	p.mu.Unlock()
+	if ducked {
+		// Started under somebody's voice: come up at the held level, not
+		// over the top of them.
+		_ = p.apply(ctx, conn, want)
+	}
 	return nil
 }
 

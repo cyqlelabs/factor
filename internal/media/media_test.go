@@ -372,3 +372,40 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition never held")
 }
+
+// A play that lands while another is still opening does not leave the first
+// caller waiting out the start timeout: it is told its source was displaced.
+func TestPlayDisplacedByAnotherPlayIsToldSo(t *testing.T) {
+	p := newTestPlayer(t, nil)
+	p.mu.Lock()
+	first := make(chan error, 1)
+	p.pending = first
+	p.mu.Unlock()
+	if _, err := p.Play(context.Background(), "https://radio.example/stream", false, origin); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-first:
+		if err == nil || !strings.Contains(err.Error(), "another source") {
+			t.Errorf("displaced waiter got %v", err)
+		}
+	default:
+		t.Error("the displaced waiter was told nothing")
+	}
+}
+
+// Music asked for while somebody is talking starts at the held level.
+func TestPlayUnderADuckStartsQuiet(t *testing.T) {
+	p := newTestPlayer(t, nil)
+	p.Duck(true)
+	if _, err := p.Play(context.Background(), "https://radio.example/stream", false, origin); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(mpvLog(t), " "); !strings.HasSuffix(got, "volume=17") {
+		t.Errorf("mpv saw %q; want the ducked level applied on load", got)
+	}
+	p.Duck(false)
+	if got := strings.Join(mpvLog(t), " "); !strings.HasSuffix(got, "volume=70") {
+		t.Errorf("mpv saw %q; want the level back", got)
+	}
+}

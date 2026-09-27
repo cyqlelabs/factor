@@ -113,6 +113,9 @@ func (c *ipcConn) command(ctx context.Context, args ...any) (json.RawMessage, er
 		return nil, err
 	}
 	if _, err := c.conn.Write(append(line, '\n')); err != nil {
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
 		return nil, err
 	}
 	timer := time.NewTimer(ipcReplyTimeout)

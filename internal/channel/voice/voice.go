@@ -539,6 +539,12 @@ func (v *Voice) captureLoop(ctx context.Context) error {
 	seg := newSegmenter(v.cfg.VADRatio, v.cfg.BargeRatio, v.cfg.SilenceMs)
 	frame := make([]byte, frameBytes)
 	barged, overlapped, musicIn, ducked := false, false, false, false
+	defer func() {
+		// A stream that dies mid-sentence must not leave the music held down.
+		if ducked {
+			v.sound.Duck(false)
+		}
+	}()
 	var utterStart time.Time
 	for {
 		if _, err := io.ReadFull(stream, frame); err != nil {
