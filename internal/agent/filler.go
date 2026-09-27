@@ -278,7 +278,7 @@ func (f *filler) compose(ctx context.Context) string {
 	if err != nil {
 		slog.Debug("filler line unavailable", "session", f.in.sessionKey, "error", err)
 		f.loop.lightFault.Do(func() {
-			slog.Warn("the fast model could not write a line while a turn worked; turns will run quiet",
+			slog.Warn("the fast model could not write a line while a turn worked; that line is skipped and the next one is tried again",
 				"error", err, "chain", "provider.light")
 		})
 		return ""

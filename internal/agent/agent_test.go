@@ -1287,6 +1287,31 @@ func TestRulesSayToLookFromTheReceivingSide(t *testing.T) {
 	}
 }
 
+// Asked for music, the model once ran three players from exec, read a live
+// pid as sound coming out, killed its own voice by process name and sent
+// configuration to a device it had guessed was the mixer. The rules now say
+// what a command proves, where audio goes, and what is the model's to stop.
+func TestRulesSayWhatACommandProvesAndWhereAudioGoes(t *testing.T) {
+	h := newHarness(t, final("ok"))
+	prompt := h.loop.builder.SystemPrompt()
+	for _, want := range []string{
+		"A command that exited 0 proves it ran",
+		"a process that is alive proves nothing",
+		"goes through the media tool",
+		"Only stop what you started",
+		"not yours to probe or configure",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the operating rules lack %q", want)
+		}
+	}
+	for _, want := range []string{"media tool", "believe the user over your last success claim"} {
+		if !strings.Contains(toolDiscipline, want) {
+			t.Errorf("the restated rules lack %q", want)
+		}
+	}
+}
+
 func TestCheckpointNudgeNamesTheTimeLeftUnderADeadline(t *testing.T) {
 	if got := checkpointNudge(context.Background(), 20); strings.Contains(got, "cut off") {
 		t.Errorf("a turn with no deadline is told about one: %q", got)
