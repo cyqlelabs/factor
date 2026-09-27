@@ -19,13 +19,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/cyqlelabs/factor/internal/desktop"
 	"github.com/cyqlelabs/factor/internal/proxy"
+	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 const (
@@ -150,6 +155,11 @@ type Player struct {
 	home   string
 	argv   []string // the mpv command; tests point it at a fake
 	notify Notifier
+	// manager names the machine's package manager and install runs it;
+	// both are seams so the tests provision without touching the machine.
+	manager func() string
+	install func(ctx context.Context, manager string, packages []string) error
+	getenv  func(string) string
 
 	mu       sync.Mutex
 	cmd      *exec.Cmd
@@ -173,7 +183,21 @@ type Player struct {
 // NewPlayer prepares a player that will run mpv under home when first asked
 // to play. notify may be nil.
 func NewPlayer(home string, notify Notifier) *Player {
-	return &Player{home: home, argv: []string{"mpv"}, notify: notify, volume: defaultVolume}
+	return &Player{home: home, argv: []string{"mpv"}, notify: notify, volume: defaultVolume,
+		manager: tools.DetectSystemManager, install: installPackages, getenv: os.Getenv}
+}
+
+// installPackages runs the same installer the wizard and pkg_install use.
+func installPackages(ctx context.Context, manager string, packages []string) error {
+	list := make([]any, len(packages))
+	for i, p := range packages {
+		list[i] = p
+	}
+	res := tools.NewPkgInstallTool().Execute(ctx, map[string]any{"packages": list, "manager": manager})
+	if res.IsError {
+		return errors.New(firstLine(res.ForLLM, errors.New("install failed")))
+	}
+	return nil
 }
 
 // helper describes the one program this needs, in the shape the wizard and
@@ -189,13 +213,91 @@ func MissingHelpers(has func(string) bool) []desktop.Helper {
 	return []desktop.Helper{helper}
 }
 
-// Available reports whether a player can run here at all: mpv is installed.
-func (p *Player) Available() error {
-	if _, err := exec.LookPath(p.argv[0]); err != nil {
-		return fmt.Errorf("%s is not installed on this machine, so nothing can be played yet; "+
-			"install it with pkg_install (package %q) and try again", helper.Bin, helper.Bin)
+// locate finds the player binary: on PATH, or where a package manager puts
+// it that this process's PATH may not carry — a gateway started by launchd
+// or systemd has the login shell's PATH from before Homebrew or winget added
+// theirs. Found, the path is kept so every later spawn uses it.
+func (p *Player) locate() bool {
+	if path, err := exec.LookPath(p.argv[0]); err == nil {
+		p.argv[0] = path
+		return true
 	}
+	if filepath.IsAbs(p.argv[0]) {
+		return false
+	}
+	name := p.argv[0]
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
+		name += ".exe"
+	}
+	for _, dir := range installDirs(runtime.GOOS, p.getenv) {
+		candidates := []string{filepath.Join(dir, name)}
+		if strings.Contains(dir, "*") {
+			candidates, _ = filepath.Glob(filepath.Join(dir, name))
+		}
+		for _, c := range candidates {
+			if info, err := os.Stat(c); err == nil && !info.IsDir() {
+				p.argv[0] = c
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// installDirs is where each platform's package manager leaves a binary.
+func installDirs(goos string, getenv func(string) string) []string {
+	switch goos {
+	case "windows":
+		local := getenv("LOCALAPPDATA")
+		return []string{
+			filepath.Join(local, "Microsoft", "WinGet", "Links"),
+			filepath.Join(local, "Microsoft", "WinGet", "Packages", "shinchiro.mpv*"),
+			filepath.Join(getenv("ProgramFiles"), "mpv"),
+		}
+	case "darwin":
+		return []string{"/opt/homebrew/bin", "/usr/local/bin"}
+	default:
+		// path.Join rather than filepath.Join: these are unix paths whatever
+		// platform the test that reads them runs on.
+		return []string{"/usr/local/bin", "/usr/bin", "/snap/bin", path.Join(getenv("HOME"), ".local", "bin"), "/home/linuxbrew/.linuxbrew/bin"}
+	}
+}
+
+// Provision makes sure the player is installed, installing it through the
+// machine's package manager when it is not. It is the wizard's step done
+// again at runtime, because an install upgraded into this feature never ran
+// the wizard, and a dependency the user has to install by hand is the one
+// failure setup promised not to have.
+func (p *Player) Provision(ctx context.Context) error {
+	if p.locate() {
+		return nil
+	}
+	manager := p.manager()
+	if manager == "" {
+		return fmt.Errorf("%s is not installed and this machine has no package manager Factor knows how to drive, "+
+			"so nothing can be played", helper.Bin)
+	}
+	pkg := helper.Package(manager)
+	slog.Info("media: installing the player", "package", pkg, "manager", manager)
+	if err := p.install(ctx, manager, []string{pkg}); err != nil {
+		return fmt.Errorf("installing %s via %s: %w", pkg, manager, err)
+	}
+	if !p.locate() {
+		return fmt.Errorf("%s was installed via %s but is not on this process's PATH; it will be found after Factor restarts", pkg, manager)
+	}
+	slog.Info("media: player installed", "path", p.argv[0])
 	return nil
+}
+
+// ProvisionInBackground is Provision for the daemon, which lives long
+// enough to see an install through and is what an upgraded machine runs
+// first; a failure is a log line, and the first play says it again.
+func (p *Player) ProvisionInBackground(ctx context.Context) {
+	go func() {
+		if err := p.Provision(ctx); err != nil {
+			slog.Warn("media: the player could not be provisioned", "error", err)
+		}
+	}()
 }
 
 // ensureRunning spawns mpv and connects to its socket if neither is up.
@@ -205,7 +307,7 @@ func (p *Player) ensureRunning(ctx context.Context) (*ipcConn, error) {
 	if p.conn != nil {
 		return p.conn, nil
 	}
-	if err := p.Available(); err != nil {
+	if err := p.Provision(ctx); err != nil {
 		return nil, err
 	}
 	address := ipcAddress(p.home)

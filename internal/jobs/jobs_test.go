@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -260,13 +261,18 @@ func TestExecJobChildrenDoNotInheritFactorsProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// cmd.exe echoes an unset %VAR% literally; sh needs the -unset default.
+	command, want := `echo "http=${HTTP_PROXY-unset}"`, "http=unset"
+	if runtime.GOOS == "windows" {
+		command, want = `echo http=%HTTP_PROXY%`, "http=%HTTP_PROXY%"
+	}
 	rec := newNotifyRecorder()
 	e := NewEngine(context.Background(), t.TempDir(), nil, nil, rec.notify)
-	if _, err := e.Start(KindExec, "env", `echo "http=${HTTP_PROXY-unset}"`, Origin{Channel: "cli", ChatID: "x"}); err != nil {
+	if _, err := e.Start(KindExec, "env", command, Origin{Channel: "cli", ChatID: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	done := rec.wait(t)
-	if done.State != StateDone || !strings.Contains(done.OutputTail(), "http=unset") {
+	if done.State != StateDone || !strings.Contains(done.OutputTail(), want) {
 		t.Errorf("state=%s output=%q; want Factor's proxy gone from the job's environment", done.State, done.OutputTail())
 	}
 }

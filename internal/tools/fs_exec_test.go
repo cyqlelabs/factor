@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -602,11 +603,16 @@ func TestExecChildrenDoNotInheritFactorsProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res := et.Execute(context.Background(), map[string]any{"command": `echo "http=${HTTP_PROXY-unset} https=${HTTPS_PROXY-unset}"`})
+	// cmd.exe echoes an unset %VAR% literally; sh needs the -unset default.
+	command, want := `echo "http=${HTTP_PROXY-unset} https=${HTTPS_PROXY-unset}"`, "http=unset https=http://corp:3128"
+	if runtime.GOOS == "windows" {
+		command, want = `echo http=%HTTP_PROXY% https=%HTTPS_PROXY%`, "http=%HTTP_PROXY% https=http://corp:3128"
+	}
+	res := et.Execute(context.Background(), map[string]any{"command": command})
 	if res.IsError {
 		t.Fatalf("exec failed: %s", res.ForLLM)
 	}
-	if !strings.Contains(res.ForLLM, "http=unset https=http://corp:3128") {
+	if !strings.Contains(res.ForLLM, want) {
 		t.Errorf("child environment = %q; want Factor's proxy gone and the shell's kept", strings.TrimSpace(res.ForLLM))
 	}
 }

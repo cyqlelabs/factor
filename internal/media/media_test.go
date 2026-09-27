@@ -2,10 +2,12 @@ package media
 
 import (
 	"context"
+	"errors"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -211,13 +213,86 @@ func TestDuckHoldsUntilEveryHolderReleases(t *testing.T) {
 	}
 }
 
-// A machine without mpv is told what to install, in the words pkg_install
-// understands, rather than handed a shell error.
+// A machine without mpv installs it before the first note: the wizard's step
+// done again at runtime, through the same installer, with the package named
+// for the manager the machine has.
+func TestPlayProvisionsTheMissingPlayer(t *testing.T) {
+	bin := t.TempDir()
+	t.Setenv("PATH", bin)
+	p := newTestPlayer(t, nil)
+	p.argv = []string{"factor-test-mpv"}
+	var asked []string
+	p.manager = func() string { return "winget" }
+	p.install = func(_ context.Context, manager string, packages []string) error {
+		asked = append(asked, manager+":"+strings.Join(packages, ","))
+		name := "factor-test-mpv"
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		self, err := os.ReadFile(os.Args[0])
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(bin, name), self, 0o700)
+	}
+	st, err := p.Play(context.Background(), "https://radio.example/stream", false, origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StatePlaying {
+		t.Errorf("status = %+v", st)
+	}
+	if strings.Join(asked, " ") != "winget:shinchiro.mpv" {
+		t.Errorf("installed %v; want the winget package once", asked)
+	}
+}
+
+// What provisioning cannot do it says: no manager to drive, an install that
+// did not land on PATH, an installer that refused.
+func TestProvisionSaysWhyItCouldNot(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	p := newTestPlayer(t, nil)
+	p.argv = []string{"factor-test-mpv"}
+	p.manager = func() string { return "" }
+	if err := p.Provision(context.Background()); err == nil || !strings.Contains(err.Error(), "no package manager") {
+		t.Errorf("no manager: %v", err)
+	}
+	p.manager = func() string { return "apt" }
+	p.install = func(context.Context, string, []string) error { return nil }
+	if err := p.Provision(context.Background()); err == nil || !strings.Contains(err.Error(), "not on this process's PATH") {
+		t.Errorf("install that landed nowhere: %v", err)
+	}
+	p.install = func(context.Context, string, []string) error { return errors.New("the user dismissed the prompt") }
+	_, err := p.Play(context.Background(), "https://radio.example/stream", false, origin)
+	if err == nil || !strings.Contains(err.Error(), "installing mpv via apt: the user dismissed the prompt") {
+		t.Errorf("refused install: %v", err)
+	}
+}
+
+func TestInstallDirsFollowEachPlatformsManager(t *testing.T) {
+	getenv := func(k string) string {
+		return map[string]string{"LOCALAPPDATA": `C:\Users\n\AppData\Local`, "ProgramFiles": `C:\Program Files`, "HOME": "/home/n"}[k]
+	}
+	win := strings.Join(installDirs("windows", getenv), " ")
+	if !strings.Contains(win, "WinGet") || !strings.Contains(win, "shinchiro.mpv*") {
+		t.Errorf("windows dirs = %s", win)
+	}
+	if mac := strings.Join(installDirs("darwin", getenv), " "); !strings.Contains(mac, "/opt/homebrew/bin") {
+		t.Errorf("darwin dirs = %s", mac)
+	}
+	if linux := strings.Join(installDirs("linux", getenv), " "); !strings.Contains(linux, "/home/n/.local/bin") {
+		t.Errorf("linux dirs = %s", linux)
+	}
+}
+
+// The helper list names the player for the wizard, and a player that cannot
+// be installed still answers every other call sensibly.
 func TestMissingPlayerIsNamedWithItsPackage(t *testing.T) {
-	p := NewPlayer(t.TempDir(), nil)
+	t.Setenv("PATH", t.TempDir())
+	p := newTestPlayer(t, nil)
 	p.argv = []string{"definitely-not-installed-mpv-xyz"}
 	_, err := p.Play(context.Background(), "https://radio.example/stream", false, origin)
-	if err == nil || !strings.Contains(err.Error(), "pkg_install") {
+	if err == nil || !strings.Contains(err.Error(), "installing mpv via apt") {
 		t.Fatalf("err = %v", err)
 	}
 	if got := MissingHelpers(func(string) bool { return false }); len(got) != 1 || got[0].Bin != "mpv" {

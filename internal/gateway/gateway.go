@@ -288,6 +288,9 @@ func serve(configPath string) (bool, error) {
 	// engine is: this process lives long enough to finish the download, and
 	// a terminal one-shot does not.
 	a.Decisions.Provision(ctx)
+	// And the music player, for the machine upgraded into it: a first "play
+	// something" should not be the moment the install starts.
+	a.Media.ProvisionInBackground(ctx)
 
 	reloading := false
 	select {

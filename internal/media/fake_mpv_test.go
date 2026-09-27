@@ -2,7 +2,9 @@ package media
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -32,6 +34,11 @@ func newTestPlayer(t *testing.T, notify Notifier) *Player {
 	t.Setenv("FACTOR_TEST_MPV_LOG", path.Join(t.TempDir(), "mpv.log"))
 	p := NewPlayer(t.TempDir(), notify)
 	p.argv = []string{os.Args[0]}
+	// Nothing in these tests may reach the machine's package manager: a real
+	// install attempt here would put a password prompt on the developer's
+	// screen.
+	p.manager = func() string { return "apt" }
+	p.install = func(context.Context, string, []string) error { return errors.New("not in tests") }
 	t.Cleanup(p.Close)
 	return p
 }

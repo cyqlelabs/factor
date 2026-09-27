@@ -822,3 +822,66 @@ func TestAutoPrefersTheDistributionManagerOverHomebrew(t *testing.T) {
 		t.Error("brew is not a system manager: it refuses to run as root")
 	}
 }
+
+// On a desktop, a manager that needs a password asks for it through
+// PolicyKit — a dialog on the screen — instead of handing the user a command.
+func TestPkgInstallAsksThroughPolicyKitOnADesktop(t *testing.T) {
+	var calls [][]string
+	tool := &PkgInstallTool{
+		lookPath: alwaysFound,
+		euid:     func() int { return 1000 },
+		screen:   func() bool { return true },
+		runner: func(_ context.Context, argv []string) (string, error) {
+			calls = append(calls, argv)
+			if argv[0] == "sudo" {
+				return "sudo: a password is required\n", errors.New("exit status 1")
+			}
+			return "Setting up mpv\n", nil
+		},
+	}
+	res := tool.Execute(context.Background(), map[string]any{"packages": []any{"mpv"}, "manager": "apt"})
+	if res.IsError || !strings.Contains(res.ForLLM, "Installed mpv via apt") {
+		t.Fatalf("res = %+v", res)
+	}
+	if len(calls) != 2 || calls[1][0] != "pkexec" || calls[1][1] != "apt-get" || calls[1][len(calls[1])-1] != "mpv" {
+		t.Errorf("calls = %v; want sudo -n first, then the same command under pkexec", calls)
+	}
+}
+
+// Declining the prompt is the user's answer, reported as such.
+func TestPkgInstallReportsADismissedPolicyKitPrompt(t *testing.T) {
+	tool := &PkgInstallTool{
+		lookPath: alwaysFound,
+		euid:     func() int { return 1000 },
+		screen:   func() bool { return true },
+		runner: func(_ context.Context, argv []string) (string, error) {
+			if argv[0] == "sudo" {
+				return "sudo: a password is required\n", errors.New("exit status 1")
+			}
+			return "Error executing command as another user: Not authorized\n", errors.New("exit status 127")
+		},
+	}
+	res := tool.Execute(context.Background(), map[string]any{"packages": []any{"mpv"}, "manager": "apt"})
+	if !res.IsError || !strings.Contains(res.ForLLM, "dismissed the authentication prompt") {
+		t.Errorf("res = %+v", res)
+	}
+}
+
+// Without a screen there is nowhere to put the prompt, so the hint stands.
+func TestPkgInstallWithoutAScreenKeepsTheSudoHint(t *testing.T) {
+	tool := &PkgInstallTool{
+		lookPath: alwaysFound,
+		euid:     func() int { return 1000 },
+		screen:   func() bool { return false },
+		runner: func(_ context.Context, argv []string) (string, error) {
+			if argv[0] == "pkexec" {
+				t.Errorf("pkexec was run with no screen to prompt on")
+			}
+			return "sudo: a password is required\n", errors.New("exit status 1")
+		},
+	}
+	res := tool.Execute(context.Background(), map[string]any{"packages": []any{"mpv"}, "manager": "apt"})
+	if !res.IsError || !strings.Contains(res.ForLLM, "needs an interactive sudo password") {
+		t.Errorf("res = %+v", res)
+	}
+}

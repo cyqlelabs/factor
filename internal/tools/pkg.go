@@ -105,12 +105,15 @@ type PkgInstallTool struct {
 	lookPath func(string) (string, error)
 	runner   func(ctx context.Context, argv []string) (string, error)
 	euid     func() int
+	// screen reports whether a desktop is there to show a PolicyKit prompt on.
+	screen func() bool
 }
 
 func NewPkgInstallTool() *PkgInstallTool {
 	return &PkgInstallTool{
 		lookPath: lookSystem,
 		euid:     os.Geteuid,
+		screen:   func() bool { return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "" },
 		runner: func(ctx context.Context, argv []string) (string, error) {
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 			defer cancel()
@@ -166,7 +169,9 @@ func (t *PkgInstallTool) resolve(manager string) (string, managerSpec, error) {
 // not be found again when the command runs. Found on PATH, the command
 // keeps the name, which is what the sudo hint reads back to the user.
 func (s managerSpec) at(path string) managerSpec {
-	if !slices.Contains(sbinDirs, filepath.Dir(path)) {
+	// sbinDirs are unix paths; compared with slashes so the answer is the
+	// same on a Windows build, where filepath.Dir would flip them.
+	if !slices.Contains(sbinDirs, filepath.ToSlash(filepath.Dir(path))) {
 		return s
 	}
 	s.install = append([]string{path}, s.install[1:]...)
@@ -227,6 +232,23 @@ func (t *PkgInstallTool) Execute(ctx context.Context, args map[string]any) *Resu
 	} else {
 		argv = append(argv, packages...)
 		out, err = t.runner(ctx, argv)
+	}
+	if err != nil && elevated && strings.Contains(out, "a password is required") {
+		// sudo wants a password nobody is at a terminal to type. On a desktop
+		// the same request goes through PolicyKit instead, which puts the
+		// password dialog on the user's screen — how a graphical package
+		// manager asks — so a dependency still installs itself from a
+		// gateway that was started by systemd or a login entry. Anything
+		// less is a command handed to the user, which setup promised never
+		// to do.
+		if _, perr := t.lookPath("pkexec"); perr == nil && t.screen != nil && t.screen() {
+			argv = append([]string{"pkexec"}, argv[2:]...)
+			out, err = t.runner(ctx, argv)
+			if err != nil && (strings.Contains(out, "Not authorized") || strings.Contains(out, "dismissed")) {
+				return Errorf("%s needs the user's password and they dismissed the authentication prompt on screen; "+
+					"nothing was installed", name)
+			}
+		}
 	}
 	if len(out) > 8*1024 {
 		out = out[len(out)-8*1024:]
