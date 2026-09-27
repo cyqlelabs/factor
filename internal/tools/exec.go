@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/proxy"
 )
 
 // Catastrophic-action patterns. This is a guardrail against obvious
@@ -144,6 +146,15 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *Result {
 
 	cmd := shellCommand(ctx, command)
 	cmd.Dir = dir
+	// A shell command is the user's work, not Factor's traffic. The capture
+	// proxy Factor routes itself through is exported into this process's
+	// environment so the sidecars' model calls land in the same capture, and
+	// a child inheriting it wholesale ran every stream, download and probe
+	// the user asked for through a proxy meant for Factor's own HTTP — which
+	// is how a radio stream stalled for ten minutes while the agent blamed
+	// the sound card. The child gets the environment the shell had before
+	// Factor rewrote it: a proxy the user exported still applies.
+	cmd.Env = proxy.Environ()
 	// Without these, a killed shell can leave grandchildren holding the output
 	// pipe and Wait would block long past the timeout.
 	cmd.WaitDelay = 2 * time.Second

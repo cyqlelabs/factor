@@ -2,11 +2,14 @@ package jobs
 
 import (
 	"context"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/proxy"
 	"github.com/cyqlelabs/factor/internal/tools"
 )
 
@@ -232,5 +235,38 @@ func TestTaskJobsRunUnderTheOriginAudience(t *testing.T) {
 
 	if got := <-seen; got != tools.AudienceShared {
 		t.Errorf("the sub-turn ran with audience %q, want the room the job was started in", got)
+	}
+}
+
+// A background shell is the same user work as a foreground one, and for a
+// while it was the one that still ran behind Factor's proxy.
+func TestExecJobChildrenDoNotInheritFactorsProxy(t *testing.T) {
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"} {
+		if prior, ok := os.LookupEnv(key); ok {
+			t.Setenv(key, prior)
+		} else {
+			t.Setenv(key, "")
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	transport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	if err := os.Unsetenv("HTTP_PROXY"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := proxy.Use("127.0.0.1:9", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := newNotifyRecorder()
+	e := NewEngine(context.Background(), t.TempDir(), nil, nil, rec.notify)
+	if _, err := e.Start(KindExec, "env", `echo "http=${HTTP_PROXY-unset}"`, Origin{Channel: "cli", ChatID: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	done := rec.wait(t)
+	if done.State != StateDone || !strings.Contains(done.OutputTail(), "http=unset") {
+		t.Errorf("state=%s output=%q; want Factor's proxy gone from the job's environment", done.State, done.OutputTail())
 	}
 }

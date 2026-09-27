@@ -3,11 +3,14 @@ package tools
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/proxy"
 )
 
 // --- read_file ---
@@ -574,4 +577,54 @@ func TestBoundedOutputSurvivesOneEnormousWrite(t *testing.T) {
 		t.Errorf("kept %d + omitted %d does not account for what was written",
 			len(out.head)+len(out.tail), out.omitted)
 	}
+}
+
+// A shell command is the user's work, not Factor's traffic: the proxy Factor
+// routes itself through must not reach it. The child gets the environment
+// the shell had before Factor rewrote it — so a proxy the shell exported
+// still applies, and the one Factor added does not.
+func TestExecChildrenDoNotInheritFactorsProxy(t *testing.T) {
+	restoreProxyEnv(t)
+	t.Setenv("HTTPS_PROXY", "http://corp:3128") // the shell's own
+	if err := os.Unsetenv("HTTP_PROXY"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := proxy.Use("127.0.0.1:9", ""); err != nil { // port 9 discards, so the probe stays quiet
+		t.Fatal(err)
+	}
+	if os.Getenv("HTTP_PROXY") != "http://127.0.0.1:9" {
+		t.Fatal("Use did not route this process")
+	}
+
+	dir := t.TempDir()
+	g := NewPathGuard(dir, true, false, nil)
+	et, err := NewExecTool(g, 5*time.Second, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := et.Execute(context.Background(), map[string]any{"command": `echo "http=${HTTP_PROXY-unset} https=${HTTPS_PROXY-unset}"`})
+	if res.IsError {
+		t.Fatalf("exec failed: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "http=unset https=http://corp:3128") {
+		t.Errorf("child environment = %q; want Factor's proxy gone and the shell's kept", strings.TrimSpace(res.ForLLM))
+	}
+}
+
+// restoreProxyEnv puts back every variable proxy.Use writes, and the transport
+// it installs, when the test ends.
+func restoreProxyEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"} {
+		if prior, ok := os.LookupEnv(key); ok {
+			t.Setenv(key, prior)
+		} else {
+			t.Setenv(key, "")
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	transport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = transport })
 }

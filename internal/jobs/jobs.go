@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/proxy"
 	"github.com/cyqlelabs/factor/internal/tools"
 )
 
@@ -254,6 +255,10 @@ func (e *Engine) runExec(ctx context.Context, job *Job) error {
 	defer cancel()
 	cmd := shellCommand(ctx, job.Payload)
 	cmd.Dir = e.workdir
+	// Same rule as the foreground exec tool: the user's command runs on the
+	// shell's own environment, not behind the proxy Factor captures itself
+	// through.
+	cmd.Env = proxy.Environ()
 	cmd.WaitDelay = 5 * time.Second
 	setProcessGroup(cmd)
 	job.mu.Lock()
