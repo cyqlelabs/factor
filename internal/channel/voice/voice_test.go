@@ -1550,14 +1550,18 @@ func TestVoiceSpeaksTheFirstSentenceWhileTheRestRenders(t *testing.T) {
 	h.mu.Lock()
 	h.reply = "Claro que sí, ahora mismo lo veo. La respuesta es que mañana llueve por la tarde. Llevá paraguas."
 	h.mu.Unlock()
-	h.setReplyPCM(make([]byte, playbackRate*2)) // a second of audio per piece, paced in real time
+	piece := playbackRate * 2
+	h.setReplyPCM(make([]byte, piece)) // a second of audio per piece, paced in real time
 	h.start()
 	h.say()
 	h.turn(10 * time.Second)
 
+	// The second request leaves as the first piece arrives, before it is
+	// cleaned and handed to the player, so whether the player has started
+	// yet is a race; what the speakers had heard of the first piece is not.
 	waitUntil(t, func() bool { return len(h.synthesized()) >= 2 })
-	if !h.v.player.busy() {
-		t.Error("the second piece was requested only after the first had been heard out")
+	if heard := len(h.speaker.heard()); heard >= piece {
+		t.Errorf("the second piece was requested only after the first had been heard out (%d of %d bytes)", heard, piece)
 	}
 	want := []string{
 		"Claro que sí, ahora mismo lo veo.",
