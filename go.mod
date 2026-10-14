@@ -1,6 +1,6 @@
 module github.com/cyqlelabs/factor
 
-go 1.25.13
+go 1.26.9
 
 require (
 	fyne.io/systray v1.12.2
@@ -11,9 +11,9 @@ require (
 	github.com/chromedp/chromedp v0.14.1
 	github.com/yuin/goldmark v1.8.5
 	golang.org/x/image v0.45.0
-	golang.org/x/net v0.57.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.45.0
+	golang.org/x/net v0.60.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
 )
 
 require (
