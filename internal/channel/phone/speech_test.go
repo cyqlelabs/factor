@@ -831,7 +831,8 @@ exec(os.environ["SNIPPET"])
 	if err != nil {
 		t.Fatalf("snippet failed: %v\n%s", err, out)
 	}
-	return string(out)
+	// Python on Windows ends every printed line with \r\n.
+	return strings.ReplaceAll(string(out), "\r\n", "\n")
 }
 
 // Three signals, each catching what the others wave through. The repetition
