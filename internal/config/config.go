@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -741,6 +742,10 @@ func loadFile(path string) (*Config, error) {
 	case err != nil:
 		return nil, fmt.Errorf("read config: %w", err)
 	default:
+		// Windows PowerShell and Notepad's "UTF-8 with BOM" open the file
+		// with a byte order mark, which a JSON parser may skip and Go's
+		// does not: the config refused to load over three invisible bytes.
+		data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 		if err := json.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}

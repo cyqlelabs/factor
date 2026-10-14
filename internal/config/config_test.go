@@ -56,6 +56,24 @@ func TestLoadOverlayAndEnv(t *testing.T) {
 	}
 }
 
+// Windows PowerShell writes UTF-8 with a byte order mark, and so does Notepad
+// when asked to, so a config saved by either begins with one.
+func TestLoadReadsAFileWithAByteOrderMark(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("FACTOR_HOME", dir)
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte("\xef\xbb\xbf"+`{"provider":{"model":"bom-model"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.Model != "bom-model" {
+		t.Errorf("Model = %q", cfg.Provider.Model)
+	}
+}
+
 // The extraction settings are what a small box tunes to keep smrti from
 // loading a local model, so each one has to be reachable from the
 // environment like the rest of the memory section.
