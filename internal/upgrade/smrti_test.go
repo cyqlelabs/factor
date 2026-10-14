@@ -115,11 +115,14 @@ func quickPacing(t *testing.T) {
 	t.Helper()
 	prevIdleWait, prevIdlePoll := smrtiIdleWait, smrtiIdlePoll
 	prevHealthWait, prevHealthPoll := smrtiHealthWait, smrtiHealthPoll
+	prevPortWait := smrtiPortWait
 	smrtiIdleWait, smrtiIdlePoll = 60*time.Millisecond, 10*time.Millisecond
 	smrtiHealthWait, smrtiHealthPoll = 60*time.Millisecond, 10*time.Millisecond
+	smrtiPortWait = 60 * time.Millisecond
 	t.Cleanup(func() {
 		smrtiIdleWait, smrtiIdlePoll = prevIdleWait, prevIdlePoll
 		smrtiHealthWait, smrtiHealthPoll = prevHealthWait, prevHealthPoll
+		smrtiPortWait = prevPortWait
 	})
 }
 

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,16 @@ var (
 	// seconds between the stop and the new pid. After this, nothing here
 	// supervises the engine.
 	smrtiRespawnWait = 90 * time.Second
+
+	// How long a stopped engine gets to release its port.
+	smrtiPortWait = 5 * time.Second
+
+	// stopBeforeInstall is whether a live engine pins the files its upgrade
+	// has to replace. Windows locks a running executable and every extension
+	// module a process has loaded, so pip could not replace smrti.exe under
+	// the engine — and its failed uninstall left the package renamed to
+	// ~mrti with no metadata, which broke memory rather than upgrading it.
+	stopBeforeInstall = runtime.GOOS == "windows"
 )
 
 // checkPackage reports what PyPI publishes against the smrti installed here.
@@ -82,8 +93,12 @@ func (s *Smrti) packageVersion(ctx context.Context, exe string) string {
 
 // applyPackage installs the published release over the one here and restarts
 // the engine into it. The install goes first, while the old engine keeps
-// serving, so the only interruption is the restart.
+// serving, so the only interruption is the restart — except where the engine
+// pins its own files, and there it has to stop first.
 func (s *Smrti) applyPackage(ctx context.Context, rel SmrtiRelease, progress Progress) (string, error) {
+	if stopBeforeInstall {
+		return s.applyStopped(ctx, rel, progress)
+	}
 	method, err := upgradePackage(ctx, rel.Path, config.Home(), memory.Progress(progress))
 	if err != nil {
 		return "", err
@@ -95,6 +110,90 @@ func (s *Smrti) applyPackage(ctx context.Context, rel SmrtiRelease, progress Pro
 		return "", fmt.Errorf("smrti %s is installed, but %w", rel.Version, err)
 	}
 	return note, nil
+}
+
+// applyStopped is applyPackage where the engine has to be gone before its
+// files can be replaced. Whatever engine serves is on the old code, so it is
+// stopped whichever it is, and its port is held until the install is done:
+// the supervisor waits on a port something holds rather than spawning, which
+// keeps it from starting an engine on half-installed files — or from reading
+// them as broken and reinstalling over the install in progress.
+func (s *Smrti) applyStopped(ctx context.Context, rel SmrtiRelease, progress Progress) (string, error) {
+	stopped, hold, err := s.stopAndHold(ctx, progress)
+	if err != nil {
+		return "", err
+	}
+	method, err := upgradePackage(ctx, rel.Path, config.Home(), memory.Progress(progress))
+	if hold != nil {
+		_ = hold.Close()
+	}
+	if err != nil {
+		return "", err
+	}
+	progress("installed smrti %s with %s", rel.Version, method)
+	if stopped == 0 {
+		return "no engine is running here, so it loads the next time the engine starts", nil
+	}
+	note, err := s.awaitReplacement(ctx, stopped, progress)
+	if err != nil {
+		return "", fmt.Errorf("smrti %s is installed, but %w", rel.Version, err)
+	}
+	return note, nil
+}
+
+// stopAndHold stops whatever engine serves once the graph is quiet and takes
+// its port, returning the pid it stopped and the held port — zero and nil
+// when no engine was running.
+func (s *Smrti) stopAndHold(ctx context.Context, progress Progress) (int, net.Listener, error) {
+	if err := s.waitIdle(ctx, progress); err != nil {
+		return 0, nil, err
+	}
+	progress("stopping the memory engine, which holds its own files open while it runs")
+	stopped, err := stopEngine(ctx, s.port(), memory.AnyEngine)
+	if err != nil {
+		return 0, nil, fmt.Errorf("the engine running here could not be stopped: %w", err)
+	}
+	if stopped == 0 {
+		return 0, nil, nil
+	}
+	// A port still taken is an engine still running — one the stop did not
+	// reach, or a replacement already spawned — and installing under it is
+	// the failure this order exists to avoid.
+	hold, err := holdPort(ctx, s.address())
+	if err != nil {
+		return 0, nil, fmt.Errorf("the engine was stopped, but its port is still taken, so nothing was installed over files it may hold open: %w", err)
+	}
+	progress("holding the memory port while the package installs, so the supervisor waits for it")
+	return stopped, hold, nil
+}
+
+// holdPort listens on the engine's address once the stopped engine has let go
+// of it, which takes a moment after the process is gone.
+func holdPort(ctx context.Context, addr string) (net.Listener, error) {
+	deadline := time.Now().Add(smrtiPortWait)
+	for {
+		l, err := net.Listen("tcp", addr)
+		if err == nil {
+			go refuse(l)
+			return l, nil
+		}
+		if time.Now().After(deadline) || !sleepCtx(ctx, 200*time.Millisecond) {
+			return nil, err
+		}
+	}
+}
+
+// refuse accepts and drops every connection on a held port, so a health probe
+// fails at once instead of waiting out its timeout against a listener that
+// never answers.
+func refuse(l net.Listener) {
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		_ = c.Close()
+	}
 }
 
 // Restart stops the engine serving here and waits for it to come back on the
@@ -157,6 +256,12 @@ func (s *Smrti) restartEngine(ctx context.Context, progress Progress) (string, e
 		}
 		return "no engine is running here, so it loads the next time the engine starts", nil
 	}
+	return s.awaitReplacement(ctx, stopped, progress)
+}
+
+// awaitReplacement waits for a supervisor to bring back the engine that was
+// stopped, reporting in one clause what became of it.
+func (s *Smrti) awaitReplacement(ctx context.Context, stopped int, progress Progress) (string, error) {
 	respawned := s.waitRespawn(ctx, stopped)
 	if ctx.Err() != nil {
 		return "", fmt.Errorf("the old engine was stopped, but the restart was interrupted: %w", ctx.Err())
@@ -184,6 +289,15 @@ func (s *Smrti) port() int {
 		}
 	}
 	return s.cfg.Port
+}
+
+// address is the host and port the engine serves on, read off the same URL.
+func (s *Smrti) address() string {
+	host := "127.0.0.1"
+	if u, err := url.Parse(s.cfg.BaseURL()); err == nil && u.Hostname() != "" {
+		host = u.Hostname()
+	}
+	return net.JoinHostPort(host, strconv.Itoa(s.port()))
 }
 
 // waitRespawn reports whether something put a new engine in place of the one

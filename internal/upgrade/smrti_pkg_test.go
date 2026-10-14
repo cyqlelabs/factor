@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,8 +62,11 @@ func fakePyPI(t *testing.T, version string) {
 func fakeInstaller(t *testing.T, stopped int, supervised bool, err error) *[]string {
 	t.Helper()
 	prevUpgrade, prevStop, prevPid := upgradePackage, stopEngine, enginePid
-	prevWait := smrtiRespawnWait
+	prevWait, prevOrder := smrtiRespawnWait, stopBeforeInstall
 	smrtiRespawnWait = 60 * time.Millisecond
+	// The order where the install goes first, whatever this machine is; the
+	// stop-first order has tests of its own.
+	stopBeforeInstall = false
 	var calls []string
 	upgradePackage = func(_ context.Context, exe, _ string, _ memory.Progress) (string, error) {
 		calls = append(calls, "upgrade "+exe)
@@ -80,7 +84,7 @@ func fakeInstaller(t *testing.T, stopped int, supervised bool, err error) *[]str
 	}
 	t.Cleanup(func() {
 		upgradePackage, stopEngine, enginePid = prevUpgrade, prevStop, prevPid
-		smrtiRespawnWait = prevWait
+		smrtiRespawnWait, stopBeforeInstall = prevWait, prevOrder
 	})
 	return &calls
 }
@@ -293,6 +297,100 @@ func TestSmrtiApplyPackageReportsAFailedInstall(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(*calls, " "), "stop") {
 		t.Errorf("the engine was restarted after an install that failed: %v", *calls)
+	}
+}
+
+// pinnedEngine is an engine whose files cannot be replaced while it runs, the
+// way Windows treats a live process. stopFrees says whether stopping it lets
+// go of its port, and calls records whether the port was taken while the
+// package installed.
+func pinnedEngine(t *testing.T, stopFrees bool) (cfg config.MemoryConfig, calls *[]string) {
+	t.Helper()
+	calls = fakeInstaller(t, 4242, false, nil)
+	prev := stopBeforeInstall
+	stopBeforeInstall = true
+	t.Cleanup(func() { stopBeforeInstall = prev })
+
+	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"spaces":{},"space":"main","version":"0.11.3"}`)
+	}))
+	t.Cleanup(engine.Close)
+	addr := engine.Listener.Addr().String()
+	stopEngine = func(_ context.Context, _, want int) (int, error) {
+		*calls = append(*calls, fmt.Sprintf("stop %d", want))
+		if stopFrees {
+			engine.Close()
+		}
+		return 4242, nil
+	}
+	upgradePackage = func(_ context.Context, exe, _ string, _ memory.Progress) (string, error) {
+		port := "free"
+		if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
+			_ = c.Close()
+			port = "taken"
+		}
+		*calls = append(*calls, "upgrade with the port "+port)
+		return "venv", nil
+	}
+	return config.MemoryConfig{Mode: "sidecar", URL: engine.URL, Host: "127.0.0.1", Port: 8420}, calls
+}
+
+// Where a live engine pins its own files, it is stopped before the install,
+// whichever engine it is, and its port is held while pip runs so the
+// supervisor waits rather than spawning on half-installed files. The hold is
+// let go once the install is done, or nothing could bring the engine back.
+func TestSmrtiApplyStopsAnEngineThatPinsItsFilesFirst(t *testing.T) {
+	quickPacing(t)
+	noDocker(t)
+	installed(t, `C:\Users\u\.factor\venv\Scripts\smrti.exe`, "0.11.3")
+	fakePyPI(t, "0.13.0")
+	cfg, calls := pinnedEngine(t, true)
+
+	s := NewSmrti(cfg, nil)
+	rel, err := s.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	note, err := s.Apply(context.Background(), rel, func(f string, a ...any) { steps = append(steps, fmt.Sprintf(f, a...)) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line := strings.Join(*calls, " | "); line != fmt.Sprintf("stop %d | upgrade with the port taken", memory.AnyEngine) {
+		t.Fatalf("calls = %q", line)
+	}
+	if c, err := net.DialTimeout("tcp", s.address(), 200*time.Millisecond); err == nil {
+		_ = c.Close()
+		t.Error("the memory port was still held after the install")
+	}
+	if !strings.Contains(note, "starts with the next factor run") {
+		t.Errorf("note = %q", note)
+	}
+	if !strings.Contains(strings.Join(steps, " "), "installed smrti 0.13.0 with venv") {
+		t.Errorf("progress = %v", steps)
+	}
+}
+
+// A port still taken after the stop is an engine still running, and pip run
+// under it fails halfway and leaves the package renamed aside with no
+// metadata — so nothing is installed at all.
+func TestSmrtiApplyInstallsNothingUnderAnEngineStillServing(t *testing.T) {
+	quickPacing(t)
+	noDocker(t)
+	installed(t, `C:\Users\u\.factor\venv\Scripts\smrti.exe`, "0.11.3")
+	fakePyPI(t, "0.13.0")
+	cfg, calls := pinnedEngine(t, false)
+
+	s := NewSmrti(cfg, nil)
+	rel, err := s.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Apply(context.Background(), rel, nil); err == nil || !strings.Contains(err.Error(), "nothing was installed") {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(strings.Join(*calls, " "), "upgrade") {
+		t.Errorf("installed under a live engine: %v", *calls)
 	}
 }
 
