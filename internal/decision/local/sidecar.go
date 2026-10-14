@@ -457,7 +457,12 @@ func serverEnv() []string {
 		// interpreter starts, which is why they are set here rather than in
 		// the script.
 		"OMP_NUM_THREADS="+strconv.Itoa(computeThreads()),
-		"MKL_NUM_THREADS="+strconv.Itoa(computeThreads()))
+		"MKL_NUM_THREADS="+strconv.Itoa(computeThreads()),
+		// The server's output goes to a log file, which Python on Windows
+		// writes in the ANSI code page. EdgeJev announces itself in Chinese
+		// as it starts, cp1252 cannot encode that line, and the server died
+		// on it before answering once on every Windows machine.
+		"PYTHONIOENCODING=utf-8")
 }
 
 // computeThreads is how many cores the model may hold at once: every one,

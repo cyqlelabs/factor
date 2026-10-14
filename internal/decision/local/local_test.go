@@ -935,6 +935,15 @@ func TestTheModelIsToldEveryCore(t *testing.T) {
 	}
 }
 
+// The server writes its startup line in Chinese to a log file, which Python on
+// Windows encodes in the ANSI code page unless told otherwise. Left to that,
+// the server raised UnicodeEncodeError on its own banner and never answered.
+func TestTheServerWritesItsLogInUTF8(t *testing.T) {
+	if env := strings.Join(serverEnv(), "\n"); !strings.Contains(env, "PYTHONIOENCODING=utf-8") {
+		t.Error("the server's environment leaves its output in the platform code page, which cannot encode its startup line on Windows")
+	}
+}
+
 // A model that starts, holds the machine for its whole load budget and never
 // answers is the failure that costs a box: three of those is an hour of a slow
 // machine's CPU. The supervisor stops asking and names the setting that keeps
