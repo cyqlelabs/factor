@@ -3,6 +3,7 @@ package trace
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,6 +23,11 @@ const maxRecordLine = 1 << 20
 // crash mid-write leaves behind, and a watcher that refused to read anything
 // because of it would go blind exactly when something has gone wrong.
 func Since(dir string, t time.Time) ([]Record, error) {
+	// Asked first because Windows reports a file read as a directory the way
+	// it reports a missing one, which read as a quiet machine with no records.
+	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
+		return nil, fmt.Errorf("the trace directory %s is a file", dir)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
