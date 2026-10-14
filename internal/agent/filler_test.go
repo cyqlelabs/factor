@@ -264,6 +264,35 @@ func TestFillerDropsALineTheAnswerHasOutrun(t *testing.T) {
 	}
 }
 
+// chatFunc is a chat provider that sees the context it was called with.
+type chatFunc func(context.Context, *provider.Request) (*provider.Response, error)
+
+func (c chatFunc) Chat(ctx context.Context, req *provider.Request) (*provider.Response, error) {
+	return c(ctx, req)
+}
+
+// The answer landing cancels the filler's call on purpose, which says nothing
+// about the fast chain. The one warning a process gets for a failing chain is
+// kept for a call that failed on its own.
+func TestFillerKeepsItsWarningForARealFault(t *testing.T) {
+	h := newHarness(t)
+	f := &filler{loop: h.loop, in: turnInput{sessionKey: "cli:test", content: "hola"},
+		said: make(chan struct{}, 1), done: make(chan struct{})}
+	h.loop.WithLight(chatFunc(func(ctx context.Context, _ *provider.Request) (*provider.Response, error) {
+		f.stop()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}))
+	if got := f.compose(context.Background()); got != "" {
+		t.Errorf("filler = %q from a cancelled call", got)
+	}
+	spent := true
+	h.loop.lightFault.Do(func() { spent = false })
+	if spent {
+		t.Error("a call the answer cancelled spent the warning a failing chain needs")
+	}
+}
+
 // A channel that names no language leaves it to the request, and the request
 // a person sends mid-task is "y?". Read alone it is nothing, the English
 // examples decide, and a Spanish conversation gets fifteen minutes of English

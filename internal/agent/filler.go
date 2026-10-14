@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -277,6 +278,12 @@ func (f *filler) compose(ctx context.Context) string {
 	})
 	if err != nil {
 		slog.Debug("filler line unavailable", "session", f.in.sessionKey, "error", err)
+		// The answer landing, or the turn ending, cancels the call on purpose.
+		// That says nothing about the chain, and spending the one warning on
+		// it left a real fault later in the process unreported.
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return ""
+		}
 		f.loop.lightFault.Do(func() {
 			slog.Warn("the fast model could not write a line while a turn worked; that line is skipped and the next one is tried again",
 				"error", err, "chain", "provider.light")
