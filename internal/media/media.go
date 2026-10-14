@@ -200,10 +200,16 @@ func installPackages(ctx context.Context, manager string, packages []string) err
 	return nil
 }
 
+// wingetPackage is mpv's own release build, unpacked per user. The package
+// that used to be the obvious one, shinchiro.mpv, became an installer that
+// demands an administrator, so a gateway installing it unattended put a UAC
+// prompt in front of nobody and gave up two minutes later.
+const wingetPackage = "mpv-player.mpv-CI.MSVC"
+
 // helper describes the one program this needs, in the shape the wizard and
 // pkg_install provision from.
 var helper = desktop.Helper{Bin: "mpv", Purpose: "playing music and audio streams",
-	Packages: map[string]string{"winget": "shinchiro.mpv"}}
+	Packages: map[string]string{"winget": wingetPackage}}
 
 // MissingHelpers is the programs the player needs that the machine lacks.
 func MissingHelpers(has func(string) bool) []desktop.Helper {
@@ -251,7 +257,7 @@ func installDirs(goos string, getenv func(string) string) []string {
 		local := getenv("LOCALAPPDATA")
 		return []string{
 			filepath.Join(local, "Microsoft", "WinGet", "Links"),
-			filepath.Join(local, "Microsoft", "WinGet", "Packages", "shinchiro.mpv*"),
+			filepath.Join(local, "Microsoft", "WinGet", "Packages", wingetPackage+"*"),
 			filepath.Join(getenv("ProgramFiles"), "mpv"),
 		}
 	case "darwin":

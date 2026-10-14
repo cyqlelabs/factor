@@ -242,7 +242,7 @@ func TestPlayProvisionsTheMissingPlayer(t *testing.T) {
 	if st.State != StatePlaying {
 		t.Errorf("status = %+v", st)
 	}
-	if strings.Join(asked, " ") != "winget:shinchiro.mpv" {
+	if strings.Join(asked, " ") != "winget:"+wingetPackage {
 		t.Errorf("installed %v; want the winget package once", asked)
 	}
 }
@@ -274,7 +274,7 @@ func TestInstallDirsFollowEachPlatformsManager(t *testing.T) {
 		return map[string]string{"LOCALAPPDATA": `C:\Users\n\AppData\Local`, "ProgramFiles": `C:\Program Files`, "HOME": "/home/n"}[k]
 	}
 	win := strings.Join(installDirs("windows", getenv), " ")
-	if !strings.Contains(win, "WinGet") || !strings.Contains(win, "shinchiro.mpv*") {
+	if !strings.Contains(win, "WinGet") || !strings.Contains(win, wingetPackage+"*") {
 		t.Errorf("windows dirs = %s", win)
 	}
 	if mac := strings.Join(installDirs("darwin", getenv), " "); !strings.Contains(mac, "/opt/homebrew/bin") {
