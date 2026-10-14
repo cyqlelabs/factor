@@ -128,8 +128,14 @@ func EnsureCamofox(ctx context.Context, home string, progress Progress) (string,
 		return "", false, err
 	}
 	progress("installing Camofox %s (a 300 MB Firefox build downloads with it)", camofoxVersion)
+	// Scripts are off. better-sqlite3 ships its bindings prebuilt for every
+	// platform, but it carries a binding.gyp, so npm runs node-gyp on it
+	// anyway — and node-gyp demands a compiler before it finds there is
+	// nothing to compile, which failed the whole install on every Windows
+	// machine without Visual Studio. The one other script is the package's
+	// postinstall, which fetches the browser; that is done below.
 	argv := []string{npmFor(node), "install", "--prefix", dir, "--no-fund", "--no-audit", "--loglevel=error",
-		camofoxPackage + "@" + camofoxVersion}
+		"--ignore-scripts", camofoxPackage + "@" + camofoxVersion}
 	env := withNode(append(os.Environ(),
 		"CAMOUFOX_INSTALL_DIR="+camoufoxDir(dir),
 		"CAMOFOX_CRASH_REPORT_ENABLED=false",
@@ -145,10 +151,9 @@ func EnsureCamofox(ctx context.Context, home string, progress Progress) (string,
 		return "", false, err
 	}
 	if !camoufoxFetched(dir) {
-		// The package fetches the browser in its postinstall step, which
-		// fails wherever impit does not load and which npm skips in some
-		// configurations; asking the fetcher directly is the documented
-		// fallback, and it runs after the stub above so it can.
+		// The package's postinstall would fetch the browser, and scripts are
+		// off; asking the fetcher directly is what that script does, and it
+		// runs after the stand-ins above so it loads wherever impit does not.
 		progress("fetching the Camoufox browser build")
 		fetch := []string{node, filepath.Join(dir, "node_modules", "camoufox-js", "dist", "__main__.js"), "fetch"}
 		if out, err := runCmdEnv(ctx, fetch, env, dir); err != nil || !camoufoxFetched(dir) {
@@ -169,6 +174,7 @@ func EnsureCamofox(ctx context.Context, home string, progress Progress) (string,
 // on every platform.
 type standIn struct {
 	module string // what is required
+	probe  string // JavaScript that fails exactly when the native binding does not load
 	file   string // the file inside node_modules that answers the require
 	body   string // what stands in for it
 }
@@ -178,6 +184,7 @@ var standInList = []standIn{
 		// camoufox-js imports impit at load time and uses it for one thing:
 		// reading the public IP behind a proxy, which Factor never sets.
 		module: "impit",
+		probe:  `require("impit")`,
 		file:   filepath.Join("impit", "index.wrapper.js"),
 		body: `// Written by Factor: the native binding does not load on this machine.
 // camoufox-js imports it at load time and only uses it to look up the public
@@ -189,8 +196,11 @@ module.exports = { Impit, HttpMethod: {}, Browser: {} };
 	{
 		// camoufox-js samples a WebGL fingerprint from a SQLite file on
 		// every launch through better-sqlite3. Node has carried the same
-		// synchronous API since 22.13, so the stand-in is an adapter.
+		// synchronous API since 22.13, so the stand-in is an adapter. The
+		// binding loads when the first database opens rather than at
+		// require, so the probe opens one.
 		module: "better-sqlite3",
+		probe:  `new (require("better-sqlite3"))(":memory:").close()`,
 		file:   filepath.Join("better-sqlite3", "lib", "index.js"),
 		body: `// Written by Factor: the native binding does not load on this machine.
 // camoufox-js reads a fingerprint database through prepare().all(), which
@@ -215,7 +225,7 @@ func standIns(ctx context.Context, node, dir string, progress Progress) error {
 		if _, err := os.Stat(path); err != nil {
 			continue // the version installed does not carry it
 		}
-		out, err := runCmdEnv(ctx, []string{node, "-e", `require("` + si.module + `")`}, withNode(os.Environ(), node), dir)
+		out, err := runCmdEnv(ctx, []string{node, "-e", si.probe}, withNode(os.Environ(), node), dir)
 		if err == nil {
 			continue
 		}

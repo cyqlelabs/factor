@@ -112,6 +112,9 @@ func TestEnsureCamofoxInstallsWithTheMachinesNode(t *testing.T) {
 	if !strings.Contains(joined, "npm install --prefix "+CamofoxDir(home)) || !strings.Contains(joined, camofoxPackage+"@"+camofoxVersion) {
 		t.Errorf("npm was not asked for the pinned package:\n%s", joined)
 	}
+	if !strings.Contains(joined, "--ignore-scripts") {
+		t.Errorf("npm ran the install scripts, which build better-sqlite3 with a compiler the machine may not have:\n%s", joined)
+	}
 	if !strings.Contains(joined, "CAMOUFOX_INSTALL_DIR="+camoufoxDir(CamofoxDir(home))) || !strings.Contains(joined, "CAMOFOX_CRASH_REPORT_ENABLED=false") {
 		t.Errorf("the install ran without Factor's environment:\n%s", joined)
 	}
@@ -188,6 +191,40 @@ console.log(JSON.stringify(rows));`
 	out, err := cmd.Output()
 	if err != nil || !strings.Contains(string(out), `[{"vendor":"v2","renderer":"r2"}]`) {
 		t.Errorf("stand-in answered %q, %v", out, err)
+	}
+}
+
+// better-sqlite3 loads its binding when the first database opens, not when it
+// is required, so a probe that only requires it passes on a machine where the
+// binding cannot load and the stand-in is never written.
+func TestSQLiteProbeReachesTheBinding(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node on PATH")
+	}
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "node_modules", "better-sqlite3")
+	if err := os.MkdirAll(filepath.Join(pkg, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "package.json"), []byte(`{"name":"better-sqlite3","main":"lib/index.js"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Shaped like the real one: the require succeeds, the first open loads a
+	// binding that is not there.
+	lazy := `module.exports = class Database { constructor() { require("../build/Release/better_sqlite3.node"); } close() {} };`
+	if err := os.WriteFile(filepath.Join(pkg, "lib", "index.js"), []byte(lazy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, si := range standInList {
+		if si.module != "better-sqlite3" {
+			continue
+		}
+		cmd := exec.Command(node, "-e", si.probe)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err == nil {
+			t.Errorf("the probe passed a binding that does not load: %s", out)
+		}
 	}
 }
 
