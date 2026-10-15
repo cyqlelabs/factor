@@ -17,7 +17,7 @@ import (
 // engine does, and records it as the engine Factor spawned.
 func hangingEngine(t *testing.T) int {
 	t.Helper()
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(engineBinary)
 	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=hang")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -53,7 +53,7 @@ func TestStopEngineStopsTheEngineFactorSpawned(t *testing.T) {
 	if stopped != pid || err != nil {
 		t.Fatalf("stopped = %v, want %d, err = %v", stopped, pid, err)
 	}
-	if runtime.GOOS != "windows" && pidAlive(pid) {
+	if pidAlive(pid) {
 		t.Error("the engine is still running")
 	}
 	if _, err := os.Stat(enginePidPath()); !os.IsNotExist(err) {
@@ -62,12 +62,9 @@ func TestStopEngineStopsTheEngineFactorSpawned(t *testing.T) {
 }
 
 func TestStopEngineIgnoresAPidThatIsGone(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("windows cannot tell a live pid from a dead one")
-	}
 	t.Setenv("FACTOR_HOME", t.TempDir())
 
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(engineBinary)
 	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=exit")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -136,7 +133,7 @@ func TestStopEngineStopsAnEngineNobodyRecorded(t *testing.T) {
 	engineStopWait = 5 * time.Second
 	t.Cleanup(func() { engineStopWait = prev })
 
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(engineBinary)
 	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=listen")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -184,18 +181,15 @@ func TestEnginePidReportsTheRecordedEngineAndItsLiveness(t *testing.T) {
 		t.Errorf("with no engine recorded: %d, %v", pid, alive)
 	}
 
-	writeEnginePid(os.Getpid())
+	running := hangingEngine(t)
 	pid, alive := EnginePid()
-	if pid != os.Getpid() || !alive {
-		t.Errorf("EnginePid() = %d, %v; want this process, running", pid, alive)
+	if pid != running || !alive {
+		t.Errorf("EnginePid() = %d, %v; want %d, running", pid, alive, running)
 	}
 
 	// A pid nothing is using any more names the engine that was stopped,
 	// and says it is gone.
-	if runtime.GOOS == "windows" {
-		return // windows cannot tell a live pid from a dead one
-	}
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(engineBinary)
 	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=exit")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -221,7 +215,7 @@ func TestStopEngineReapsAnEngineItInherited(t *testing.T) {
 	engineStopWait = 5 * time.Second
 	t.Cleanup(func() { engineStopWait = prev })
 
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(engineBinary)
 	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=hang")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -272,7 +266,7 @@ func TestStopEngineLeavesAnEngineThatAlreadyReplacedTheOneMeasured(t *testing.T)
 	if stopped != 0 {
 		t.Errorf("stopped = %d, want 0: the engine had already been replaced", stopped)
 	}
-	if runtime.GOOS != "windows" && !pidAlive(replacement) {
+	if !pidAlive(replacement) {
 		t.Fatal("the replacement engine was stopped; one ceiling breach just cost two restarts")
 	}
 
@@ -282,7 +276,7 @@ func TestStopEngineLeavesAnEngineThatAlreadyReplacedTheOneMeasured(t *testing.T)
 	if stopped != replacement || err != nil {
 		t.Fatalf("stopped = %v, want %d, err = %v", stopped, replacement, err)
 	}
-	if runtime.GOOS != "windows" && pidAlive(replacement) {
+	if pidAlive(replacement) {
 		t.Error("the engine it was told to stop is still running")
 	}
 

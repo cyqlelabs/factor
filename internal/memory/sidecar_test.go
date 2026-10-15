@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -36,7 +38,12 @@ func TestMain(m *testing.M) {
 	case "exit":
 		os.Exit(3) // dies immediately: exercises the restart path
 	case "hang":
-		select {} // never becomes healthy: exercises the startup-timeout warning
+		// Never becomes healthy: exercises the startup-timeout warning. A
+		// sleep, because the runtime reads a bare select{} with nothing else
+		// running as a deadlock, and on Windows ends the process over it.
+		for {
+			time.Sleep(time.Hour)
+		}
 	case "listen":
 		// Holds a port the way an engine nobody recorded does, and says
 		// which: a port picked before the bind is one another test can take
@@ -54,7 +61,51 @@ func TestMain(m *testing.M) {
 			_ = c.Close()
 		}
 	}
-	os.Exit(m.Run())
+	dir, err := impersonateSmrti()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot stage the fake engine:", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	if dir != "" {
+		_ = os.RemoveAll(dir) // a keep_alive engine may still hold the image
+	}
+	os.Exit(code)
+}
+
+// engineBinary is the program the tests run as the engine: this test binary,
+// which TestMain turns into one.
+var engineBinary = os.Args[0]
+
+// impersonateSmrti gives the fake engine the engine's own file name on
+// Windows. The code under test stops a process there only when its image is
+// smrti.exe — the guard against a recycled pid — so a fake running as
+// memory.test.exe is refused exactly as a stranger would be, and the guard
+// itself is what the Windows run should be exercising.
+func impersonateSmrti() (string, error) {
+	if runtime.GOOS != "windows" {
+		return "", nil
+	}
+	self, err := os.Open(os.Args[0])
+	if err != nil {
+		return "", err
+	}
+	defer self.Close()
+	dir, err := os.MkdirTemp("", "fake-smrti")
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, BinaryName())
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o755)
+	if err != nil {
+		return dir, err
+	}
+	if _, err := io.Copy(out, self); err != nil {
+		_ = out.Close()
+		return dir, err
+	}
+	engineBinary = path
+	return dir, out.Close()
 }
 
 // fakeSmrtiServe parses `serve rest --host H --port P` like the real CLI and
@@ -102,7 +153,7 @@ func fakeSmrtiServe() {
 func selfCommand(t *testing.T, mode string) string {
 	t.Helper()
 	t.Setenv("FACTOR_TEST_SMRTI_MODE", mode) // inherited by the spawned child
-	return os.Args[0]
+	return engineBinary
 }
 
 // freePort reserves and releases a port so the child can bind it.
@@ -584,7 +635,7 @@ func TestAnEngineThatIsAlreadyGoneStillCountsAsASizeRestart(t *testing.T) {
 	stopEngineIf = func(context.Context, int, int) (int, error) { return 0, nil }
 	t.Cleanup(func() { processRSS, sizeRestartGap, stopEngineIf = saved, savedGap, savedStop })
 
-	writeEnginePid(os.Getpid()) // something alive to measure
+	hangingEngine(t) // something alive to measure
 	if !s.restartForSize(context.Background()) {
 		t.Fatal("an engine already gone was not reported as restarted; the loop would keep polling instead of spawning")
 	}

@@ -39,9 +39,13 @@ func newFakeEnv(t *testing.T, present ...string) *fakeEnv {
 		f.present[p] = true
 	}
 	// Hermetic: no system bin dirs, and a home nothing else writes to.
+	// Windows reads the home from USERPROFILE, and left alone that is the
+	// machine's own, whose real smrti installs then answer for the fake.
 	oldSystem := systemBinDirs
 	systemBinDirs = nil
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	oldLook, oldRun := lookPath, runCmd
 	lookPath = func(name string) (string, error) {

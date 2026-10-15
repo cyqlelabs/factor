@@ -68,7 +68,7 @@ func TestUpgradeRunsTheInstallerThatOwnsTheInstall(t *testing.T) {
 		{"uv", []string{"uv"}, "/home/u/.local/share/uv/tools/smrti/bin/smrti", "uv tool upgrade smrti"},
 		{"pipx", []string{"pipx"}, "/home/u/.local/share/pipx/venvs/smrti/bin/smrti", "pipx upgrade smrti"},
 		{"pip", []string{"pip3"}, "/home/u/.local/bin/smrti", "pip3 install --user --upgrade smrti"},
-		{"venv", []string{"python3"}, filepath.Join(VenvDir(home), "bin", "smrti"), "pip install --upgrade smrti"},
+		{"venv", []string{"python3"}, filepath.Join(VenvDir(home), "bin", "smrti"), strings.Join(venvInstall(home), " ")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeEnv(t, tc.present...)

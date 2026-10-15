@@ -124,7 +124,7 @@ func TestSizeRestartIsHeldBack(t *testing.T) {
 	// file left in the old home resolves to nothing, and every gate below
 	// would then pass for the wrong reason.
 	cfg := sidecarConfig(t, "serve")
-	writeEnginePid(os.Getpid())
+	hangingEngine(t)
 
 	cfg.MaxRSSMB = -1
 	off := &Sidecar{client: NewClient("http://127.0.0.1:1", "", ""), cfg: cfg}
@@ -165,7 +165,7 @@ func TestSizeRestartStopsWaitingForAQuietGraph(t *testing.T) {
 		processRSS, sizeRestartGap, sizeBreachGrace, stopEngineIf = savedRSS, savedGap, savedGrace, savedStop
 	})
 	cfg := sidecarConfig(t, "serve")
-	writeEnginePid(os.Getpid())
+	hangingEngine(t)
 	cfg.MaxRSSMB = 1024
 	s := &Sidecar{client: NewClient("http://127.0.0.1:1", "", ""), cfg: cfg}
 	defer s.client.activity()() // a request that never ends: the graph is never idle

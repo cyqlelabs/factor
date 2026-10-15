@@ -31,6 +31,7 @@ func TestRecallFailureIsNamedToTheTurnAndTraced(t *testing.T) {
 	a := NewAmbient(&downEngine{}, 5, 0.1, 5, 500, 500, nil, testPolicy())
 	dir := t.TempDir()
 	rec := trace.NewRecorder(dir, trace.Config{Enabled: true, KeepDays: 14}, nil)
+	defer func() { _ = rec.Close() }()
 	turn := rec.Begin("cli:x", "user", "")
 	ctx := trace.WithTurn(tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "cli"}), turn)
 

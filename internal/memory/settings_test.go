@@ -110,7 +110,7 @@ func TestSupervisorRestartsAnAdoptedEngineOnStaleSettings(t *testing.T) {
 // reports its pid and port.
 func portHolder(t *testing.T) (int, int) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(engineBinary)
 	cmd.Env = append(os.Environ(), "FACTOR_TEST_SMRTI_MODE=listen")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
