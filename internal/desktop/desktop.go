@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -297,7 +298,7 @@ func HasLiveDisplay(env Env) bool {
 
 // x11Socket names the unix socket behind a local DISPLAY (":1", ":1.0"),
 // reporting false for anything that does not have one.
-func x11Socket(display string) (path string, local bool) {
+func x11Socket(display string) (sock string, local bool) {
 	if !strings.HasPrefix(display, ":") {
 		return "", false
 	}
@@ -305,30 +306,30 @@ func x11Socket(display string) (path string, local bool) {
 	if num == "" {
 		return "", false
 	}
-	return filepath.Join(x11SocketDir, "X"+num), true
+	return path.Join(x11SocketDir, "X"+num), true
 }
 
 // waylandSocket resolves WAYLAND_DISPLAY the way a client does: a bare name
 // sits in XDG_RUNTIME_DIR, an absolute one stands on its own.
 func waylandSocket(env Env, name string) string {
-	if filepath.IsAbs(name) {
+	if path.IsAbs(name) {
 		return name
 	}
 	dir := env.env("XDG_RUNTIME_DIR")
 	if dir == "" {
 		return ""
 	}
-	return filepath.Join(dir, name)
+	return path.Join(dir, name)
 }
 
 // socketThere answers whether one socket is still on disk, and says yes when
 // it has no way to look: a display that cannot be checked must not be called
 // dead, or a working screen is thrown away on a guess.
-func socketThere(env Env, path string) bool {
-	if env.Glob == nil || path == "" {
+func socketThere(env Env, sock string) bool {
+	if env.Glob == nil || sock == "" {
 		return true
 	}
-	matches, err := env.Glob(path)
+	matches, err := env.Glob(sock)
 	return err != nil || len(matches) > 0
 }
 
@@ -397,14 +398,14 @@ func findDisplay(env Env) (key, value string) {
 	if env.Glob == nil {
 		return "", ""
 	}
-	if sock := firstSocket(env, filepath.Join(x11SocketDir, "X*")); sock != "" {
-		return "DISPLAY", ":" + strings.TrimPrefix(filepath.Base(sock), "X")
+	if sock := firstSocket(env, path.Join(x11SocketDir, "X*")); sock != "" {
+		return "DISPLAY", ":" + strings.TrimPrefix(path.Base(sock), "X")
 	}
 	// With no XDG_RUNTIME_DIR the pattern would be a bare "wayland-*",
 	// which Glob would resolve against the working directory.
 	if dir := env.env("XDG_RUNTIME_DIR"); dir != "" {
-		if sock := firstSocket(env, filepath.Join(dir, "wayland-*")); sock != "" {
-			return "WAYLAND_DISPLAY", filepath.Base(sock)
+		if sock := firstSocket(env, path.Join(dir, "wayland-*")); sock != "" {
+			return "WAYLAND_DISPLAY", path.Base(sock)
 		}
 	}
 	return "", ""

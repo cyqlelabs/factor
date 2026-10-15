@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -822,7 +823,7 @@ func TestScreenReadyAgreesWithTheEnvironment(t *testing.T) {
 func globOf(pattern string, paths ...string) []string {
 	var out []string
 	for _, p := range paths {
-		if ok, _ := filepath.Match(pattern, p); ok {
+		if ok, _ := path.Match(pattern, p); ok {
 			out = append(out, p)
 		}
 	}
