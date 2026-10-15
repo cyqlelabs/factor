@@ -13,6 +13,14 @@ LDFLAGS   := -s -w \
 # silently change what CI tags.
 SVU ?= go run github.com/caarlos0/svu/v3@v3.4.1
 
+# A Go binary carries no version resource, and the Windows one needs it:
+# SignPath's signing policy enforces the product name and version it reads
+# there, and Windows Installer compares file versions when it upgrades. The
+# object is generated for the one build that links it and removed after, so a
+# later `go build` never picks up a stale version. Pinned like svu.
+WINRES ?= go run github.com/tc-hib/go-winres@v0.3.3
+WINRES_SYSO := cmd/factor/rsrc_windows_amd64.syso
+
 export CGO_ENABLED=0
 
 COVER_MIN := 90
@@ -32,7 +40,11 @@ build-all: clean
 	GOOS=linux  GOARCH=arm GOARM=7        go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-linux-armv7 ./cmd/factor
 	GOOS=darwin GOARCH=arm64              go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-darwin-arm64 ./cmd/factor
 	GOOS=darwin GOARCH=amd64              go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-darwin-amd64 ./cmd/factor
+	$(WINRES) simply --arch amd64 --manifest none --out cmd/factor/rsrc \
+		--product-name Factor --file-description Factor --original-filename $(BINARY).exe \
+		--copyright "Copyright (c) 2026 CyqleLabs" --product-version $(VERSION) --file-version $(VERSION)
 	GOOS=windows GOARCH=amd64             go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-windows-amd64.exe ./cmd/factor
+	rm -f $(WINRES_SYSO)
 
 # Smallest binary: browser suite stripped.
 build-tiny:
@@ -116,4 +128,4 @@ version-next:
 	@if git log "$$($(SVU) current)..HEAD" --format=%s | grep -qE '^perf(\([^)]*\))?!?:'; then $(SVU) next --always; else $(SVU) next; fi
 
 clean:
-	rm -rf dist $(BINARY) $(BINARY)-tiny
+	rm -rf dist $(BINARY) $(BINARY)-tiny $(WINRES_SYSO)

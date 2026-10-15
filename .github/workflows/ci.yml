@@ -194,6 +194,27 @@ jobs:
           path: dist/
           retention-days: 7
 
+  # The installer is built after the tag is pushed, on Windows, by the
+  # release workflow. Building it here first is what keeps an installer that
+  # no longer builds from leaving a version tagged with no release behind it.
+  installer:
+    runs-on: windows-latest
+    concurrency:
+      group: ci-installer-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build the installer
+        shell: pwsh
+        run: |
+          go build -o factor.exe ./cmd/factor
+          ./packaging/windows/build-msi.ps1 -Exe factor.exe -Version v0.0.1 -Out factor.msi
+
   # Semantic versioning. Once every check above is green on main, derive the
   # next version from the Conventional Commits since the last tag, build the
   # release set with it, and push the tag. A no-op when nothing since the last
@@ -206,7 +227,7 @@ jobs:
   # behind with no release attached to it.
   tag:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [test, lint, govulncheck]
+    needs: [test, lint, govulncheck, installer]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -265,6 +286,10 @@ jobs:
     if: needs.tag.outputs.version != ''
     permissions:
       contents: write
+      actions: read
     uses: ./.github/workflows/release.yml
+    # A called workflow sees none of the caller's secrets unless handed them,
+    # and signing needs SIGNPATH_API_TOKEN.
+    secrets: inherit
     with:
       version: ${{ needs.tag.outputs.version }}

@@ -1,0 +1,115 @@
+<!--
+  The Factor installer: a per-user MSI, so it never asks for an administrator.
+  An MSI rather than a setup.exe because SignPath signs the binary inside it
+  in the same request that signs the package, and a release then waits on one
+  approval instead of two. build-msi.ps1 builds it.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <!-- The UpgradeCode never changes: it is how a new version finds the one it replaces. -->
+  <Package Name="Factor" Manufacturer="CyqleLabs" Version="$(var.Version)"
+           UpgradeCode="FE323F32-9C86-485C-95C6-42784C757FB3" Scope="perUser">
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Factor is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/cyqlelabs/factor" />
+
+    <!-- What `factor init` writes when asked to start the gateway at login. -->
+    <Property Id="AUTOSTART">
+      <RegistrySearch Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="Factor" Type="raw" />
+    </Property>
+    <Property Id="CONFIGURED">
+      <DirectorySearch Id="FactorHome" Path="[%USERPROFILE]\.factor" Depth="0">
+        <FileSearch Name="config.json" />
+      </DirectorySearch>
+    </Property>
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="LocalPrograms" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Factor" />
+      </Directory>
+    </StandardDirectory>
+
+    <!--
+      A per-user component is keyed on a registry value rather than its file,
+      and names every profile directory it creates for removal: Windows
+      Installer cannot tell whether a file under a profile belongs to the
+      user it is installing for.
+    -->
+    <Component Id="Binary" Directory="INSTALLFOLDER" Guid="356491D1-CDFC-4920-88F9-16B10268A507">
+      <File Id="FactorExe" Name="factor.exe" Source="$(var.Exe)" />
+      <RegistryValue Root="HKCU" Key="Software\CyqleLabs\Factor" Name="Binary" Type="integer" Value="1" KeyPath="yes" />
+      <Environment Id="Path" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="no" />
+      <!-- What `factor upgrade` leaves beside the binary it replaces. -->
+      <RemoveFile Id="Replaced" Name="factor.exe.old-*" On="uninstall" />
+      <RemoveFile Id="Staged" Name="factor.exe.new" On="uninstall" />
+      <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      <RemoveFolder Id="RemoveLocalPrograms" Directory="LocalPrograms" On="uninstall" />
+    </Component>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenu">
+        <Shortcut Id="FactorShortcut" Name="Factor" Description="Chat with Factor"
+                  Target="[INSTALLFOLDER]factor.exe" WorkingDirectory="INSTALLFOLDER" />
+        <Shortcut Id="SetupShortcut" Name="Factor setup" Description="Set up Factor"
+                  Target="[INSTALLFOLDER]factor.exe" Arguments="init" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\CyqleLabs\Factor" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Factor">
+      <ComponentRef Id="Binary" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+
+    <!--
+      The gateway runs from the installed binary, and a running binary cannot
+      be replaced or removed. It is stopped before Windows Installer checks
+      for files in use, and started again after an upgrade when it is the one
+      that starts at login. Removing Factor also stops the engines the
+      gateway leaves running beside it and the login entry that points here;
+      the nested removal an upgrade performs does neither.
+    -->
+    <SetProperty Id="WixQuietExec64CmdLine" Action="SetStopForUpgrade" Sequence="execute" Before="StopFactor"
+                 Condition="WIX_UPGRADE_DETECTED AND NOT REMOVE"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;Get-Process factor -ErrorAction SilentlyContinue | Where-Object Path -like '[INSTALLFOLDER]*' | Stop-Process -Force&quot;" />
+    <SetProperty Id="WixQuietExec64CmdLine" Action="SetStopForRemoval" Sequence="execute" Before="StopFactor"
+                 Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;Get-Process -ErrorAction SilentlyContinue | Where-Object Path -like '[INSTALLFOLDER]*' | Stop-Process -Force; Get-Process -ErrorAction SilentlyContinue | Where-Object Path -like '[%USERPROFILE]\.factor\*' | Stop-Process -Force&quot;" />
+    <CustomAction Id="StopFactor" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64" Execute="immediate" Return="ignore" />
+
+    <SetProperty Id="WixQuietExec64CmdLine" Action="SetForgetAutostart" Sequence="execute" Before="ForgetAutostart"
+                 Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND AUTOSTART ~&gt;&lt; INSTALLFOLDER"
+                 Value="&quot;[System64Folder]reg.exe&quot; delete &quot;HKCU\Software\Microsoft\Windows\CurrentVersion\Run&quot; /v Factor /f" />
+    <CustomAction Id="ForgetAutostart" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64" Execute="immediate" Return="ignore" />
+
+    <CustomAction Id="StartGateway" FileRef="FactorExe" ExeCommand="gateway -d" Execute="immediate" Return="asyncNoWait" />
+
+    <InstallExecuteSequence>
+      <Custom Action="StopFactor" Before="InstallValidate"
+              Condition="(WIX_UPGRADE_DETECTED AND NOT REMOVE) OR (REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE)" />
+      <Custom Action="ForgetAutostart" After="StopFactor"
+              Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND AUTOSTART ~&gt;&lt; INSTALLFOLDER" />
+      <Custom Action="StartGateway" After="InstallFinalize" Condition="NOT REMOVE AND AUTOSTART ~&gt;&lt; INSTALLFOLDER" />
+    </InstallExecuteSequence>
+
+    <!-- The finish page offers the setup wizard, ticked until Factor has a config. -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Set up Factor now" />
+    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" Sequence="ui" After="AppSearch" Condition="NOT CONFIGURED" />
+    <!--
+      Opened through the shortcut rather than run as a program: Windows
+      Installer refuses to start an executable from the finish page (1631),
+      by file key or by path, and only a shell open passes the argument.
+    -->
+    <SetProperty Id="WixShellExecTarget" Value="[ProgramMenuFolder]Factor setup.lnk" Sequence="ui" After="CostFinalize" />
+    <CustomAction Id="RunSetup" BinaryRef="Wix4UtilCA_X64" DllEntry="WixShellExec" Impersonate="yes" />
+
+    <WixVariable Id="WixUILicenseRtf" Value="$(sys.SOURCEFILEDIR)license.rtf" />
+    <UI>
+      <ui:WixUI Id="WixUI_Minimal" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="RunSetup"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+  </Package>
+</Wix>

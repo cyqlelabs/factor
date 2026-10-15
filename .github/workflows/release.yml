@@ -8,8 +8,8 @@ name: Release
 # The two paths arrive with different work already done, which is what every
 # `if:` below is about. On the call path the tag job has already tested,
 # cross-compiled with the version stamped in, and uploaded the binaries, so
-# there is nothing left to do but publish them. A hand-pushed tag has had none
-# of that and builds here.
+# there is nothing left to build but the installer. A hand-pushed tag has had
+# none of that and builds here.
 #
 # `inputs` is empty on the push path, which is both how the steps tell the two
 # apart and why `inputs.version || github.ref_name` resolves to the tag either
@@ -26,36 +26,120 @@ on:
 
 permissions:
   contents: write
+  # SignPath's action reads this run's jobs and downloads the artifact it signs.
+  actions: read
 
 jobs:
-  release:
+  binaries:
+    if: inputs.version == ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        if: inputs.version == ''
         with:
           fetch-depth: 0
           ref: ${{ github.ref_name }}
       - uses: actions/setup-go@v5
-        if: inputs.version == ''
         with:
           go-version-file: go.mod
       - name: test
-        if: inputs.version == ''
         run: go test ./...
       - name: build
-        if: inputs.version == ''
         env:
           TAG: ${{ github.ref_name }}
         run: make build-all VERSION="$TAG"
-      - name: binaries from the tag job
-        if: inputs.version != ''
-        uses: actions/download-artifact@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: dist/
+          retention-days: 7
+          overwrite: true
+
+  # The Windows binary and its installer, signed once SignPath is set up: the
+  # SIGNPATH_* repository variables and the SIGNPATH_API_TOKEN secret. Until
+  # then they ship unsigned, which is also what SignPath asks to see before it
+  # accepts a project. Signing waits for a person to approve the request on
+  # SignPath, so a release waits too, for up to the five and a half hours
+  # given below; past that the job fails and a rerun asks again.
+  windows:
+    needs: binaries
+    # Runs on the call path too, where `binaries` is skipped by design.
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref_name }}
+      - uses: actions/download-artifact@v4
         with:
           name: release-binaries
           path: dist
+      - name: build the installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory windows | Out-Null
+          Copy-Item dist/factor-windows-amd64.exe windows/
+          ./packaging/windows/build-msi.ps1 -Exe windows/factor-windows-amd64.exe -Version $env:VERSION -Out windows/factor-windows-amd64.msi
+      - name: hand the unsigned files to SignPath
+        id: unsigned
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned
+          path: |
+            windows/factor-windows-amd64.exe
+            windows/factor-windows-amd64.msi
+          retention-days: 7
+          overwrite: true
+      - name: sign
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 19800
+          output-artifact-directory: signed
+          parameters: |
+            version: ${{ toJSON(inputs.version || github.ref_name) }}
+      - name: take the signed files
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: pwsh
+        run: Copy-Item signed/* windows/ -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            windows/factor-windows-amd64.exe
+            windows/factor-windows-amd64.msi
+          retention-days: 7
+          overwrite: true
+
+  # Published once, with the Windows files already in their final form:
+  # `factor upgrade` checks the binary against SHA256SUMS, so replacing it on
+  # a published release would fail every upgrade that read the old sum.
+  publish:
+    needs: windows
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: windows
       - name: checksums
-        run: cd dist && sha256sum * > SHA256SUMS
+        run: |
+          cp windows/* dist/
+          cd dist && sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           # Explicit: on the workflow_call path github.ref is the branch, not

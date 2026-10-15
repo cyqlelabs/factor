@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The artifact configuration of the SignPath project, kept here so a change to
+  what gets signed is reviewed like the code that produces it. Paste it into
+  the project's default artifact configuration.
+
+  A signing request is the zip the release's windows job uploads: the bare
+  binary `factor upgrade` downloads, and the installer with the same binary
+  inside. The release passes its tag as `version`, which every signed binary
+  must carry, as SignPath Foundation requires.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="factor-windows-amd64.exe" product-name="Factor" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <msi-file path="factor-windows-amd64.msi" subject="Factor" author="CyqleLabs">
+      <pe-file path="**/factor.exe" product-name="Factor" product-version="${version}">
+        <authenticode-sign />
+      </pe-file>
+      <authenticode-sign />
+    </msi-file>
+  </zip-file>
+</artifact-configuration>

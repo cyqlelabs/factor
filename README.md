@@ -73,6 +73,13 @@ go install github.com/cyqlelabs/factor/cmd/factor@latest
 factor init      # interactive setup wizard
 ```
 
+On Windows, download
+[factor-windows-amd64.msi](https://github.com/cyqlelabs/factor/releases/latest/download/factor-windows-amd64.msi)
+and run it. It installs for your account alone, so it asks for no administrator,
+puts `factor` on your PATH and in the Start menu, and offers to start the setup
+wizard when it finishes. Remove it in Settings > Apps; your settings and memory in
+`%USERPROFILE%\.factor` stay.
+
 The wizard verifies every step live — a real provider completion, the endpoint's
 model list, Telegram's `getMe`, carrier and voice credentials, an actual page load —
 and installs what's missing: smrti, a browser, your desktop backend's helpers. It
@@ -703,6 +710,40 @@ voice shell (both spawned by re-execing the test binary), a fake Telegram API, a
 fake carrier, a scripted microphone and speaker, a fake MCP server over real stdio
 JSON-RPC, a scripted desktop — plus live headless-Chrome and desktop round-trip
 tests that auto-skip where the machine can't host them.
+
+## Code signing policy
+
+Windows releases are signed. Free code signing provided by
+[SignPath.io](https://about.signpath.io), certificate by
+[SignPath Foundation](https://signpath.org).
+
+| Role | Members |
+|---|---|
+| Committers and reviewers | [CyqleLabs members](https://github.com/orgs/cyqlelabs/people) |
+| Approvers | [CyqleLabs owners](https://github.com/orgs/cyqlelabs/people?query=role%3Aowner) |
+
+Each signed file comes from this repository's release workflow, built from the
+tagged source, and an approver releases every signing request by hand.
+
+### Privacy
+
+Factor sends your conversations only where you point it: to the language-model
+providers you configure, to the channels you turn on (Telegram, phone, voice
+services), and to the sites, searches and servers its tools use for your requests.
+The memory engine runs on your machine and sends text to the same provider to
+extract facts from it. Factor has no telemetry, and it switches off the telemetry
+of every engine, library and browser it runs.
+
+On its own, Factor contacts these services, sending none of your data:
+
+| Service | Why | Turned off by |
+|---|---|---|
+| GitHub | new Factor releases; the decision model's weights | `upgrade.check: false`; `decision.mode: off` |
+| PyPI | installing and updating the memory engine and the decision runtime | `memory.auto_install: false`; `decision.auto_install: false` |
+| Hugging Face | the memory engine's embedding and entity models | `memory.mode: off` |
+| npm, nodejs.org | installing the browser engine | `browser.engine: chromium` |
+| Your package manager (winget, apt, Homebrew) | installing the media player | `tools.allow_install: false` |
+| openrouter.ai | its public price list | `cost.track: false`, with no budget caps set |
 
 ## License
 
