@@ -23,7 +23,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 const (
@@ -220,11 +219,11 @@ func untar(r io.Reader, dir string) error {
 }
 
 // safeJoin resolves an archive entry against dir and refuses anything that
-// climbs out of it.
+// climbs out of it, including a rooted name and, on Windows, a drive or a
+// device name, which IsLocal refuses where IsAbs does not.
 func safeJoin(dir, name string) (string, error) {
-	clean := filepath.Clean(filepath.FromSlash(name))
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+	if !filepath.IsLocal(name) {
 		return "", fmt.Errorf("%s carries an entry outside the archive: %q", ModelAsset, name)
 	}
-	return filepath.Join(dir, clean), nil
+	return filepath.Join(dir, filepath.FromSlash(name)), nil
 }
