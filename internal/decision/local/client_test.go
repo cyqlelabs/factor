@@ -70,7 +70,9 @@ var goodAnswer = map[string]any{
 
 func TestClientSendsTheContractAndReadsTheReply(t *testing.T) {
 	srv, cap, calls := fakeServer(t, nil, goodAnswer)
+	started := time.Now()
 	resp, err := testClient(srv.URL).decide(context.Background(), oneQuestion)
+	waited := time.Since(started)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,8 +88,10 @@ func TestClientSendsTheContractAndReadsTheReply(t *testing.T) {
 	if op["criteria"] == nil || op["instructions"] == nil || cap.body["state"] == nil {
 		t.Errorf("body missing state/criteria/instructions: %v", cap.body)
 	}
-	if resp.Model != "laya-multilingual" || resp.Usage.InputTokens != 512 || resp.Latency <= 0 {
-		t.Errorf("resp = %+v", resp)
+	// Bounded by the wait rather than required to be positive: Windows moves
+	// its clock in ticks, and a loopback round trip can fit inside one.
+	if resp.Model != "laya-multilingual" || resp.Usage.InputTokens != 512 || resp.Latency < 0 || resp.Latency > waited {
+		t.Errorf("resp = %+v, waited %s", resp, waited)
 	}
 	if err := decision.Validate(resp.Answers["op"], []string{"CLICK", "DONE"}); err != nil {
 		t.Errorf("answer did not validate: %v", err)

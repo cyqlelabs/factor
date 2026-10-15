@@ -388,7 +388,7 @@ func TestInstallReportsWhatItCouldNotDo(t *testing.T) {
 
 	// An interpreter that is too old is named as such rather than ignored.
 	bin := t.TempDir()
-	old := filepath.Join(bin, "python3")
+	old := filepath.Join(bin, exeName("python3"))
 	if err := os.WriteFile(old, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -410,6 +410,15 @@ func TestInstallReportsWhatItCouldNotDo(t *testing.T) {
 		!strings.Contains(err.Error(), InstallHint()) {
 		t.Errorf("err = %v, want the hand-install command", err)
 	}
+}
+
+// exeName is the file a command name finds on PATH: Windows looks only for
+// the executable extensions, so a stub without one is never found.
+func exeName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
 }
 
 // plantVenv makes a virtualenv that looks installed: an interpreter that
@@ -476,7 +485,7 @@ func TestInterpreterResolution(t *testing.T) {
 	// A bare name is looked up on PATH.
 	dir := t.TempDir()
 	name := "factor-test-python"
-	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, exeName(name)), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
