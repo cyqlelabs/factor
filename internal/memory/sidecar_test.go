@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/childproc"
 	"github.com/cyqlelabs/factor/internal/config"
 )
 
@@ -321,8 +322,11 @@ func TestSidecarBuildEnvCapsMallocArenas(t *testing.T) {
 // sidecar is born with rather than set from inside it.
 func TestSidecarBuildEnvSilencesOnnxruntimeTelemetry(t *testing.T) {
 	s := &Sidecar{cfg: config.Default().Memory, extract: ExtractSettings{Mode: "local"}}
-	if !slices.Contains(s.buildEnv(), "ORT_DISABLE_TELEMETRY=1") {
-		t.Error("ORT_DISABLE_TELEMETRY=1 missing: smrti will post this machine to Microsoft")
+	env := s.buildEnv()
+	for _, kv := range childproc.NoTelemetry {
+		if !slices.Contains(env, kv) {
+			t.Errorf("%s missing: smrti would report this machine", kv)
+		}
 	}
 }
 

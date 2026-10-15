@@ -9,8 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/cyqlelabs/factor/internal/childproc"
 )
 
 // A local tier with no server named is the case the wizard writes, and the one
@@ -478,14 +481,11 @@ func TestEmbeddedSpeechServerKnowsBothEngines(t *testing.T) {
 // ORT_DISABLE_TELEMETRY, read before initialization, keeps the uploader and
 // the persistent device id from existing.
 func TestSpeechProcessIsBornWithTelemetryOff(t *testing.T) {
-	var got string
-	for _, entry := range speechEnv() {
-		if v, ok := strings.CutPrefix(entry, "ORT_DISABLE_TELEMETRY="); ok {
-			got = v
+	env := speechEnv()
+	for _, kv := range childproc.NoTelemetry {
+		if !slices.Contains(env, kv) {
+			t.Errorf("%s missing from the speech process environment", kv)
 		}
-	}
-	if got != "1" {
-		t.Errorf("ORT_DISABLE_TELEMETRY = %q in the speech process environment, want \"1\"", got)
 	}
 }
 
@@ -497,9 +497,9 @@ func TestEmbeddedSpeechServerSetsTelemetryOffBeforeAnyImport(t *testing.T) {
 	script := string(speechServerScript)
 	// Column zero, so it runs when the module is imported rather than when
 	// some function is eventually called.
-	switchAt := strings.Index(script, "\nos.environ.setdefault(\"ORT_DISABLE_TELEMETRY\", \"1\")\n")
+	switchAt := strings.Index(script, "\nfor _switch in (\"ORT_DISABLE_TELEMETRY\", \"HF_HUB_DISABLE_TELEMETRY\", \"DO_NOT_TRACK\"):\n    os.environ.setdefault(_switch, \"1\")\n")
 	if switchAt < 0 {
-		t.Fatal("the script does not disable onnxruntime telemetry at module level")
+		t.Fatal("the script does not disable onnxruntime and huggingface_hub telemetry at module level")
 	}
 	// The first third-party import in the file: everything that can reach
 	// onnxruntime comes at or after this point.

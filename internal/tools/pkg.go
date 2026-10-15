@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/childproc"
 )
 
 // managerSpec describes one supported package manager.
@@ -118,6 +120,7 @@ func NewPkgInstallTool() *PkgInstallTool {
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+			cmd.Env = childproc.Quiet(os.Environ())
 			cmd.WaitDelay = 5 * time.Second
 			setProcessGroup(cmd)
 			out, err := cmd.CombinedOutput()

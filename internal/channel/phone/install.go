@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/childproc"
 )
 
 // Patter is a Python package, so the voice shell needs an interpreter Factor
@@ -48,7 +50,9 @@ const (
 var (
 	lookPath = exec.LookPath
 	runCmd   = func(ctx context.Context, argv []string) (string, error) {
-		return runCmdEnv(ctx, argv, nil)
+		// Quiet even for a probe: `import onnxruntime` is one, and the import
+		// is when onnxruntime reports the machine.
+		return runCmdEnv(ctx, argv, childproc.Quiet(os.Environ()))
 	}
 	// runCmdEnv is the same, with an environment — the speech installer takes
 	// its configuration the way every other child does, through the env, so no

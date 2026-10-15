@@ -110,7 +110,9 @@ func FindBrowserBinary(configured string) (string, error) {
 // of RAM, so background networking, component updates, sync and the media
 // router are pure overhead. --disable-dev-shm-usage matters most of all on
 // the small distributions: their /dev/shm is tiny, and a renderer that fills
-// it dies mid-page.
+// it dies mid-page. Nothing the browser records leaves the machine either:
+// metrics are kept rather than uploaded, and crash dumps and Domain
+// Reliability reports are never made.
 var frugalFlags = []chromedp.ExecAllocatorOption{
 	chromedp.Flag("disable-background-networking", true),
 	chromedp.Flag("disable-component-update", true),
@@ -118,6 +120,8 @@ var frugalFlags = []chromedp.ExecAllocatorOption{
 	chromedp.Flag("disable-sync", true),
 	chromedp.Flag("disable-dev-shm-usage", true),
 	chromedp.Flag("metrics-recording-only", true),
+	chromedp.Flag("disable-breakpad", true),
+	chromedp.Flag("disable-domain-reliability", true),
 	chromedp.Flag("no-pings", true),
 	chromedp.Flag("disable-features", "Translate,MediaRouter,OptimizationHints,InterestFeedContentSuggestions"),
 	chromedp.Flag("renderer-process-limit", "2"),

@@ -196,7 +196,7 @@ func (s *supervisor) spawnAndWait(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, command, s.scriptPath)
 	// Secrets ride in the environment, never in argv, where every process on
 	// the machine could read them out of /proc.
-	cmd.Env = append(os.Environ(), "FACTOR_VOICE_CONFIG="+string(blob))
+	cmd.Env = append(childproc.Quiet(os.Environ()), "FACTOR_VOICE_CONFIG="+string(blob))
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Cancel = func() error { childproc.Stop(cmd.Process); return nil }
 

@@ -39,6 +39,13 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# Patter exports OpenTelemetry spans when PATTER_OTEL_ENABLED is set. Factor
+# switches it and every other reporting channel off when it spawns this shell
+# (childproc.NoTelemetry); this keeps a run started any other way the same.
+os.environ.setdefault("PATTER_OTEL_ENABLED", "0")
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+os.environ.setdefault("DO_NOT_TRACK", "1")
+
 # ---------------------------------------------------------------- configuration
 
 

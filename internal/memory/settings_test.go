@@ -8,10 +8,13 @@ import (
 	"os/exec"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/childproc"
 )
 
 func TestSettingsDriftNamesOnlyTheEngineSettingsThatChanged(t *testing.T) {
@@ -28,6 +31,12 @@ func TestSettingsDriftNamesOnlyTheEngineSettingsThatChanged(t *testing.T) {
 	}
 	if d := settingsDrift(want, want); len(d) != 0 {
 		t.Fatalf("identical settings drift: %v", d)
+	}
+	// An engine started before a telemetry switch was added is restarted
+	// with it, the way it would be for a setting.
+	quiet := engineSettings(parseEnviron(childproc.Quiet([]string{"SMRTI_DB=/a"})))
+	if d := settingsDrift(quiet, engineSettings(parseEnviron([]string{"SMRTI_DB=/a", "ORT_DISABLE_TELEMETRY=1"}))); !slices.Contains(d, "HF_HUB_DISABLE_TELEMETRY") {
+		t.Errorf("an engine without the newer switches did not drift: %v", d)
 	}
 }
 

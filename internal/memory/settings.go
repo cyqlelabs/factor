@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/cyqlelabs/factor/internal/childproc"
 )
 
 // processEnv reports a process's environment, read from the kernel on
@@ -35,13 +37,25 @@ func parseEnviron(entries []string) map[string]string {
 	return env
 }
 
+// telemetrySwitch reports whether k is one of the switches buildEnv sets to
+// keep the engine from reporting home, so an engine started before one was
+// added is restarted with it.
+func telemetrySwitch(k string) bool {
+	for _, kv := range childproc.NoTelemetry {
+		if name, _, _ := strings.Cut(kv, "="); name == k {
+			return true
+		}
+	}
+	return false
+}
+
 // engineSettings keeps the variables that configure the engine — the ones
 // buildEnv writes, which are the ones a newer Factor can add, drop or
 // change — out of an environment that also holds the shell's own.
 func engineSettings(env map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range env {
-		if strings.HasPrefix(k, "SMRTI_") || k == "ORT_DISABLE_TELEMETRY" || k == "MALLOC_ARENA_MAX" {
+		if strings.HasPrefix(k, "SMRTI_") || k == "MALLOC_ARENA_MAX" || telemetrySwitch(k) {
 			out[k] = v
 		}
 	}

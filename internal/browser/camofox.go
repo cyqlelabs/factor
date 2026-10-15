@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/childproc"
 	"github.com/cyqlelabs/factor/internal/config"
 	"github.com/cyqlelabs/factor/internal/tools"
 )
@@ -209,11 +210,10 @@ func (c *camofox) env(node string) []string {
 	// The server is Node, and what it spawns — the browser fetcher above all —
 	// looks node up on PATH. A Factor that had to provision one did so because
 	// PATH has none.
-	env := withNode(os.Environ(), node)
+	env := withNode(childproc.Quiet(os.Environ()), node)
 	set := func(k, v string) { env = append(env, k+"="+v) }
 	set("CAMOFOX_PORT", strconv.Itoa(c.cfg.Camofox.Port))
 	set("CAMOFOX_BIND_HOST", "127.0.0.1")
-	set("CAMOFOX_CRASH_REPORT_ENABLED", "false")
 	set("CAMOUFOX_INSTALL_DIR", camoufoxDir(c.dir()))
 	set("CAMOFOX_PROFILE_DIR", filepath.Join(state, "profiles"))
 	set("CAMOFOX_COOKIES_DIR", filepath.Join(state, "cookies"))

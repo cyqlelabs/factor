@@ -61,9 +61,11 @@ from pathlib import Path
 # cannot stop that, because the events are logged while the environment is
 # being created (microsoft/onnxruntime#25573). Only this, read before
 # initialization, keeps the uploader and the device id from existing at all.
-# Factor sets it when it spawns this server; the default is for a run started
-# any other way.
-os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+# huggingface_hub, which fetches the models, reports what it downloaded unless
+# told not to. Factor sets all of these when it spawns this server
+# (childproc.NoTelemetry); the defaults are for a run started any other way.
+for _switch in ("ORT_DISABLE_TELEMETRY", "HF_HUB_DISABLE_TELEMETRY", "DO_NOT_TRACK"):
+    os.environ.setdefault(_switch, "1")
 
 from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile  # noqa: E402
 from fastapi.responses import JSONResponse, Response  # noqa: E402

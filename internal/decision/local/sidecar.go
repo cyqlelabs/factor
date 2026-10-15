@@ -440,12 +440,11 @@ func limitsOf(h health) decision.Limits {
 // the interpreter path (which holds the username) to Microsoft as it
 // initializes — logged while the environment is created, which here is the
 // import itself, so nothing the code does afterwards can stop it
-// (microsoft/onnxruntime#25573). Both switches have to be in the environment
+// (microsoft/onnxruntime#25573). The switches have to be in the environment
 // before the interpreter starts, which is why they live here rather than in
 // anything the server runs.
 func quietEnv() []string {
-	return append(os.Environ(), "ORT_DISABLE_TELEMETRY=1", "HF_HUB_DISABLE_TELEMETRY=1",
-		"TRANSFORMERS_NO_ADVISORY_WARNINGS=1")
+	return childproc.Quiet(append(os.Environ(), "TRANSFORMERS_NO_ADVISORY_WARNINGS=1"))
 }
 
 // serverEnv is quietEnv plus what the model is allowed to hold while it runs.

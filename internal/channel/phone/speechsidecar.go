@@ -65,9 +65,10 @@ func newSpeechSupervisor(cfg SpeechConfig, home, language, token string, needSTT
 // events are logged while the environment is created, before any call can be
 // made against it (microsoft/onnxruntime#25573). Only ORT_DISABLE_TELEMETRY,
 // read before initialization, prevents the uploader and the device id from
-// existing at all, which is why it is set out here rather than in the script.
+// existing at all, which is why it and the other childproc.NoTelemetry
+// switches are set out here rather than left to the script.
 func speechEnv() []string {
-	return append(os.Environ(), "ORT_DISABLE_TELEMETRY=1")
+	return childproc.Quiet(os.Environ())
 }
 
 func (s *speechSupervisor) Healthy() bool { return s.healthy.Load() }

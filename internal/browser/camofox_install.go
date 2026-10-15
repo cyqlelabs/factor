@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/childproc"
 	"github.com/cyqlelabs/factor/internal/config"
 )
 
@@ -136,9 +137,8 @@ func EnsureCamofox(ctx context.Context, home string, progress Progress) (string,
 	// postinstall, which fetches the browser; that is done below.
 	argv := []string{npmFor(node), "install", "--prefix", dir, "--no-fund", "--no-audit", "--loglevel=error",
 		"--ignore-scripts", camofoxPackage + "@" + camofoxVersion}
-	env := withNode(append(os.Environ(),
+	env := withNode(append(childproc.Quiet(os.Environ()),
 		"CAMOUFOX_INSTALL_DIR="+camoufoxDir(dir),
-		"CAMOFOX_CRASH_REPORT_ENABLED=false",
 		"npm_config_update_notifier=false",
 	), node)
 	if out, err := runCmdEnv(ctx, argv, env, dir); err != nil {
@@ -225,7 +225,7 @@ func standIns(ctx context.Context, node, dir string, progress Progress) error {
 		if _, err := os.Stat(path); err != nil {
 			continue // the version installed does not carry it
 		}
-		out, err := runCmdEnv(ctx, []string{node, "-e", si.probe}, withNode(os.Environ(), node), dir)
+		out, err := runCmdEnv(ctx, []string{node, "-e", si.probe}, withNode(childproc.Quiet(os.Environ()), node), dir)
 		if err == nil {
 			continue
 		}

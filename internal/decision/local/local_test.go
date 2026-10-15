@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/childproc"
 	"github.com/cyqlelabs/factor/internal/decision"
 )
 
@@ -522,23 +524,15 @@ func TestRunCmdReportsOutputAndFailure(t *testing.T) {
 	}
 }
 
-// The environment the server is born with says no to Hugging Face's usage
-// reporting, which a personal agent's sidecar has no business doing, and to
-// onnxruntime's, which posts this machine to Microsoft as it initializes.
+// The environment the server is born with says no to every reporting channel
+// it could reach: Hugging Face's usage reporting, which a personal agent's
+// sidecar has no business doing, and onnxruntime's, which posts this machine
+// to Microsoft as it initializes.
 func TestServerEnvironmentSwitchesOffTelemetry(t *testing.T) {
-	want := map[string]string{
-		"HF_HUB_DISABLE_TELEMETRY": "the server would report usage to Hugging Face",
-		"ORT_DISABLE_TELEMETRY":    "the server would post this machine to Microsoft",
-	}
-	for key, complaint := range want {
-		var got string
-		for _, kv := range serverEnv() {
-			if v, ok := strings.CutPrefix(kv, key+"="); ok {
-				got = v
-			}
-		}
-		if got != "1" {
-			t.Errorf("%s = %q, want \"1\": %s", key, got, complaint)
+	env := serverEnv()
+	for _, kv := range childproc.NoTelemetry {
+		if !slices.Contains(env, kv) {
+			t.Errorf("%s missing from the server's environment", kv)
 		}
 	}
 }
