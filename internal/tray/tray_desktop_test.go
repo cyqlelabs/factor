@@ -83,3 +83,24 @@ func TestQuitEndsRun(t *testing.T) {
 		t.Fatal("Run did not return after Quit")
 	}
 }
+
+// A gateway that fails in its first moments stops the tray before its loop is
+// up. On Windows that stop used to be posted to a window that did not exist
+// yet and was spent doing it, leaving Run blocked for good; it is held for the
+// loop instead.
+func TestAStopBeforeTheLoopIsUpIsHeldForIt(t *testing.T) {
+	quitMu.Lock()
+	savedUp, savedAsked := loopUp, quitAsked
+	loopUp, quitAsked = false, false
+	quitMu.Unlock()
+	t.Cleanup(func() {
+		quitMu.Lock()
+		loopUp, quitAsked = savedUp, savedAsked
+		quitMu.Unlock()
+	})
+
+	Quit() // no loop yet: nothing to end, so nothing may be spent
+	if !loopReady() {
+		t.Fatal("the loop came up without the stop that arrived before it")
+	}
+}

@@ -6,15 +6,21 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"fyne.io/systray"
 )
 
-// started remembers whether the systray loop was really entered: its Quit
-// must not be called for a loop that never ran.
-var started atomic.Bool
+// A stop is held until the loop is up to take it. systray's Quit is spent on
+// its first call, and on Windows it posts a close to the tray's window, which
+// does not exist until the loop has created it: a gateway that stopped in its
+// first moments called Quit into nothing, and Run never returned.
+var (
+	quitMu    sync.Mutex
+	loopUp    bool
+	quitAsked bool
+)
 
 // overviewRows caps the status overview. The rows are created up front and
 // hidden while blank, because a menu item added later would land below the
@@ -40,7 +46,6 @@ func Run(version string, status func() []string, onQuit func()) {
 	// failed at startup (nativeEnd closes a nil conn). A session advertising
 	// a dead bus must cost the gateway its icon, not its clean shutdown.
 	defer func() { _ = recover() }()
-	started.Store(true)
 	stop := make(chan struct{})
 	// When the mark can be handed over differs by platform, and handing it
 	// over at the wrong moment loses it silently. Linux exports its
@@ -53,6 +58,10 @@ func Run(version string, status func() []string, onQuit func()) {
 		identify(version)
 	}
 	systray.Run(func() {
+		if loopReady() {
+			systray.Quit()
+			return
+		}
 		if runtime.GOOS == "windows" {
 			identify(version)
 		}
@@ -120,9 +129,21 @@ func refreshOverview(rows []*systray.MenuItem, status func() []string, stop <-ch
 // Quit ends Run, which the gateway's own shutdown triggers so the icon never
 // outlives the daemon it stands for.
 func Quit() {
-	if started.Load() {
+	quitMu.Lock()
+	defer quitMu.Unlock()
+	quitAsked = true
+	if loopUp {
 		systray.Quit()
 	}
+}
+
+// loopReady records that the loop can now be ended, and reports whether a
+// stop arrived before it could be.
+func loopReady() bool {
+	quitMu.Lock()
+	defer quitMu.Unlock()
+	loopUp = true
+	return quitAsked
 }
 
 // canTray reports whether this session can carry an icon at all: Windows
