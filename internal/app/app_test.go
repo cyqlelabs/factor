@@ -211,6 +211,19 @@ func TestDisabledToolsAreHonoured(t *testing.T) {
 	}
 }
 
+// tools.allow_install off takes away the agent's installer; the default
+// keeps it.
+func TestInstallsCanBeTurnedOff(t *testing.T) {
+	cfg := testConfig(t)
+	if !names(t, cfg)["pkg_install"] {
+		t.Fatal("pkg_install is missing by default")
+	}
+	cfg.Tools.AllowInstall = false
+	if names(t, cfg)["pkg_install"] {
+		t.Error("pkg_install was registered with installs turned off")
+	}
+}
+
 func TestNewFailsOnBadConfiguration(t *testing.T) {
 	cases := map[string]func(*config.Config){
 		"unknown memory mode":    func(c *config.Config) { c.Memory.Mode = "telepathy" },

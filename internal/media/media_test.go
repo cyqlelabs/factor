@@ -269,6 +269,19 @@ func TestProvisionSaysWhyItCouldNot(t *testing.T) {
 	}
 }
 
+// With installs turned off the player names the setting rather than
+// installing anything.
+func TestProvisionRefusedWhenInstallsAreOff(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	p := newTestPlayer(t, nil)
+	p.argv = []string{"factor-test-mpv"}
+	p.manager = func() string { return "apt" }
+	p.RefuseInstall()
+	if err := p.Provision(context.Background()); err == nil || !strings.Contains(err.Error(), "tools.allow_install is off") {
+		t.Errorf("err = %v", err)
+	}
+}
+
 func TestInstallDirsFollowEachPlatformsManager(t *testing.T) {
 	getenv := func(k string) string {
 		return map[string]string{"LOCALAPPDATA": `C:\Users\n\AppData\Local`, "ProgramFiles": `C:\Program Files`, "HOME": "/home/n"}[k]

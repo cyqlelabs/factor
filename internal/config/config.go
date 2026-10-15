@@ -314,7 +314,10 @@ type ToolsConfig struct {
 	ExecTimeoutSecs           int      `json:"exec_timeout_secs"`
 	EnableDenyPatterns        bool     `json:"enable_deny_patterns"`
 	CustomDenyPatterns        []string `json:"custom_deny_patterns,omitempty"`
-	AllowInstall              bool     `json:"allow_install"`
+	// AllowInstall lets Factor install system packages on its own: the
+	// pkg_install tool, and the media player provisioning mpv. Off, neither
+	// happens; the setup wizard still installs what it asks about.
+	AllowInstall bool `json:"allow_install"`
 	// SkillRegistryURL points skill_find and skill_install at something other
 	// than skills.sh: a mirror, a private index, a stub in a test.
 	SkillRegistryURL string `json:"skill_registry_url,omitempty" env:"FACTOR_SKILL_REGISTRY_URL"`

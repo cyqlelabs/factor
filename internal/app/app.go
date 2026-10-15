@@ -291,7 +291,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry.Register(&skills.FindTool{Registry: skillReg, Installed: skillLoader})
 	registry.Register(tools.NewConfigTools(cfg)...)
 	registry.Register(cost.NewTool(meter)...)
-	registry.Register(tools.NewPkgInstallTool())
+	if cfg.Tools.AllowInstall {
+		registry.Register(tools.NewPkgInstallTool())
+	}
 	// A question needs somewhere to land: the chat whose turn is asking when
 	// there is one (wired below, once the loop exists), the machine's screen
 	// otherwise; a chat session swaps in its terminal instead (App.Ask).
@@ -415,6 +417,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			System:   true,
 		})
 	})
+	if !cfg.Tools.AllowInstall {
+		mediaPlayer.RefuseInstall()
+	}
 	registry.Register(media.NewTool(mediaPlayer, guard))
 
 	cronService, err := cron.NewService(filepath.Join(ws, "cron"),

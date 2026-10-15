@@ -278,6 +278,9 @@ func (p *Player) Provision(ctx context.Context) error {
 	if p.locate() {
 		return nil
 	}
+	if p.install == nil {
+		return fmt.Errorf("%s is not installed, and tools.allow_install is off, so Factor will not install it", helper.Bin)
+	}
 	manager := p.manager()
 	if manager == "" {
 		return fmt.Errorf("%s is not installed and this machine has no package manager Factor knows how to drive, "+
@@ -294,6 +297,10 @@ func (p *Player) Provision(ctx context.Context) error {
 	slog.Info("media: player installed", "path", p.argv[0])
 	return nil
 }
+
+// RefuseInstall keeps the player from installing mpv when it is missing, for
+// a machine whose owner turned off the installs Factor starts on its own.
+func (p *Player) RefuseInstall() { p.install = nil }
 
 // ProvisionInBackground is Provision for the daemon, which lives long
 // enough to see an install through and is what an upgraded machine runs
