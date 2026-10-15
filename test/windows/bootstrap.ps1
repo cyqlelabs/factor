@@ -201,7 +201,6 @@ foreach ($dir in @("C:\go\bin", "C:\w64devkit\bin", "$env:USERPROFILE\go\bin")) 
   if ($machinePath -notlike "*$dir*") { $machinePath = "$machinePath;$dir" }
 }
 [Environment]::SetEnvironmentVariable("Path", $machinePath, "Machine")
-[Environment]::SetEnvironmentVariable("GOTOOLCHAIN", "local", "Machine")
 
 # --- the interactive runners ----------------------------------------------
 # Anything ssh starts lands in a non-interactive window station: no desktop to

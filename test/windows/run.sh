@@ -15,6 +15,10 @@ REPO=$(cd "$HERE/../.." && pwd)
 VMCTL="$HERE/vmctl.sh"
 GUEST_SRC=${FACTOR_WIN_SRC:-C:/factor-test/src}
 GUEST_SRC_WIN=${GUEST_SRC//\//\\}
+# The guest's Go is whatever bootstrap installed, frozen into the snapshot,
+# while go.mod moves on: pinned to it, every run after a toolchain bump
+# refused to build. Go fetches the toolchain go.mod names instead.
+GUEST_GO="set GOTOOLCHAIN=auto&& go"
 
 die() { echo "run: $*" >&2; exit 1; }
 
@@ -87,6 +91,7 @@ job() {
   cat <<EOF
 \$ErrorActionPreference = "Continue"
 \$env:CGO_ENABLED = "$cgo"
+\$env:GOTOOLCHAIN = "auto"
 # Prepended rather than relied upon: the task's environment block is built
 # when it starts, and a machine PATH written after this session logged on has
 # been seen not to reach it. Naming the directories costs nothing and removes
@@ -127,7 +132,7 @@ cmd_sync() { sync_tree; }
 cmd_prime() {
   sync_tree
   echo "==> warming the module and build caches"
-  "$VMCTL" ssh "cd /d $GUEST_SRC_WIN && go mod download && go build ./... && go vet ./..." || true
+  "$VMCTL" ssh "cd /d $GUEST_SRC_WIN && $GUEST_GO mod download && go build ./... && go vet ./..." || true
 }
 
 cmd_fast() {
@@ -136,7 +141,7 @@ cmd_fast() {
   if [ -z "$args" ]; then announce_exclusions; args="test $(win_packages)"; fi
   args=$(withCount "$args")
   echo "==> go $args (non-interactive session)"
-  "$VMCTL" ssh "cd /d $GUEST_SRC_WIN && go $args"
+  "$VMCTL" ssh "cd /d $GUEST_SRC_WIN && $GUEST_GO $args"
 }
 
 cmd_test() {
