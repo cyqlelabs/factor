@@ -16,6 +16,7 @@ func TestTurnRidesTheContext(t *testing.T) {
 	TurnFrom(context.Background()).Event(EventRecallFailed, "nobody is hurt") // nil-safe
 
 	rec := NewRecorder(t.TempDir(), Config{Enabled: true, KeepDays: 14}, nil)
+	defer func() { _ = rec.Close() }()
 	turn := rec.Begin("cli:x", "user", "")
 	ctx := WithTurn(context.Background(), turn)
 	if got := TurnFrom(ctx); got != turn {
