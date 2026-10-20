@@ -38,6 +38,11 @@ func TestSettingsDriftNamesOnlyTheEngineSettingsThatChanged(t *testing.T) {
 	if d := settingsDrift(quiet, engineSettings(parseEnviron([]string{"SMRTI_DB=/a", "ORT_DISABLE_TELEMETRY=1"}))); !slices.Contains(d, "HF_HUB_DISABLE_TELEMETRY") {
 		t.Errorf("an engine without the newer switches did not drift: %v", d)
 	}
+	// An engine still caching its model in the temp dir is moved off it.
+	moved := engineSettings(parseEnviron([]string{"SMRTI_DB=/a", embedCacheVar + "=/home/x/.factor/memory-model"}))
+	if d := settingsDrift(moved, engineSettings(parseEnviron([]string{"SMRTI_DB=/a"}))); !slices.Equal(d, []string{embedCacheVar}) {
+		t.Errorf("an engine on the temp-dir cache did not drift: %v", d)
+	}
 }
 
 func TestEnvOfReadsThisProcess(t *testing.T) {

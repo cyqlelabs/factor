@@ -316,6 +316,26 @@ func TestSidecarBuildEnvCapsMallocArenas(t *testing.T) {
 	}
 }
 
+// FastEmbed's default cache is the temp dir, which a reboot empties: every
+// boot's first recall then waited on a 241 MB download.
+func TestSidecarBuildEnvKeepsTheEmbeddingModelAcrossReboots(t *testing.T) {
+	t.Setenv("FACTOR_HOME", t.TempDir())
+	s := &Sidecar{cfg: config.Default().Memory, extract: ExtractSettings{Mode: "local"}}
+	want := embedCacheVar + "=" + filepath.Join(config.Home(), "memory-model")
+	if !slices.Contains(s.buildEnv(), want) {
+		t.Errorf("%s missing; the model would live in the temp dir", want)
+	}
+
+	t.Setenv(embedCacheVar, "/srv/models")
+	env := s.buildEnv()
+	if slices.Contains(env, want) {
+		t.Errorf("a user's own %s must be left alone", embedCacheVar)
+	}
+	if !slices.Contains(env, embedCacheVar+"=/srv/models") {
+		t.Errorf("the inherited %s went missing", embedCacheVar)
+	}
+}
+
 // onnxruntime uploads the machine — OS build, CPU, memory, a persistent
 // device id and the interpreter path, which carries the user's name — the
 // moment it initializes, so the switch has to be in the environment the

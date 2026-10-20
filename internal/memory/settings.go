@@ -55,7 +55,7 @@ func telemetrySwitch(k string) bool {
 func engineSettings(env map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range env {
-		if strings.HasPrefix(k, "SMRTI_") || k == "MALLOC_ARENA_MAX" || telemetrySwitch(k) {
+		if strings.HasPrefix(k, "SMRTI_") || k == "MALLOC_ARENA_MAX" || k == embedCacheVar || telemetrySwitch(k) {
 			out[k] = v
 		}
 	}

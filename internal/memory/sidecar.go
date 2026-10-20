@@ -461,10 +461,21 @@ func (s *Sidecar) SizeRestarts() int64 { return s.sizeRestarts.Load() }
 // keeps their value.
 const arenaMax = "2"
 
+// embedCacheVar names the directory FastEmbed downloads the embedding model
+// into.
+const embedCacheVar = "FASTEMBED_CACHE_PATH"
+
 func (s *Sidecar) buildEnv() []string {
 	env := os.Environ()
 	if _, tuned := os.LookupEnv("MALLOC_ARENA_MAX"); !tuned {
 		env = append(env, "MALLOC_ARENA_MAX="+arenaMax)
+	}
+	// FastEmbed keeps smrti's embedding model under the temp dir unless told
+	// otherwise, and a reboot empties it: the first recall after every boot
+	// then fetched 241 MB from Hugging Face — refused while the proxy was
+	// still coming up, and past the turn's recall deadline once it was.
+	if _, tuned := os.LookupEnv(embedCacheVar); !tuned {
+		env = append(env, embedCacheVar+"="+filepath.Join(config.Home(), "memory-model"))
 	}
 	// smrti embeds on onnxruntime, which posts the machine to Microsoft as it
 	// initializes, and fetches its models through huggingface_hub, which
