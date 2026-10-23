@@ -67,15 +67,15 @@ func Daemonize(configPath string, passthrough []string) (int, error) {
 	// seconds this waits for the child. Hiding it keeps a window from flashing
 	// up on every login, and leaves a terminal the user typed into alone.
 	hideConsole()
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
 	return awaitDaemon(exited)
 }
 
 // awaitDaemon watches for the child to claim the pid file, or to die trying —
 // a taken port, a malformed config — in which case its last words are in the
 // log and worth more than "it exited".
-func awaitDaemon(exited <-chan error) (int, error) {
+func awaitDaemon(exited <-chan struct{}) (int, error) {
 	deadline := time.Now().Add(confirmTimeout)
 	for time.Now().Before(deadline) {
 		if pid, alive := ReadPidFile(); alive {

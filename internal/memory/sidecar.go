@@ -607,7 +607,6 @@ func (s *Sidecar) spawnAndWait(ctx context.Context) error {
 	case <-ctx.Done():
 		if s.cfg.KeepAlive {
 			slog.Info("leaving smrti running for the next factor invocation", "pid", cmd.Process.Pid)
-			go func() { <-waitCh }() // reap if it dies while we're still alive
 			return ctx.Err()
 		}
 		defer clearEnginePid(cmd.Process.Pid)

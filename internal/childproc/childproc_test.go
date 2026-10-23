@@ -62,14 +62,11 @@ func TestStopAndWaitKillsWhatWillNotStop(t *testing.T) {
 // nobody delivered spends the whole grace period for nothing.
 func TestStopReportsWhetherItAskedOrKilled(t *testing.T) {
 	cmd := sleeper(t)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
 	graceful := Stop(cmd.Process)
 	if graceful != (runtime.GOOS != "windows") {
 		t.Fatalf("Stop reported graceful=%v on %s", graceful, runtime.GOOS)
 	}
-	<-done
+	_ = cmd.Wait()
 }
 
 func TestStopIgnoresANilProcess(t *testing.T) {
