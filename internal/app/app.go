@@ -181,6 +181,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// nothing counts it, so "it got slower last week" has no answer.
 	failover := func(ctx context.Context, name, reason string) {
 		tracer.Event(tools.ToolContextFrom(ctx).SessionKey, trace.EventFailover, name+": "+reason)
+		agent.NoteFailover(ctx)
 	}
 	chain.OnFailover(failover)
 	if utilityChain != nil {

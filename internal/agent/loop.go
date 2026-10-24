@@ -677,6 +677,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 	// stops talking, not when the first provider call leaves.
 	fill := l.fill(ctx, in)
 	defer fill.stop()
+	ctx = withFiller(ctx, fill)
 
 	var history []provider.Message
 	if !in.ephemeral {

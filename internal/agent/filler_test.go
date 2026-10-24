@@ -105,7 +105,7 @@ func TestFillerIsSilentWithoutALightChain(t *testing.T) {
 // arguments are not: a second model has no business with the user's paths and
 // searches, and the shape of the work is all the sentence needs.
 func TestFillerStateCarriesToolNamesAndNotArguments(t *testing.T) {
-	state := fillerState("open the report", []string{"read_file", "exec"}, nil, "")
+	state := fillerState("open the report", []string{"read_file", "exec"}, nil, "", false)
 	if !strings.Contains(state, "read_file, exec") {
 		t.Errorf("tool names missing: %q", state)
 	}
@@ -118,11 +118,11 @@ func TestFillerStateCarriesToolNamesAndNotArguments(t *testing.T) {
 		many = append(many, "read_file")
 	}
 	many[0] = "first_call"
-	if got := fillerState("x", many, nil, ""); strings.Contains(got, "first_call") {
+	if got := fillerState("x", many, nil, "", false); strings.Contains(got, "first_call") {
 		t.Errorf("the oldest calls should fall off: %q", got)
 	}
 	// It repeats neither itself nor the assistant.
-	if got := fillerState("x", nil, []string{"Dame un momento."}, ""); !strings.Contains(got, "Dame un momento.") {
+	if got := fillerState("x", nil, []string{"Dame un momento."}, "", false); !strings.Contains(got, "Dame un momento.") {
 		t.Errorf("said lines missing: %q", got)
 	}
 }
@@ -132,7 +132,7 @@ func TestFillerStateCarriesToolNamesAndNotArguments(t *testing.T) {
 // temptation in the best seat in the house and the rule against it in the
 // worst, so the state block closes on the instruction instead.
 func TestFillerStateEndsOnTheInstructionRatherThanTheRequest(t *testing.T) {
-	state := fillerState("¿cuánto gasté este mes?", []string{"read_file"}, nil, "es")
+	state := fillerState("¿cuánto gasté este mes?", []string{"read_file"}, nil, "es", false)
 	tail := state[len(state)/2:]
 	if !strings.Contains(tail, "not the answer") {
 		t.Errorf("the closing constraint is missing: %q", tail)
@@ -149,8 +149,39 @@ func TestFillerStateEndsOnTheInstructionRatherThanTheRequest(t *testing.T) {
 // subject, not all of it.
 func TestFillerStateClipsALongRequest(t *testing.T) {
 	long := strings.Repeat("palabra ", 200)
-	if got := fillerState(long, nil, nil, ""); len(got) > fillerRequestChars+600 {
+	if got := fillerState(long, nil, nil, "", false); len(got) > fillerRequestChars+600 {
 		t.Errorf("state grew to %d bytes on a long request", len(got))
+	}
+}
+
+// A turn stuck on a provider outage is not a turn thinking. Told only that no
+// tool had run, the filler said "still trying to decipher your message" while
+// every model call was being refused.
+func TestFillerSaysTheModelIsFailingWhileItIsRetried(t *testing.T) {
+	f := &filler{}
+	ctx := withFiller(context.Background(), f)
+	NoteFailover(ctx)
+	NoteFailover(context.Background()) // a call outside any turn is ignored
+	f.mu.Lock()
+	failing := f.failing
+	f.mu.Unlock()
+	if !failing {
+		t.Fatal("a failover did not reach the turn's filler")
+	}
+	state := fillerState("¿qué pasó con el reporte?", nil, nil, "es", true)
+	if !strings.Contains(state, "failing right now") {
+		t.Errorf("the outage is not stated: %q", state)
+	}
+	if strings.Contains(state, "working out what to do") {
+		t.Errorf("an outage is described as thinking: %q", state)
+	}
+	// The model answering with a batch of tools ends the outage.
+	f.running("exec")
+	f.mu.Lock()
+	failing = f.failing
+	f.mu.Unlock()
+	if failing {
+		t.Error("the outage outlived the model's next answer")
 	}
 }
 

@@ -114,6 +114,26 @@ type filler struct {
 	flight   []string // the batch running right now
 	lines    []string // what the filler has already said, so it does not repeat
 	language string   // the language the line comes out in; blank means the request's
+	failing  bool     // the model call failed and is being retried
+}
+
+type fillerKey struct{}
+
+// withFiller lets the provider chain's failover hook find the turn's filler.
+func withFiller(ctx context.Context, f *filler) context.Context {
+	return context.WithValue(ctx, fillerKey{}, f)
+}
+
+// NoteFailover tells the turn running under ctx that a model call failed and
+// is being retried. Without it a turn stuck on a provider outage looks, to the
+// filler, like one still thinking: "No tool has run yet" became "still trying
+// to decipher your message" while the model was refusing every call.
+func NoteFailover(ctx context.Context) {
+	if f, ok := ctx.Value(fillerKey{}).(*filler); ok {
+		f.mu.Lock()
+		f.failing = true
+		f.mu.Unlock()
+	}
 }
 
 // fill starts the filler for one turn. It says nothing until the turn has been
@@ -158,7 +178,7 @@ func (f *filler) spoke() {
 // part of it that is actually now.
 func (f *filler) running(names ...string) {
 	f.mu.Lock()
-	f.flight = names
+	f.flight, f.failing = names, false
 	f.mu.Unlock()
 }
 
@@ -249,7 +269,7 @@ func (f *filler) compose(ctx context.Context) string {
 	f.mu.Lock()
 	done := append(append([]string(nil), f.tools...), f.flight...)
 	said, waiting := append([]string(nil), f.lines...), slices.Contains(f.flight, tools.AskToolName)
-	language := f.language
+	language, failing := f.language, f.failing
 	f.mu.Unlock()
 	// The turn has asked the user something and is waiting on them. The
 	// silence is theirs to break, and filling it is talking over an answer.
@@ -272,7 +292,7 @@ func (f *filler) compose(ctx context.Context) string {
 	resp, err := chat.Chat(ctx, &provider.Request{
 		Messages: []provider.Message{
 			{Role: "system", Content: fillerRules(language)},
-			{Role: "user", Content: fillerState(f.in.content, done, said, language)},
+			{Role: "user", Content: fillerState(f.in.content, done, said, language, failing)},
 		},
 		MaxTokens: fillerMaxTokens,
 	})
@@ -364,17 +384,21 @@ func fillerExamples(language string) string {
 // strongest at the two ends of a prompt, and the request is the one thing
 // here that pulls toward answering: ending on it put the temptation in the
 // best seat in the house and the rule against it in the worst.
-func fillerState(request string, done, said []string, language string) string {
+func fillerState(request string, done, said []string, language string, failing bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<request>\n%s\n</request>\n\n", clipLine(request, fillerRequestChars))
 	if len(done) > fillerToolsShown {
 		done = done[len(done)-fillerToolsShown:]
 	}
 	b.WriteString("<progress>\n")
-	if len(done) > 0 {
+	switch {
+	case len(done) > 0:
 		fmt.Fprintf(&b, "Tools run so far, oldest first: %s\n", strings.Join(done, ", "))
-	} else {
+	case !failing:
 		b.WriteString("No tool has run yet; the assistant is still working out what to do.\n")
+	}
+	if failing {
+		b.WriteString("The model service the assistant runs on is failing right now, and the call is being retried.\n")
 	}
 	b.WriteString("</progress>\n\n")
 	if len(said) > 0 {
