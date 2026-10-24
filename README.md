@@ -392,12 +392,14 @@ factor status      # number, speech tier, voice-shell health
 ```
 
 Carrier setup has a page of its own: **[Twilio](docs/phone-twilio.md)** ·
-**[Telnyx](docs/phone-telnyx.md)**.
+**[Telnyx](docs/phone-telnyx.md)**. Telnyx costs less per minute and per text but
+needs a Call Control Application; the wizard verifies either carrier's credentials
+live before writing anything.
 
 The voice shell is [Patter](https://github.com/PatterAI/Patter), installed on demand
-and supervised like the smrti sidecar. It owns the carrier's media stream,
-turn-taking, barge-in, voice activity detection, answering-machine detection and
-transcoding; Factor is its brain, over an endpoint that never leaves `127.0.0.1`.
+and supervised like the smrti sidecar. It handles the call audio, turn-taking,
+barge-in and voicemail detection; Factor answers over an endpoint that never leaves
+`127.0.0.1`.
 
 **Speech tiers** — the one decision with real trade-offs, asked by the wizard:
 
@@ -408,8 +410,6 @@ transcoding; Factor is its brain, over an endpoint that never leaves `127.0.0.1`
 | **3 · local TTS** | Deepgram | Piper | +0.3 GB | Piper's ~100 ms render beats the cloud, on any CPU |
 | **4 · fully local** | Parakeet / Whisper | Piper | +1–2 GB | no audio leaves the machine, no per-minute audio cost |
 
-A tier picks who serves each half of the pipeline; everything else is the same call:
-
 <!-- A PNG, not a mermaid fence: the GitHub mobile app shows mermaid as raw code.
      Source: docs/assets/speech-tiers.mmd — rebuild with: make diagrams -->
 
@@ -418,88 +418,43 @@ A tier picks who serves each half of the pipeline; everything else is the same c
        alt="The voice shell hears with a speech-to-text engine and speaks with a text-to-speech one. Tiers 2 and 4 hear with Parakeet or Whisper and tiers 3 and 4 speak with Piper, both on Factor's own speech server; tiers 1 and 3 hear with Deepgram and tiers 1 and 2 speak with ElevenLabs, off the machine.">
 </p>
 
-Pick a local tier and Factor installs it: engines in their own virtualenv, your
-language's models on disk before setup finishes, nothing to start by hand.
+Pick a local tier and Factor installs it, models included. To use your own server
+instead, point `stt.base_url` / `tts.base_url` at anything OpenAI-compatible, such as
+[Speaches](https://github.com/speaches-ai/speaches); one that isn't answering at
+startup falls back to the cloud tier unless `local_audio_fallback` is `false`.
 
 Roughly $0.04–0.06 per talk-minute on tier 1 plus your model's tokens, and about
-1.3¢ per SMS segment. Simple questions land in 1.5–3 s. The reply arrives whole, but
-a tool-using turn still speaks: the line Factor says on its way to the answer is
-streamed into the live call while the tools run.
+1.3¢ per SMS segment. Simple questions land in 1.5–3 s, and a tool-using turn says
+what it's doing while the tools run.
+
+The rails are closed by default, because anyone can dial a number and every minute
+costs money: only `user_number` may call in or be dialed, calls end at
+`max_call_minutes`, and transfer is off. `phone_sms` sends a text and `phone_call`
+dials, reporting the outcome and a transcript tail into the conversation that asked.
+Your carrier's page covers widening the rails, moving off the default Cloudflare
+quick tunnel, and what to check when the line doesn't come up.
 
 <details>
-<summary><b>Which languages and voices you get, and which transcriber</b></summary>
+<summary><b>Languages, voices and transcribers</b></summary>
 
-Transcription covers Whisper's ~99 languages, with Parakeet serving its 25 at higher
-accuracy where the machine allows. Voices come from Piper's catalogue of **49**,
-resolved from your `language` setting with the exact locale winning where it exists
-(`es-MX` gets a Mexican voice, not a Castilian one). You can also pick the voice by
-name: the wizard lists your ElevenLabs voices on the cloud tier and the catalogue's on
-the local one, and a voice named in `speech_server.piper_voice` is downloaded on the
-next start.
+Transcription covers Whisper's ~99 languages, with
+[Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) serving its 25 more
+accurately where the machine allows. Voices come from Piper's 49, matched to your
+`language` setting with the exact locale winning (`es-MX` gets a Mexican voice, not a
+Castilian one), or picked by name in the wizard. `speech_server.speech_speed` paces
+the voice — 0.9 a tenth slower, 1.1 a tenth faster — without changing its pitch.
 
-`speech_server.speech_speed` paces it: 0.9 speaks a tenth slower, 1.1 a tenth faster.
-Piper stretches the phonemes rather than the audio, so the voice keeps its pitch —
-past about 1.2 either way it stops sounding like a person.
-
-Whisper decodes a fixed 30-second window however little audio it gets, and the phone
-pipeline feeds it about a second at a time — so its cost is per chunk, not per second
-of speech. Measured on this design: `small` takes ~2.4 s per 1 s chunk on a CPU and
-falls behind while you talk; `base` keeps up at ~0.9 s but mishears more. That used
-to be the CPU's ceiling.
-
-[Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) breaks the
-trade: a transducer's cost scales with the audio it is handed, not a fixed window,
-and its accuracy benchmarks at Whisper large-v3 level. So the installer picks:
+The installer picks the transcriber:
 
 | Machine | Transcriber |
 |---|---|
 | GPU | Whisper `large-v3-turbo` — every language, large-class accuracy |
 | CPU, ≥4 GB RAM, one of Parakeet's 25 languages | Parakeet TDT int8 (~1 GB resident) |
-| CPU otherwise | Whisper `base`/`tiny`, as before |
+| CPU otherwise | Whisper `base` or `tiny` |
 
 `speech_server.stt_engine` (`parakeet` / `whisper`) or `speech_server.whisper_model`
-override the choice. On a machine that lands on `base`, tier 3 — Piper's ~100 ms
-render locally, transcription in the cloud — is still the better trade, and the
-wizard says so.
-
-</details>
-
-<details>
-<summary><b>Bring your own speech server</b></summary>
-
-Point `stt.base_url` / `tts.base_url` at anything OpenAI-compatible —
-[Speaches](https://github.com/speaches-ai/speaches) or your own — and Factor uses it
-as-is. It probes at startup either way and falls back to the cloud tier if the
-server isn't answering; set `local_audio_fallback: false` to have the channel report
-itself down instead. Silero voice-activity detection runs locally in every tier.
-
-</details>
-
-<details>
-<summary><b>Getting the line up, and the guardrails on it</b></summary>
-
-Buy a number at Twilio or Telnyx, then run `factor init`. The wizard asks which one,
-takes the credentials, and verifies them live before writing anything.
-
-| | Twilio | Telnyx |
-|---|---|---|
-| Credentials | account SID + auth token | API key + connection id + public key |
-| Setup at the carrier | buy a number | buy a number, create a Call Control Application |
-| Cost | the baseline above | lower per minute and per text |
-| Step by step | [docs/phone-twilio.md](docs/phone-twilio.md) | [docs/phone-telnyx.md](docs/phone-telnyx.md) |
-
-The carrier is pointed at the shell on every start — Patter does it for Twilio,
-Factor for Telnyx — so a rotating tunnel keeps working with nothing to click.
-
-The rails are closed by default, because a number is dialable by anyone and every
-minute costs money: only `user_number` may call in, only `user_number` may be
-dialed, calls are cut off at `max_call_minutes`, and transfer is off. Two tools
-appear once the channel is configured — `phone_sms` sends a text and `phone_call`
-dials, reporting the outcome with a transcript tail into the conversation that asked.
-
-Your carrier's page has the rest: the allowlist knobs that widen those rails, how to
-move off the default Cloudflare quick tunnel — fine for a first call, wrong for
-daily use — and what to check when the line does not come up.
+override the choice. Whisper `base` mishears more, so on those machines tier 3 —
+local Piper, cloud transcription — is the better trade, and the wizard says so.
 
 </details>
 
