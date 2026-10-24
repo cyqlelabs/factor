@@ -506,8 +506,8 @@ daily use — and what to check when the line does not come up.
 ## PC voice: mic and speakers
 
 The same conversation without a phone bill: Factor listens on the machine's own
-microphone and answers through its speakers. The mic opens whenever Factor runs — in
-`factor` (the terminal chat keeps working alongside) and in `factor gateway` alike.
+microphone and answers through its speakers. The mic opens in `factor` and
+`factor gateway` alike, and the terminal chat keeps working beside it.
 
 ```bash
 factor init        # the Channels step sets up the mic, the speech tier, and the activation
@@ -522,126 +522,50 @@ factor status      # tier, activation, helpers, and whether anything is listenin
 | `wake-word` | utterances that open with the wake word, plus a short window after each reply so follow-ups don't need it (the wizard preselects this) |
 | `push-to-talk` | nothing until `factor talk` arms the microphone |
 
-`factor talk` works in every mode: it rescues a misfired wake word and cuts off
-whatever is playing, and `/talk` does the same inside the chat. Talk over a reply and
-it stops mid-word, cancelling the turn behind it. The speech tiers are the phone's,
-chosen the same way, with the local server on its own port so both channels can keep
-speech at home.
+`factor talk` (or `/talk` in the chat) works in every mode and rescues a missed wake
+word. Talk over a reply and Factor stops mid-word and cancels the turn behind it. The
+speech tiers are the [phone's](#phone-calls-and-sms).
 
-**It hears people, not clips.** Two people talking to each other leave gaps far
-shorter than the silence that closes a recording, so their whole exchange arrives as
-one clip — and a single embedding of that is a blend that hands both of them one
-name. With `speaker_id` on, the speech server separates the voices first and reads
-each one alone. The owner keeps the main conversation, a recognized guest gets a
-session of their own and is named to the agent as the person speaking, and
+**It tells voices apart.** With `speaker_id` on, which needs a local speech tier, the
+speech server splits each recording by speaker before matching voices to profiles.
+The owner keeps the main conversation, a recognized guest gets one of their own, and
 `voice_speakers` turns a profile born `speaker-2` into Roxana.
 
-**And it knows who is listening.** That, not who asked, is the question
-confidentiality turns on. A second voice in a recording makes the room shared — at
-most one of them is the owner, so the rest are company — which holds before anyone is
-enrolled and even when nobody could be named, so long as the voice holds a second of
-speech of its own.
+**And it knows who is listening.** A second voice in one recording, or about three
+seconds of a voice that isn't yours over a couple of minutes, makes the room shared.
+Everyone present then shares one conversation, and private memory stays out of it:
 
 | Room | Session | Recalls from | Remembers into |
 |---|---|---|---|
 | private | `voice:local`, or the guest's own | `space` + `shared_space` | `space` |
-| shared | `voice:local:room` — everyone in one thread | `shared_space` | `shared_space` |
+| shared | `voice:local:room` | `shared_space` | `shared_space` |
 
-The room governs delayed work too. A background job or a scheduled task is answered
-into whatever room it lands in rather than the one it was asked in — the channel is
-asked again at the moment the report is composed, and the wider answer wins, so a
-job started alone and finished in company is written under the shared scope instead
-of being withheld after the fact. Telling Factor mid-answer that somebody just
-walked in ends that turn where it stands and asks your question again in the room's
-session: a turn already assembled for an empty room holds private recall in it, and
-relabelling it afterwards would not take any of that back.
+Factor says so before answering each time the room flips. It turns private again
+only after `room_timeout_minutes` of silence or when you tell it everyone left (the
+`room` tool), because a room wrongly called private says a secret to a guest. Tell it
+somebody walked in and it asks your question again in the shared session. Jobs and
+scheduled tasks answer into the room as it is when they finish.
 
-What the split covers is memory: what is recalled, and what is written down. It is
-not a filter over everything Factor knows. `AGENT.md`, `USER.md` and your
-`instructions/` are in every turn's system prompt whoever is listening — they have
-to be, or the prompt would stop being cacheable and every turn of a long
-conversation would cost more than the last — so discretion about what is in them is
-asked of the model, in a notice on every shared turn, rather than enforced by the
-scope.
-
-Three seconds of a voice that is not yours, added up over a couple of minutes,
-declares company — a cough, a shout or the "Gracias." Whisper hears in noise never
-gets there, and a guest does within their first few remarks; `room_timeout_minutes`
-of silence or the `room` tool takes it back. The asymmetry is deliberate: a room
-wrongly called shared costs you a coy answer, one wrongly called private says
-something private to a guest.
+The split covers memory only. `AGENT.md`, `USER.md` and `instructions/` reach every
+turn whoever is listening, so in company the model is asked to be discreet about
+them rather than kept from them.
 
 <details>
-<summary><b>Microphone, meter and barge-in</b></summary>
+<summary><b>Microphone, echo and spoken replies</b></summary>
 
-Audio rides the sound system's own helpers — `parec`/`paplay`, `pw-record`/`pw-play`,
-`arecord`/`aplay`, sox's `rec`/`play` on macOS, sox's `waveaudio` driver on Windows —
-installed by the wizard, which also asks *which* microphone and proves it live: you
-make a noise, it measures, and a silent source is called out on the spot. The chat's
-status bar carries a live meter — `mic ▂▄▁` moves with the room and turns green on
-speech, `♪` lights cyan while Factor talks, a dead source shows `mic ✗`.
+The wizard installs the audio helpers (`parec`/`paplay`, `pw-record`/`pw-play`,
+`arecord`/`aplay`, or sox on macOS and Windows), asks which microphone to use, and
+tests it live. The chat's status bar carries a meter: `mic ▂▄▁` turns green on
+speech, `♪` lights while Factor talks, and `mic ✗` marks a dead source.
 
-Voice activity detection is pure Go: an adaptive noise floor that also learns from
-what the transcriber heard nobody in (a fan that starts up is speech to an energy
-detector until the empty transcripts teach it otherwise), a pre-roll so the first
-syllable survives, and a higher bar while the agent speaks so the speakers can't
-barge in on themselves. Speakers loud enough get past that bar anyway, so what got
-through is matched against the words Factor just sent them: its own voice is dropped
-instead of answered, or stripped off the front of what you actually said.
-`output_volume` turns the reply down in rooms where the speakers overpower the
-microphone.
+Factor recognizes its own voice when the speakers reach the mic and drops it; lower
+`output_volume` if they still overpower the mic. A sentence it heard but didn't take,
+such as one without the wake word, gets a soft chime; `ignored_chime` turns it off.
 
-A sentence the wake word never reached gets a soft two-note chime, so a misfire sounds
-different from a machine that never heard you. It is a tone and not a voice, so talking
-across it is not an interruption and still needs the wake word; it waits fifteen seconds
-between chimes, because a conversation held in front of the machine is turned away
-sentence by sentence. `ignored_chime` turns it off.
-
-</details>
-
-<details>
-<summary><b>How a voice becomes a name</b></summary>
-
-Each voice is matched against the profiles in `~/.factor/voice-speakers.json`, which
-needs a local speech tier — that is what computes the embeddings. The turn belongs to
-whoever opened the recording, since the wake word was at its front; anyone who joined
-halfway through is the room, not the asker. `unknown_speaker` decides what a new voice
-gets: a profile on the spot, or the main conversation, unnamed.
-
-Three bars rise with the stakes: one second of speech to put a name to a voice, two
-to fold it into that profile, three to create one, because a spurious profile never
-goes away and competes for every match after it. Every decision lands in the log with
-the similarity behind it, so a turn answered as the wrong person is readable rather
-than a guess.
-
-The room is read from every utterance the mic resolves, including the ones the wake
-word turned away — someone talking to *you* is still someone in the room. Sound only
-reports people who make it, so the `room` tool is how you mention someone who came in
-quietly or left. Either flip is spoken before the answer that depends on it, and the
-room outlives the process, aged against the wall clock rather than uptime, so a 9pm
-upgrade doesn't bring Factor back up private while the guest is still on the sofa.
-
-</details>
-
-<details>
-<summary><b>Replies you can listen to</b></summary>
-
-A spoken turn is told it's being heard rather than read, so replies come out sayable
-— no markdown, no bullet lists, no spelled-out URLs. `voice_write` sends anything
-long or written to your terminal instead, or to the chat you last used when Factor
-runs as a daemon.
-
-Factor starts talking before the whole reply is rendered. The answer is cut at
-sentence boundaries with a short first piece, and each piece is synthesised while
-the one before it plays. A CPU voice renders at a few times real time, so waiting
-for a twenty-second answer in full used to cost several seconds of silence after
-every question; one sentence renders in a fraction of that, and the rest is in
-hand before the speakers need it.
-
-The local tier keeps to itself. Factor sets `ORT_DISABLE_TELEMETRY=1` in the speech
-process's environment before it starts, because onnxruntime otherwise uploads your
-OS build, CPU, memory and a persistent device id as it initializes, and its own
-`disable_telemetry_events()` runs too late to stop it
+Replies come out speakable — no markdown, lists or URLs — and `voice_write` sends
+anything long to the terminal, or to your last chat when Factor runs as a daemon.
+Speech starts once the first sentence is rendered, not the whole reply. The local
+speech server runs with onnxruntime's telemetry switched off
 ([onnxruntime#25573](https://github.com/microsoft/onnxruntime/issues/25573)).
 
 </details>
