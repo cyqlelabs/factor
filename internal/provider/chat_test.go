@@ -111,6 +111,46 @@ func TestOpenAIChatEmptyChoicesIsFormatError(t *testing.T) {
 	}
 }
 
+// An upstream that fails after OpenRouter has answered 200 is reported in the
+// body; read as a response with no choices, a rate limit became a format error
+// and benched the model for ten minutes.
+func TestOpenAIChatErrorInSuccessfulResponseIsClassifiedByItsCode(t *testing.T) {
+	cases := []struct {
+		body string
+		want Reason
+	}{
+		{`{"error":{"code":429,"message":"Rate limit exceeded","metadata":{"error_type":"rate_limit_exceeded"}}}`, ReasonRateLimit},
+		{`{"error":{"code":502,"message":"Provider returned error"},"choices":[]}`, ReasonOverloaded},
+		{`{"error":{"code":400,"message":"This endpoint's maximum context length is 65536 tokens"}}`, ReasonContextOverflow},
+		{`{"error":{"code":"rate_limit_exceeded","message":"slow down"}}`, ReasonUnknown},
+		{`{"error":"slow down"}`, ReasonUnknown},
+	}
+	for _, tc := range cases {
+		srv := jsonServer(t, http.StatusOK, tc.body)
+		_, err := NewOpenAI(srv.URL, "k", "gpt-x").Chat(context.Background(), &Request{})
+		apiErr := wantAPIError(t, err)
+		if apiErr.Reason != tc.want {
+			t.Errorf("%s: reason = %s, want %s", tc.body, apiErr.Reason, tc.want)
+		}
+		if !strings.Contains(apiErr.Error(), "error") {
+			t.Errorf("%s: the message should carry the endpoint's error, got %q", tc.body, apiErr.Error())
+		}
+	}
+}
+
+func TestOpenAIChatEmptyErrorIsNotAFailure(t *testing.T) {
+	for _, empty := range []string{`null`, `""`, `{}`} {
+		srv := jsonServer(t, http.StatusOK, `{"error":`+empty+`,"choices":[{"message":{"content":"hola"},"finish_reason":"stop"}]}`)
+		resp, err := NewOpenAI(srv.URL, "k", "gpt-x").Chat(context.Background(), &Request{})
+		if err != nil {
+			t.Fatalf("error %s: %v", empty, err)
+		}
+		if resp.Content != "hola" {
+			t.Errorf("error %s: content = %q", empty, resp.Content)
+		}
+	}
+}
+
 func TestOpenAIChatTransportFailureIsClassified(t *testing.T) {
 	_, err := NewOpenAI(deadEndpoint(t), "k", "gpt-x").Chat(context.Background(), &Request{})
 	apiErr := wantAPIError(t, err)

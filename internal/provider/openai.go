@@ -133,6 +133,31 @@ type oaResponse struct {
 			CachedTokens int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
+	// OpenRouter commits to 200 as soon as an upstream accepts the request, so
+	// an upstream that fails after that — a rate limit, an overload, every
+	// fallback provider down — is reported here, in a successful response.
+	Error json.RawMessage `json:"error"`
+}
+
+// errorCode reads the status an endpoint put in its error object. OpenRouter
+// sends a number; other OpenAI-compatible servers send a string such as
+// "rate_limit_exceeded", which reads as 0 and classifies as unknown.
+func errorCode(raw json.RawMessage) int {
+	var e struct {
+		Code int `json:"code"`
+	}
+	_ = json.Unmarshal(raw, &e)
+	return e.Code
+}
+
+// hasError reports whether an error field says anything: a server may send it
+// null or empty beside an answer that succeeded.
+func hasError(raw json.RawMessage) bool {
+	switch string(bytes.TrimSpace(raw)) {
+	case "", "null", `""`, "{}":
+		return false
+	}
+	return true
 }
 
 // A model that reasons inside <think> writes those delimiters into its content,
@@ -310,6 +335,9 @@ func (p *OpenAI) send(ctx context.Context, body oaRequest) (*Response, error) {
 	var parsed oaResponse
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return nil, &APIError{Provider: p.Name(), Reason: ReasonFormat, Err: fmt.Errorf("decode response: %w", err)}
+	}
+	if hasError(parsed.Error) {
+		return nil, ClassifyStatus(p.Name(), errorCode(parsed.Error), string(data))
 	}
 	if len(parsed.Choices) == 0 {
 		return nil, &APIError{Provider: p.Name(), Reason: ReasonFormat, Body: string(data), Err: fmt.Errorf("no choices in response")}
