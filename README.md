@@ -101,43 +101,16 @@ factor -p 127.0.0.1:8080                   # route HTTP through a proxy and watc
 ```
 
 `-p` routes Factor's HTTP through any proxy — mitmproxy, Burp, ZAP, SOCKS5 — so you
-can read the prompts, tool schemas, replies and token counts it actually sends. On a
-desktop, the running gateway also puts a status icon in the system tray: version,
-uptime, memory health, connected channels, and a clean quit.
+can read the prompts, tool schemas, replies and token counts it actually sends;
+`--proxy-ca` trusts an intercepting proxy's certificate. A gateway started by systemd
+or your login gets no flags, so give it `proxy.address` and `proxy.ca` in the config.
 
-<details>
-<summary><b>Proxy details, the memory sidecar, and how upgrades land</b></summary>
+`factor upgrade` verifies the newest release against its `SHA256SUMS`, swaps the
+binary and updates smrti; a running gateway restarts into it once the current turn is
+answered.
 
-Loopback stays direct and child processes inherit the proxy setting, so smrti's calls
-show up but the local sidecars aren't caught. `--proxy-ca` trusts an intercepting
-proxy's CA, probed once at startup. A flag only reaches the process you typed it at,
-and the gateway that systemd or your login starts gets none, so `proxy.address` and
-`proxy.ca` in the config (`FACTOR_PROXY`, `FACTOR_PROXY_CA`) carry the setting to
-every start; a typed `-p` still wins. An address is tried with one request before it is
-saved or applied on reload, so a proxy nothing answers at is refused instead of
-failing every call, and the agent cannot move it from a heartbeat. The browser isn't
-routed; it has its own trust store. The tray is absent on a headless box and on
-macOS, whose tray would cost the build its CGO-free binaries.
-
-Factor supervises the smrti sidecar, restarts it with backoff, and degrades
-gracefully (empty recalls, dropped writes) when it's down. Point
-`memory.mode: "external"` + `memory.url` at a shared smrti if you run one.
-
-`factor upgrade` downloads the release for this machine, verifies it against the
-published `SHA256SUMS`, and swaps the binary in place (`--check` only reports). A
-running gateway restarts into it once the turn in flight is answered, keeping its
-pid so systemd never sees it stop. Windows has no signal that reaches a process it
-did not start, so the terminal asks over the gateway's own loopback endpoint
-instead and the replacement comes up as a new pid. Factor checks daily and tells
-you, never installing unasked.
-
-The same command brings smrti up to date however it runs here: a container is
-recreated on the newly published image, and a uv, pipx, pip or venv install is
-upgraded by the installer that made it, then restarted into. Both wait for the
-memory graph to go quiet first, so nothing in flight is lost. An engine on
-another machine is left to whoever runs it.
-
-</details>
+On a Linux or Windows desktop, the running gateway also puts a status icon in the
+system tray: version, uptime, memory health, connected channels, and a clean quit.
 
 ## Configuration
 
@@ -174,7 +147,7 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
   },
   "memory": {
     "max_rss_mb": 0,                         // restart the engine for size once idle; 0 sizes it to the machine, -1 turns it off
-    "mode": "sidecar",                       // sidecar | external | off
+    "mode": "sidecar",                       // sidecar | external (set "url" to a shared smrti) | off
     "auto_install": true,                    // install smrti when it is missing
     "personality": "balanced",               // analytical | curious | empathetic | maverick | deterministic
     "space": "main",                         // where conversations are remembered
