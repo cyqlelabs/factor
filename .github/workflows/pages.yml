@@ -1,0 +1,37 @@
+name: Pages
+
+# The homepage in site/ is static and has no build step: the job uploads the
+# directory as it stands and publishes it to GitHub Pages. The Pages source
+# must be set to "GitHub Actions" in the repository settings, or the deploy
+# step has nothing to publish to.
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and never cancel one halfway: a newer push queues
+# behind it and publishes everything both carried.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v5
