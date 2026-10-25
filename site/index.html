@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title data-i18n="meta.title">Factor — the AI agent that lives on your machine and answers the phone</title>
+<meta name="description" data-i18n-attr="content:meta.desc" content="Factor is a personal AI agent in one ~15 MB file. Talk to it in the terminal, on Telegram, over the phone or out loud. It works your browser and desktop, remembers what matters, and reports nothing home. MIT.">
+<meta name="theme-color" content="#EDF5FA">
+<link rel="canonical" href="https://cyqlelabs.github.io/factor/">
+<link rel="icon" href="assets/mark.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/mark-180.png">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://cyqlelabs.github.io/factor/">
+<meta property="og:title" content="Factor — lives on your machine, answers the phone">
+<meta property="og:description" content="A personal AI agent in one ~15 MB file: terminal, Telegram, phone and voice, with real memory and hands on your desktop. MIT.">
+<meta property="og:image" content="https://cyqlelabs.github.io/factor/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/atkinson.woff2" as="font" type="font/woff2" crossorigin>
+<script>
+  // Language is the visitor's: ?lang= first, then a choice they made here, then
+  // the browser's own list. English ships inline; any other dictionary loads
+  // before the page shows, and a dictionary that never arrives shows English.
+  (function () {
+    var d = document.documentElement, have = ["en", "es", "pt", "fr", "de", "ja", "zh"], tags = { pt: "pt-BR", zh: "zh-Hans" };
+    function pick() {
+      var q = new URLSearchParams(location.search).get("lang");
+      if (q && have.indexOf(q) >= 0) return q;
+      try { var s = localStorage.getItem("factor-lang"); if (s && have.indexOf(s) >= 0) return s; } catch (e) {}
+      var list = navigator.languages || [navigator.language || "en"];
+      for (var i = 0; i < list.length; i++) {
+        var base = String(list[i] || "").toLowerCase().split("-")[0];
+        if (have.indexOf(base) >= 0) return base;
+      }
+      return "en";
+    }
+    var lang = pick();
+    d.lang = tags[lang] || lang;
+    d.setAttribute("data-lang", lang);
+    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) d.classList.add("pending");
+    setTimeout(function () { d.classList.remove("pending", "i18n-wait"); }, 3000);
+    window.__i18n = new Promise(function (done) {
+      if (lang === "en") return done(null);
+      d.classList.add("i18n-wait");
+      var s = document.createElement("script");
+      s.src = "i18n/" + lang + ".js";
+      s.onload = function () { done(window.FACTOR_DICT || null); };
+      s.onerror = function () { done(null); };
+      document.head.appendChild(s);
+    });
+  })();
+</script>
+<link rel="stylesheet" href="css/site.css">
+<script defer src="vendor/gsap.min.js"></script>
+<script defer src="vendor/ScrollTrigger.min.js"></script>
+<script defer src="vendor/SplitText.min.js"></script>
+<script defer src="vendor/ScrambleTextPlugin.min.js"></script>
+<script defer src="vendor/DrawSVGPlugin.min.js"></script>
+<script defer src="vendor/MotionPathPlugin.min.js"></script>
+<script defer src="vendor/lenis.min.js"></script>
+<script defer src="js/i18n.js"></script>
+<script defer src="js/main.js"></script>
+</head>
+<body>
+<a class="skip" href="#main" data-i18n="nav.skip">Skip to content</a>
+
+<svg width="0" height="0" class="sprite" aria-hidden="true">
+  <symbol id="i-term" viewBox="0 0 24 24"><path d="M4 6l6 6-6 6M12 18h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"/></symbol>
+  <symbol id="i-plane" viewBox="0 0 24 24"><path d="M21 4L3 11l6 2.5L19 7l-8 8v5l3.2-3.6L18 19z" fill="currentColor"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><path d="M6.6 3h3l1.6 4.5-2.1 1.6a11 11 0 005.8 5.8l1.6-2.1L21 14.4v3A2.6 2.6 0 0118.4 20 15.4 15.4 0 014 5.6 2.6 2.6 0 016.6 3z" fill="currentColor"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 3v12m-5-5l5 5 5-5M4 20h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2.8l2.8 6 6.5.7-4.9 4.4 1.4 6.4L12 17l-5.8 3.3 1.4-6.4-4.9-4.4 6.5-.7z" fill="currentColor"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M8 8h11v12H8zM5 16V4h11" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5" fill="none" stroke="currentColor" stroke-width="2.4"/></symbol>
+  <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16.5 8.5a5 5 0 010 7M19 6a8.5 8.5 0 010 12" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+  <symbol id="mark" viewBox="0 0 512 512"><circle cx="256" cy="256" r="256" fill="url(#plate)"/><g fill="#fff" transform="translate(12.8 12.8) scale(.95)"><circle cx="256" cy="103" r="38.25"/><path d="M150.25 172.75h211.5V202l-38.25 38.25H150.25z"/><path d="M150.25 271.75h211.5V301l-38.25 38.25H214.75v108h-42.75l-21.75-21.75z"/></g></symbol>
+  <defs><linearGradient id="plate" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0ea5e9"/><stop offset="1" stop-color="#0369a1"/></linearGradient></defs>
+</svg>
+
+<!-- The page is one battleship sheet, the way Factor sees a screen: columns
+     lettered across the top, rows numbered down the side, and the cell under
+     the pointer named in the corner. -->
+<div class="sheet" aria-hidden="true"><div class="sheet-cell"></div></div>
+<div class="ruler ruler-x" aria-hidden="true"></div>
+<div class="ruler ruler-y" aria-hidden="true"></div>
+<div class="readout mono" aria-hidden="true"><span data-i18n="grid.cell">cell</span> <b>A1</b></div>
+
+<header class="nav">
+  <a class="brand" href="#top" aria-label="Factor">
+    <svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true"><use href="#mark"/></svg>
+    <span>Factor</span>
+  </a>
+  <nav class="nav-links" data-i18n-attr="aria-label:nav.label" aria-label="Primary">
+    <a href="#reach" data-i18n="nav.how">How it works</a>
+    <a href="#honest" data-i18n="nav.why">Why trust it</a>
+    <a href="https://github.com/cyqlelabs/factor#readme" data-i18n="nav.docs">Docs</a>
+  </nav>
+  <div class="nav-end">
+    <label class="lang">
+      <span class="sr-only" data-i18n="nav.lang">Language</span>
+      <select id="lang">
+        <option value="en">English</option>
+        <option value="es">Español</option>
+        <option value="pt">Português</option>
+        <option value="fr">Français</option>
+        <option value="de">Deutsch</option>
+        <option value="ja">日本語</option>
+        <option value="zh">简体中文</option>
+      </select>
+    </label>
+    <a class="btn btn-small" href="#install" data-i18n="nav.install">Install</a>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- HERO -->
+<section class="hero" id="top">
+  <div class="hero-letters" aria-hidden="true"><span>A</span><span>1</span></div>
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow mono" data-i18n="hero.eyebrow">Personal AI agent · open source · MIT</p>
+      <h1 class="display hero-title">
+        <span class="line"><span data-i18n="hero.t1">Lives on your machine.</span></span>
+        <span class="line"><span data-i18n="hero.t2">Answers the phone.</span></span>
+      </h1>
+      <div class="hero-rest">
+      <p class="lead hero-lead" data-i18n="hero.sub">Factor is an AI agent in a single ~15 MB file. Talk to it in the terminal, on Telegram, over the phone, or out loud across the room. It works your browser and desktop, remembers what matters, and gets back to you when the work is done.</p>
+      <div class="cta hero-cta">
+        <a class="btn btn-primary" data-dl href="https://github.com/cyqlelabs/factor/releases/latest">
+          <svg aria-hidden="true"><use href="#i-down"/></svg>
+          <span data-dl-label data-i18n="dl.generic">Download Factor</span>
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/cyqlelabs/factor">
+          <svg aria-hidden="true"><use href="#i-star"/></svg>
+          <span data-i18n="cta.star">Star on GitHub</span>
+        </a>
+      </div>
+      <p class="cta-note mono"><span data-dl-note></span> <a href="#install" data-i18n="cta.other">Other builds and Go</a></p>
+      </div>
+    </div>
+
+    <div class="stage" aria-hidden="true">
+      <div class="stage-plane" data-depth="0.2">
+        <div class="plane">
+          <div class="plane-grid"></div>
+          <span class="plane-l" style="--c:0">A</span><span class="plane-l" style="--c:1">B</span><span class="plane-l" style="--c:2">C</span><span class="plane-l" style="--c:3">D</span><span class="plane-l" style="--c:4">E</span><span class="plane-l" style="--c:5">F</span>
+          <span class="plane-n" style="--r:0">1</span><span class="plane-n" style="--r:1">2</span><span class="plane-n" style="--r:2">3</span><span class="plane-n" style="--r:3">4</span><span class="plane-n" style="--r:4">5</span><span class="plane-n" style="--r:5">6</span>
+          <span class="plane-hit"></span>
+        </div>
+      </div>
+      <div class="stage-mark" data-depth="0.5">
+        <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+        <svg viewBox="0 0 512 512"><use href="#mark"/></svg>
+      </div>
+      <div class="frag frag-term" data-depth="0.9">
+        <div class="frag-body">
+          <div class="frag-bar"><i></i><i></i><i></i><span class="mono">~ factor</span></div>
+          <p class="mono t-user"><b>›</b> <span data-i18n="stage.q">what's eating my disk?</span></p>
+          <p class="mono t-tool"><span class="spin"></span> exec <span>du -sh ~/*</span></p>
+          <p class="t-say" data-i18n="stage.a">~/Videos holds 41 GB of old screen recordings. Want me to move them to the NAS?</p>
+        </div>
+      </div>
+      <div class="frag frag-call" data-depth="1.3">
+        <div class="frag-body">
+          <p class="mono call-top"><svg><use href="#i-phone"/></svg> <span data-i18n="stage.calling">Factor is calling</span></p>
+          <p class="call-quote" data-i18n="stage.callq">“The backup finished. Two files changed.”</p>
+          <div class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+      </div>
+      <div class="frag frag-tg" data-depth="1.1">
+        <div class="frag-body">
+          <p class="mono tg-top"><svg><use href="#i-plane"/></svg> Factor <span>09:41</span></p>
+          <p data-i18n="stage.tg">Done. Three flights under $400 are in your notes.</p>
+        </div>
+      </div>
+      <div class="frag frag-mic" data-depth="1.6">
+        <div class="frag-body mono"><svg><use href="#i-mic"/></svg> <span data-i18n="stage.mic">listening for “factor”</span></div>
+      </div>
+    </div>
+  </div>
+  <p class="scroll-cue mono" aria-hidden="true"><span data-i18n="hero.scroll">scroll</span><i></i></p>
+</section>
+
+<!-- REACH -->
+<section class="reach" id="reach">
+  <div class="reach-pin">
+    <div class="wrap reach-head">
+      <p class="eyebrow mono"><span class="cellref" data-cellref></span><span data-i18n="reach.eyebrow">Channels</span></p>
+      <h2 class="display h2" data-i18n="reach.title">Four ways in. One agent.</h2>
+      <p class="lead" data-i18n="reach.lead">Whichever door you use, you reach the same agent, with the same tools and the same memory. Start something at your desk and hear back on your phone.</p>
+    </div>
+    <div class="reach-field">
+      <svg class="reach-lines" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M180 110 C 340 110, 380 300, 500 300"/>
+        <path d="M820 110 C 660 110, 620 300, 500 300"/>
+        <path d="M180 490 C 340 490, 380 300, 500 300"/>
+        <path d="M820 490 C 660 490, 620 300, 500 300"/>
+      </svg>
+      <div class="reach-core" aria-hidden="true"><svg viewBox="0 0 512 512"><use href="#mark"/></svg></div>
+      <article class="door door-a">
+        <svg class="door-ico" aria-hidden="true"><use href="#i-term"/></svg>
+        <h3 data-i18n="reach.t.h">Terminal</h3>
+        <p data-i18n-html="reach.t.p">Run <code>factor</code> for a chat whose prompt stays editable while it works, or <code>factor -m</code> for one question.</p>
+      </article>
+      <article class="door door-b">
+        <svg class="door-ico" aria-hidden="true"><use href="#i-plane"/></svg>
+        <h3 data-i18n="reach.g.h">Telegram</h3>
+        <p data-i18n="reach.g.p">Message it from anywhere. Only the accounts you allow get an answer.</p>
+      </article>
+      <article class="door door-c">
+        <svg class="door-ico" aria-hidden="true"><use href="#i-phone"/></svg>
+        <h3 data-i18n="reach.p.h">Phone</h3>
+        <p data-i18n="reach.p.p">Give it a number and it picks up. It also calls or texts you when a job lands. Twilio or Telnyx.</p>
+      </article>
+      <article class="door door-d">
+        <svg class="door-ico" aria-hidden="true"><use href="#i-mic"/></svg>
+        <h3 data-i18n="reach.r.h">The room</h3>
+        <p data-i18n="reach.r.p">Speak to the machine itself. Wake word or push-to-talk, and talk over it to stop it mid-word.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- HANDS: grid vision -->
+<section class="hands dark" id="hands">
+  <div class="hands-letters" aria-hidden="true">D4</div>
+  <div class="hands-pin">
+    <div class="wrap hands-grid">
+      <div class="hands-copy">
+        <p class="eyebrow mono"><span class="cellref" data-cellref></span><span data-i18n="hands.eyebrow">Grid vision</span></p>
+        <h2 class="display h2" data-i18n="hands.title">It doesn't guess pixels. It names the cell.</h2>
+        <p class="lead" data-i18n="hands.lead">Vision models are bad at coordinates. So Factor lays a battleship grid over your screen, lets the model say where, zooms in, and clicks.</p>
+        <ol class="steps">
+          <li class="step is-on" data-n="1"><code>screen_view</code><span data-i18n="hands.s1">Captures the screen under a lettered grid. The model answers: “Export is in D4.”</span></li>
+          <li class="step" data-n="2"><code>screen_zoom cell=D4</code><span data-i18n="hands.s2">Magnifies that cell under a finer grid, down to about ten pixels.</span></li>
+          <li class="step" data-n="3"><code>mouse click cell=B3</code><span data-i18n="hands.s3">Clicks the center of the cell, mapped back to real screen pixels.</span></li>
+        </ol>
+      </div>
+      <div class="screen-wrap" aria-hidden="true">
+        <div class="screen">
+          <div class="screen-canvas">
+            <div class="app">
+              <div class="app-bar"><i></i><i></i><i></i><span class="mono">render — clip_final.mov</span></div>
+              <div class="app-side"><b></b><b></b><b></b><b></b><b></b><b></b></div>
+              <div class="app-main">
+                <div class="app-view"></div>
+                <div class="app-track"><i></i><i></i><i></i><i></i></div>
+              </div>
+              <div class="app-foot"><span class="mono">00:04:12</span></div>
+              <span class="app-btn b1">Trim</span>
+              <span class="app-export">Export</span>
+              <span class="app-btn b2">Share</span>
+            </div>
+            <div class="vgrid"></div>
+            <div class="vgrid-labels mono"></div>
+            <div class="vcell"></div>
+            <div class="subgrid"></div>
+          </div>
+          <div class="cursor"><svg viewBox="0 0 24 24"><path d="M3 2l17 9.5-7.6 1.6L9 21z"/></svg><span class="click"></span></div>
+          <p class="screen-say mono"><span class="say" data-i18n="hands.say1">“Export is in D4.”</span></p>
+        </div>
+        <p class="screen-tool mono" aria-hidden="true"><span>screen_view</span></p>
+      </div>
+    </div>
+  </div>
+  <div class="wrap hands-after">
+    <p data-i18n-html="hands.after">The same hands drive <b>a real browser</b>: Chromium over DevTools where there is a screen, or Camofox, a Firefox build with a spoofed fingerprint, for sites that turn headless browsers away. Pure Go image math. No OCR, no OpenCV.</p>
+  </div>
+</section>
+
+<!-- WORK: jobs, steering -->
+<section class="work" id="work">
+  <div class="wrap work-grid">
+    <div class="work-copy">
+      <p class="eyebrow mono"><span class="cellref" data-cellref></span><span data-i18n="work.eyebrow">Background jobs</span></p>
+      <h2 class="display h2" data-i18n="work.title">Hand it the slow stuff. Go do something else.</h2>
+      <p class="lead" data-i18n="work.lead">Long work runs as a background job and messages you when it lands. While it works, it tells you what it's doing. Change your mind halfway and it hears you at the next step.</p>
+      <ul class="facts">
+        <li data-i18n-html="work.f1"><b>Says what it's doing.</b> A progress line while the tools run, never a silent minute.</li>
+        <li data-i18n-html="work.f2"><b>Steer it mid-task.</b> A second message joins the turn that's running.</li>
+        <li data-i18n-html="work.f3"><b>Asks when only you know.</b> In your chat, your terminal, or a dialog on your desktop.</li>
+        <li data-i18n-html="work.f4"><b>Keeps a schedule.</b> Cron jobs, reminders, and a heartbeat that costs nothing while idle.</li>
+      </ul>
+    </div>
+    <div class="thread" aria-hidden="true">
+      <div class="msg msg-you" data-i18n="work.m1">Compare the three standing desks in my bookmarks. Take your time.</div>
+      <div class="msg msg-bot"><span class="mono tag">job k7f2</span><span data-i18n="work.m2">On it, as a background job. I'll message you when it's done.</span></div>
+      <div class="lane">
+        <span class="chip mono">browser_open</span><span class="chip mono">browser_read</span><span class="chip mono">browser_read</span><span class="chip chip-steer mono" data-i18n="work.folded">steering folded in</span><span class="chip mono">browser_read</span><span class="chip mono chip-done" data-i18n="work.done">done</span>
+      </div>
+      <div class="msg msg-you msg-steer"><span class="mono tag" data-i18n="work.mid">mid-task</span><span data-i18n="work.m3">Skip anything deeper than 70 cm.</span></div>
+      <div class="msg msg-note mono" data-i18n="work.m4">reading the second desk's spec sheet…</div>
+      <div class="notify">
+        <p class="mono notify-top"><svg><use href="#i-plane"/></svg> Factor <span data-i18n="work.now">now</span></p>
+        <p data-i18n="work.m5">Done. The second desk is the only one under 70 cm deep, and it's on sale until Sunday.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- MEMORY -->
+<section class="memory" id="memory">
+  <div class="memory-pin">
+    <div class="wrap memory-head">
+      <p class="eyebrow mono"><span class="cellref" data-cellref></span><span data-i18n="mem.eyebrow">Memory · smrti</span></p>
+      <h2 class="display h2" data-i18n="mem.title">Remembers what matters. Forgets the rest.</h2>
+      <p class="lead" data-i18n="mem.lead">Memory is smrti, an engine that runs beside Factor on your machine. It consolidates what you tell it, lets trivia decay, and turns past failures into rules it follows. Before every turn, it recalls what is relevant.</p>
+    </div>
+    <div class="mem-field" aria-hidden="true">
+      <svg class="mem-lines" viewBox="0 0 100 100" preserveAspectRatio="none"><path d="M24 38 L46 26 L70 34 L78 60 L52 70 L30 64 Z M46 26 L52 70"/></svg>
+      <span class="m m-keep" style="--x:24;--y:38;--mx:28;--my:30" data-i18n="mem.k1">prefers aisle seats</span>
+      <span class="m m-keep" style="--x:46;--y:26;--mx:62;--my:15" data-i18n="mem.k2">NAS lives at 192.168.0.20</span>
+      <span class="m m-keep" style="--x:70;--y:34;--mx:68;--my:44" data-i18n="mem.k3">Sofía is allergic to nuts</span>
+      <span class="m m-keep m-rule" style="--x:78;--y:60;--mx:70;--my:74" data-i18n="mem.k4">never run backups during calls: it failed twice</span>
+      <span class="m m-keep" style="--x:52;--y:70;--mx:32;--my:88" data-i18n="mem.k5">the dog is called Tango</span>
+      <span class="m m-keep" style="--x:30;--y:64;--mx:32;--my:58" data-i18n="mem.k6">invoices go out on the 1st</span>
+      <span class="m m-drop" style="--x:12;--y:16;--mx:24;--my:3" data-i18n="mem.d1">said “ok” 41 times</span>
+      <span class="m m-drop" style="--x:88;--y:14;--mx:79;--my:29" data-i18n="mem.d2">weather in March</span>
+      <span class="m m-drop" style="--x:8;--y:82;--mx:50;--my:100" data-i18n="mem.d3">typo in a filename, fixed</span>
+      <span class="m m-drop" style="--x:92;--y:86;--mx:68;--my:100" data-i18n="mem.d4">a song from last Tuesday</span>
+      <span class="m m-drop" style="--x:62;--y:10;--mx:50;--my:100" data-i18n="mem.d5">one-off unit conversion</span>
+      <span class="m m-drop" style="--x:38;--y:90;--mx:50;--my:100" data-i18n="mem.d6">the tab left open</span>
+      <span class="m m-drop" style="--x:4;--y:48;--mx:9;--my:73" data-i18n="mem.d7">“brb”</span>
+      <span class="m m-drop" style="--x:96;--y:46;--mx:50;--my:100" data-i18n="mem.d8">a retry that worked</span>
+    </div>
+  </div>
+  <div class="wrap skill">
+    <div class="skill-copy">
+      <h3 class="display h3" data-i18n="skill.title">It writes its own skills.</h3>
+      <p data-i18n="skill.p">A task that took four or more tool calls, or two if you had to steer it, gets a second look once the session goes quiet. If it holds a workflow worth keeping, Factor writes it down and lists it next time. Most of the time the answer is SKIP. Skills you wrote stay yours.</p>
+    </div>
+    <pre class="skill-card mono" aria-hidden="true"><span class="sk-path">skills/move-old-recordings/SKILL.md</span>
+<span class="sk-l">---</span><span class="sk-l">name: move-old-recordings</span><span class="sk-l">learned: true</span><span class="sk-l">---</span><span class="sk-l" data-i18n="skill.l1">1. du -sh ~/Videos; list files older than 90 days</span><span class="sk-l" data-i18n="skill.l2">2. confirm the NAS answers on 192.168.0.20</span><span class="sk-l" data-i18n="skill.l3">3. rsync, verify sizes, then delete local copies</span></pre>
+  </div>
+</section>
+
+<!-- ROOM -->
+<section class="room dark" id="room">
+  <div class="room-pin">
+    <div class="wrap room-grid">
+      <div class="room-copy">
+        <p class="eyebrow mono"><span class="cellref" data-cellref></span><span data-i18n="room.eyebrow">Voice · speaker ID</span></p>
+        <h2 class="display h2" data-i18n="room.title">It knows who's listening.</h2>
+        <p class="lead" data-i18n="room.lead">Factor reads a recording voice by voice. You keep your own conversation, and a guest it recognizes gets theirs. When someone else is in the room, it switches to a shared memory, so your private things stay private.</p>
+        <p class="fine" data-i18n="room.fine">Speaker ID needs the local speech tier. The split covers memory; your instruction files still reach every turn.</p>
+      </div>
+      <div class="room-stage" aria-hidden="true">
+        <div class="room-status mono"><span class="dot"></span><span class="st st-private" data-i18n="room.private">private · voice:local</span><span class="st st-shared" data-i18n="room.shared">shared · voice:local:room</span></div>
+        <div class="voice voice-you"><span class="who mono" data-i18n="room.you">you</span><div class="bars"></div></div>
+        <div class="voice voice-guest"><span class="who mono">speaker-2</span><div class="bars"></div></div>
+        <div class="room-say"><svg><use href="#i-speaker"/></svg><span data-i18n="room.say">“We're not alone now.”</span></div>
+        <div class="spaces mono">
+          <div class="space space-main"><span data-i18n="room.main">main</span><small data-i18n="room.mainp">your private memory</small></div>
+          <div class="space space-shared"><span data-i18n="room.sharedsp">shared</span><small data-i18n="room.sharedp">what the room may hear</small></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HONEST -->
+<section class="honest" id="honest">
+  <div class="wrap">
+    <p class="eyebrow mono"><span class="cellref" data-cellref></span><span data-i18n="honest.eyebrow">The fine print, up front</span></p>
+    <h2 class="display h2" data-i18n="honest.title">Small, local, and straight with you.</h2>
+    <div class="ledger">
+      <div class="row"><p class="fig display" data-speed="0.9">~15&nbsp;MB</p><div><h3 data-i18n="honest.r1.h">One file</h3><p data-i18n="honest.r1.p">A single static Go binary without CGO. The wizard fetches whatever else a feature needs. It runs happily on an old Puppy Linux box.</p></div></div>
+      <div class="row"><p class="fig display" data-speed="0.94">7</p><div><h3 data-i18n="honest.r2.h">Builds</h3><p data-i18n="honest.r2.p">Linux on x86-64, 386, ARM64 and ARMv7. macOS on Intel and Apple silicon. Windows, with an installer that needs no administrator.</p></div></div>
+      <div class="row"><p class="fig display" data-speed="0.88">0</p><div><h3 data-i18n="honest.r3.h">Telemetry</h3><p data-i18n="honest.r3.p">Factor reports nothing home, and it switches off the telemetry of every engine, library and browser it runs.</p></div></div>
+      <div class="row"><p class="fig display" data-speed="0.92">$</p><div><h3 data-i18n="honest.r4.h">Every call priced</h3><p data-i18n-html="honest.r4.p">Each model call is billed to its session, with caps you set. Run <code>factor -p 127.0.0.1:8080</code> and read every prompt it sends through your own proxy.</p></div></div>
+      <div class="row row-rails"><p class="fig display" data-speed="0.96">!</p><div><h3 data-i18n="honest.r5.h">Rails, not a sandbox</h3><p data-i18n="honest.r5.p">Workspace-restricted files, command deny-lists, sender allowlists, scrubbed secrets. They stop accidents and casual prompt injection. They are not a security boundary, and we won't pretend they are.</p></div></div>
+    </div>
+    <p class="proof mono" data-proof aria-live="polite"></p>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<section class="install dark" id="install">
+  <div class="wrap install-grid">
+    <div class="install-copy">
+      <p class="eyebrow mono"><span class="cellref" data-cellref></span><span data-i18n="install.eyebrow">Install</span></p>
+      <h2 class="display h2" data-i18n="install.title">Give it a home.</h2>
+      <p class="lead" data-i18n="install.lead">Download one file and run the wizard. It checks every step live and installs what's missing: the memory engine, a browser, your desktop's helpers.</p>
+      <div class="tabs" role="tablist" data-i18n-attr="aria-label:install.os" aria-label="Operating system">
+        <button role="tab" id="tab-linux" aria-controls="pane-linux" aria-selected="true">Linux</button>
+        <button role="tab" id="tab-mac" aria-controls="pane-mac" aria-selected="false" tabindex="-1">macOS</button>
+        <button role="tab" id="tab-win" aria-controls="pane-win" aria-selected="false" tabindex="-1">Windows</button>
+        <button role="tab" id="tab-go" aria-controls="pane-go" aria-selected="false" tabindex="-1">Go</button>
+      </div>
+      <div class="pane" role="tabpanel" id="pane-linux" aria-labelledby="tab-linux">
+        <div class="code"><pre class="mono"><code>curl -fLo factor \
+  https://github.com/cyqlelabs/factor/releases/latest/download/factor-linux-amd64
+chmod +x factor && mkdir -p ~/.local/bin && mv factor ~/.local/bin/
+~/.local/bin/factor init</code></pre><button class="copy" type="button" data-i18n-attr="aria-label:copy.label" aria-label="Copy commands"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></div>
+        <p class="alt mono"><span data-i18n="install.other">Other CPUs:</span> <a href="https://github.com/cyqlelabs/factor/releases/latest/download/factor-linux-arm64">arm64</a> · <a href="https://github.com/cyqlelabs/factor/releases/latest/download/factor-linux-armv7">armv7</a> · <a href="https://github.com/cyqlelabs/factor/releases/latest/download/factor-linux-386">386</a></p>
+      </div>
+      <div class="pane" role="tabpanel" id="pane-mac" aria-labelledby="tab-mac" hidden>
+        <div class="code"><pre class="mono"><code>curl -fLo factor \
+  https://github.com/cyqlelabs/factor/releases/latest/download/factor-darwin-arm64
+chmod +x factor && mkdir -p ~/.local/bin && mv factor ~/.local/bin/
+~/.local/bin/factor init</code></pre><button class="copy" type="button" data-i18n-attr="aria-label:copy.label" aria-label="Copy commands"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></div>
+        <p class="alt mono"><span data-i18n="install.intel">Intel Mac:</span> <a href="https://github.com/cyqlelabs/factor/releases/latest/download/factor-darwin-amd64">darwin-amd64</a></p>
+      </div>
+      <div class="pane" role="tabpanel" id="pane-win" aria-labelledby="tab-win" hidden>
+        <a class="btn btn-primary" href="https://github.com/cyqlelabs/factor/releases/latest/download/factor-windows-amd64.msi"><svg aria-hidden="true"><use href="#i-down"/></svg><span data-i18n="dl.msi">Download the installer (.msi)</span></a>
+        <p class="alt" data-i18n-html="install.win">It installs for your account alone, so it asks for no administrator, puts <code>factor</code> on your PATH, and offers to start the setup wizard when it finishes.</p>
+      </div>
+      <div class="pane" role="tabpanel" id="pane-go" aria-labelledby="tab-go" hidden>
+        <div class="code"><pre class="mono"><code>go install github.com/cyqlelabs/factor/cmd/factor@latest
+factor init</code></pre><button class="copy" type="button" data-i18n-attr="aria-label:copy.label" aria-label="Copy commands"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></div>
+      </div>
+    </div>
+    <div class="wizard" aria-hidden="true">
+      <div class="frag-bar"><i></i><i></i><i></i><span class="mono">factor init</span></div>
+      <ol class="wz mono">
+        <li><span class="ok"></span><b data-i18n="wz.provider">provider</b><span data-i18n="wz.provider.p">a real completion came back</span></li>
+        <li><span class="ok"></span><b data-i18n="wz.models">models</b><span data-i18n="wz.models.p">listed by the endpoint itself</span></li>
+        <li><span class="ok"></span><b data-i18n="wz.memory">memory</b><span data-i18n="wz.memory.p">smrti installed and answering</span></li>
+        <li><span class="ok"></span><b data-i18n="wz.browser">browser</b><span data-i18n="wz.browser.p">a real page loaded</span></li>
+        <li><span class="ok"></span><b data-i18n="wz.tg">telegram</b><span data-i18n="wz.tg.p">the bot answered getMe</span></li>
+        <li><span class="ok"></span><b data-i18n="wz.boot">autostart</b><span data-i18n="wz.boot.p">starts with your login</span></li>
+      </ol>
+      <p class="wz-done mono"><span data-i18n="wz.done">Ready. Say hi:</span> <b>factor</b><span class="caret"></span></p>
+    </div>
+  </div>
+  <div class="wrap final">
+    <svg class="final-mark" viewBox="0 0 512 512" aria-hidden="true"><use href="#mark"/></svg>
+    <p class="final-line display" data-i18n="final.line">Somebody's home.</p>
+    <div class="cta">
+      <a class="btn btn-primary" data-dl href="https://github.com/cyqlelabs/factor/releases/latest"><svg aria-hidden="true"><use href="#i-down"/></svg><span data-dl-label data-i18n="dl.generic">Download Factor</span></a>
+      <a class="btn btn-ghost btn-ghost-dark" href="https://github.com/cyqlelabs/factor"><svg aria-hidden="true"><use href="#i-star"/></svg><span data-i18n="cta.star">Star on GitHub</span></a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-grid">
+    <a class="brand" href="#top" aria-label="Factor"><svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true"><use href="#mark"/></svg><span>Factor</span></a>
+    <nav class="foot-links" data-i18n-attr="aria-label:foot.label" aria-label="Project">
+      <a href="https://github.com/cyqlelabs/factor" data-i18n="foot.source">Source</a>
+      <a href="https://github.com/cyqlelabs/factor/releases" data-i18n="foot.releases">Releases</a>
+      <a href="https://github.com/cyqlelabs/factor#readme" data-i18n="nav.docs">Docs</a>
+      <a href="https://github.com/cyqlelabs/smrti">smrti</a>
+      <a href="https://github.com/cyqlelabs/factor/blob/main/docs/phone-twilio.md" data-i18n="foot.phone">Phone setup</a>
+    </nav>
+    <p class="foot-legal mono" data-i18n="foot.legal">MIT © CyqleLabs · no cookies, no analytics</p>
+  </div>
+</footer>
+</body>
+</html>
