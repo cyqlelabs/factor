@@ -110,6 +110,7 @@ func execRunner(timeout time.Duration) Runner {
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, bin, argv[1:]...)
+		ownConsole(cmd)
 		if stdin != "" {
 			cmd.Stdin = strings.NewReader(stdin)
 		}

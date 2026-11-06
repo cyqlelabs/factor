@@ -49,6 +49,7 @@ func askRunner(ctx context.Context, argv ...string) (string, int, error) {
 		return "", -1, errors.New("no command")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	ownConsole(cmd)
 	var out, errOut bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
@@ -267,7 +268,10 @@ func powerShellScript(q Question) string {
 		b.WriteString("\n\nType a number, or your own answer.")
 		prompt = b.String()
 	}
-	return "Add-Type -AssemblyName Microsoft.VisualBasic\n" +
+	// UTF-8 out, because PowerShell writes the console's OEM code page
+	// otherwise and an answer with an accent in it came back mangled.
+	return "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n" +
+		"Add-Type -AssemblyName Microsoft.VisualBasic\n" +
 		"Write-Output ([Microsoft.VisualBasic.Interaction]::InputBox(" +
 		psQuote(prompt) + ", 'Factor', ''))"
 }

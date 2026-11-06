@@ -39,7 +39,7 @@ func (u *uiaAccessor) ps(ctx context.Context, script, stdin string) (string, err
 	if !ok {
 		return "", missingHelper("reading the accessibility tree", "powershell")
 	}
-	return u.env.Run(ctx, stdin, shell, "-NoProfile", "-NonInteractive", "-Command", script)
+	return u.env.Run(ctx, stdin, shell, "-NoProfile", "-NonInteractive", "-Command", psUTF8+script)
 }
 
 // uiaPrelude loads UI Automation and defines Describe, which renders one

@@ -63,6 +63,14 @@ func shellCommand(ctx context.Context, command string) *exec.Cmd {
 	return cmd
 }
 
+// ownConsole gives the PowerShell behind the question dialog a console of its
+// own, without a window. Its script switches the console's output code page
+// to UTF-8, and a console shared with the terminal Factor runs in would stay
+// on UTF-8 after Factor exits.
+func ownConsole(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+}
+
 // setProcessGroup kills the shell's whole process tree on cancel. Windows has
 // no process group to signal, so the tree is walked by taskkill — without it a
 // killed cmd.exe leaves grandchildren holding the output pipe, which is the

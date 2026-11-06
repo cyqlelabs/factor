@@ -67,8 +67,15 @@ func (c *windowsController) psIn(ctx context.Context, script, stdin string) (str
 	if !ok {
 		return "", missingHelper("controlling the desktop", "powershell")
 	}
-	return c.env.Run(ctx, stdin, shell, "-NoProfile", "-NonInteractive", "-Command", script)
+	return c.env.Run(ctx, stdin, shell, "-NoProfile", "-NonInteractive", "-Command", psUTF8+script)
 }
+
+// psUTF8 makes the script's standard output UTF-8, the encoding Go reads it
+// in. PowerShell writes in the console's OEM code page otherwise, so every
+// accented letter in a window title, a control's name or the clipboard came
+// back as the wrong character, and a "€" as "?". Set this way it writes no
+// byte order mark.
+const psUTF8 = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
 
 // psStdin defines $in as the script's standard input decoded as UTF-8.
 // Console.In would decode it in the console's OEM code page, which turns

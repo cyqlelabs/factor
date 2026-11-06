@@ -20,6 +20,10 @@ func shellCommand(ctx context.Context, command string) *exec.Cmd {
 	return exec.CommandContext(ctx, "sh", "-c", command)
 }
 
+// ownConsole is a Windows concern: elsewhere a dialog's terminal settings
+// are its own already.
+func ownConsole(*exec.Cmd) {}
+
 // setProcessGroup makes the command a process-group leader and kills the
 // whole group on cancel, so grandchildren die with the shell.
 func setProcessGroup(cmd *exec.Cmd) {
