@@ -256,8 +256,8 @@ func TestLinuxClipboardAndTypingPreferWaylandNatives(t *testing.T) {
 	if err := c.TypeText(ctx, "-dash-leading", 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(m.lastCall(), " "); got != "wtype -- -dash-leading" {
-		t.Errorf("type ran %q", got)
+	if got := strings.Join(m.lastCall(), " "); got != "wtype -" || m.lastStdin() != "-dash-leading" {
+		t.Errorf("type ran %q with stdin %q", got, m.lastStdin())
 	}
 	if err := c.PressKey(ctx, "ctrl+s", 1); err != nil {
 		t.Fatal(err)

@@ -319,12 +319,20 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	// Desktop control: skipped on headless machines, where these tools would
 	// be prompt weight that can only ever fail (desktop.enabled forces it).
 	desktopEnv := desktop.DefaultEnv()
+	desktopEnv.Accessibility = cfg.Desktop.AccessibilityOn()
 	if cfg.Desktop.Register(desktop.HasDisplay(desktopEnv)) {
 		shotDir := cfg.Desktop.ScreenshotDir
 		if shotDir == "" {
 			shotDir = filepath.Join(ws, "screenshots")
 		}
-		registry.Register(desktop.NewTools(desktopEnv, guard, shotDir)...)
+		// desktop_run decides over the window's own list of controls — a
+		// different list every time, like the browser's — which the student
+		// has no head for, so it is Laya's alone.
+		var deskOpts []desktop.Option
+		if cfg.Decision.DesktopOn() && cfg.Decision.Active() && decisionModel.Engine() != local.EngineStudent {
+			deskOpts = append(deskOpts, desktop.WithDecisions(decider, lightMeter))
+		}
+		registry.Register(desktop.NewTools(desktopEnv, guard, shotDir, deskOpts...)...)
 	} else {
 		slog.Info("desktop tools not registered: no graphical session (set desktop.enabled=true to force)")
 	}

@@ -223,7 +223,12 @@ func liveTools(t *testing.T) map[string]tools.Tool {
 	t.Helper()
 	ws := t.TempDir()
 	byName := map[string]tools.Tool{}
-	for _, tool := range NewTools(DefaultEnv(), tools.NewPathGuard(ws, true, false, nil),
+	// The grid is measured alone here: a tree read off whatever session bus
+	// the machine running the tests has would tag that desktop's windows on
+	// this private screen. The accessibility tests bring their own bus.
+	env := DefaultEnv()
+	env.Accessibility = false
+	for _, tool := range NewTools(env, tools.NewPathGuard(ws, true, false, nil),
 		filepath.Join(ws, "screenshots")) {
 		byName[tool.Name()] = tool
 	}

@@ -42,7 +42,7 @@ than logging, so past failures become constraints it doesn't repeat.
 | ☎️ **Answers the phone** | A real number to call, or it calls and texts you — barge-in, voicemail detection, optional fully local speech ([Phone](#phone-calls-and-sms)) |
 | 🎙️ **Listens in the room** | Mic in, speakers out, barge-in, optional wake word, push-to-talk via `factor talk` ([PC voice](#pc-voice-mic-and-speakers)) |
 | 👥 **Tells voices apart** | A recording is read voice by voice, so each person holds their own conversation — and company in the room moves the answer to a memory space it can hear ([PC voice](#pc-voice-mic-and-speakers)) |
-| 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications on X11/Wayland/macOS/Windows — plus grid vision ([Desktop](#desktop)) |
+| 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications on X11/Wayland/macOS/Windows — plus grid vision with the accessibility tree tagged on top ([Desktop](#desktop)) |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed one ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills ([Extending](#extending-factor)) |
 | 📊 **Watches its own numbers** | Every turn leaves a local trace — models, tools, timings, cache and cost — and control bands measure it against a rolling baseline, so the heartbeat wakes a model only once a number has drifted |
@@ -193,7 +193,7 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "servers": { "github": { "command": "github-mcp-server", "args": ["stdio"] } }
   },
   "tools": { "disabled": [], "restrict_to_workspace": true },
-  "desktop": { "enabled": null },            // null = on when a display exists
+  "desktop": { "enabled": null, "accessibility": null }, // null = on when a display exists / on
   "browser": {
     "enabled": true,
     "engine": "auto",                        // auto | camofox | chromium
@@ -322,6 +322,42 @@ Frames are capped at 1568px on the longest side (clicks still land at native
 resolution), only the two newest stay in context, and image bytes never touch
 session history. Non-vision models can disable both vision tools via
 `tools.disabled`.
+
+**The accessibility tree rides on top of the grid.** Where the window in front
+publishes one — AT-SPI on Linux (spoken over D-Bus in pure Go), UI Automation on
+Windows, the AX API on macOS — `screen_view` also outlines and tags its controls on
+the same picture (`e1`, `e2`…) and lists them with their names, contents and states:
+which box is ticked, which button is greyed out, which field has focus. A password
+field's contents are never read.
+
+- `mouse action=click element=e4` presses the control through the application
+  itself, so the pointer you may be holding is left alone. It is found again and
+  checked against what was listed before anything is sent: a dialog that closed or a
+  list that changed is a refusal, not a click on whatever moved under the old spot.
+  What the application cannot do itself (a double click, a right click) the pointer
+  does, at the control's live position, after bringing its window forward.
+- `type_text element=e1` replaces a field's contents directly and reads the result
+  back, so it says what the field now holds rather than what was attempted.
+- `desktop_run goal=…` works a dialog or settings pane toward a goal on its own,
+  choosing each step with the local decision model, the way `browser_run` does for
+  web pages. It withholds anything that sends, deletes or buys unless
+  `allow_submit` is set, and never types into a password field.
+
+Not every application publishes a usable tree. Games, canvas-drawn apps, remote
+desktops and terminal contents are pixels to it, and some toolkits leave controls
+unnamed. `screen_view` says when a tree is thin or missing, and the grid works on all
+of those exactly as before. Chromium needs `--force-renderer-accessibility` and Qt
+needs `QT_ACCESSIBILITY=1` to publish one; an app started before the accessibility
+service ran has to be restarted. `desktop.accessibility: false` turns the tree off.
+
+Every cell and ref is tied to the picture it was read from: each look is numbered
+(`f3`), names can be qualified (`f3:D4`, `f3:e2`), and a name from an older look is
+refused. Each conversation keeps its own picture, so two sessions driving one screen
+never click on each other's grid. `press_key` refuses shortcuts that act on the
+session rather than the window (switching windows, locking the screen, `alt+f4`)
+unless `force` is set, and `type_text` refuses a newline or tab sent as a keystroke,
+since Return submits the form it lands in. Typed text is handed to the helper on
+stdin, never on a command line other processes can read.
 
 **On a Mac, grant Screen Recording first.** Without it `screencapture` does not
 fail — it exits 0 and returns the wallpaper with every window removed, so a

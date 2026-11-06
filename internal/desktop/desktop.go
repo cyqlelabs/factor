@@ -36,6 +36,10 @@ type Env struct {
 	Getenv func(key string) string
 	Glob   func(pattern string) ([]string, error)
 	GOOS   string
+	// Accessibility turns on the accessibility tree beside the grid. It is
+	// off in the zero Env, so a scripted machine in a test sees exactly the
+	// helper calls it scripted, and on in DefaultEnv.
+	Accessibility bool
 }
 
 // defaultRunnerTimeout bounds one helper invocation; desktop helpers are
@@ -50,6 +54,8 @@ func DefaultEnv() Env {
 		Getenv: os.Getenv,
 		Glob:   filepath.Glob,
 		GOOS:   runtime.GOOS,
+
+		Accessibility: true,
 	}
 }
 

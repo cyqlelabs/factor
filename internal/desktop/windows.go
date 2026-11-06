@@ -55,12 +55,27 @@ func psQuote(s string) string {
 }
 
 func (c *windowsController) ps(ctx context.Context, script string) (string, error) {
+	return c.psIn(ctx, script, "")
+}
+
+// psIn runs a script with data on its standard input. What the user's text
+// is — something typed, something copied — goes there rather than into the
+// script, so it never sits in a command line another process can list; the
+// script reads it back with psStdin.
+func (c *windowsController) psIn(ctx context.Context, script, stdin string) (string, error) {
 	shell, ok := c.env.first("powershell", "pwsh")
 	if !ok {
 		return "", missingHelper("controlling the desktop", "powershell")
 	}
-	return c.env.Run(ctx, "", shell, "-NoProfile", "-NonInteractive", "-Command", script)
+	return c.env.Run(ctx, stdin, shell, "-NoProfile", "-NonInteractive", "-Command", script)
 }
+
+// psStdin defines $in as the script's standard input decoded as UTF-8.
+// Console.In would decode it in the console's OEM code page, which turns
+// every accented letter into the wrong one; the raw bytes are what Go wrote.
+const psStdin = `$__s = [Console]::OpenStandardInput(); $__m = New-Object System.IO.MemoryStream; $__s.CopyTo($__m)
+$in = [System.Text.Encoding]::UTF8.GetString($__m.ToArray())
+`
 
 // psListScript prints one tab-separated row per window. Fields are joined
 // with [char]9 rather than an escaped tab so the script survives Go's raw
@@ -233,10 +248,16 @@ func sendKeysEscape(s string) string {
 	return r.Replace(s)
 }
 
+// psSendKeysEscape is sendKeysEscape in PowerShell, for text that arrives on
+// stdin rather than in the script: every character SendKeys reads as syntax
+// is wrapped in braces, which is how SendKeys spells it literally.
+const psSendKeysEscape = `$keys = [regex]::Replace($in, '[+^%~(){}\[\]]', '{$0}')
+`
+
 func (c *windowsController) TypeText(ctx context.Context, text string, _ int) error {
 	script := `Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.SendKeys]::SendWait(` + psQuote(sendKeysEscape(text)) + `)`
-	_, err := c.ps(ctx, script)
+` + psStdin + psSendKeysEscape + `[System.Windows.Forms.SendKeys]::SendWait($keys)`
+	_, err := c.psIn(ctx, script, text)
 	return err
 }
 
@@ -288,7 +309,7 @@ func (c *windowsController) ClipboardGet(ctx context.Context) (string, error) {
 }
 
 func (c *windowsController) ClipboardSet(ctx context.Context, text string) error {
-	_, err := c.ps(ctx, `Set-Clipboard -Value `+psQuote(text))
+	_, err := c.psIn(ctx, psStdin+`Set-Clipboard -Value $in`, text)
 	return err
 }
 

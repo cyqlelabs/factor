@@ -28,7 +28,10 @@ func (c *macController) osa(ctx context.Context, script string) (string, error) 
 	if !c.env.has("osascript") {
 		return "", missingHelper("controlling the desktop", "osascript")
 	}
-	out, err := c.env.Run(ctx, "", "osascript", "-e", script)
+	// The script rides stdin rather than -e: it carries whatever is typed
+	// or announced, and a command line is readable by every process on the
+	// machine for as long as osascript runs.
+	out, err := c.env.Run(ctx, script, "osascript", "-")
 	if err != nil && strings.Contains(err.Error(), "assistive access") {
 		return out, fmt.Errorf("%w — grant your terminal Accessibility permission in System Settings → Privacy & Security → Accessibility", err)
 	}

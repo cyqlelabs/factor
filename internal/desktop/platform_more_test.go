@@ -87,7 +87,7 @@ func TestMacWindowOperationsBuildTheirScripts(t *testing.T) {
 			if err := tc.call(c); err != nil {
 				t.Fatal(err)
 			}
-			script := m.lastCall()[2]
+			script := m.lastStdin()
 			if !strings.Contains(script, tc.want) {
 				t.Errorf("script = %s", script)
 			}
@@ -105,7 +105,7 @@ func TestMacMaximizeUsesTheScreenSize(t *testing.T) {
 	if err := c.SetState(context.Background(), Window{ID: "12:3"}, "maximize"); err != nil {
 		t.Fatal(err)
 	}
-	if script := m.lastCall()[2]; !strings.Contains(script, "set size of w to {1512, 945}") {
+	if script := m.lastStdin(); !strings.Contains(script, "set size of w to {1512, 945}") {
 		t.Errorf("script = %s", script)
 	}
 
@@ -287,9 +287,9 @@ func TestWindowsWindowOperationsBuildTheirScripts(t *testing.T) {
 		{"restore", func(c Controller) error { return c.SetState(ctx, w, "restore") }, "ShowWindow([IntPtr]::new([int64]'4242'), 9)"},
 		{"mouse", func(c Controller) error { return c.MoveMouse(ctx, 7, 8) }, "SetCursorPos(7 + $vs.Left, 8 + $vs.Top)"},
 		{"open", func(c Controller) error { return c.Open(ctx, "C:\\tmp\\a.txt") }, `Start-Process 'C:\tmp\a.txt'`},
-		{"clipboard", func(c Controller) error { return c.ClipboardSet(ctx, "it's") }, `Set-Clipboard -Value 'it''s'`},
+		{"clipboard", func(c Controller) error { return c.ClipboardSet(ctx, "it's") }, `Set-Clipboard -Value $in`},
 		{"notify", func(c Controller) error { return c.Notify(ctx, "T", "B", "normal") }, "ShowBalloonTip(5000, 'T', 'B'"},
-		{"type", func(c Controller) error { return c.TypeText(ctx, "50% off", 0) }, "SendWait('50{%} off')"},
+		{"type", func(c Controller) error { return c.TypeText(ctx, "50% off", 0) }, "SendWait($keys)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

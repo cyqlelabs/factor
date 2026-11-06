@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/cyqlelabs/factor/internal/tools"
@@ -17,6 +18,9 @@ import (
 // which fail. Every invocation is recorded so tests can assert on the exact
 // command line built for each desktop operation.
 type fakeMachine struct {
+	// mu guards calls: the tree read runs beside the screenshot, so two
+	// helpers can be run at once, as the real runner allows.
+	mu        sync.Mutex
 	installed map[string]bool
 	env       map[string]string
 	outputs   map[string]string
@@ -70,6 +74,8 @@ func (m *fakeMachine) Env() Env {
 		Has:    func(bin string) bool { return m.installed[bin] },
 		Getenv: func(k string) string { return m.env[k] },
 		Run: func(_ context.Context, stdin string, argv ...string) (string, error) {
+			m.mu.Lock()
+			defer m.mu.Unlock()
 			m.calls = append(m.calls, fakeCall{argv: argv, stdin: stdin})
 			if m.onRun != nil {
 				m.onRun(argv)
@@ -91,6 +97,15 @@ func (m *fakeMachine) lastCall() []string {
 		return nil
 	}
 	return m.calls[len(m.calls)-1].argv
+}
+
+// lastStdin is what the last helper was handed on standard input: the
+// script osascript reads, or the text a typing helper types.
+func (m *fakeMachine) lastStdin() string {
+	if len(m.calls) == 0 {
+		return ""
+	}
+	return m.calls[len(m.calls)-1].stdin
 }
 
 func (m *fakeMachine) ranWith(substr string) bool {
@@ -377,8 +392,13 @@ func TestTypeText(t *testing.T) {
 		t.Fatalf("type: %s", res.ForLLM)
 	}
 	got := m.lastCall()
-	if got[len(got)-2] != "--" || got[len(got)-1] != "--not-a-flag" {
-		t.Errorf("text must be passed after --; got %v", got)
+	if got[len(got)-2] != "--file" || got[len(got)-1] != "-" || m.lastStdin() != "--not-a-flag" {
+		t.Errorf("text must be read from stdin, never the command line; got %v with stdin %q", got, m.lastStdin())
+	}
+	for _, arg := range got {
+		if strings.Contains(arg, "not-a-flag") {
+			t.Errorf("typed text leaked into the command line: %v", got)
+		}
 	}
 	if !m.ranWith("--delay 12") {
 		t.Errorf("default delay missing: %v", got)
