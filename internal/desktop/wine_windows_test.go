@@ -15,7 +15,7 @@ func underWine() bool {
 	if err != nil {
 		return false
 	}
-	defer windows.FreeLibrary(ntdll)
+	defer func() { _ = windows.FreeLibrary(ntdll) }()
 	_, err = windows.GetProcAddress(ntdll, "wine_get_version")
 	return err == nil
 }
