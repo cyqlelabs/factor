@@ -138,6 +138,11 @@ const (
 	// work the trajectory does not show, and which the turn was asked to
 	// finish or restate.
 	EventOverclaim = "overclaim"
+	// EventAccessibility is one read of a window's accessibility tree, with
+	// the backend, the application and how much the tree could be trusted:
+	// which programs on a machine publish a tree worth leaning on is a fact
+	// about that machine, and only its own traces can say it.
+	EventAccessibility = "accessibility"
 )
 
 // maxArgChars bounds a recorded argument blob. Enough to tell one call from

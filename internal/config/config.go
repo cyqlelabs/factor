@@ -340,7 +340,15 @@ func (t ToolsConfig) IsToolEnabled(name string) bool {
 type DesktopConfig struct {
 	Enabled       *bool  `json:"enabled,omitempty"`
 	ScreenshotDir string `json:"screenshot_dir,omitempty"`
+	// Accessibility reads the operating system's accessibility tree beside
+	// every screen_view — AT-SPI, UI Automation or the AX API — and tags the
+	// controls it names on the grid's picture. Nil means on; false leaves the
+	// grid alone, exactly as it was before the tree existed.
+	Accessibility *bool `json:"accessibility,omitempty"`
 }
+
+// AccessibilityOn reports whether the accessibility tree is read.
+func (d DesktopConfig) AccessibilityOn() bool { return d.Accessibility == nil || *d.Accessibility }
 
 // Register reports whether the desktop tools should be registered.
 func (d DesktopConfig) Register(hasDisplay bool) bool {
@@ -555,6 +563,7 @@ type DecisionConfig struct {
 	// the bar held back every verdict but one in thirty-six, and each of
 	// them cost the turn a model call before its reply went out.
 	Browser *bool `json:"browser,omitempty"`
+	Desktop *bool `json:"desktop,omitempty"`
 	Verify  *bool `json:"verify,omitempty"`
 	Recover *bool `json:"recover,omitempty"`
 	Induce  *bool `json:"induce,omitempty"`
@@ -596,10 +605,12 @@ func (d DecisionConfig) Active() bool { return d.Mode == "active" }
 
 func enabled(b *bool) bool { return b == nil || *b }
 
-// BrowserOn, VerifyOn, RecoverOn and InduceOn are the per-scenario switches
-// read against the mode: a scenario is on when decisions are and it was not
-// switched off by name — or, for Verify, was switched on by name.
+// BrowserOn, DesktopOn, VerifyOn, RecoverOn and InduceOn are the
+// per-scenario switches read against the mode: a scenario is on when
+// decisions are and it was not switched off by name — or, for Verify, was
+// switched on by name.
 func (d DecisionConfig) BrowserOn() bool { return d.On() && enabled(d.Browser) }
+func (d DecisionConfig) DesktopOn() bool { return d.On() && enabled(d.Desktop) }
 func (d DecisionConfig) VerifyOn() bool  { return d.On() && d.Verify != nil && *d.Verify }
 func (d DecisionConfig) RecoverOn() bool { return d.On() && enabled(d.Recover) }
 func (d DecisionConfig) InduceOn() bool  { return d.On() && enabled(d.Induce) }

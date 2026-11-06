@@ -50,7 +50,7 @@ func TestMacKeyTranslation(t *testing.T) {
 	if err := c.PressKey(ctx, "cmd+shift+t", 1); err != nil {
 		t.Fatal(err)
 	}
-	script := m.lastCall()[2]
+	script := m.lastStdin()
 	if !strings.Contains(script, `keystroke "t" using {command down, shift down}`) {
 		t.Errorf("script = %s", script)
 	}
@@ -62,8 +62,8 @@ func TestMacKeyTranslation(t *testing.T) {
 	if len(m.calls) != 2 {
 		t.Errorf("repeat=2 ran %d scripts", len(m.calls))
 	}
-	if !strings.Contains(m.lastCall()[2], "key code 36") {
-		t.Errorf("script = %s", m.lastCall()[2])
+	if !strings.Contains(m.lastStdin(), "key code 36") {
+		t.Errorf("script = %s", m.lastStdin())
 	}
 	if err := c.PressKey(ctx, "hyper+x", 1); err == nil {
 		t.Error("unknown modifier accepted")
@@ -79,7 +79,7 @@ func TestMacAppleScriptEscaping(t *testing.T) {
 	if err := c.TypeText(context.Background(), `say "hi" \ bye`, 0); err != nil {
 		t.Fatal(err)
 	}
-	script := m.lastCall()[2]
+	script := m.lastStdin()
 	if !strings.Contains(script, `keystroke "say \"hi\" \\ bye"`) {
 		t.Errorf("escaping is wrong: %s", script)
 	}
@@ -113,8 +113,8 @@ func TestMacClipboardAndNotify(t *testing.T) {
 	if err := c.Notify(ctx, "T", "B", "normal"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(m.lastCall()[2], `display notification "B" with title "T"`) {
-		t.Errorf("notify script = %s", m.lastCall()[2])
+	if !strings.Contains(m.lastStdin(), `display notification "B" with title "T"`) {
+		t.Errorf("notify script = %s", m.lastStdin())
 	}
 }
 

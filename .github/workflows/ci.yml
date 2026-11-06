@@ -27,7 +27,10 @@ jobs:
         with:
           go-version-file: go.mod
       # The desktop grid-vision tests drive a real X server end to end, and a
-      # build that skipped them is a build whose desktop path nobody ran. So
+      # build that skipped them is a build whose desktop path nobody ran. The
+      # accessibility tests add a real AT-SPI stack beside it — a private
+      # session bus, the accessibility bus it activates, and a GTK 3 window
+      # driven through Python's bindings — under the same rule. So
       # this is not best-effort: each attempt is bounded so a stalled mirror
       # cannot hold the run (one did, for half an hour), it retries a
       # transient failure, and if the helpers still will not install the job
@@ -38,7 +41,8 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             if timeout 120 sudo apt-get update && \
-               timeout 240 sudo apt-get install -y --no-install-recommends xvfb scrot xdotool x11-apps; then
+               timeout 240 sudo apt-get install -y --no-install-recommends xvfb scrot xdotool x11-apps \
+                 dbus at-spi2-core python3-gi gir1.2-gtk-3.0; then
               exit 0
             fi
             echo "attempt $attempt did not install the helpers; retrying in 15s"

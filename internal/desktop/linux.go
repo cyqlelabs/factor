@@ -317,13 +317,15 @@ func (c *linuxController) Click(ctx context.Context, button string, count int, a
 }
 
 func (c *linuxController) TypeText(ctx context.Context, text string, delayMs int) error {
+	// The text rides stdin, never the command line: a helper's arguments are
+	// readable by every process on the machine for as long as it runs, and
+	// what gets typed is as often a password as a sentence.
 	switch {
 	case c.env.has("xdotool"):
-		// "--" stops flag parsing so text beginning with "-" types literally.
-		_, err := c.env.Run(ctx, "", "xdotool", "type", "--clearmodifiers", "--delay", itoa(delayMs), "--", text)
+		_, err := c.env.Run(ctx, text, "xdotool", "type", "--clearmodifiers", "--delay", itoa(delayMs), "--file", "-")
 		return err
 	case c.env.has("wtype"):
-		_, err := c.env.Run(ctx, "", "wtype", "--", text)
+		_, err := c.env.Run(ctx, text, "wtype", "-")
 		return err
 	}
 	return missingHelper("typing text", "xdotool", "wtype")

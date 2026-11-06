@@ -9,16 +9,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyqlelabs/factor/internal/decision"
 	"github.com/cyqlelabs/factor/internal/tools"
 )
 
 // NewTools builds the desktop arsenal. screenshotDir receives screenshots
 // when the caller does not name a path; guard keeps written files inside the
 // workspace like every other file-producing tool.
-func NewTools(env Env, guard *tools.PathGuard, screenshotDir string) []tools.Tool {
+func NewTools(env Env, guard *tools.PathGuard, screenshotDir string, opts ...Option) []tools.Tool {
 	c := NewController(env)
-	d := &deps{env: env, ctl: c, guard: guard, shotDir: screenshotDir, vision: &visionState{}}
-	return []tools.Tool{
+	var access Accessor
+	if env.Accessibility {
+		access = NewAccessor(env, c)
+	}
+	return newToolsWith(env, c, access, guard, screenshotDir, opts...)
+}
+
+// newToolsWith builds the tools over a given controller and accessibility
+// backend, which is the seam a test scripts both through.
+func newToolsWith(env Env, c Controller, access Accessor, guard *tools.PathGuard, screenshotDir string, opts ...Option) []tools.Tool {
+	d := &deps{env: env, ctl: c, guard: guard, shotDir: screenshotDir, vision: newVisionStore(), access: access}
+	for _, o := range opts {
+		o(d)
+	}
+	set := []tools.Tool{
 		&windowListTool{d},
 		&windowControlTool{d},
 		&screenshotTool{d},
@@ -32,6 +46,12 @@ func NewTools(env Env, guard *tools.PathGuard, screenshotDir string) []tools.Too
 		&openTool{d},
 		&desktopInfoTool{deps: d},
 	}
+	// The executor is mounted only where it can do something: a tree to
+	// read, and a decider allowed to act on what it decides.
+	if d.access != nil && d.decider.Active() {
+		set = append(set, &runTool{d})
+	}
+	return set
 }
 
 type deps struct {
@@ -39,7 +59,13 @@ type deps struct {
 	ctl     Controller
 	guard   *tools.PathGuard
 	shotDir string
-	vision  *visionState
+	vision  *visionStore
+	// access reads the accessibility tree; nil where there is none to read,
+	// and every tool then behaves exactly as the grid alone would.
+	access Accessor
+	// decider and text drive desktop_run; nil leaves it unmounted.
+	decider *decision.Decider
+	text    TextWriter
 }
 
 // resolveWindow turns a tool argument into a window: "active", a window id,
@@ -262,18 +288,26 @@ type mouseTool struct{ *deps }
 
 func (t *mouseTool) Name() string { return "mouse" }
 func (t *mouseTool) Description() string {
-	return "Control the pointer: move it, or click at a position (or wherever it currently is). Target either a grid cell from the latest screen_view/screen_zoom image (cell=D4), or absolute screen pixels from the top-left (x/y); desktop_info reports the screen size. To click something in a web page, use browser_click instead: it addresses the element rather than a spot on the glass, so it still lands when the window moves or the user takes the mouse."
+	d := "Control the pointer: move it, or click at a position (or wherever it currently is). Target either a grid cell from the latest screen_view/screen_zoom image (cell=D4), or absolute screen pixels from the top-left (x/y); desktop_info reports the screen size. To click something in a web page, use browser_click instead: it addresses the element rather than a spot on the glass, so it still lands when the window moves or the user takes the mouse."
+	if t.access != nil {
+		d += " A control screen_view listed from the accessibility tree is better targeted by element=e3: a click is performed by the application itself without moving the pointer, and nothing is sent if the control has changed since."
+	}
+	return d
 }
 func (t *mouseTool) Parameters() map[string]any {
+	props := map[string]any{
+		"action": map[string]any{"type": "string", "enum": []any{"move", "click", "double_click", "right_click", "middle_click", "scroll_up", "scroll_down"}, "description": "Pointer action to perform at element, cell or x/y, or at the current position when all are omitted"},
+		"cell":   map[string]any{"type": "string", "description": "Grid cell on the latest screen_view or screen_zoom image, e.g. D4 (or f7:D4 to name which image); acts at the cell's center. Zoom first for small targets"},
+		"x":      map[string]any{"type": "integer", "description": "Absolute screen pixels from the left edge; omit cell and x/y to act where the pointer already is"},
+		"y":      map[string]any{"type": "integer", "description": "Absolute screen pixels from the top edge; omit cell and x/y to act where the pointer already is"},
+	}
+	if t.access != nil {
+		props["element"] = map[string]any{"type": "string", "description": elementArgDoc}
+	}
 	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"action": map[string]any{"type": "string", "enum": []any{"move", "click", "double_click", "right_click", "middle_click", "scroll_up", "scroll_down"}, "description": "Pointer action to perform at cell or x/y, or at the current position when all are omitted"},
-			"cell":   map[string]any{"type": "string", "description": "Grid cell on the latest screen_view or screen_zoom image, e.g. D4; acts at the cell's center. Zoom first for small targets"},
-			"x":      map[string]any{"type": "integer", "description": "Absolute screen pixels from the left edge; omit cell and x/y to act where the pointer already is"},
-			"y":      map[string]any{"type": "integer", "description": "Absolute screen pixels from the top edge; omit cell and x/y to act where the pointer already is"},
-		},
-		"required": []any{"action"},
+		"type":       "object",
+		"properties": props,
+		"required":   []any{"action"},
 	}
 }
 
@@ -281,6 +315,12 @@ func (t *mouseTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 	action := tools.StringArg(args, "action")
 	_, hasX := args["x"]
 	_, hasY := args["y"]
+	if ref := strings.TrimSpace(tools.StringArg(args, "element")); ref != "" {
+		if hasX || hasY || strings.TrimSpace(tools.StringArg(args, "cell")) != "" {
+			return tools.Errorf("give element, cell or x/y — one target, not several")
+		}
+		return t.actOnElement(ctx, action, ref)
+	}
 	var at *Point
 	var resolved string
 	if hasX && hasY {
@@ -292,7 +332,7 @@ func (t *mouseTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 		if at != nil {
 			return tools.Errorf("give either cell or x/y, not both")
 		}
-		p, view, err := t.vision.resolveCell(cell)
+		p, view, err := t.vision.forCtx(ctx).resolveCell(cell)
 		if err != nil {
 			return tools.Errorf("%v", err)
 		}
@@ -340,16 +380,24 @@ type typeTextTool struct{ *deps }
 
 func (t *typeTextTool) Name() string { return "type_text" }
 func (t *typeTextTool) Description() string {
-	return "Type text into whatever window has keyboard focus, as if the user typed it. Focus the target window first (window_control action=focus)."
+	d := "Type text into whatever window has keyboard focus, as if the user typed it. Focus the target window first (window_control action=focus)."
+	if t.access != nil {
+		d += " With element=e3 (a field screen_view listed), the field's whole contents are replaced by text — written directly through the application where it allows, so no key is pressed and the result is read back."
+	}
+	return d
 }
 func (t *typeTextTool) Parameters() map[string]any {
+	props := map[string]any{
+		"text":     map[string]any{"type": "string", "description": "Literal text to type; this types characters, it does not send shortcuts (use press_key for those)"},
+		"delay_ms": map[string]any{"type": "integer", "description": "Per-keystroke delay (default 12)"},
+	}
+	if t.access != nil {
+		props["element"] = map[string]any{"type": "string", "description": "A field to fill: " + elementArgDoc}
+	}
 	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"text":     map[string]any{"type": "string", "description": "Literal text to type; this types characters, it does not send shortcuts (use send_keys for those)"},
-			"delay_ms": map[string]any{"type": "integer", "description": "Per-keystroke delay (default 12)"},
-		},
-		"required": []any{"text"},
+		"type":       "object",
+		"properties": props,
+		"required":   []any{"text"},
 	}
 }
 
@@ -367,6 +415,14 @@ func (t *typeTextTool) Execute(ctx context.Context, args map[string]any) *tools.
 	if delay < 0 || delay > 1000 {
 		delay = 12
 	}
+	if ref := strings.TrimSpace(tools.StringArg(args, "element")); ref != "" {
+		// A field written directly takes newlines safely: no key is pressed.
+		return t.typeIntoElement(ctx, ref, text, delay)
+	}
+	if r, ok := controlRune(text); ok {
+		return tools.Errorf("text contains %s, which a keystroke sends as a key — Return submits the form it lands in and Tab moves to another field, so the rest of the text would go somewhere else. "+
+			"Type each line separately and press_key the key you mean between them.", runeName(r))
+	}
 	if err := t.ctl.TypeText(ctx, text, delay); err != nil {
 		return tools.Errorf("%v", err)
 	}
@@ -377,7 +433,8 @@ type pressKeyTool struct{ *deps }
 
 func (t *pressKeyTool) Name() string { return "press_key" }
 func (t *pressKeyTool) Description() string {
-	return `Press a key or key combination in the focused window, e.g. "Return", "ctrl+s", "alt+Tab", "super". Modifiers: ctrl, alt, shift, super/cmd.`
+	return `Press a key or key combination in the focused window, e.g. "Return", "ctrl+s", "Escape", "ctrl+shift+t". Modifiers: ctrl, alt, shift, super/cmd. ` +
+		`Shortcuts that act on the session rather than the window — switching windows, locking the screen, closing the window in front, opening a terminal — are refused unless force is true.`
 }
 func (t *pressKeyTool) Parameters() map[string]any {
 	return map[string]any{
@@ -385,6 +442,7 @@ func (t *pressKeyTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"keys":   map[string]any{"type": "string", "description": `Key or combination, e.g. "ctrl+shift+t"`},
 			"repeat": map[string]any{"type": "integer", "description": "How many times (default 1)"},
+			"force":  map[string]any{"type": "boolean", "description": "Send a refused session shortcut anyway; only when the user asked for exactly that key"},
 		},
 		"required": []any{"keys"},
 	}
@@ -401,6 +459,10 @@ func (t *pressKeyTool) Execute(ctx context.Context, args map[string]any) *tools.
 	}
 	if repeat > 100 {
 		return tools.Errorf("repeat is capped at 100")
+	}
+	if combo, why := blockedCombo(keys); combo != "" && !tools.BoolArg(args, "force", false) {
+		return tools.Errorf("refused %s: it %s, so every key after it would land somewhere else. Nothing was sent. "+
+			"To change windows use window_control action=focus; pass force=true only if the user asked for exactly this key.", combo, why)
 	}
 	if err := t.ctl.PressKey(ctx, keys, repeat); err != nil {
 		return tools.Errorf("%v", err)
