@@ -46,9 +46,19 @@ func (u *uiaAccessor) ps(ctx context.Context, script, stdin string) (string, err
 // element as the record Go reads — the same shape for a read and for the
 // element an action leaves behind. Coordinates are made relative to the
 // virtual screen's top-left, the origin every other Factor coordinate uses.
+//
+// The client-side providers are registered by hand: they are what turn a
+// Win32 or Windows Forms control into a button or a field, and PowerShell's
+// managed client never loads them itself, so every such control read as a
+// bare pane and Notepad as a window with nothing in it. Applications with a
+// provider of their own (XAML, WPF, browsers) never needed them, which is
+// why the gap only showed on classic windows. The registration only takes
+// once the client is up — before that it throws a NullReferenceException —
+// so RootElement is touched first.
 const uiaPrelude = psPrelude + `Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $A = [System.Windows.Automation.AutomationElement]
+try { $null = $A::RootElement; Add-Type -AssemblyName UIAutomationClientsideProviders; [System.Windows.Automation.ClientSettings]::RegisterClientSideProviders([UIAutomationClientsideProviders.UIAutomationClientSideProviders]::ClientSideProviderDescriptionTable) } catch { }
 function Describe($el, $ord) {
   $c = $el.Current
   $o = [ordered]@{ ct = $c.ControlType.ProgrammaticName; n = $c.Name; id = $c.AutomationId; en = $c.IsEnabled; f = $c.HasKeyboardFocus; kf = $c.IsKeyboardFocusable; pw = $c.IsPassword; off = $c.IsOffscreen; rid = (($el.GetRuntimeId()) -join '.'); ord = $ord }
