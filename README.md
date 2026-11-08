@@ -302,68 +302,40 @@ decisions too.
 
 ## Desktop
 
-Factor works the graphical session through the desktop's own helper programs
-(xdotool, wmctrl, scrot on X11; grim/wtype on Wayland; osascript on macOS;
-PowerShell on Windows) — no CGO bindings, and nothing registers on a headless box.
+Factor drives the graphical session through the desktop's own helpers (xdotool,
+wmctrl and scrot on X11; grim and wtype on Wayland; osascript on macOS; PowerShell on
+Windows), so it needs no CGO and registers nothing on a headless box. Beside the
+window, mouse, keyboard and clipboard tools, a vision model gets a coordinate grid
+and the accessibility tree:
 
-On top of the window/mouse/keyboard/clipboard tools sits **grid vision**, a two-pass
-pointing loop for vision-capable models:
+| Tool | What it does |
+|---|---|
+| `screen_view` | captures the screen under a battleship grid (columns A, B, C…, rows 1, 2, 3…), so the model names a cell ("D4") instead of guessing pixels, and tags each control the window publishes (`e1`, `e2`…) with its name, contents and state |
+| `screen_zoom cell=D4` | magnifies a cell or any pixel region under a finer sub-grid, down to about 10 px |
+| `mouse action=click cell=B3` | clicks the cell's center; with `element=e4` it presses that control through its application and leaves your pointer alone |
+| `type_text element=e1` | replaces a field's contents and reports what it now holds |
+| `desktop_run goal=…` | works a dialog toward a goal with the [local decision model](#typed-decisions), as `browser_run` works a page |
 
-1. `screen_view` captures the screen under a battleship coordinate grid — columns
-   A, B, C…, rows 1, 2, 3…. The model names the cell it sees ("the icon is in D4")
-   instead of guessing pixel coordinates, which vision models are bad at.
-2. `screen_zoom cell=D4` magnifies that cell — or any pixel region, e.g. a window's
-   geometry from `window_list` — under a finer sub-grid, down to ~10px precision.
-3. `mouse action=click cell=B3` clicks the cell's center, resolved back to native
-   screen pixels on either view.
+Frames are capped at 1568 px (clicks still land at native resolution); only the two
+newest stay in context, and none reach session history. A model without vision can
+drop both vision tools through `tools.disabled`.
 
-Pure Go image math — no OpenCV, no OCR, no helpers beyond the screenshot program.
-Frames are capped at 1568px on the longest side (clicks still land at native
-resolution), only the two newest stay in context, and image bytes never touch
-session history. Non-vision models can disable both vision tools via
-`tools.disabled`.
+The tree comes from AT-SPI on Linux, UI Automation on Windows and the AX API on
+macOS. Games, canvas apps, remote desktops and terminals publish none, and
+`screen_view` says when a tree is thin; the grid works on all of them. Chromium needs
+`--force-renderer-accessibility` and Qt needs `QT_ACCESSIBILITY=1`.
+`desktop.accessibility: false` turns the tree off.
 
-**The accessibility tree rides on top of the grid.** Where the window in front
-publishes one — AT-SPI on Linux (spoken over D-Bus in pure Go), UI Automation on
-Windows, the AX API on macOS — `screen_view` also outlines and tags its controls on
-the same picture (`e1`, `e2`…) and lists them with their names, contents and states:
-which box is ticked, which button is greyed out, which field has focus. A password
-field's contents are never read.
+Each conversation keeps its own numbered looks, and a cell or ref from an older one
+(`f3:D4`, `f3:e2`) is refused, as is a control that changed since it was listed. A
+password field is never read, and `desktop_run` withholds anything that sends,
+deletes or buys unless `allow_submit` is set. `press_key` refuses session shortcuts
+(alt+tab, locking the screen, alt+f4) without `force`, and `type_text` refuses a
+newline or tab sent as a keystroke, since Return would submit the form.
 
-- `mouse action=click element=e4` presses the control through the application
-  itself, so the pointer you may be holding is left alone. It is found again and
-  checked against what was listed before anything is sent: a dialog that closed or a
-  list that changed is a refusal, not a click on whatever moved under the old spot.
-  What the application cannot do itself (a double click, a right click) the pointer
-  does, at the control's live position, after bringing its window forward.
-- `type_text element=e1` replaces a field's contents directly and reads the result
-  back, so it says what the field now holds rather than what was attempted.
-- `desktop_run goal=…` works a dialog or settings pane toward a goal on its own,
-  choosing each step with the local decision model, the way `browser_run` does for
-  web pages. It withholds anything that sends, deletes or buys unless
-  `allow_submit` is set, and never types into a password field.
-
-Not every application publishes a usable tree. Games, canvas-drawn apps, remote
-desktops and terminal contents are pixels to it, and some toolkits leave controls
-unnamed. `screen_view` says when a tree is thin or missing, and the grid works on all
-of those exactly as before. Chromium needs `--force-renderer-accessibility` and Qt
-needs `QT_ACCESSIBILITY=1` to publish one; an app started before the accessibility
-service ran has to be restarted. `desktop.accessibility: false` turns the tree off.
-
-Every cell and ref is tied to the picture it was read from: each look is numbered
-(`f3`), names can be qualified (`f3:D4`, `f3:e2`), and a name from an older look is
-refused. Each conversation keeps its own picture, so two sessions driving one screen
-never click on each other's grid. `press_key` refuses shortcuts that act on the
-session rather than the window (switching windows, locking the screen, `alt+f4`)
-unless `force` is set, and `type_text` refuses a newline or tab sent as a keystroke,
-since Return submits the form it lands in. Typed text is handed to the helper on
-stdin, never on a command line other processes can read.
-
-**On a Mac, grant Screen Recording first.** Without it `screencapture` does not
-fail — it exits 0 and returns the wallpaper with every window removed, so a
-desktop with six applications open reads as an empty one. `screen_view` says which
-permission produces that; it lives under System Settings → Privacy & Security →
-Screen Recording.
+**On a Mac, grant Screen Recording first** (System Settings → Privacy & Security).
+Without it `screencapture` exits 0 with only the wallpaper, so a busy desktop reads
+as empty.
 
 ## Phone calls and SMS
 
