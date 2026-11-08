@@ -150,8 +150,10 @@ func TestReadFileReadsALargeImageFileWhole(t *testing.T) {
 	if len(data) <= 4<<20 {
 		t.Skipf("fixture is %d bytes, not past the 4 MB text cap", len(data))
 	}
-	if _, img, _ := attached(t, tool.Execute(t.Context(), map[string]any{"path": "noise.png"})); img.Bounds().Dx() != 1500 {
-		t.Errorf("bounds = %v", img.Bounds())
+	// A PNG that stays past what a provider takes is sent as a JPEG.
+	mediaType, img, raw := attached(t, tool.Execute(t.Context(), map[string]any{"path": "noise.png"}))
+	if mediaType != "image/jpeg" || img.Bounds().Dx() != 1500 || len(raw) > imagePassBytes {
+		t.Errorf("%s %v, %d bytes", mediaType, img.Bounds(), len(raw))
 	}
 	huge := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, imageMaxBytes)...)
 	if err := os.WriteFile(filepath.Join(ws, "huge.png"), huge, 0o644); err != nil {

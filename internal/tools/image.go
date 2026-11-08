@@ -104,13 +104,20 @@ func shrinkImage(data []byte, mediaType string) ([]byte, string, int, int, error
 	draw.CatmullRom.Scale(dst, dst.Bounds(), src, b, draw.Src, nil)
 	var buf bytes.Buffer
 	if mediaType == "image/png" {
-		err = png.Encode(&buf, dst)
-	} else {
-		mediaType = "image/jpeg"
-		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85})
+		if err := png.Encode(&buf, dst); err != nil {
+			return nil, "", 0, 0, fmt.Errorf("encode: %w", err)
+		}
+		if buf.Len() <= imagePassBytes {
+			return buf.Bytes(), mediaType, w, h, nil
+		}
+		// A photograph saved as PNG stays too big at any size a model reads.
+		buf.Reset()
 	}
-	if err != nil {
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85}); err != nil {
 		return nil, "", 0, 0, fmt.Errorf("encode: %w", err)
 	}
-	return buf.Bytes(), mediaType, w, h, nil
+	if buf.Len() > imagePassBytes {
+		return nil, "", 0, 0, fmt.Errorf("the image is still %d KB after scaling, over the %d KB a provider takes", buf.Len()>>10, imagePassBytes>>10)
+	}
+	return buf.Bytes(), "image/jpeg", w, h, nil
 }
