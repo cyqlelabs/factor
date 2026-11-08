@@ -163,8 +163,8 @@ func TestHandleDownloadsTheLargestPhotoNamedByItsServerPath(t *testing.T) {
 	if data, err := os.ReadFile(saved); err != nil || string(data) != "jpegbytes" {
 		t.Fatalf("saved photo = %q, %v; want the served bytes at %s", data, err, saved)
 	}
-	if !strings.Contains(msg.Content, "photo") || !strings.Contains(msg.Content, saved) {
-		t.Errorf("content = %q, want a photo note with the saved path", msg.Content)
+	if !strings.Contains(msg.Content, "photo") || !strings.Contains(msg.Content, saved) || !strings.Contains(msg.Content, "read_file shows it") {
+		t.Errorf("content = %q, want a photo note with the saved path and how to look at it", msg.Content)
 	}
 	api.mu.Lock()
 	defer api.mu.Unlock()

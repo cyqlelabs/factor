@@ -29,7 +29,7 @@ type readFileTool struct {
 
 func (t *readFileTool) Name() string { return "read_file" }
 func (t *readFileTool) Description() string {
-	return "Read a file. Relative paths are workspace-relative. Use offset/limit (1-based line numbers) for large files."
+	return "Read a file. Relative paths are workspace-relative. Use offset/limit (1-based line numbers) for large files. An image (PNG, JPEG, GIF, WebP) is shown to you as a picture — a photo the user sent, or a screenshot you took."
 }
 func (t *readFileTool) Parameters() map[string]any {
 	return map[string]any{
@@ -60,6 +60,9 @@ func (t *readFileTool) Execute(_ context.Context, args map[string]any) *Result {
 		return Errorf("read %s: %v", path, err)
 	}
 	capped := len(data) > readCap
+	if mediaType := imageType(data[:min(len(data), 512)]); mediaType != "" {
+		return readImage(path, mediaType, data, !capped)
+	}
 	if capped {
 		data = data[:readCap]
 	}

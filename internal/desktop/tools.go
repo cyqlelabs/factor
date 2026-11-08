@@ -215,7 +215,7 @@ type screenshotTool struct{ *deps }
 
 func (t *screenshotTool) Name() string { return "screenshot" }
 func (t *screenshotTool) Description() string {
-	return "Capture the screen, one window, or a rectangular region to a PNG file in the workspace and return its path. Handy for showing the user what you see or keeping a record; you cannot read the image back yourself unless the model supports vision."
+	return "Capture the screen, one window, or a rectangular region to a PNG file in the workspace and return its path. Handy for showing the user what you see or keeping a record; read_file shows you the saved image."
 }
 func (t *screenshotTool) Parameters() map[string]any {
 	return map[string]any{

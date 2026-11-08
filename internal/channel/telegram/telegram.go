@@ -239,6 +239,9 @@ func (t *Telegram) handle(ctx context.Context, u update) {
 			note = fmt.Sprintf("[the user sent a %s over Telegram, but downloading it failed: %v]", att.kind, err)
 		} else {
 			note = fmt.Sprintf("[the user sent a %s over Telegram; it is saved at %s]", att.kind, path)
+			if att.kind == "photo" {
+				note = fmt.Sprintf("[the user sent a photo over Telegram; it is saved at %s, and read_file shows it to you]", path)
+			}
 		}
 		if content != "" {
 			content += "\n\n"
