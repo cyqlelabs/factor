@@ -109,17 +109,7 @@ func (s *Service) Tick(ctx context.Context) {
 	raw, _ := os.ReadFile(filepath.Join(s.workspace, "HEARTBEAT.md"))
 	content := string(raw)
 
-	var breached []bands.Breach
-	if s.bands != nil {
-		for _, b := range s.bands() {
-			slog.Info("control band breached", "metric", b.Metric, "sigma", b.Sigma,
-				"recent", b.Recent, "baseline", b.Baseline, "tier", b.Tier())
-			if b.Tier() >= judgeTier {
-				breached = append(breached, b)
-			}
-		}
-	}
-	breached = s.unjudged(breached)
+	breached := s.unjudged(s.worthJudging())
 	if !HasActionable(content) && len(breached) == 0 {
 		return // nothing written down, nothing worth judging → no LLM call
 	}
@@ -284,6 +274,23 @@ func (s *Service) verdictsOn(metrics []string) []verdict {
 	return past
 }
 
+// worthJudging is every breach, logged, less those too mild to pay a model
+// to judge.
+func (s *Service) worthJudging() []bands.Breach {
+	if s.bands == nil {
+		return nil
+	}
+	var out []bands.Breach
+	for _, b := range s.bands() {
+		slog.Info("control band breached", "metric", b.Metric, "sigma", b.Sigma,
+			"recent", b.Recent, "baseline", b.Baseline, "tier", b.Tier())
+		if b.Tier() >= judgeTier {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 // rejudgeAfter is how long a verdict stands for a reading that has not got
 // worse. A breach outlives the hour that caused it — the failures behind it
 // stay in the recent window until newer turns push them out — and every check
@@ -298,7 +305,22 @@ func (s *Service) unjudged(breached []bands.Breach) []bands.Breach {
 	if s.verdicts == "" || len(breached) == 0 {
 		return breached
 	}
-	judged := map[string]int{} // metric → highest tier judged recently
+	judged := s.recentlyJudged()
+	var out []bands.Breach
+	for _, b := range breached {
+		if t, ok := judged[b.Metric]; ok && b.Tier() <= t {
+			slog.Info("control band already judged", "metric", b.Metric, "tier", b.Tier())
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+// recentlyJudged is the highest tier each metric was judged at within
+// rejudgeAfter.
+func (s *Service) recentlyJudged() map[string]int {
+	judged := map[string]int{}
 	now := s.now()
 	for _, v := range s.loadVerdicts() {
 		if now.Sub(v.At) > rejudgeAfter {
@@ -311,15 +333,7 @@ func (s *Service) unjudged(breached []bands.Breach) []bands.Breach {
 			}
 		}
 	}
-	var out []bands.Breach
-	for _, b := range breached {
-		if t, ok := judged[b.Metric]; ok && b.Tier() <= t {
-			slog.Info("control band already judged", "metric", b.Metric, "tier", b.Tier())
-			continue
-		}
-		out = append(out, b)
-	}
-	return out
+	return judged
 }
 
 // loadVerdicts reads the log, forgiving a torn line the way the trace reader

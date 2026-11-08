@@ -53,16 +53,9 @@ func imageType(head []byte) string {
 func readImage(path, mediaType string, head []byte, complete bool) *Result {
 	data := head
 	if !complete {
-		f, err := os.Open(path)
-		if err != nil {
-			return Errorf("read %s: %v", path, err)
-		}
-		defer f.Close()
-		if data, err = io.ReadAll(io.LimitReader(f, imageMaxBytes+1)); err != nil {
-			return Errorf("read %s: %v", path, err)
-		}
-		if len(data) > imageMaxBytes {
-			return Errorf("%s is an image over %d MB; it is too large to show", path, imageMaxBytes>>20)
+		var err error
+		if data, err = readWholeImage(path); err != nil {
+			return Errorf("%v", err)
 		}
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
@@ -86,6 +79,24 @@ func readImage(path, mediaType string, head []byte, complete bool) *Result {
 		ForLLM: fmt.Sprintf("Image %s (%dx%d%s), attached for you to look at.", path, cfg.Width, cfg.Height, shown),
 		Images: []provider.ImagePart{{MediaType: mediaType, Data: base64.StdEncoding.EncodeToString(data)}},
 	}
+}
+
+// readWholeImage reads an image file past the text read's cap, up to
+// imageMaxBytes.
+func readWholeImage(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, imageMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(data) > imageMaxBytes {
+		return nil, fmt.Errorf("%s is an image over %d MB; it is too large to show", path, imageMaxBytes>>20)
+	}
+	return data, nil
 }
 
 // shrinkImage scales an image to fit imageMaxSide. A PNG stays a PNG, so text

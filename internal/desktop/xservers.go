@@ -59,23 +59,8 @@ func xServers(env Env) []xServer {
 		if err != nil || len(raw) == 0 {
 			continue
 		}
-		args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
-		program := path.Base(args[0])
-		if !xServerPrograms[program] {
-			continue
-		}
-		s := xServer{Program: program, Virtual: virtualServers[program]}
-		for i, a := range args[1:] {
-			switch {
-			case displayArg.MatchString(a) && s.Display == "":
-				s.Display = a
-			case vtArg.MatchString(a):
-				s.VT = a
-			case a == "-auth" && i+2 < len(args):
-				s.Auth = args[i+2]
-			}
-		}
-		if s.Display == "" || seen[s.Display] {
+		s, ok := parseXServer(strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00"))
+		if !ok || seen[s.Display] {
 			continue
 		}
 		seen[s.Display] = true
@@ -83,6 +68,27 @@ func xServers(env Env) []xServer {
 	}
 	sort.Slice(out, func(i, j int) bool { return displayNumber(out[i].Display) < displayNumber(out[j].Display) })
 	return out
+}
+
+// parseXServer reads one command line as an X server, reporting false for
+// anything that is not one or names no display.
+func parseXServer(args []string) (xServer, bool) {
+	program := path.Base(args[0])
+	if !xServerPrograms[program] {
+		return xServer{}, false
+	}
+	s := xServer{Program: program, Virtual: virtualServers[program]}
+	for i, a := range args[1:] {
+		switch {
+		case displayArg.MatchString(a) && s.Display == "":
+			s.Display = a
+		case vtArg.MatchString(a):
+			s.VT = a
+		case a == "-auth" && i+2 < len(args):
+			s.Auth = args[i+2]
+		}
+	}
+	return s, s.Display != ""
 }
 
 func displayNumber(d string) int {

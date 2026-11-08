@@ -410,18 +410,7 @@ func (w *Watcher) Check() []Breach {
 				vals = append(vals, v)
 			}
 		}
-		split := sort.Search(len(at), func(i int) bool { return !at[i].Before(cut) })
-		// A machine that runs a few turns a day never fills an hour, and
-		// a band that needs three turns in one would never look at it: a
-		// tool failing in every morning job reads as nothing forever. So
-		// the window reaches back for the newest readings, as far as a day.
-		for split > 0 && len(at)-split < minRecent && at[split-1].After(floor) {
-			split--
-		}
-		from := cut
-		if split < len(at) && at[split].Before(cut) {
-			from = at[split]
-		}
+		split, from := recentWindow(at, cut, floor)
 		if b, ok := judge(spec, vals[:split], vals[split:], w.minSamples); ok {
 			b.From = from
 			if spec.Evidence != nil {
@@ -433,6 +422,24 @@ func (w *Watcher) Check() []Breach {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Sigma > out[j].Sigma })
 	return out
+}
+
+// recentWindow finds where the recent readings start in at, which is sorted:
+// at the cut, or — when fewer than minRecent fall after it — back at the
+// newest minRecent, no earlier than floor. A machine that runs a few turns a
+// day never fills an hour, and a band that needs three turns in one would
+// never look at it: a tool failing in every morning job reads as nothing
+// forever. from is the start of the window, for the breach to name.
+func recentWindow(at []time.Time, cut, floor time.Time) (split int, from time.Time) {
+	split = sort.Search(len(at), func(i int) bool { return !at[i].Before(cut) })
+	for split > 0 && len(at)-split < minRecent && at[split-1].After(floor) {
+		split--
+	}
+	from = cut
+	if split < len(at) && at[split].Before(cut) {
+		from = at[split]
+	}
+	return split, from
 }
 
 // minRecent is the floor under the recent window. One turn is a reading,
