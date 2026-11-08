@@ -219,6 +219,9 @@ type Breach struct {
 	Baseline float64
 	Sigma    float64
 	Samples  int
+	// From is where the recent window starts: an hour ago, or further back
+	// on a machine too quiet to fill an hour.
+	From     time.Time
 	Evidence Evidence
 }
 
@@ -236,8 +239,12 @@ func (b Breach) Tier() int {
 // Line renders the breach the way a person reads it: what moved, from what to
 // what, and how unusual that is.
 func (b Breach) Line() string {
-	return fmt.Sprintf("%s is %s (was %s), %.1fσ from the baseline over %d turns",
+	line := fmt.Sprintf("%s is %s (was %s), %.1fσ from the baseline over %d turns",
 		b.Metric, format(b.Recent, b.Unit), format(b.Baseline, b.Unit), b.Sigma, b.Samples)
+	if !b.From.IsZero() {
+		line += " since " + b.From.Format("2006-01-02 15:04")
+	}
+	return line
 }
 
 // Details renders the evidence, one line each: the failures as they
@@ -353,6 +360,9 @@ type Watcher struct {
 	specs    []Spec
 	baseline time.Duration
 	recent   time.Duration
+	// sparse is how far back the recent window may reach for minRecent
+	// readings when the last hour holds fewer.
+	sparse time.Duration
 	// minSamples is the floor under saying anything. Two turns are not a
 	// baseline, and a band that fires on them is a band nobody will trust
 	// the third time.
@@ -367,6 +377,7 @@ func New(dir string) *Watcher {
 		specs:      Specs(),
 		baseline:   7 * 24 * time.Hour,
 		recent:     time.Hour,
+		sparse:     24 * time.Hour,
 		minSamples: 10,
 		now:        time.Now,
 	}
@@ -385,25 +396,36 @@ func (w *Watcher) Check() []Breach {
 	if err != nil || len(records) == 0 {
 		return nil
 	}
+	sort.SliceStable(records, func(i, j int) bool { return records[i].Started.Before(records[j].Started) })
 	cut := now.Add(-w.recent)
+	floor := now.Add(-w.sparse)
 
 	var out []Breach
 	for _, spec := range w.specs {
-		var base, recent []float64
+		var at []time.Time
+		var vals []float64
 		for _, r := range records {
-			v, ok := spec.Of(r)
-			if !ok {
-				continue
-			}
-			if r.Started.Before(cut) {
-				base = append(base, v)
-			} else {
-				recent = append(recent, v)
+			if v, ok := spec.Of(r); ok {
+				at = append(at, r.Started)
+				vals = append(vals, v)
 			}
 		}
-		if b, ok := judge(spec, base, recent, w.minSamples); ok {
+		split := sort.Search(len(at), func(i int) bool { return !at[i].Before(cut) })
+		// A machine that runs a few turns a day never fills an hour, and
+		// a band that needs three turns in one would never look at it: a
+		// tool failing in every morning job reads as nothing forever. So
+		// the window reaches back for the newest readings, as far as a day.
+		for split > 0 && len(at)-split < minRecent && at[split-1].After(floor) {
+			split--
+		}
+		from := cut
+		if split < len(at) && at[split].Before(cut) {
+			from = at[split]
+		}
+		if b, ok := judge(spec, vals[:split], vals[split:], w.minSamples); ok {
+			b.From = from
 			if spec.Evidence != nil {
-				b.Evidence = spec.Evidence(records, cut)
+				b.Evidence = spec.Evidence(records, from)
 				b.Evidence.Since = now.Add(-w.baseline)
 			}
 			out = append(out, b)

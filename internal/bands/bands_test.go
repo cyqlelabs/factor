@@ -504,3 +504,66 @@ func TestRecallFailuresAreABand(t *testing.T) {
 		t.Errorf("a turn without its memory = %v, %v", v, ok)
 	}
 }
+
+// quietBaseline is a week of a box that runs a few turns a day, mostly clean.
+func quietBaseline(now time.Time) []trace.Record {
+	var recs []trace.Record
+	for i := 0; i < 40; i++ {
+		errs := 0
+		if i%8 == 0 {
+			errs = 1
+		}
+		recs = append(recs, record(now.Add(-time.Duration(30+3*i)*time.Hour), 4, errs))
+	}
+	return recs
+}
+
+// A machine that runs a few turns a day never has three in one hour; the
+// window reaches back for the newest three, so a tool failing in each of
+// them is seen.
+func TestAQuietMachineIsJudgedOnItsLastFewTurns(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	recs := quietBaseline(now)
+	oldest := now.Add(-20 * time.Hour)
+	recs = append(recs, record(oldest, 4, 4), record(now.Add(-8*time.Hour), 4, 4), record(now.Add(-3*time.Hour), 4, 4))
+	writeTraces(t, dir, recs)
+	b, ok := breachFor(testWatcher(dir, now).Check(), "tool error rate")
+	if !ok {
+		t.Fatal("three failing turns over a day went unseen")
+	}
+	if b.Samples != 3 || b.From.Sub(oldest).Abs() > time.Millisecond {
+		t.Errorf("samples %d, from %v (want %v)", b.Samples, b.From, oldest)
+	}
+	if len(b.Evidence.Failures) != 8 || !contains(b.Line(), "since "+oldest.Format("2006-01-02 15:04")) {
+		t.Errorf("failures %d, line %q", len(b.Evidence.Failures), b.Line())
+	}
+}
+
+// The reach stops at a day: turns older than that are the baseline.
+func TestTheQuietWindowReachesBackOneDay(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	recs := quietBaseline(now)
+	recs = append(recs, record(now.Add(-26*time.Hour), 4, 4), record(now.Add(-25*time.Hour), 4, 4), record(now.Add(-time.Hour/2), 4, 4))
+	writeTraces(t, dir, recs)
+	if b, ok := breachFor(testWatcher(dir, now).Check(), "tool error rate"); ok {
+		t.Errorf("reached past a day: %+v", b)
+	}
+}
+
+// A busy hour is judged on itself.
+func TestABusyHourIsNotWidened(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	recs := quietBaseline(now)
+	recs = append(recs, record(now.Add(-5*time.Hour), 4, 0))
+	for m := 10; m <= 40; m += 10 {
+		recs = append(recs, record(now.Add(-time.Duration(m)*time.Minute), 4, 4))
+	}
+	writeTraces(t, dir, recs)
+	b, ok := breachFor(testWatcher(dir, now).Check(), "tool error rate")
+	if !ok || b.Samples != 4 || !b.From.Equal(now.Add(-time.Hour)) {
+		t.Errorf("breach = %+v, %v", b, ok)
+	}
+}

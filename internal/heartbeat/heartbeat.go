@@ -165,7 +165,7 @@ func bandSection(breached []bands.Breach) string {
 	}
 	var b strings.Builder
 	b.WriteString("\n\n# Drifted metrics (measured, not diagnosed)\n")
-	b.WriteString("These are Factor's own numbers over the last hour against a rolling baseline, ")
+	b.WriteString("These are Factor's own numbers for its recent turns — the last hour, or the last few turns on a quiet machine — against a rolling baseline, ")
 	b.WriteString("with the evidence behind each: the calls that failed and what they said, and each failing tool's record over the whole baseline. ")
 	b.WriteString("That is the entire record — the traces hold nothing more and the journal holds no tool outcomes — so judge from it rather than going looking. ")
 	b.WriteString("Work out whether any of it matters. Say something only if it does; ")
