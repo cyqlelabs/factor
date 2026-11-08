@@ -156,31 +156,69 @@ func failedTools(turn []provider.Message) []string {
 }
 
 // stepOnFailedTool returns the first tool in failed that a numbered step of
-// body names. Pitfalls are where a failed tool belongs, so nothing from the
-// first line mentioning them on is read.
+// body tells the reader to use. A step is its numbered line and the indented
+// lines under it; a mention inside a "not", "instead of" or "never" clause
+// steers away from the tool rather than toward it. Pitfalls are where a
+// failed tool belongs, so nothing under a Pitfalls heading is read.
 func stepOnFailedTool(body string, failed []string) string {
 	names := make([]*regexp.Regexp, len(failed))
 	for i, tool := range failed {
 		names[i] = regexp.MustCompile(`\b` + regexp.QuoteMeta(tool) + `\b`)
 	}
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.Contains(strings.ToLower(line), "pitfall") {
-			return ""
-		}
-		if !numberedStep.MatchString(line) {
-			continue
-		}
+	var step strings.Builder
+	settle := func() string {
+		text := step.String()
+		step.Reset()
 		for i, name := range names {
-			if name.MatchString(line) {
-				return failed[i]
+			for _, at := range name.FindAllStringIndex(text, -1) {
+				if !steersAway(text[:at[0]]) {
+					return failed[i]
+				}
+			}
+		}
+		return ""
+	}
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case line == "":
+			continue
+		case pitfallsHeading(line):
+			return settle()
+		case numberedStep.MatchString(line):
+			if tool := settle(); tool != "" {
+				return tool
+			}
+			step.WriteString(line)
+		case step.Len() > 0 && raw != strings.TrimLeft(raw, " \t"):
+			step.WriteString(" " + line)
+		default:
+			if tool := settle(); tool != "" {
+				return tool
 			}
 		}
 	}
-	return ""
+	return settle()
 }
 
 var numberedStep = regexp.MustCompile(`^\d+[.)]\s`)
+
+// pitfallsHeading recognises the heading of a Pitfalls section in the forms
+// a model writes it: "## Pitfalls", "Pitfalls:", "**Pitfalls**".
+func pitfallsHeading(line string) bool {
+	bare := strings.ToLower(strings.Trim(line, "#*_: "))
+	return bare == "pitfalls" || bare == "pitfall" || (strings.HasPrefix(line, "#") && strings.Contains(bare, "pitfall"))
+}
+
+// awayFrom is the wording that turns a tool's mention into advice against it.
+var awayFrom = regexp.MustCompile(`\b(not|never|avoid|instead of|rather than|without|don't|dont)\b`)
+
+// steersAway reports whether the clause running up to a mention — back to
+// the last comma, colon, semicolon or full stop — argues against the tool.
+func steersAway(before string) bool {
+	clause := before[strings.LastIndexAny(before, ".,;:")+1:]
+	return awayFrom.MatchString(strings.ToLower(clause))
+}
 
 // induceIdleSessions distills the pending candidates whose sessions have
 // gone quiet. It runs beside idle compaction on the same sweep, paid while

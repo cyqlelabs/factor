@@ -390,6 +390,13 @@ func TestStepOnFailedTool(t *testing.T) {
 		"1. call media\n2. check status\n\n## Pitfalls\n1. exec failed, avoid": "",
 		"1. call job_exec\n2. read_files is not a tool":                        "",
 		"Use exec for this.\n1. call media\n2. check":                          "",
+		"1. Start playback:\n   call exec with the file\n2. done":              "exec",
+		"1. Use media, not exec\n2. Instead of exec, check media status":       "",
+		"1. Never kill it with exec; call media\n2. done":                      "",
+		"1. If the stream does not open, call exec\n2. done":                   "exec",
+		"1. call media; avoid the pitfall of polling\n2. run exec":             "exec",
+		"1. call media\n**Pitfalls**\n- exec":                                  "",
+		"1. call media\nNotes\n   exec is indented but not a step":             "",
 	} {
 		if got := stepOnFailedTool(body, failed); got != want {
 			t.Errorf("stepOnFailedTool(%q) = %q, want %q", body, got, want)
