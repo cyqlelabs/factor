@@ -107,17 +107,20 @@ func (l *Loop) judgeSkillUses(reads map[string]skillRead, steered int, outcome s
 			uses[dir] = u
 			continue
 		}
-		delete(uses, dir)
 		reason := fmt.Sprintf("corrected in %d uses in a row, %s", u.Bad, time.Now().Format("2006-01-02"))
-		if err := skills.Quarantine(l.skillsRoot(), dir, r.hash, reason); err != nil {
-			if !errors.Is(err, skills.ErrSkillChanged) {
-				slog.Warn("could not quarantine a learned skill", "skill", dir, "error", err)
-			}
+		err := skills.Quarantine(l.skillsRoot(), dir, r.hash, reason)
+		switch {
+		case err == nil:
+			slog.Warn("learned skill quarantined: it was corrected in every recent use",
+				"skill", dir, "uses", u.Bad, "review", filepath.Join(l.skillsRoot(), dir, "SKILL.md"))
+			l.noteWorkspaceChange("quarantined learned skill " + dir)
+		case !errors.Is(err, skills.ErrSkillChanged):
+			// Kept, so the next corrected use tries again.
+			slog.Warn("could not quarantine a learned skill", "skill", dir, "error", err)
+			uses[dir] = u
 			continue
 		}
-		slog.Warn("learned skill quarantined: it was corrected in every recent use",
-			"skill", dir, "uses", u.Bad, "review", filepath.Join(l.skillsRoot(), dir, "SKILL.md"))
-		l.noteWorkspaceChange("quarantined learned skill " + dir)
+		delete(uses, dir)
 	}
 	saveSkillUses(uses)
 }

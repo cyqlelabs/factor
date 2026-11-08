@@ -197,3 +197,19 @@ func TestSkillReadsUnderARelativeWorkspace(t *testing.T) {
 		t.Errorf("a relative workspace hid the read: %+v", reads)
 	}
 }
+
+// A quarantine that could not be written keeps the record, so the next
+// corrected use tries again rather than starting the count over.
+func TestAFailedQuarantineKeepsTheRecord(t *testing.T) {
+	h, path := learnedSkillHarness(t)
+	_, hash, _ := skills.LearnedFile(skillsRoot(h), path)
+	read := map[string]skillRead{"play-radio": {hash: hash}}
+	h.loop.judgeSkillUses(read, 1, "ok")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	h.loop.judgeSkillUses(read, 1, "ok")
+	if got := loadSkillUses()["play-radio"].Bad; got != 2 {
+		t.Errorf("bad = %d after a failed quarantine, want 2", got)
+	}
+}
