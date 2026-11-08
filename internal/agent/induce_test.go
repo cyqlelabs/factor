@@ -363,3 +363,66 @@ func writeSkillDir(t *testing.T, root, dir, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestFailedToolsNamesOnlyToolsThatNeverWorked(t *testing.T) {
+	turn := []provider.Message{
+		{Role: "user", Content: "play something"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "1", Name: "exec"}, {ID: "2", Name: "media"}}},
+		{Role: "tool", ToolCallID: "1", Content: "ERROR: paplay: no such file"},
+		{Role: "tool", ToolCallID: "2", Content: "ERROR: loading failed"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "3", Name: "media"}, {ID: "4", Name: "web_search"}, {ID: "5", Name: "read_file"}}},
+		{Role: "tool", ToolCallID: "3", Content: "playing Song"},
+		{Role: "tool", ToolCallID: "4", Content: interruptedTool},
+	}
+	got := failedTools(turn)
+	want := []string{"exec", "web_search", "read_file"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("failedTools = %v, want %v", got, want)
+	}
+}
+
+func TestStepOnFailedTool(t *testing.T) {
+	failed := []string{"exec", "read_file"}
+	for body, want := range map[string]string{
+		"1. call media with the url\n2. confirm with media status":             "",
+		"1. call media\n2. run `exec` to kill the player":                      "exec",
+		"1) read it with read_file\n2. done":                                   "read_file",
+		"1. call media\n2. check status\n\n## Pitfalls\n1. exec failed, avoid": "",
+		"1. call job_exec\n2. read_files is not a tool":                        "",
+		"Use exec for this.\n1. call media\n2. check":                          "",
+	} {
+		if got := stepOnFailedTool(body, failed); got != want {
+			t.Errorf("stepOnFailedTool(%q) = %q, want %q", body, got, want)
+		}
+	}
+	if got := stepOnFailedTool("1. exec it", nil); got != "" {
+		t.Errorf("nothing failed, yet %q was flagged", got)
+	}
+}
+
+// A recipe built on a tool that failed every time it ran is the failure
+// written down; it is refused before anything reaches the catalog.
+func TestInduceRefusesAStepOnAToolThatOnlyFailed(t *testing.T) {
+	h := newHarness(t, learnReply("probe-routine"))
+	cand := induceCandidate{task: "t", transcript: "tr", failedTools: "probe"}
+	err := h.loop.induce(context.Background(), "cli:x", cand)
+	if err == nil || !strings.Contains(err.Error(), "probe") {
+		t.Fatalf("err = %v, want a refusal naming probe", err)
+	}
+	if got := skills.Learned(skillsRoot(h)); len(got) != 0 {
+		t.Fatalf("a skill was written: %+v", got)
+	}
+}
+
+// A corrected turn is not described as having worked: the correction says
+// what the user rejected, and only the results say what succeeded.
+func TestInduceInputDoesNotClaimTheCorrectedTurnWorked(t *testing.T) {
+	var none []skills.Skill
+	got := induceInput(induceCandidate{task: "t", transcript: "x", corrected: true}, none, none, false)
+	if strings.Contains(got, "the one that worked") {
+		t.Errorf("the prompt asserts the corrected approach worked:\n%s", got)
+	}
+	if !strings.Contains(got, "SKIP if none do") {
+		t.Errorf("the prompt does not tie steps to results:\n%s", got)
+	}
+}

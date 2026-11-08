@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -73,6 +74,10 @@ type induceCandidate struct {
 	// then holds both the approach that was wrong and the one that worked,
 	// which is most of what makes a workflow worth writing down.
 	corrected bool
+	// failedTools are the tools the turn called that never once succeeded,
+	// space-separated so the candidate stays comparable. A recipe whose
+	// steps lean on one is a write-up of the failure.
+	failedTools string
 }
 
 // noteInduceCandidate remembers the turn that just ended as something the
@@ -111,12 +116,71 @@ func (l *Loop) noteInduceCandidate(in turnInput, messages []provider.Message, th
 	l.induceMu.Lock()
 	defer l.induceMu.Unlock()
 	l.pendingInduce[in.sessionKey] = induceCandidate{
-		toolCtx:    in.toolCtx,
-		task:       task,
-		transcript: renderTurn(turn),
-		corrected:  corrected,
+		toolCtx:     in.toolCtx,
+		task:        task,
+		transcript:  renderTurn(turn),
+		corrected:   corrected,
+		failedTools: strings.Join(failedTools(turn), " "),
 	}
 }
+
+// failedTools names the tools a turn called whose every result was an error
+// or never came back, in the order they were first called.
+func failedTools(turn []provider.Message) []string {
+	names := map[string]string{} // call id → tool
+	worked := map[string]bool{}
+	var order []string
+	for _, m := range turn {
+		switch m.Role {
+		case "assistant":
+			for _, tc := range m.ToolCalls {
+				names[tc.ID] = tc.Name
+				if _, seen := worked[tc.Name]; !seen {
+					worked[tc.Name] = false
+					order = append(order, tc.Name)
+				}
+			}
+		case "tool":
+			if name, ok := names[m.ToolCallID]; ok && !strings.HasPrefix(m.Content, "ERROR: ") && m.Content != interruptedTool {
+				worked[name] = true
+			}
+		}
+	}
+	var failed []string
+	for _, name := range order {
+		if !worked[name] {
+			failed = append(failed, name)
+		}
+	}
+	return failed
+}
+
+// stepOnFailedTool returns the first tool in failed that a numbered step of
+// body names. Pitfalls are where a failed tool belongs, so nothing from the
+// first line mentioning them on is read.
+func stepOnFailedTool(body string, failed []string) string {
+	names := make([]*regexp.Regexp, len(failed))
+	for i, tool := range failed {
+		names[i] = regexp.MustCompile(`\b` + regexp.QuoteMeta(tool) + `\b`)
+	}
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(strings.ToLower(line), "pitfall") {
+			return ""
+		}
+		if !numberedStep.MatchString(line) {
+			continue
+		}
+		for i, name := range names {
+			if name.MatchString(line) {
+				return failed[i]
+			}
+		}
+	}
+	return ""
+}
+
+var numberedStep = regexp.MustCompile(`^\d+[.)]\s`)
 
 // induceIdleSessions distills the pending candidates whose sessions have
 // gone quiet. It runs beside idle compaction on the same sweep, paid while
@@ -246,6 +310,9 @@ func (l *Loop) induce(ctx context.Context, sessionKey string, cand induceCandida
 		slog.Debug("nothing worth learning from turn", "session", sessionKey)
 		return nil
 	}
+	if tool := stepOnFailedTool(body, strings.Fields(cand.failedTools)); tool != "" {
+		return fmt.Errorf("induction made a step of %s, which failed every time this turn called it; refusing %q", tool, name)
+	}
 	if atCap {
 		isUpdate := false
 		for _, s := range learned {
@@ -319,7 +386,7 @@ const inducePrompt = `A task just finished. Decide whether its trajectory holds 
 Rules:
 - Most turns teach nothing durable. A one-off errand, a plain question, or a task an existing skill already covers gets SKIP. When in doubt, SKIP.
 - Extract the reusable sub-routine, not this task. Replace task-specific values with {placeholder} names; keep invariant identifiers — tool names, URLs, paths, commands that worked — exactly as they appear.
-- Write the body as numbered steps naming the tools to call, at least two. If the trajectory shows attempts that failed before one worked, add a Pitfalls section saying what not to repeat.
+- Write the body as numbered steps naming the tools to call, at least two. A step is something the trajectory shows working: a result starting with ERROR: is a failure, so that call belongs in a Pitfalls section saying what not to repeat, never in the steps.
 - The skill is read in every future conversation: no personal data, no secrets — procedure only.
 - To improve a skill from the learned list, reply with its exact name; the new body replaces the old, so carry forward what it already gets right. Never use any other existing skill's name.
 
@@ -347,11 +414,13 @@ func induceInput(cand induceCandidate, catalog, learned []skills.Skill, atCap bo
 	if cand.corrected {
 		// Worth saying out loud, because it changes what the trajectory is
 		// evidence of: the user interrupted to redirect this work, so the
-		// transcript holds both the approach that was wrong and the one that
-		// was right. That contrast is the lesson.
-		b.WriteString("\nThe user corrected this turn while it was running. " +
-			"The trajectory therefore contains an approach that was wrong before the one that worked; " +
-			"the skill should capture what to do, not the detour.\n")
+		// approach before their message was one they rejected. It says
+		// nothing about the approach after it — a redirected turn can fail
+		// the second time too, and telling the model it "worked" is how a
+		// failed workflow got written down as a recipe.
+		b.WriteString("\nThe user corrected this turn while it was running, so the approach before their message is one they rejected. " +
+			"Whether what came after it worked is only what its results show: " +
+			"write steps the results show succeeding, and SKIP if none do.\n")
 	}
 	b.WriteString("\n# Learned skills (the only names you may reuse, to update)\n")
 	if len(learned) == 0 {
