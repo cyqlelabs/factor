@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,5 +110,99 @@ func TestSkillWriteDropsLearnedMarker(t *testing.T) {
 	// Once curated, induction may not touch it again.
 	if _, _, err := WriteLearned(root, "auto", "d", "b"); err == nil {
 		t.Fatal("induction replaced a curated skill")
+	}
+}
+
+func TestLearnedFileKnowsOnlyLearnedSkills(t *testing.T) {
+	root := t.TempDir()
+	path, _, err := WriteLearned(root, "radio", "play the radio", "1. call media")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, root, "mine", "---\nname: mine\ndescription: by hand\n---\n\nbody\n")
+
+	dir, hash, ok := LearnedFile(root, path)
+	if !ok || dir != "radio" || len(hash) != 12 {
+		t.Fatalf("LearnedFile = %q %q %v", dir, hash, ok)
+	}
+	for _, other := range []string{
+		filepath.Join(root, "mine", "SKILL.md"),
+		filepath.Join(root, "radio", "notes.md"),
+		filepath.Join(filepath.Dir(root), "SKILL.md"),
+		filepath.Join(root, "gone", "SKILL.md"),
+	} {
+		if _, _, ok := LearnedFile(root, other); ok {
+			t.Errorf("LearnedFile(%s) claimed a learned skill", other)
+		}
+	}
+	if _, _, err := WriteLearned(root, "radio", "play the radio", "1. call media\n2. check status"); err != nil {
+		t.Fatal(err)
+	}
+	if _, again, _ := LearnedFile(root, path); again == hash {
+		t.Error("a rewritten skill hashed the same")
+	}
+}
+
+// A quarantined skill leaves the catalog and the learned list but keeps its
+// file, with the reason, for review; a skill somebody wrote is refused.
+func TestQuarantineTakesALearnedSkillOutOfTheCatalog(t *testing.T) {
+	root := t.TempDir()
+	path, _, err := WriteLearned(root, "radio", "play the radio", "1. call media")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, root, "mine", "---\nname: mine\ndescription: by hand\n---\n\nbody\n")
+
+	_, hash, _ := LearnedFile(root, path)
+	if err := Quarantine(root, "radio", hash, "corrected twice,\n in a row"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "quarantined: corrected twice, in a row\n") || !strings.Contains(string(data), "1. call media") {
+		t.Fatalf("file after quarantine:\n%s", data)
+	}
+	for _, s := range NewLoader(root).List() {
+		if s.Name == "radio" {
+			t.Error("a quarantined skill is still in the catalog")
+		}
+	}
+	if got := Learned(root); len(got) != 0 {
+		t.Errorf("Learned() = %+v", got)
+	}
+	if _, _, ok := LearnedFile(root, path); ok {
+		t.Error("a quarantined skill still reads as a learned one")
+	}
+	if err := Quarantine(root, "mine", hash, "x"); err == nil {
+		t.Error("quarantined a hand-written skill")
+	}
+	if err := Quarantine(root, "gone", hash, "x"); err == nil {
+		t.Error("quarantined a skill that does not exist")
+	}
+	// Induction writing it again is how it comes back.
+	if _, _, err := WriteLearned(root, "radio", "play the radio", "1. call media"); err != nil {
+		t.Fatal(err)
+	}
+	if got := Learned(root); len(got) != 1 {
+		t.Errorf("a rewritten skill did not come back: %+v", got)
+	}
+}
+
+// A skill rewritten since it was judged is a version nobody has used yet,
+// and is not quarantined for its predecessor.
+func TestQuarantineRefusesAVersionItDidNotJudge(t *testing.T) {
+	root := t.TempDir()
+	path, _, err := WriteLearned(root, "radio", "play the radio", "1. call exec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, old, _ := LearnedFile(root, path)
+	if _, _, err := WriteLearned(root, "radio", "play the radio", "1. call media"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Quarantine(root, "radio", old, "x"); !errors.Is(err, ErrSkillChanged) {
+		t.Fatalf("err = %v, want ErrSkillChanged", err)
+	}
+	if got := Learned(root); len(got) != 1 {
+		t.Errorf("the new version left the catalog: %+v", got)
 	}
 }

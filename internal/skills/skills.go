@@ -60,6 +60,9 @@ func (l *Loader) List() []Skill {
 				continue
 			}
 			meta, body := parseFrontmatter(string(data))
+			if Quarantined(meta) {
+				continue
+			}
 			name := meta["name"]
 			if name == "" {
 				name = e.Name()
@@ -317,9 +320,12 @@ func (t *WriteTool) Execute(_ context.Context, args map[string]any) *tools.Resul
 		return tools.Errorf("create skill dir: %v", err)
 	}
 	path := filepath.Join(dir, "SKILL.md")
+	writeMu.Lock()
 	_, statErr := os.Stat(path)
 	existed := statErr == nil
-	if err := os.WriteFile(path, []byte(renderSkillDoc(name, desc, content, false)), 0o644); err != nil {
+	err := os.WriteFile(path, []byte(renderSkillDoc(name, desc, content, false)), 0o644)
+	writeMu.Unlock()
+	if err != nil {
 		return tools.Errorf("write SKILL.md: %v", err)
 	}
 

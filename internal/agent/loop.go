@@ -125,6 +125,10 @@ type Loop struct {
 	induceMu      sync.Mutex
 	pendingInduce map[string]induceCandidate
 
+	// skillUseMu serializes the read-modify-write of the record of how
+	// learned skills fared in use, which turns in different sessions share.
+	skillUseMu sync.Mutex
+
 	windowFor func() int // context length of the models in play; 0 = unknown
 
 	// tracer keeps the local record of what each turn did. Nil is tracing
@@ -720,6 +724,12 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 	// nothing about the answer and everything about whether the trajectory
 	// is worth learning from.
 	steered := 0
+	// The learned skills this turn read, judged by how the turn went once it
+	// is over: a correction after the read counts against the skill.
+	reads := map[string]skillRead{}
+	if !in.ephemeral {
+		defer func() { l.judgeSkillUses(reads, steered, turnOutcome(ctx, err)) }()
+	}
 
 	// What the policies watch: the same call coming back the same way, how
 	// many tools the turn has used, and whether its answer has already been
@@ -846,6 +856,9 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 		outcomes := l.runTools(ctx, in.sessionKey, tr, resp.ToolCalls, summaryTruncated(resp.FinishReason))
 		fill.finished()
 		toolCalls += len(resp.ToolCalls)
+		if !in.ephemeral {
+			l.noteSkillReads(tr, reads, resp.ToolCalls, outcomes, steered)
+		}
 		// A call that has come back the same way for the third time is a
 		// stall, and the turn is told so after this batch's results — with
 		// what kind of stall it is, where something can judge that.

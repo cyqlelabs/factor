@@ -137,6 +137,10 @@ const (
 	// use-based confidence update would be measured against before it is
 	// trusted to write anything.
 	EventMemoryShown = "memory_shown"
+	// EventSkillRead is a turn reading a learned skill: its directory and a
+	// hash of the version read. Reading is exposure, not proof the turn
+	// followed it.
+	EventSkillRead = "skill_read"
 	// EventStall is the same tool call returning the same result for the
 	// third time in one turn, detected in code; the detail names the tool.
 	EventStall = "stall"
