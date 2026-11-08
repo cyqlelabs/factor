@@ -1331,7 +1331,7 @@ func TestCheckpointNudgeNamesTheTimeLeftUnderADeadline(t *testing.T) {
 // The user cannot tell that from a crash, and the blank turn recorded in its
 // place means "repeat what you just said" finds nothing either.
 func TestEmptyFinalAnswerIsAFailure(t *testing.T) {
-	h := newHarness(t, final("   "))
+	h := newHarness(t, final("   "), final(""))
 	reply, err := h.loop.ProcessDirect(context.Background(), "hi", "cli:test")
 	if !errors.Is(err, errEmptyAnswer) {
 		t.Fatalf("err = %v, want errEmptyAnswer", err)
@@ -1342,5 +1342,29 @@ func TestEmptyFinalAnswerIsAFailure(t *testing.T) {
 	// Nothing was said, so nothing is remembered as having been said.
 	if len(h.engine.remembered) != 0 {
 		t.Errorf("an empty turn was stored: %v", h.engine.remembered)
+	}
+	history, _ := h.store.History("cli:test")
+	for _, m := range history {
+		if m.Role == "assistant" {
+			t.Errorf("a blank reply was written to the transcript: %+v", history)
+		}
+	}
+}
+
+// One empty completion is the provider stumbling, and the next call is
+// usually the answer: the user gets it without having to ask again, and the
+// transcript holds it once.
+func TestAnEmptyCompletionIsAskedAgainOnce(t *testing.T) {
+	h := newHarness(t, final(" "), final("here it is"))
+	reply, err := h.loop.ProcessDirect(context.Background(), "hi", "cli:test")
+	if err != nil || reply != "here it is" {
+		t.Fatalf("reply = %q, err = %v", reply, err)
+	}
+	history, _ := h.store.History("cli:test")
+	if len(history) != 2 || history[1].Content != "here it is" {
+		t.Errorf("history = %+v", history)
+	}
+	if len(h.chat.requests) != 2 {
+		t.Errorf("asked %d times, want 2", len(h.chat.requests))
 	}
 }

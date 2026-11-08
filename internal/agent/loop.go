@@ -30,9 +30,11 @@ type ChatProvider interface {
 const steeringBuffer = 8
 
 // errEmptyAnswer is a turn that finished with no tool call and nothing to
-// say. It is a provider fault rather than anything the user did — see the
-// reasoning-field case in provider.answerOf — and it is reported as one, so
-// the channel says something instead of going quiet.
+// say, twice in a row. It is a provider fault rather than anything the user
+// did — see the reasoning-field case in provider.answerOf — and it is the one
+// failure that looks like working software: the channel has nothing to send,
+// so it sends nothing, and a spoken conversation ends without anyone knowing
+// it ended. So it is reported as a failure, and the channel says something.
 var errEmptyAnswer = errors.New("the model returned an empty reply")
 
 // claimRetry is how often a synchronous turn that must own its session
@@ -737,6 +739,8 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 	stalls := newStallTracker()
 	toolCalls := 0
 	verified := false
+	// An empty completion is asked again once per turn, not once per call.
+	retriedEmpty := false
 
 	budget := l.cfg.Agent.MaxToolIterations
 	checkpointed := 0
@@ -786,6 +790,29 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 			return "", err
 		}
 
+		// A completion with no tool call and nothing to say is the provider
+		// failing, not the model answering, and it is asked once more
+		// before it is reported: measured on one box, a flash model answered
+		// a failed exec with two tokens of nothing, and the user was left to
+		// type "y?" to get the reply the next call gave. It is never written
+		// down, because what the transcript would keep is a blank turn that
+		// "what did you just say" reads back.
+		if len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) == "" {
+			if injected := l.drainSteering(in, t, record); len(injected) > 0 {
+				steered++
+				tr.Event(trace.EventSteering, "")
+				messages = append(messages, injected...)
+				continue
+			}
+			if !retriedEmpty {
+				retriedEmpty = true
+				iteration--
+				continue
+			}
+			fill.stop()
+			return "", errEmptyAnswer
+		}
+
 		assistantMsg := provider.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls}
 		if err := record(assistantMsg); err != nil {
 			return "", err
@@ -799,16 +826,6 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 				// The turn has its answer; anything the filler adds now
 				// arrives after the user has stopped waiting.
 				fill.stop()
-				// A turn that ends with nothing to say is a failure, not an
-				// answer, and it is the one failure that looks like working
-				// software: the channel has nothing to send, so it sends
-				// nothing, and the user is left deciding whether to ask
-				// again. Saying so out loud is the whole fix — a blank reply
-				// silently dropped is how a spoken conversation ends without
-				// anyone knowing it ended.
-				if strings.TrimSpace(resp.Content) == "" {
-					return "", errEmptyAnswer
-				}
 				// A reply after tool use is a claim about what those tools
 				// did, and it is checked against them once before it stands.
 				if toolCalls > 0 && !verified && !in.ephemeral {
