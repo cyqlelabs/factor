@@ -400,7 +400,23 @@ func AdoptDisplay(env Env, setenv func(key, value string) error) string {
 	if key == "" || setenv(key, value) != nil {
 		return ""
 	}
+	if key == "DISPLAY" {
+		adoptAuth(env, setenv, value)
+	}
 	return key + "=" + value
+}
+
+// adoptAuth points XAUTHORITY at the cookies an X server was started with,
+// when this process can read them: a screen adopted without its cookies is
+// one every helper is refused by, wherever access control is on.
+func adoptAuth(env Env, setenv func(key, value string) error, display string) {
+	s, ok := serverFor(xServers(env), display)
+	if !ok || s.Auth == "" || env.ReadFile == nil {
+		return
+	}
+	if _, err := env.ReadFile(s.Auth); err == nil {
+		_ = setenv("XAUTHORITY", s.Auth)
+	}
 }
 
 // findDisplay looks for a display server this process was not told about and
@@ -479,13 +495,8 @@ func AdoptConsole(env Env, setenv func(key, value string) error) string {
 	if !ok || setenv("DISPLAY", console.Display) != nil {
 		return ""
 	}
-	// The console's cookies are in the file it was started with; the one
-	// this process holds was written for the virtual screen.
-	if console.Auth != "" && env.ReadFile != nil {
-		if _, err := env.ReadFile(console.Auth); err == nil {
-			_ = setenv("XAUTHORITY", console.Auth)
-		}
-	}
+	// The cookies this process holds were written for the virtual screen.
+	adoptAuth(env, setenv, console.Display)
 	return fmt.Sprintf("DISPLAY=%s (was %s: %s)", console.Display, held, current.describe())
 }
 

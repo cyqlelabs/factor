@@ -229,3 +229,15 @@ func TestFindDisplayPrefersTheConsole(t *testing.T) {
 		t.Errorf("with only the virtual screen up, findDisplay = %s, want :0", value)
 	}
 }
+
+// A process with no DISPLAY adopts the console with its cookies, wherever
+// it can read them.
+func TestAdoptDisplayBringsTheConsolesCookies(t *testing.T) {
+	env, set := puppyEnv("", "/tmp/.X11-unix/X0", "/tmp/.X11-unix/X1")
+	if got := AdoptDisplay(env, setter(set)); got != "DISPLAY=:1" {
+		t.Fatalf("AdoptDisplay = %q", got)
+	}
+	if set["XAUTHORITY"] != "/tmp/serverauth.0ltkUg0Thi" {
+		t.Errorf("env = %v", set)
+	}
+}
