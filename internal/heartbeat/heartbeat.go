@@ -63,13 +63,14 @@ type Service struct {
 	deliver   Deliver
 	bands     Bands
 	verdicts  string // where each breach's verdict is kept; blank keeps none
+	now       func() time.Time
 }
 
 func NewService(workspace string, interval time.Duration, run Runner, deliver Deliver) *Service {
 	if interval <= 0 {
 		interval = 30 * time.Minute
 	}
-	return &Service{workspace: workspace, interval: interval, run: run, deliver: deliver}
+	return &Service{workspace: workspace, interval: interval, run: run, deliver: deliver, now: time.Now}
 }
 
 // WithBands gives the heartbeat something to notice besides what the user
@@ -118,6 +119,7 @@ func (s *Service) Tick(ctx context.Context) {
 			}
 		}
 	}
+	breached = s.unjudged(breached)
 	if !HasActionable(content) && len(breached) == 0 {
 		return // nothing written down, nothing worth judging → no LLM call
 	}
@@ -191,6 +193,9 @@ type verdict struct {
 	At      time.Time `json:"at"`
 	Metrics []string  `json:"metrics"`
 	Reply   string    `json:"reply"`
+	// Sigmas is how far out each metric was when it was judged, so the
+	// same reading is not paid for again while it stays where it was.
+	Sigmas map[string]float64 `json:"sigmas,omitempty"`
 }
 
 // Bounds on the verdict log: what is kept on disk, how far back a check is
@@ -213,7 +218,11 @@ func (s *Service) recordVerdict(breached []bands.Breach, reply string) {
 	if r := []rune(reply); len(r) > maxVerdictChars {
 		reply = string(r[:maxVerdictChars]) + "…"
 	}
-	all := append(s.loadVerdicts(), verdict{At: time.Now(), Metrics: metricsOf(breached), Reply: reply})
+	sigmas := make(map[string]float64, len(breached))
+	for _, b := range breached {
+		sigmas[b.Metric] = b.Sigma
+	}
+	all := append(s.loadVerdicts(), verdict{At: s.now(), Metrics: metricsOf(breached), Reply: reply, Sigmas: sigmas})
 	if len(all) > keepVerdicts {
 		all = all[len(all)-keepVerdicts:]
 	}
@@ -256,7 +265,7 @@ func (s *Service) verdictsOn(metrics []string) []verdict {
 	for _, m := range metrics {
 		current[m] = true
 	}
-	now := time.Now()
+	now := s.now()
 	var past []verdict
 	for _, v := range s.loadVerdicts() {
 		if now.Sub(v.At) > verdictAge {
@@ -273,6 +282,44 @@ func (s *Service) verdictsOn(metrics []string) []verdict {
 		past = past[len(past)-showVerdicts:]
 	}
 	return past
+}
+
+// rejudgeAfter is how long a verdict stands for a reading that has not got
+// worse. A breach outlives the hour that caused it — the failures behind it
+// stay in the recent window until newer turns push them out — and every check
+// in between would otherwise pay to be told the same thing again.
+const rejudgeAfter = 6 * time.Hour
+
+// unjudged drops the breaches a recent verdict already covers: the same
+// metric, judged within rejudgeAfter at the same tier or a higher one. A
+// reading that has moved a tier further out is judged again at once. A
+// verdict written before sigmas were kept covers nothing.
+func (s *Service) unjudged(breached []bands.Breach) []bands.Breach {
+	if s.verdicts == "" || len(breached) == 0 {
+		return breached
+	}
+	judged := map[string]int{} // metric → highest tier judged recently
+	now := s.now()
+	for _, v := range s.loadVerdicts() {
+		if now.Sub(v.At) > rejudgeAfter {
+			continue
+		}
+		for m, sigma := range v.Sigmas {
+			tier := bands.Breach{Sigma: sigma}.Tier()
+			if t, ok := judged[m]; !ok || tier > t {
+				judged[m] = tier
+			}
+		}
+	}
+	var out []bands.Breach
+	for _, b := range breached {
+		if t, ok := judged[b.Metric]; ok && b.Tier() <= t {
+			slog.Info("control band already judged", "metric", b.Metric, "tier", b.Tier())
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // loadVerdicts reads the log, forgiving a torn line the way the trace reader

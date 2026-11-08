@@ -171,6 +171,10 @@ func TestVerdictsAreShownToTheNextCheckOnTheSameMetric(t *testing.T) {
 	svc := NewService(ws, 0, run, deliver).
 		WithBands(func() []bands.Breach { return breaches }).
 		WithVerdicts(log)
+	// Each check comes after the last verdict has stopped standing, so every
+	// one is judged and shown what was said before.
+	clock := time.Now()
+	svc.now = func() time.Time { clock = clock.Add(rejudgeAfter + time.Hour); return clock }
 
 	svc.Tick(context.Background())
 	if strings.Contains(prompts[0], "concluded the last times") {
@@ -233,6 +237,8 @@ func TestVerdictLogIsBoundedAndForgiving(t *testing.T) {
 	svc := NewService(t.TempDir(), 0, run, nil).
 		WithBands(func() []bands.Breach { return []bands.Breach{toolBreach()} }).
 		WithVerdicts(log)
+	clock := time.Now()
+	svc.now = func() time.Time { clock = clock.Add(rejudgeAfter + time.Minute); return clock }
 	for i := 0; i < keepVerdicts+10; i++ {
 		svc.Tick(context.Background())
 	}
@@ -277,5 +283,50 @@ func TestOnlyATierTwoBreachIsJudged(t *testing.T) {
 	svc.Tick(context.Background())
 	if len(s.prompts) != 1 || !strings.Contains(s.prompts[0], "cost per turn") || strings.Contains(s.prompts[0], "seconds per turn") {
 		t.Errorf("prompts = %v", s.prompts)
+	}
+}
+
+// A breach judged once is not paid for again while it stays where it was;
+// one that moves a tier further out is judged at once.
+func TestAJudgedBreachIsNotJudgedAgainUntilItWorsens(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "verdicts.jsonl")
+	breach := bands.Breach{Metric: "tool error rate", Unit: "of calls", Recent: 0.3, Baseline: 0.05, Sigma: 2.4, Samples: 3}
+	svc, s := serviceWith(t, "", []bands.Breach{breach})
+	svc.WithVerdicts(log)
+	clock := time.Now()
+	svc.now = func() time.Time { return clock }
+
+	svc.Tick(context.Background())
+	clock = clock.Add(30 * time.Minute)
+	svc.Tick(context.Background())
+	if len(s.prompts) != 1 {
+		t.Fatalf("the same reading was judged %d times in half an hour", len(s.prompts))
+	}
+	breach.Sigma = 3.2
+	svc.bands = func() []bands.Breach { return []bands.Breach{breach} }
+	svc.Tick(context.Background())
+	if len(s.prompts) != 2 {
+		t.Fatalf("a reading a tier further out was not judged: %d prompts", len(s.prompts))
+	}
+	clock = clock.Add(rejudgeAfter + time.Minute)
+	svc.Tick(context.Background())
+	if len(s.prompts) != 3 {
+		t.Errorf("a verdict outlived rejudgeAfter: %d prompts", len(s.prompts))
+	}
+}
+
+// A verdict written before sigmas were kept cannot say what it judged, so it
+// suppresses nothing.
+func TestAVerdictWithoutSigmasSuppressesNothing(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "verdicts.jsonl")
+	old := fmt.Sprintf(`{"at":%q,"metrics":["tool error rate"],"reply":"HEARTBEAT_OK"}`+"\n", time.Now().Format(time.RFC3339Nano))
+	if err := os.WriteFile(log, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc, s := serviceWith(t, "", []bands.Breach{toolBreach()})
+	svc.WithVerdicts(log)
+	svc.Tick(context.Background())
+	if len(s.prompts) != 1 {
+		t.Errorf("an old verdict suppressed a check: %d prompts", len(s.prompts))
 	}
 }
