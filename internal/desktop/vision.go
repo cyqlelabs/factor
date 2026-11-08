@@ -342,6 +342,10 @@ func (t *screenViewTool) Execute(ctx context.Context, args map[string]any) *tool
 		<-trees // the read must not outlive the call that asked for it
 		return tools.Errorf("screen_view: %v", err)
 	}
+	blank := ""
+	if c, flat := flatColor(raw); flat {
+		blank = blankNote(t.env, c)
+	}
 	view, scale := fitForModel(raw)
 	grid := layoutFor(view.Bounds().Dx(), view.Bounds().Dy(), gridDivisions)
 	drawGrid(view, grid)
@@ -382,8 +386,8 @@ func (t *screenViewTool) Execute(ctx context.Context, args map[string]any) *tool
 	return &tools.Result{
 		ForLLM: fmt.Sprintf(
 			"Screen is %dx%d px. Attached: the current screen with grid cells A1-%s (each ≈%dpx square on screen). "+
-				"Pick the cell containing your target, then screen_zoom cell=... for precision, then mouse cell=... to click.%s%s",
-			screenW, screenH, grid.lastCell(), cellNative, emptyScreenHint(t.env), summary),
+				"Pick the cell containing your target, then screen_zoom cell=... for precision, then mouse cell=... to click.%s%s%s",
+			screenW, screenH, grid.lastCell(), cellNative, blank, emptyScreenHint(t.env), summary),
 		ForUser: "👁 screen view",
 		Images:  []provider.ImagePart{part},
 	}

@@ -103,6 +103,11 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	if adopted := desktop.AdoptDisplay(desktop.DefaultEnv(), os.Setenv); adopted != "" {
 		slog.Info("adopted the machine's screen", "display", adopted)
 	}
+	// A screen handed over by a launcher can be one nobody looks at.
+	if moved := desktop.AdoptConsole(desktop.DefaultEnv(), os.Setenv); moved != "" {
+		slog.Warn("moved off a virtual screen onto the console; whatever started this process set the wrong DISPLAY",
+			"display", moved)
+	}
 
 	ws := cfg.Agent.Workspace
 	if err := config.EnsureWorkspace(ws); err != nil {

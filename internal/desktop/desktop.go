@@ -35,7 +35,11 @@ type Env struct {
 	Has    func(bin string) bool
 	Getenv func(key string) string
 	Glob   func(pattern string) ([]string, error)
-	GOOS   string
+	// ReadFile reads the process table on Linux, to tell the console's X
+	// server from a virtual one. Nil reads nothing, and every display is
+	// judged by its socket alone, as it always was.
+	ReadFile func(name string) ([]byte, error)
+	GOOS     string
 	// Accessibility turns on the accessibility tree beside the grid. It is
 	// off in the zero Env, so a scripted machine in a test sees exactly the
 	// helper calls it scripted, and on in DefaultEnv.
@@ -49,11 +53,12 @@ const defaultRunnerTimeout = 30 * time.Second
 // DefaultEnv wires Env to the real machine.
 func DefaultEnv() Env {
 	return Env{
-		Run:    screenRunner(execRunner(defaultRunnerTimeout)),
-		Has:    hasBinary,
-		Getenv: os.Getenv,
-		Glob:   filepath.Glob,
-		GOOS:   runtime.GOOS,
+		Run:      screenRunner(execRunner(defaultRunnerTimeout)),
+		Has:      hasBinary,
+		Getenv:   os.Getenv,
+		Glob:     filepath.Glob,
+		ReadFile: os.ReadFile,
+		GOOS:     runtime.GOOS,
 
 		Accessibility: true,
 	}
@@ -405,7 +410,7 @@ func findDisplay(env Env) (key, value string) {
 	if env.Glob == nil {
 		return "", ""
 	}
-	if sock := firstSocket(env, path.Join(x11SocketDir, "X*")); sock != "" {
+	if sock := consoleFirst(env, firstSocket(env, path.Join(x11SocketDir, "X*"))); sock != "" {
 		return "DISPLAY", ":" + strings.TrimPrefix(path.Base(sock), "X")
 	}
 	// With no XDG_RUNTIME_DIR the pattern would be a bare "wayland-*",
@@ -416,6 +421,72 @@ func findDisplay(env Env) (key, value string) {
 		}
 	}
 	return "", ""
+}
+
+// consoleFirst trades the lowest-numbered X socket for a console server's
+// when the lowest one is a virtual screen. An Xvfb started before the desktop
+// came up takes :0, and the console then lands on :1, so "lowest" is how a
+// gateway ends up capturing a framebuffer nobody looks at.
+func consoleFirst(env Env, sock string) string {
+	if sock == "" {
+		return ""
+	}
+	servers := xServers(env)
+	lowest, ok := serverFor(servers, ":"+strings.TrimPrefix(path.Base(sock), "X"))
+	if !ok || !lowest.Virtual {
+		return sock
+	}
+	if console, ok := liveConsole(env, servers); ok {
+		alt, _ := x11Socket(console.Display)
+		return alt
+	}
+	return sock
+}
+
+// liveConsole is the first X server that draws on a monitor and still has
+// its socket on disk.
+func liveConsole(env Env, servers []xServer) (xServer, bool) {
+	for _, s := range servers {
+		if sock, _ := x11Socket(s.Display); !s.Virtual && socketThere(env, sock) {
+			return s, true
+		}
+	}
+	return xServer{}, false
+}
+
+// AdoptConsole moves a process that was handed a virtual screen onto the
+// console's, and reports the move ("DISPLAY=:1 (was :0, Xvfb ...)"), or ""
+// when the display it holds is not a virtual one or there is no console to
+// move to. It is for startup only: the live desktop tests run a private Xvfb
+// on machines that have a console, and a move there would click on the
+// developer's real screen.
+//
+// A gateway started by a script that hard-codes DISPLAY=:0 keeps that value
+// long after the console moved: on one box an Xvfb nobody looked at held :0
+// for six weeks while the desktop ran on :1, and every screenshot the user
+// asked for came back black.
+func AdoptConsole(env Env, setenv func(key, value string) error) string {
+	if setenv == nil || env.GOOS != "linux" {
+		return ""
+	}
+	held := env.env("DISPLAY")
+	servers := xServers(env)
+	current, ok := serverFor(servers, held)
+	if !ok || !current.Virtual {
+		return ""
+	}
+	console, ok := liveConsole(env, servers)
+	if !ok || setenv("DISPLAY", console.Display) != nil {
+		return ""
+	}
+	// The console's cookies are in the file it was started with; the one
+	// this process holds was written for the virtual screen.
+	if console.Auth != "" && env.ReadFile != nil {
+		if _, err := env.ReadFile(console.Auth); err == nil {
+			_ = setenv("XAUTHORITY", console.Auth)
+		}
+	}
+	return fmt.Sprintf("DISPLAY=%s (was %s: %s)", console.Display, held, current.describe())
 }
 
 // firstSocket returns the lowest-numbered match, skipping the lock file a
