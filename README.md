@@ -521,16 +521,20 @@ speech server runs with onnxruntime's telemetry switched off
 | **Skill** | Drop `workspace/skills/<name>/SKILL.md` — catalog in prompt, full text on demand, `skill_find` searches the public registry (skills.sh) and `skill_install` takes its slug, a git URL, or a directory |
 
 **It also writes its own.** Factor remembers a turn that took four or more tool
-calls, or two if you steered it while it ran, since a correction names both the
-approach that was wrong and the one that worked; once that session sits quiet for
+calls, or two if you steered it while it ran, since a correction says the
+approach before it was wrong; once that session sits quiet for
 ten minutes, it spends one metered call asking whether the trajectory holds a
 workflow worth keeping. Most of the time
-the answer is `SKIP`. A `LEARN` lands as a skill in the same catalog, marked
+the answer is `SKIP`. Only the tool results say what worked, so a recipe whose
+steps use a tool that failed every time the turn called it is refused. A `LEARN`
+lands as a skill in the same catalog, marked
 `learned: true`, and the next turn lists it like any other. Induction rewrites
 its own output and never a skill you wrote or installed — `skill_write` drops the
 marker, which is how a learned skill graduates out of its reach. The learned
 library holds 40, so past that induction has to improve an entry rather than
-mint a near-duplicate. `agent.learn_skills: false`, or `FACTOR_LEARN_SKILLS=0`,
+mint a near-duplicate. A learned skill you corrected Factor after reading, in two
+uses in a row, is quarantined: it leaves the catalog, and its file stays with the
+reason written in it. `agent.learn_skills: false`, or `FACTOR_LEARN_SKILLS=0`,
 turns it off.
 
 <details>
