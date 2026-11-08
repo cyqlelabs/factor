@@ -278,7 +278,7 @@ func (t *screenshotTool) Execute(ctx context.Context, args map[string]any) *tool
 		return tools.Errorf("the screenshot tool reported success but %s does not exist", resolved)
 	}
 	return &tools.Result{
-		ForLLM:  fmt.Sprintf("Saved %s screenshot to %s (%d KB).%s", mode, resolved, info.Size()/1024, t.blankFile(resolved)),
+		ForLLM:  fmt.Sprintf("Saved %s screenshot to %s (%d KB).%s", mode, resolved, info.Size()/1024, t.blankFile(mode, resolved)),
 		ForUser: "📸 " + resolved,
 	}
 }
@@ -287,7 +287,13 @@ func (t *screenshotTool) Execute(ctx context.Context, args map[string]any) *tool
 // in it. A flat frame is a small file, and from its size alone it looks like
 // any other capture: the agent sent one as "the desktop" and then spent six
 // tool calls reconstructing the screen by hand.
-func (t *screenshotTool) blankFile(path string) string {
+//
+// Only a whole screen is judged: a window or a region of a blank panel is
+// one colour honestly, and the note would blame the display for it.
+func (t *screenshotTool) blankFile(mode, path string) string {
+	if mode != "screen" {
+		return ""
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return ""

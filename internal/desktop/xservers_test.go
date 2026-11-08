@@ -141,6 +141,11 @@ func TestCapturesSayWhenNothingIsDrawn(t *testing.T) {
 			t.Errorf("%s on a drawn frame: %s", name, res.ForLLM)
 		}
 	}
+	// A region of a blank panel is one colour honestly.
+	region := map[string]any{"target": "region", "x": 0, "y": 0, "width": 50, "height": 50}
+	if res := run(t, flat["screenshot"], region); res.IsError || strings.Contains(res.ForLLM, "same colour") {
+		t.Errorf("a flat region was blamed on the display: %s", res.ForLLM)
+	}
 }
 
 // puppyEnv is the Puppy box as a process sees it: the process table, the two
