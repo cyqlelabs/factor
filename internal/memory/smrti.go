@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -31,6 +33,10 @@ type Client struct {
 	// unknown fields — the memory would land in the wrong space, not error —
 	// so space fields are only ever sent once the engine has proved support.
 	routing atomic.Pointer[spaceRouting]
+	// attends is refreshed by the same probe, from the version the engine
+	// reports. It stays false until an engine has said it is new enough,
+	// because an older one ignores boost:false and recalls with the boost on.
+	attends atomic.Bool
 }
 
 // spaceRouting is what the last status probe said about spaces: whether the
@@ -216,6 +222,17 @@ func (c *Client) SpaceSupport() (bool, string) {
 }
 
 func (c *Client) Recall(ctx context.Context, query string, topK int, minConfidence float64, scope Scope) ([]Memory, error) {
+	return c.recall(ctx, query, topK, minConfidence, scope, true)
+}
+
+// RecallQuiet recalls without raising the attention of what comes back; the
+// caller boosts what it actually used with Attend. Only meaningful when
+// Attends reports true: an older engine ignores the flag and boosts anyway.
+func (c *Client) RecallQuiet(ctx context.Context, query string, topK int, minConfidence float64, scope Scope) ([]Memory, error) {
+	return c.recall(ctx, query, topK, minConfidence, scope, false)
+}
+
+func (c *Client) recall(ctx context.Context, query string, topK int, minConfidence float64, scope Scope, boost bool) ([]Memory, error) {
 	if query == "" {
 		return nil, nil
 	}
@@ -227,6 +244,11 @@ func (c *Client) Recall(ctx context.Context, query string, topK int, minConfiden
 		Memories []Memory `json:"memories"`
 	}
 	body := map[string]any{"query": query, "top_k": topK, "min_confidence": minConfidence}
+	// Sent only to turn the boost off, so a boosting recall is the payload
+	// it always was.
+	if !boost {
+		body["boost"] = false
+	}
 	c.addSpace(body, scope.Space)
 	if ok, _ := c.SpaceSupport(); len(scope.ReadSpaces) > 0 && ok {
 		body["read_spaces"] = scope.ReadSpaces
@@ -235,6 +257,65 @@ func (c *Client) Recall(ctx context.Context, query string, topK int, minConfiden
 		return nil, err
 	}
 	return out.Memories, nil
+}
+
+// attendBatch is the most ids the engine takes in one /attend.
+const attendBatch = 64
+
+// Attend gives ids the access boost a recall would have given them, in the
+// space the turn writes to. That is where a recall's own boost lands too:
+// atoms read from an overlay space are left alone, so a private turn cannot
+// move the attention of the shared graph.
+func (c *Client) Attend(ctx context.Context, ids []string, space string) error {
+	defer c.activity()()
+	for len(ids) > 0 {
+		n := min(len(ids), attendBatch)
+		body := map[string]any{"atom_ids": ids[:n]}
+		c.addSpace(body, space)
+		if err := c.do(ctx, http.MethodPost, "/attend", body, nil); err != nil {
+			return err
+		}
+		ids = ids[n:]
+	}
+	return nil
+}
+
+// Attends reports whether the engine can recall without boosting and then
+// boost what the caller kept. Both arrived over two releases — /attend in
+// smrti 0.19.1, a recall that honours boost:false in 0.21.4 — and an engine
+// between them would boost every candidate on the recall and the kept ones
+// again on the attend, so only the second release counts.
+func (c *Client) Attends() bool { return c.attends.Load() }
+
+// quietRecallSince is the first smrti release whose recall honours boost:false.
+var quietRecallSince = [3]int{0, 21, 4}
+
+// versionAtLeast compares a reported release version against want. Anything
+// that does not parse as one — "dev", an empty field — is not new enough,
+// which keeps the engine on the recall it has always had.
+func versionAtLeast(v string, want [3]int) bool {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	var have [3]int
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return false
+		}
+		have[i] = n
+	}
+	for i := range have {
+		if have[i] != want[i] {
+			return have[i] > want[i]
+		}
+	}
+	return true
 }
 
 func (c *Client) Forget(ctx context.Context, query, reason, space string) error {
@@ -282,6 +363,8 @@ func (c *Client) Status(ctx context.Context) (map[string]any, error) {
 	_, ok := out["spaces"]
 	space, _ := out["space"].(string)
 	c.routing.Store(&spaceRouting{ok: ok, space: space})
+	version, _ := out["version"].(string)
+	c.attends.Store(versionAtLeast(version, quietRecallSince))
 	return out, nil
 }
 

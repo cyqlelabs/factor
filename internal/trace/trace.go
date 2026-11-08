@@ -131,6 +131,12 @@ const (
 	// best-effort by design, so the failure is a log line and the reply
 	// reads as if there had been nothing to remember.
 	EventRecallFailed = "recall_failed"
+	// EventMemoryShown names the memories ambient recall put in front of
+	// the model, comma-separated ids. With the turn's steering and outcome
+	// it is the record of which memories a turn used, which is what a
+	// use-based confidence update would be measured against before it is
+	// trusted to write anything.
+	EventMemoryShown = "memory_shown"
 	// EventStall is the same tool call returning the same result for the
 	// third time in one turn, detected in code; the detail names the tool.
 	EventStall = "stall"

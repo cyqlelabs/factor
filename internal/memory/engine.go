@@ -184,6 +184,18 @@ type Engine interface {
 	Close() error
 }
 
+// Attender is an engine whose recall can leave no trace, so that only the
+// memories a turn actually showed are boosted afterwards. A recall boosts
+// everything it returns, and ambient recall asks twice and keeps half: the
+// half it threw away still had its attention raised, and an atom both
+// queries found was raised twice. Attends is false for an engine too old to
+// honour the quiet recall, which then keeps recalling the way it always did.
+type Attender interface {
+	Attends() bool
+	RecallQuiet(ctx context.Context, query string, topK int, minConfidence float64, scope Scope) ([]Memory, error)
+	Attend(ctx context.Context, ids []string, space string) error
+}
+
 // UpgradeQuiet is how long the graph must have gone untouched before the
 // engine may be restarted under a running Factor. Long enough that a turn's
 // trailing store has landed, short enough that an idle minute offers a window.

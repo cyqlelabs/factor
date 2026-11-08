@@ -654,6 +654,13 @@ func (s *Sidecar) Remember(ctx context.Context, req RememberRequest) (string, er
 func (s *Sidecar) Recall(ctx context.Context, query string, topK int, minConfidence float64, scope Scope) ([]Memory, error) {
 	return s.client.Recall(ctx, query, topK, minConfidence, scope)
 }
+func (s *Sidecar) RecallQuiet(ctx context.Context, query string, topK int, minConfidence float64, scope Scope) ([]Memory, error) {
+	return s.client.RecallQuiet(ctx, query, topK, minConfidence, scope)
+}
+func (s *Sidecar) Attend(ctx context.Context, ids []string, space string) error {
+	return s.client.Attend(ctx, ids, space)
+}
+func (s *Sidecar) Attends() bool { return s.client.Attends() }
 func (s *Sidecar) Forget(ctx context.Context, query, reason, space string) error {
 	return s.client.Forget(ctx, query, reason, space)
 }

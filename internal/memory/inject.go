@@ -63,13 +63,7 @@ func FormatMemories(mems []Memory, maxCharsEach int) string {
 	}
 	var constraints, background []string
 	for _, m := range mems {
-		if strings.TrimSpace(m.Content) == "" {
-			// A concept atom with no content is a bare label — "email",
-			// "send_email.py" — and a line saying "Note: email" tells the
-			// model nothing while spending the budget that the episode
-			// behind it would have used. Measured on one box, four of the
-			// six atoms recalled for a question about sending mail were
-			// these.
+		if !shown(m) {
 			continue
 		}
 		conf := int(m.Confidence*100 + 0.5)
@@ -98,6 +92,24 @@ func FormatMemories(mems []Memory, maxCharsEach int) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// shown reports whether FormatMemories puts m in front of the model. A
+// concept atom with no content is a bare label — "email", "send_email.py" —
+// and a line saying "Note: email" tells the model nothing while spending the
+// budget that the episode behind it would have used. Measured on one box,
+// four of the six atoms recalled for a question about sending mail were these.
+func shown(m Memory) bool { return strings.TrimSpace(m.Content) != "" }
+
+// shownIDs is the ids of the memories FormatMemories renders, in order.
+func shownIDs(mems []Memory) []string {
+	var ids []string
+	for _, m := range mems {
+		if shown(m) {
+			ids = append(ids, m.ID)
+		}
+	}
+	return ids
 }
 
 // Ambient stores conversation exchanges and recalls context for each turn.
@@ -210,10 +222,11 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 	if !recall {
 		return ""
 	}
+	quiet := a.attender()
 	var mems []Memory
 	err := errors.New("the memory engine is not healthy")
 	if a.Engine.Healthy() {
-		mems, err = a.recall(ctx, query, strings.TrimSpace(current), scope)
+		mems, err = a.recall(ctx, quiet, query, strings.TrimSpace(current), scope)
 	}
 	if err != nil {
 		// The turn goes on without its memory, which is the right call —
@@ -224,7 +237,43 @@ func (a *Ambient) MemoryPrompt(ctx context.Context, history []provider.Message, 
 		trace.TurnFrom(ctx).Event(trace.EventRecallFailed, err.Error())
 		return memoryUnavailable
 	}
+	if ids := shownIDs(mems); len(ids) > 0 {
+		// The turn's record names what it was shown, so the record can
+		// later say which memories a use-based /reinforce would have
+		// credited: the shown ids on a turn nobody corrected.
+		trace.TurnFrom(ctx).Event(trace.EventMemoryShown, strings.Join(ids, ","))
+		// A heartbeat is the machine reading its own memory to check on
+		// itself, not the user returning to a subject, so it raises
+		// nobody's attention. Scheduled tasks and jobs do: the user asked
+		// for them.
+		if quiet != nil && tc.Channel != "system" {
+			go a.attend(quiet, ids, scope.Space)
+		}
+	}
 	return FormatMemories(mems, a.InjectMaxChars)
+}
+
+// attender is the engine's quiet-recall half when the engine can honour it,
+// and nil when recall has to boost as it always has.
+func (a *Ambient) attender() Attender {
+	if at, ok := a.Engine.(Attender); ok && at.Attends() {
+		return at
+	}
+	return nil
+}
+
+// attendTimeout bounds the boost that follows a turn's recall. Nobody waits
+// on it, so it only has to end.
+const attendTimeout = 30 * time.Second
+
+// attend boosts the memories a turn was shown. It runs beside the turn and a
+// failure costs those memories one boost, never the reply.
+func (a *Ambient) attend(at Attender, ids []string, space string) {
+	ctx, cancel := context.WithTimeout(context.Background(), attendTimeout)
+	defer cancel()
+	if err := at.Attend(ctx, ids, space); err != nil {
+		slog.Warn("memory attend failed", "error", err)
+	}
 }
 
 // defaultRecallTimeout is how long a turn waits for its memory. It is short
@@ -266,16 +315,19 @@ const memoryUnavailable = "# Memory\n\nLong-term memory could not be consulted t
 // The error is the engine not answering at all: one query of the two failing
 // while the other answers is still a recall, and the turn gets what came
 // back.
-func (a *Ambient) recall(ctx context.Context, query, current string, scope Scope) ([]Memory, error) {
+//
+// quiet, when set, makes both recalls leave no trace; the caller boosts what
+// the turn was actually shown.
+func (a *Ambient) recall(ctx context.Context, quiet Attender, query, current string, scope Scope) ([]Memory, error) {
 	if current == "" || current == query {
-		return a.recallOne(ctx, query, scope)
+		return a.recallOne(ctx, quiet, query, scope)
 	}
 	var direct, contextual []Memory
 	var directErr, contextualErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); direct, directErr = a.recallOne(ctx, current, scope) }()
-	go func() { defer wg.Done(); contextual, contextualErr = a.recallOne(ctx, query, scope) }()
+	go func() { defer wg.Done(); direct, directErr = a.recallOne(ctx, quiet, current, scope) }()
+	go func() { defer wg.Done(); contextual, contextualErr = a.recallOne(ctx, quiet, query, scope) }()
 	wg.Wait()
 	if directErr != nil && contextualErr != nil {
 		return nil, directErr
@@ -286,8 +338,12 @@ func (a *Ambient) recall(ctx context.Context, query, current string, scope Scope
 // recallOne is best-effort like everything else on this path: a failed recall
 // costs the turn its memory, never its reply. The error comes back so the
 // caller can say so.
-func (a *Ambient) recallOne(ctx context.Context, query string, scope Scope) ([]Memory, error) {
-	mems, err := a.Engine.Recall(ctx, query, a.TopK, a.MinConfidence, scope)
+func (a *Ambient) recallOne(ctx context.Context, quiet Attender, query string, scope Scope) ([]Memory, error) {
+	recall := a.Engine.Recall
+	if quiet != nil {
+		recall = quiet.RecallQuiet
+	}
+	mems, err := recall(ctx, query, a.TopK, a.MinConfidence, scope)
 	if err != nil {
 		slog.Warn("memory recall failed", "error", err)
 		return nil, err
