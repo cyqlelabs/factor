@@ -262,3 +262,20 @@ func TestNoVerdictLogMeansNoVerdicts(t *testing.T) {
 		t.Errorf("a verdict appeared with no log configured:\n%s", s.prompts[1])
 	}
 }
+
+// A reading one standard deviation out is ordinary variation: it is logged
+// and nobody is paid to judge it. Two out is.
+func TestOnlyATierTwoBreachIsJudged(t *testing.T) {
+	mild := bands.Breach{Metric: "seconds per turn", Unit: "s", Recent: 30, Baseline: 20, Sigma: 1.8, Samples: 4}
+	svc, s := serviceWith(t, "", []bands.Breach{mild})
+	svc.Tick(context.Background())
+	if len(s.prompts) != 0 {
+		t.Fatalf("a 1.8σ reading was judged: %v", s.prompts)
+	}
+	marked := bands.Breach{Metric: "cost per turn", Unit: "USD", Recent: 0.2, Baseline: 0.05, Sigma: 2.8, Samples: 4}
+	svc, s = serviceWith(t, "", []bands.Breach{mild, marked})
+	svc.Tick(context.Background())
+	if len(s.prompts) != 1 || !strings.Contains(s.prompts[0], "cost per turn") || strings.Contains(s.prompts[0], "seconds per turn") {
+		t.Errorf("prompts = %v", s.prompts)
+	}
+}

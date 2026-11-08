@@ -39,6 +39,13 @@ import (
 
 const OKToken = "HEARTBEAT_OK"
 
+// judgeTier is the least unusual a reading has to be before a model is paid
+// to judge it. A tier-1 breach is a log line: one standard deviation is the
+// band ordinary variation lives in — about one reading in six lands past it
+// on the harmful side by chance alone — and a check costs a call even when
+// its answer is HEARTBEAT_OK.
+const judgeTier = 2
+
 // Runner executes a history-less agent turn.
 type Runner func(ctx context.Context, prompt string) (string, error)
 
@@ -103,14 +110,16 @@ func (s *Service) Tick(ctx context.Context) {
 
 	var breached []bands.Breach
 	if s.bands != nil {
-		breached = s.bands()
+		for _, b := range s.bands() {
+			slog.Info("control band breached", "metric", b.Metric, "sigma", b.Sigma,
+				"recent", b.Recent, "baseline", b.Baseline, "tier", b.Tier())
+			if b.Tier() >= judgeTier {
+				breached = append(breached, b)
+			}
+		}
 	}
 	if !HasActionable(content) && len(breached) == 0 {
-		return // nothing written down, nothing drifting → no LLM call
-	}
-	for _, b := range breached {
-		slog.Info("control band breached", "metric", b.Metric, "sigma", b.Sigma,
-			"recent", b.Recent, "baseline", b.Baseline, "tier", b.Tier())
+		return // nothing written down, nothing worth judging → no LLM call
 	}
 
 	prompt := fmt.Sprintf(`# Heartbeat check
