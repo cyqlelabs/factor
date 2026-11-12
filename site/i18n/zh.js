@@ -131,6 +131,7 @@ window.FACTOR_DICT = {
   "og.title": "Factor — 住在你的电脑里，也会接电话",
   "og.desc": "装在单个不到 20 MB 的文件里的个人 AI 智能体：终端、Telegram、电话和语音都能用，有真正的记忆，还能动手操作你的桌面。MIT。",
   "og.alt": "Factor。住在你的电脑里。也会接电话。",
+  "og.tag": "个人 AI 智能体 · 单个文件不到 20 MB · MIT",
   "nav.label": "主导航",
   "install.os": "操作系统",
   "copy.label": "复制命令",

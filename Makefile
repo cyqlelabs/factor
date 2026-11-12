@@ -25,7 +25,7 @@ export CGO_ENABLED=0
 
 COVER_MIN := 90
 
-.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check hooks diagrams clean version version-next win-setup test-windows test-windows-race
+.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check hooks diagrams og clean version version-next win-setup test-windows test-windows-race
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/factor
@@ -109,6 +109,12 @@ diagrams:
 		echo "$$f"; \
 		$(MMDC) -c mermaid.json -p puppeteer.json -i "$$f" -o "$${f%.mmd}.png" -b white -s 3 || exit 1; \
 	done
+
+# The homepage's social cards ship as PNGs, one per language, rendered from
+# site/_tools/og.html. Rebuild after changing the card or the copy it shows
+# (hero.t1, hero.t2, og.tag). Needs node and Chrome (CHROME= names another).
+og:
+	node site/_tools/og.mjs
 
 # Point git at the tracked hooks, so every commit lints first.
 hooks:

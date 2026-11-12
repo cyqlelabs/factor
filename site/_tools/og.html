@@ -1,0 +1,110 @@
+<!doctype html>
+<!-- The social card. og.mjs screenshots this page at 1200×630 once per
+     language (og.html?lang=es) into assets/og-<lang>.png. English is inline;
+     any other language reads the site's own dictionary. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+@font-face {
+  font-family: "Archivo";
+  src: url("../fonts/archivo.woff2") format("woff2");
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+}
+@font-face {
+  font-family: "Martian Mono";
+  src: url("../fonts/martian-mono.woff2") format("woff2");
+  font-weight: 100 800;
+  font-stretch: 75% 112.5%;
+}
+html, body { margin: 0; }
+body {
+  position: relative; width: 1200px; height: 630px; overflow: hidden;
+  background-color: #edf5fa;
+  background-image:
+    linear-gradient(90deg, rgba(14, 165, 233, 0.1) 1px, transparent 1px),
+    linear-gradient(rgba(14, 165, 233, 0.1) 1px, transparent 1px);
+  background-size: 100px 100px;
+  color: #0f2e44;
+  font-family: "Archivo", sans-serif;
+}
+:lang(ja) body { font-family: "Archivo", "Noto Sans CJK JP", sans-serif; }
+:lang(zh-Hans) body { font-family: "Archivo", "Noto Sans CJK SC", sans-serif; }
+.brand {
+  position: absolute; left: 80px; top: 72px;
+  display: flex; align-items: center; gap: 21px;
+  font-size: 45px; font-weight: 800; font-stretch: 112%; letter-spacing: -0.01em;
+}
+.brand svg { width: 92px; height: 92px; }
+.cell { position: absolute; left: 1000px; top: 100px; width: 100px; height: 100px; background: #f2c75c; }
+.ruler { position: absolute; font: 500 17px/1 "Martian Mono", monospace; font-stretch: 87.5%; color: #3a586d; }
+.ruler.x { left: 1000px; width: 100px; top: 75px; text-align: center; }
+.ruler.y { left: 978px; top: 142px; }
+h1 {
+  position: absolute; left: 80px; right: 80px; top: 219px; margin: 0;
+  font-weight: 800; font-stretch: 125%; line-height: 0.94; letter-spacing: -0.025em;
+}
+h1 span { display: block; }
+.tag {
+  position: absolute; left: 80px; right: 80px; top: 547px; margin: 0;
+  font: 500 19.5px/1 "Martian Mono", monospace; font-stretch: 87.5%;
+  letter-spacing: 0.06em; text-transform: uppercase; color: #0369a1;
+}
+:lang(ja) h1, :lang(zh-Hans) h1 { letter-spacing: 0; line-height: 1.12; font-stretch: 100%; line-break: strict; }
+:lang(ja) .tag { font-family: "Martian Mono", "Noto Sans CJK JP", monospace; text-transform: none; letter-spacing: 0.02em; }
+:lang(zh-Hans) .tag { font-family: "Martian Mono", "Noto Sans CJK SC", monospace; text-transform: none; letter-spacing: 0.02em; }
+</style>
+</head>
+<body>
+<div class="brand">
+  <svg viewBox="0 0 512 512" aria-hidden="true">
+    <defs>
+      <linearGradient id="p" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#0ea5e9"/>
+        <stop offset="1" stop-color="#0369a1"/>
+      </linearGradient>
+    </defs>
+    <circle cx="256" cy="256" r="256" fill="url(#p)"/>
+    <g fill="#fff" transform="translate(12.8 12.8) scale(.95)">
+      <circle cx="256" cy="103" r="38.25"/>
+      <path d="M150.25 172.75h211.5V202l-38.25 38.25H150.25z"/>
+      <path d="M150.25 271.75h211.5V301l-38.25 38.25H214.75v108h-42.75l-21.75-21.75z"/>
+    </g>
+  </svg>
+  Factor
+</div>
+<span class="ruler x">K</span>
+<span class="ruler y">2</span>
+<div class="cell"></div>
+<h1><span data-i18n="hero.t1">Lives on your machine.</span><span data-i18n="hero.t2">Answers the phone.</span></h1>
+<p class="tag" data-i18n="og.tag">Personal AI agent · one file under 20 MB · MIT</p>
+<script>
+  // The headline is set as large as the English card's and shrinks until it
+  // fits between the margins and above the tagline in every language.
+  (function () {
+    var lang = new URLSearchParams(location.search).get("lang") || "en";
+    var tags = { pt: "pt-BR", zh: "zh-Hans" };
+    document.documentElement.lang = tags[lang] || lang;
+    var dict = new Promise(function (done) {
+      if (lang === "en") return done(null);
+      var s = document.createElement("script");
+      s.src = "../i18n/" + lang + ".js";
+      s.onload = function () { done(window.FACTOR_DICT); };
+      s.onerror = function () { throw new Error("no dictionary for " + lang); };
+      document.head.appendChild(s);
+    });
+    Promise.all([dict, document.fonts.load("800 92px Archivo"), document.fonts.load("500 22px 'Martian Mono'")]).then(function (r) {
+      var d = r[0];
+      if (d) document.querySelectorAll("[data-i18n]").forEach(function (el) {
+        var v = d[el.getAttribute("data-i18n")];
+        if (v == null) throw new Error("missing " + el.getAttribute("data-i18n"));
+        el.textContent = v;
+      });
+      var h = document.querySelector("h1"), size = 92;
+      do { h.style.fontSize = size-- + "px"; } while ((h.scrollWidth > h.clientWidth || h.offsetHeight > 310) && size > 40);
+    });
+  })();
+</script>
+</body>
+</html>

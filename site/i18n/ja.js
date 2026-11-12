@@ -131,6 +131,7 @@ window.FACTOR_DICT = {
   "og.title": "Factor — マシンに住み、電話にも出る",
   "og.desc": "20 MB未満のファイルひとつで動く個人用AIエージェント。ターミナル、Telegram、電話、声で話せて、本物の記憶を持ち、デスクトップを操作します。MIT。",
   "og.alt": "Factor。マシンに住む。電話にも出る。",
+  "og.tag": "自分のためのAIエージェント · 20 MB未満のファイルひとつ · MIT",
   "nav.label": "メインナビゲーション",
   "install.os": "OS",
   "copy.label": "コマンドをコピー",

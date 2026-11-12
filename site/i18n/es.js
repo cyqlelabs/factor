@@ -131,6 +131,7 @@ window.FACTOR_DICT = {
   "og.title": "Factor — vive en tu máquina, atiende el teléfono",
   "og.desc": "Un agente personal de IA en un solo archivo de menos de 20 MB: terminal, Telegram, teléfono y voz, con memoria de verdad y manos en tu escritorio. MIT.",
   "og.alt": "Factor. Vive en tu máquina. Atiende el teléfono.",
+  "og.tag": "Agente personal de IA · un archivo de menos de 20 MB · MIT",
   "nav.label": "Principal",
   "install.os": "Sistema operativo",
   "copy.label": "Copiar comandos",

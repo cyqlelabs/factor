@@ -131,6 +131,7 @@ window.FACTOR_DICT = {
   "og.title": "Factor — lebt auf deinem Rechner, geht ans Telefon",
   "og.desc": "Ein persönlicher KI-Agent in einer einzigen Datei unter 20 MB: Terminal, Telegram, Telefon und Stimme, mit echtem Gedächtnis und Händen auf deinem Desktop. MIT.",
   "og.alt": "Factor. Lebt auf deinem Rechner. Geht ans Telefon.",
+  "og.tag": "Persönlicher KI-Agent · eine Datei unter 20 MB · MIT",
   "nav.label": "Hauptnavigation",
   "install.os": "Betriebssystem",
   "copy.label": "Befehle kopieren",
