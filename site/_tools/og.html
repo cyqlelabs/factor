@@ -81,29 +81,35 @@ h1 span { display: block; }
 <p class="tag" data-i18n="og.tag">Personal AI agent · one file under 20 MB · MIT</p>
 <script>
   // The headline is set as large as the English card's and shrinks until it
-  // fits between the margins and above the tagline in every language.
+  // fits between the margins and above the tagline in every language. The
+  // screenshot is taken whatever happens here, so a missing dictionary or key
+  // is painted onto the card in red rather than leaving English in its place.
   (function () {
     var lang = new URLSearchParams(location.search).get("lang") || "en";
     var tags = { pt: "pt-BR", zh: "zh-Hans" };
     document.documentElement.lang = tags[lang] || lang;
-    var dict = new Promise(function (done) {
+    function fail(why) {
+      document.body.innerHTML = '<p style="margin:80px;font:700 48px sans-serif;color:#c00"></p>';
+      document.body.firstChild.textContent = why;
+    }
+    var dict = new Promise(function (done, refuse) {
       if (lang === "en") return done(null);
       var s = document.createElement("script");
       s.src = "../i18n/" + lang + ".js";
       s.onload = function () { done(window.FACTOR_DICT); };
-      s.onerror = function () { throw new Error("no dictionary for " + lang); };
+      s.onerror = function () { refuse(new Error("no dictionary for " + lang)); };
       document.head.appendChild(s);
     });
     Promise.all([dict, document.fonts.load("800 92px Archivo"), document.fonts.load("500 22px 'Martian Mono'")]).then(function (r) {
       var d = r[0];
       if (d) document.querySelectorAll("[data-i18n]").forEach(function (el) {
         var v = d[el.getAttribute("data-i18n")];
-        if (v == null) throw new Error("missing " + el.getAttribute("data-i18n"));
+        if (v == null) throw new Error(lang + " has no " + el.getAttribute("data-i18n"));
         el.textContent = v;
       });
       var h = document.querySelector("h1"), size = 92;
       do { h.style.fontSize = size-- + "px"; } while ((h.scrollWidth > h.clientWidth || h.offsetHeight > 310) && size > 40);
-    });
+    }).catch(function (e) { fail(e.message); });
   })();
 </script>
 </body>
