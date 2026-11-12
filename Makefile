@@ -112,7 +112,9 @@ diagrams:
 
 # The homepage's social cards ship as PNGs, one per language, rendered from
 # site/_tools/og.html. Rebuild after changing the card or the copy it shows
-# (hero.t1, hero.t2, og.tag). Needs node and Chrome (CHROME= names another).
+# (hero.t1, hero.t2, og.tag). Needs node, Chrome (CHROME= names another) and
+# Noto Sans CJK JP and SC, without which the ja and zh cards still render, in
+# whatever face the machine falls back to.
 og:
 	node site/_tools/og.mjs
 
