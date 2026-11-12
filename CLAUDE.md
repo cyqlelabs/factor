@@ -23,6 +23,8 @@ make build                                  # local binary
 make build-all                              # release cross-compile (incl. GOAMD64=v1 for old x86-64)
 make build-tiny                             # -tags nobrowser strips the CDP browser suite (stubs in internal/browser/browser_stub.go)
 make diagrams                               # re-render docs/assets/*.mmd into the PNGs the docs embed (needs node)
+make og                                     # re-render the homepage social cards, one per language (needs node and Chrome)
+make site                                   # build the homepage into _site/ as Pages serves it, with a page per language
 ```
 
 The coverage gate is real: new code needs tests or `make check` fails. Live tests (real headless Chrome, real desktop round-trip) auto-skip in `-short` mode or when the machine can't host them; the rest of the suite runs against fakes — scripted providers, a fake smrti sidecar and a fake voice shell (both spawned by re-execing the test binary), a fake Telegram API, a fake carrier, a scripted microphone and speaker, a fake MCP server over real stdio JSON-RPC, and a scripted desktop backend.
