@@ -25,7 +25,7 @@ export CGO_ENABLED=0
 
 COVER_MIN := 90
 
-.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check hooks diagrams og clean version version-next win-setup test-windows test-windows-race
+.PHONY: build build-all build-tiny install test test-race cover vet fmt lint check hooks diagrams og site clean version version-next win-setup test-windows test-windows-race
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/factor
@@ -115,6 +115,11 @@ diagrams:
 # (hero.t1, hero.t2, og.tag). Needs node and Chrome (CHROME= names another).
 og:
 	node site/_tools/og.mjs
+
+# The homepage as GitHub Pages serves it, in _site/: the site plus a copy per
+# language at /<lang>/. Preview with: python3 -m http.server -d _site
+site:
+	node site/_tools/build.mjs
 
 # Point git at the tracked hooks, so every commit lints first.
 hooks:

@@ -1,5 +1,6 @@
 /factor
 /dist/
+/_site/
 /.cache/
 *.log
 coverage.out

@@ -196,9 +196,7 @@
     sel.value = root.getAttribute("data-lang") || "en";
     sel.addEventListener("change", function () {
       try { localStorage.setItem("factor-lang", sel.value); } catch (e) {}
-      var u = new URL(location.href);
-      u.searchParams.set("lang", sel.value);
-      location.href = u.toString();
+      location.href = sel.value === "en" ? "/" : "/" + sel.value + "/";
     });
   }
 

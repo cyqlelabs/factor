@@ -7,12 +7,26 @@
 <meta name="description" data-i18n-attr="content:meta.desc" content="Factor is a personal AI agent in one file under 20 MB. Talk to it in the terminal, on Telegram, over the phone or out loud. It works your browser and desktop, remembers what matters, and reports nothing home. MIT.">
 <meta name="theme-color" content="#EDF5FA">
 <link rel="canonical" href="https://fctr.app/">
-<link rel="icon" href="assets/mark.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="assets/mark-180.png">
+<link rel="alternate" hreflang="en" href="https://fctr.app/">
+<link rel="alternate" hreflang="es" href="https://fctr.app/es/">
+<link rel="alternate" hreflang="pt-BR" href="https://fctr.app/pt/">
+<link rel="alternate" hreflang="fr" href="https://fctr.app/fr/">
+<link rel="alternate" hreflang="de" href="https://fctr.app/de/">
+<link rel="alternate" hreflang="ja" href="https://fctr.app/ja/">
+<link rel="alternate" hreflang="zh-Hans" href="https://fctr.app/zh/">
+<link rel="alternate" hreflang="x-default" href="https://fctr.app/">
+<link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/mark-180.png">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Factor">
 <meta property="og:url" content="https://fctr.app/">
 <meta property="og:locale" content="en_US">
+<meta property="og:locale:alternate" content="es_ES">
+<meta property="og:locale:alternate" content="pt_BR">
+<meta property="og:locale:alternate" content="fr_FR">
+<meta property="og:locale:alternate" content="de_DE">
+<meta property="og:locale:alternate" content="ja_JP">
+<meta property="og:locale:alternate" content="zh_CN">
 <meta property="og:title" data-i18n-attr="content:og.title" content="Factor — lives on your machine, answers the phone">
 <meta property="og:description" data-i18n-attr="content:og.desc" content="A personal AI agent in one file under 20 MB: terminal, Telegram, phone and voice, with real memory and hands on your desktop. MIT.">
 <meta property="og:image" content="https://fctr.app/assets/og-en.png">
@@ -21,15 +35,19 @@
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" data-i18n-attr="content:og.alt" content="Factor. Lives on your machine. Answers the phone.">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="fonts/atkinson.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/atkinson.woff2" as="font" type="font/woff2" crossorigin>
 <script>
-  // Language is the visitor's: ?lang= first, then a choice they made here, then
-  // the browser's own list. English ships inline; any other dictionary loads
-  // before the page shows, and a dictionary that never arrives shows English.
+  // Language is the page's when its path names one (/es/), so a shared link
+  // opens in the language it was shared in. On / it is the visitor's: ?lang=
+  // first, then a choice they made here, then the browser's own list. English
+  // ships inline; any other dictionary loads before the page shows, and a
+  // dictionary that never arrives shows English.
   (function () {
     var d = document.documentElement, have = ["en", "es", "pt", "fr", "de", "ja", "zh"], tags = { pt: "pt-BR", zh: "zh-Hans" };
     function pick() {
+      var p = location.pathname.split("/")[1];
+      if (p && have.indexOf(p) >= 0) return p;
       var q = new URLSearchParams(location.search).get("lang");
       if (q && have.indexOf(q) >= 0) return q;
       try { var s = localStorage.getItem("factor-lang"); if (s && have.indexOf(s) >= 0) return s; } catch (e) {}
@@ -49,23 +67,23 @@
       if (lang === "en") return done(null);
       d.classList.add("i18n-wait");
       var s = document.createElement("script");
-      s.src = "i18n/" + lang + ".js";
+      s.src = "/i18n/" + lang + ".js";
       s.onload = function () { done(window.FACTOR_DICT || null); };
       s.onerror = function () { done(null); };
       document.head.appendChild(s);
     });
   })();
 </script>
-<link rel="stylesheet" href="css/site.css">
-<script defer src="vendor/gsap.min.js"></script>
-<script defer src="vendor/ScrollTrigger.min.js"></script>
-<script defer src="vendor/SplitText.min.js"></script>
-<script defer src="vendor/ScrambleTextPlugin.min.js"></script>
-<script defer src="vendor/DrawSVGPlugin.min.js"></script>
-<script defer src="vendor/MotionPathPlugin.min.js"></script>
-<script defer src="vendor/lenis.min.js"></script>
-<script defer src="js/i18n.js"></script>
-<script defer src="js/main.js"></script>
+<link rel="stylesheet" href="/css/site.css">
+<script defer src="/vendor/gsap.min.js"></script>
+<script defer src="/vendor/ScrollTrigger.min.js"></script>
+<script defer src="/vendor/SplitText.min.js"></script>
+<script defer src="/vendor/ScrambleTextPlugin.min.js"></script>
+<script defer src="/vendor/DrawSVGPlugin.min.js"></script>
+<script defer src="/vendor/MotionPathPlugin.min.js"></script>
+<script defer src="/vendor/lenis.min.js"></script>
+<script defer src="/js/i18n.js"></script>
+<script defer src="/js/main.js"></script>
 </head>
 <body>
 <a class="skip" href="#main" data-i18n="nav.skip">Skip to content</a>
