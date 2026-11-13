@@ -401,6 +401,11 @@ section { position: relative; overflow-x: clip; }
   box-shadow: inset 0 0 0 1px rgba(164, 191, 210, 0.25);
 }
 .screen-canvas { position: absolute; inset: 0; transform-origin: 0 0; }
+/* Laid out at ten times the screen and scaled back down. Its text is one to six
+   pixels tall, and a browser's minimum font size (8px in Android WebViews such
+   as Instagram's) enlarged it, then the zoom enlarged it five times more. A
+   pixel in here is a tenth of one on screen, hence the 10px grid lines. */
+.screen-art { position: absolute; left: 0; top: 0; width: 1000%; height: 1000%; transform: scale(0.1); transform-origin: 0 0; container-type: inline-size; }
 .app { position: absolute; inset: 0; }
 .app > * { position: absolute; }
 .app-bar { left: 0; right: 0; top: 0; height: 7%; display: flex; align-items: center; gap: 0.6cqw; padding: 0 1.4cqw; background: #12355a; }
@@ -426,8 +431,8 @@ section { position: relative; overflow-x: clip; }
 .vgrid {
   position: absolute; inset: 0;
   background:
-    linear-gradient(to right, rgba(242, 199, 92, 0.55) 1px, transparent 1px) 0 0 / 12.5% 100%,
-    linear-gradient(to bottom, rgba(242, 199, 92, 0.55) 1px, transparent 1px) 0 0 / 100% 20%;
+    linear-gradient(to right, rgba(242, 199, 92, 0.55) 10px, transparent 10px) 0 0 / 12.5% 100%,
+    linear-gradient(to bottom, rgba(242, 199, 92, 0.55) 10px, transparent 10px) 0 0 / 100% 20%;
 }
 .vgrid-labels { position: absolute; inset: 0; font-size: 1.6cqw; }
 .vgrid-labels span { position: absolute; padding: 0.25cqw 0.5cqw; background: var(--signal); color: var(--ink); line-height: 1; font-weight: 600; }
