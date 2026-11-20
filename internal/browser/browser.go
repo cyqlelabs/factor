@@ -58,10 +58,10 @@ type Session struct {
 	attached    bool // driving the user's own browser rather than one Factor launched
 	tabs        map[target.ID]*tabHandle
 	cur         *tabHandle
-	tabRefs     map[int]target.ID // tab number from the last listing -> target
-	refs        map[string]string // eN -> CSS selector from the last read
-	refsURL     string            // fragment-stripped URL of the page those refs were read from
-	refSeq      int               // refs already handed out; the next read numbers from here
+	tabRefs     map[int]target.ID    // tab number from the last listing -> target
+	refs        map[string]refTarget // eN -> the element the last read handed it to
+	refsURL     string               // fragment-stripped URL of the page those refs were read from
+	refSeq      int                  // refs already handed out; the next read numbers from here
 
 	// cam is the headless engine, and chosen says whether this session
 	// drives it: decided once, on the first call, so a browser attached
@@ -79,7 +79,7 @@ func NewSession(cfg config.BrowserConfig, workspace string, guard *tools.PathGua
 		cam:       newCamofox(cfg, config.Home(), workspace, guard),
 		tabs:      map[target.ID]*tabHandle{},
 		tabRefs:   map[int]target.ID{},
-		refs:      map[string]string{},
+		refs:      map[string]refTarget{},
 	}
 }
 
@@ -603,7 +603,7 @@ func (s *Session) openTab(ctx context.Context) error {
 		return err
 	}
 	s.cur = h
-	s.refs = map[string]string{}
+	s.refs = map[string]refTarget{}
 	s.refsURL = ""
 	return nil
 }
@@ -710,14 +710,55 @@ func (s *Session) run(ctx context.Context, timeout time.Duration, actions ...chr
 func (s *Session) selectorFor(refOrSelector string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sel, ok := s.refs[refOrSelector]; ok {
-		return sel
+	if ref, ok := s.refs[refOrSelector]; ok {
+		return ref.selector
 	}
 	return refOrSelector
 }
 
-// readScript enumerates page text and interactive elements with stable
-// generated selectors.
+// elementHelpers are the page-side functions that describe one element.
+//
+// A field is named by what a person reads beside it — its label, its
+// placeholder, its accessible name — and not by what it happens to hold,
+// which travels separately as value: a field labelled by its own contents
+// reads as "Zurich" and says nothing about what it is for. An editable div is
+// a field like any other; its value is the text in it, and it reports its
+// type as "editable" so a reader knows it can be typed into.
+//
+// A key is what a ref is checked against when it is used: the tag and the
+// name. A path names a position, and a list that re-sorts as messages arrive
+// puts a different chat at that position — so a ref whose element no longer
+// carries the name it was read with is refused, rather than clicked or typed
+// into on somebody else's behalf.
+const elementHelpers = `
+  const isField = (el) => el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable;
+  const fieldName = (el) => {
+    const lbl = el.labels && el.labels[0] ? el.labels[0].innerText : '';
+    return el.getAttribute('aria-label') || el.placeholder || el.getAttribute('aria-placeholder') ||
+      lbl || el.title || el.name || '';
+  };
+  const labelOf = (el) => {
+    const raw = isField(el)
+      ? (fieldName(el) || (el.isContentEditable ? el.innerText : el.value) || '')
+      : (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.href || '');
+    return raw.trim().replace(/\s+/g, ' ').slice(0, 80);
+  };
+  // What a field currently holds, so a form can be read as filled or not
+  // without a second call — and never a password, which is the one value a
+  // page holds that must not travel anywhere.
+  const valueOf = (el) => {
+    const tag = el.tagName;
+    if (!isField(el)) return '';
+    if (el.isContentEditable) return (el.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    if (el.type === 'password') return '';
+    if (tag === 'SELECT') { const o = el.options[el.selectedIndex]; return (o ? o.text : '').trim().slice(0, 80); }
+    if (el.type === 'checkbox' || el.type === 'radio') return el.checked ? 'checked' : '';
+    return (el.value || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+  };
+  const typeOf = (el) => el.isContentEditable ? 'editable' : (el.type || el.getAttribute('role') || '');
+  const keyOf = (el) => el.tagName + '|' + typeOf(el) + '|' + (isField(el) ? fieldName(el) : labelOf(el));
+`
+
 // readTemplate renders the page for the model. The filter and limit are
 // spliced in as JSON literals by readPage.
 //
@@ -727,13 +768,29 @@ func (s *Session) selectorFor(refOrSelector string) string {
 // navigation first in the DOM — taking the first N in document order returns
 // the furniture and none of the results. And the text is read from that same
 // region when there is one, for the same reason.
-const readTemplate = `(() => {
+//
+// The helpers are shared with refCheckScript, which recomputes an element's
+// key at the moment a ref is acted on.
+//
+// What counts as a control is what a person can operate, not only what HTML
+// names a control: an application built from divs marks its controls with an
+// ARIA role, makes them focusable, or makes them editable. A WhatsApp Web chat
+// row is a focusable gridcell and its message box an editable div, and with
+// neither listed the chat could only be reached through a script.
+//
+// A ref's selector is the element's whole path from the root, or from the
+// nearest id, because a path cut short is a pattern rather than an address:
+// in a deep DOM built from identical divs it matches some other element first.
+const readTemplate = `(() => {` + elementHelpers + `
   const FILTER = %s, LIMIT = %s, MAX_TEXT = %s, START = %s;
-  const sel = 'a[href], button, input, select, textarea, [role=button], [onclick]';
+  const sel = 'a[href], button, input, select, textarea, [onclick], [contenteditable=""], [contenteditable=true], ' +
+    '[tabindex]:not([tabindex="-1"]), [role=button], [role=link], [role=checkbox], [role=radio], [role=switch], ' +
+    '[role=tab], [role=menuitem], [role=menuitemcheckbox], [role=menuitemradio], [role=option], [role=treeitem], ' +
+    '[role=combobox], [role=searchbox], [role=slider], [role=spinbutton]';
   const main = document.querySelector('main, [role=main]');
   const cssPath = (el) => {
     const parts = [];
-    while (el && el.nodeType === 1 && parts.length < 6) {
+    while (el && el.nodeType === 1) {
       let part = el.tagName.toLowerCase();
       if (el.id) { parts.unshift(part + '#' + CSS.escape(el.id)); break; }
       const parent = el.parentNode;
@@ -745,33 +802,6 @@ const readTemplate = `(() => {
       el = el.parentNode;
     }
     return parts.join(' > ');
-  };
-  // A field is named by what a person reads beside it — its label, its
-  // placeholder, its accessible name — and not by what it happens to hold,
-  // which travels separately as value: a field labelled by its own contents
-  // reads as "Zurich" and says nothing about what it is for.
-  const fieldName = (el) => {
-    const lbl = el.labels && el.labels[0] ? el.labels[0].innerText : '';
-    return el.getAttribute('aria-label') || el.placeholder || lbl || el.title || el.name || '';
-  };
-  const labelOf = (el) => {
-    const tag = el.tagName;
-    const field = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
-    const raw = field
-      ? (fieldName(el) || el.value || '')
-      : (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.href || '');
-    return raw.trim().replace(/\s+/g, ' ').slice(0, 80);
-  };
-  // What a field currently holds, so a form can be read as filled or not
-  // without a second call — and never a password, which is the one value a
-  // page holds that must not travel anywhere.
-  const valueOf = (el) => {
-    const tag = el.tagName;
-    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return '';
-    if (el.type === 'password') return '';
-    if (tag === 'SELECT') { const o = el.options[el.selectedIndex]; return (o ? o.text : '').trim().slice(0, 80); }
-    if (el.type === 'checkbox' || el.type === 'radio') return el.checked ? 'checked' : '';
-    return (el.value || '').trim().replace(/\s+/g, ' ').slice(0, 80);
   };
 
   const visible = [];
@@ -821,8 +851,9 @@ const readTemplate = `(() => {
   // menu. A number used once is never reused, so a ref from an earlier read
   // can only be refused, not misread.
   const items = matched.slice(0, LIMIT).map(({el, tier}, i) => ({
-    ref: 'e' + (START + i + 1), tag: el.tagName.toLowerCase(), type: el.type || '',
+    ref: 'e' + (START + i + 1), tag: el.tagName.toLowerCase(), type: typeOf(el),
     label: labelOf(el), value: valueOf(el), href: tier === 0 ? hrefOf(el) : '', selector: cssPath(el),
+    key: keyOf(el),
   }));
 
   const region = main || document.body;
@@ -879,6 +910,15 @@ type pageElement struct {
 	Value    string `json:"value"`
 	Href     string `json:"href"`
 	Selector string `json:"selector"`
+	// Key is what the element was when it was read, checked again when its
+	// ref is used (keyOf in elementHelpers).
+	Key string `json:"key"`
+}
+
+// refTarget is what a ref resolves to: where the element was, what it was,
+// and the label to name it by when it is refused.
+type refTarget struct {
+	selector, key, label string
 }
 
 // read returns the whole page at the default budget, which is what every
@@ -910,9 +950,9 @@ func (s *Session) readPage(ctx context.Context, filter string, limit int) (*page
 		return nil, err
 	}
 	s.mu.Lock()
-	s.refs = map[string]string{}
+	s.refs = map[string]refTarget{}
 	for _, el := range result.Elements {
-		s.refs[el.Ref] = el.Selector
+		s.refs[el.Ref] = refTarget{selector: el.Selector, key: el.Key, label: el.Label}
 	}
 	s.refsURL = stripFragment(result.URL)
 	s.refSeq = start + len(result.Elements)
@@ -947,13 +987,15 @@ func stripFragment(url string) string {
 // never reused, so it can only be refused, never misread. A ref from the
 // latest read is still checked against where the browser is now: a page that
 // redirected itself after the read leaves the table pointing into a document
-// that no longer exists. A fragment change is not a navigation.
+// that no longer exists. A fragment change is not a navigation. And the
+// element at the ref's path must still be the one that was read (keyOf),
+// because a page can move its contents without going anywhere.
 func (s *Session) staleRef(ctx context.Context, target string) string {
 	if !isRef(target) {
 		return ""
 	}
 	s.mu.Lock()
-	_, known := s.refs[target]
+	ref, known := s.refs[target]
 	last := s.refsURL
 	seq := s.refSeq
 	s.mu.Unlock()
@@ -966,15 +1008,32 @@ func (s *Session) staleRef(ctx context.Context, target string) string {
 		}
 		return fmt.Sprintf("%s is from an earlier read and the page has been read again since — browser_read for fresh refs", target)
 	}
-	var current string
-	if err := s.run(ctx, 10*time.Second, chromedp.Evaluate(`location.href`, &current)); err != nil {
+	selJSON, _ := json.Marshal(ref.selector)
+	var now struct {
+		URL string  `json:"url"`
+		Key *string `json:"key"`
+	}
+	if err := s.run(ctx, 10*time.Second, chromedp.Evaluate(fmt.Sprintf(refCheckScript, selJSON), &now)); err != nil {
 		return "" // the action itself will surface whatever is wrong here
 	}
-	if stripFragment(current) == last {
-		return ""
+	if url := stripFragment(now.URL); url != last {
+		return fmt.Sprintf("%s is a ref from a read of %s, but the page is now %s — browser_read for fresh refs", target, last, url)
 	}
-	return fmt.Sprintf("%s is a ref from a read of %s, but the page is now %s — browser_read for fresh refs", target, last, stripFragment(current))
+	switch {
+	case now.Key == nil:
+		return fmt.Sprintf("%s (%q) is no longer on the page — browser_read for fresh refs", target, ref.label)
+	case *now.Key != ref.key:
+		return fmt.Sprintf("%s was %q when it was read, and something else now stands where it was — the page moved; browser_read for fresh refs", target, ref.label)
+	}
+	return ""
 }
+
+// refCheckScript reports where the page is and the key of whatever now
+// stands at a ref's path, or null when nothing does.
+const refCheckScript = `(() => {` + elementHelpers + `
+  const el = document.querySelector(%s);
+  return {url: location.href, key: el ? keyOf(el) : null};
+})()`
 
 // readSettleWait bounds how long a read that follows a navigation or click
 // keeps waiting for a page that fired its load event around an empty shell.
@@ -1279,6 +1338,64 @@ func (t *clickTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 	return tools.Text(out)
 }
 
+// A click is a real mouse press wherever the pointer can reach the target.
+// element.click() fires a lone click event, which is not what a person's
+// click produces: a WhatsApp Web chat row opens on the press, and ignores a
+// click event and an in-page pointerdown/mousedown sequence alike, because
+// neither is trusted input. A real press also focuses what it lands on.
+//
+// locateScript scrolls the target into view and names the point to press, or
+// says the pointer cannot reach it — something else drawn over its centre, or
+// nothing drawn at all — in which case the click goes to the element
+// directly, which is what a covered checkbox behind its styled label needs.
+const locateScript = `(() => {
+  const el = document.querySelector(%s);
+  if (!el) return {kind: "missing"};
+  const r0 = el.getBoundingClientRect();
+  el.scrollIntoView({block: "center"});
+  const r = el.getBoundingClientRect();
+  const scrolled = r.top !== r0.top || r.left !== r0.left;
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const hit = r.width > 0 && r.height > 0 ? document.elementFromPoint(x, y) : null;
+  if (hit && (hit === el || el.contains(hit))) return {kind: "point", x, y, scrolled};
+  return {kind: "direct", scrolled};
+})()`
+
+const directClickScript = `(() => { const el = document.querySelector(%s); if (el) el.click(); })()`
+
+type clickSpot struct {
+	Kind     string  `json:"kind"`
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+	Scrolled bool    `json:"scrolled"`
+}
+
+// pressAt presses and releases the left button at a viewport point. There is
+// deliberately no move first: on a tab in the background — the user's own
+// browser, with another tab in front — Chrome holds the acknowledgement of a
+// mouse move for five seconds waiting for a frame, while the press itself
+// lands in a fraction of one. The press updates hover on its own.
+//
+// File choosers are intercepted for the length of the press, because a
+// trusted click on an "Attach" button opens the operating system's dialog on
+// the user's screen, and attaching a file is browser_upload's job. Only for
+// the press: the browser may be the user's own, and a dialog they open
+// themselves must still open. A browser that cannot intercept is still
+// clicked.
+func pressAt(x, y float64) chromedp.Action {
+	return chromedp.ActionFunc(func(c context.Context) error {
+		if page.SetInterceptFileChooserDialog(true).Do(c) == nil {
+			defer func() { _ = page.SetInterceptFileChooserDialog(false).Do(c) }()
+		}
+		if err := input.DispatchMouseEvent(input.MousePressed, x, y).
+			WithButton(input.Left).WithButtons(1).WithClickCount(1).Do(c); err != nil {
+			return err
+		}
+		return input.DispatchMouseEvent(input.MouseReleased, x, y).
+			WithButton(input.Left).WithClickCount(1).Do(c)
+	})
+}
+
 // click clicks the target, waits for the page to react, and reads it. It is
 // the whole of what browser_click does on the Chromium engine, factored out
 // so the bounded executor can take the same path and get the read back as
@@ -1289,22 +1406,27 @@ func (s *Session) click(ctx context.Context, target string) (*pageRead, bool, er
 	}
 	sel := s.selectorFor(target)
 	selJSON, _ := json.Marshal(sel)
-	before, _ := s.probe(ctx)
-	// Native element.click() beats synthesized mouse events for reliability
-	// across headless modes and Chrome versions.
-	script := fmt.Sprintf(`(() => {
-		const el = document.querySelector(%s);
-		if (!el) return "missing";
-		el.scrollIntoView({block: "center"});
-		el.click();
-		return "ok";
-	})()`, selJSON)
-	var outcome string
-	if err := s.run(ctx, 20*time.Second, chromedp.Evaluate(script, &outcome)); err != nil {
-		return nil, false, fmt.Errorf("click %q failed: %v", sel, err)
+	var spot clickSpot
+	if err := s.run(ctx, 20*time.Second, chromedp.Evaluate(fmt.Sprintf(locateScript, selJSON), &spot)); err != nil {
+		return nil, false, fmt.Errorf("click %q failed: %v", target, err)
 	}
-	if outcome == "missing" {
-		return nil, false, fmt.Errorf("no element matches %q — run browser_read for fresh refs", sel)
+	if spot.Kind == "missing" {
+		return nil, false, fmt.Errorf("no element matches %q — run browser_read for fresh refs", target)
+	}
+	// The baseline is taken once the scroll has rendered, not before it: a
+	// list that renders rows as it scrolls — WhatsApp Web's chat list — moves
+	// the page on the frame after the scroll, and measured from before that,
+	// a click that did nothing reads as one that did.
+	before, _ := s.probe(ctx)
+	if spot.Scrolled {
+		before, _ = s.awaitChange(ctx, before, settleIntoView)
+	}
+	var press chromedp.Action = chromedp.Evaluate(fmt.Sprintf(directClickScript, selJSON), nil)
+	if spot.Kind == "point" {
+		press = pressAt(spot.X, spot.Y)
+	}
+	if err := s.run(ctx, 20*time.Second, press); err != nil {
+		return nil, false, fmt.Errorf("click %q failed: %v", target, err)
 	}
 	_, changed := s.awaitChange(ctx, before, settleAfterClick)
 	r, err := s.readSettled(ctx)
@@ -1419,20 +1541,20 @@ func (s *Session) fill(ctx context.Context, target, text string, submit bool) (s
 	var out fillOutcome
 	if err := s.run(ctx, 20*time.Second,
 		chromedp.Evaluate(fmt.Sprintf(focusScript, selJSON, clearJSON, clearJSON), &out)); err != nil {
-		return "", fmt.Errorf("fill %q failed: %v", sel, err)
+		return "", fmt.Errorf("fill %q failed: %v", target, err)
 	}
 	switch out.Kind {
 	case "missing":
-		return "", fmt.Errorf("no element matches %q — run browser_read for fresh refs", sel)
+		return "", fmt.Errorf("no element matches %q — run browser_read for fresh refs", target)
 	case "select":
 		if err := s.run(ctx, 20*time.Second,
 			chromedp.Evaluate(fmt.Sprintf(selectScript, selJSON, textJSON), &out)); err != nil {
-			return "", fmt.Errorf("selecting in %q failed: %v", sel, err)
+			return "", fmt.Errorf("selecting in %q failed: %v", target, err)
 		}
 		if out.Kind == "no-option" {
-			return "", fmt.Errorf("no option in %s matches %q; it offers: %s", sel, text, strings.Join(out.Options, ", "))
+			return "", fmt.Errorf("no option in %s matches %q; it offers: %s", target, text, strings.Join(out.Options, ", "))
 		}
-		return fmt.Sprintf("Selected %q in %s.", out.Chosen, sel), nil
+		return fmt.Sprintf("Selected %q in %s.", out.Chosen, target), nil
 	}
 
 	// Typed over the protocol rather than assigned: this goes through the
@@ -1443,7 +1565,7 @@ func (s *Session) fill(ctx context.Context, target, text string, submit bool) (s
 		if err := s.run(ctx, 20*time.Second, chromedp.ActionFunc(func(c context.Context) error {
 			return input.InsertText(text).Do(c)
 		})); err != nil {
-			return "", fmt.Errorf("typing into %q failed: %v", sel, err)
+			return "", fmt.Errorf("typing into %q failed: %v", target, err)
 		}
 	}
 
@@ -1458,12 +1580,12 @@ func (s *Session) fill(ctx context.Context, target, text string, submit bool) (s
 		if err := s.run(ctx, 20*time.Second, chromedp.ActionFunc(func(c context.Context) error {
 			return pressChord(c, 0, "Enter", "Enter", 13)
 		})); err != nil {
-			return "", fmt.Errorf("typed into %s, but submitting failed: %v", sel, err)
+			return "", fmt.Errorf("typed into %s, but submitting failed: %v", target, err)
 		}
 		s.awaitChange(ctx, before, settleAfterSubmit)
 	}
 
-	msg := fmt.Sprintf("Filled %s with %q.", sel, text)
+	msg := fmt.Sprintf("Filled %s with %q.", target, text)
 	if strings.TrimSpace(actual) != strings.TrimSpace(text) {
 		// Not an error: a chip field empties itself once it has the address,
 		// and a formatter rewrites what it was given. Saying so lets the model
@@ -1507,7 +1629,7 @@ type evalTool struct{ s *Session }
 
 func (t *evalTool) Name() string { return "browser_eval" }
 func (t *evalTool) Description() string {
-	return "Evaluate a JavaScript expression on the current page and return its JSON result."
+	return "Evaluate a JavaScript expression on the current page and return its JSON result. It is for reading what browser_read does not show, not for acting: element.click() and dispatched events from a script are not a person's input, and apps like WhatsApp Web ignore them — click with browser_click and type with browser_fill."
 }
 func (t *evalTool) Parameters() map[string]any {
 	return map[string]any{

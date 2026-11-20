@@ -48,6 +48,9 @@ var (
 	settleAfterSubmit = 2 * time.Second
 	settleAfterScroll = 1200 * time.Millisecond
 	settleAfterBack   = 1500 * time.Millisecond
+	// settleIntoView is how long a click waits for the page to render the
+	// scroll that brought its target into view, before measuring the click.
+	settleIntoView = 200 * time.Millisecond
 	// settlePoll is how often the probe is asked. Two consecutive identical
 	// probes after a change is what "held still" means.
 	settlePoll = 60 * time.Millisecond

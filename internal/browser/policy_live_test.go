@@ -98,6 +98,29 @@ func (f *fakeModel) seen() []wireQuestions {
 	return append([]wireQuestions(nil), f.requests...)
 }
 
+// operations is the requests that asked for an operation: one per step the
+// run decided, leaving out the target requests that followed them.
+func (f *fakeModel) operations() []wireQuestions {
+	var out []wireQuestions
+	for _, req := range f.seen() {
+		if _, ok := req.Questions["operation"]; ok {
+			out = append(out, req)
+		}
+	}
+	return out
+}
+
+// offered reports whether a request's state lists a control labelled label.
+func offered(req wireQuestions, label string) bool {
+	els, _ := req.State["elements"].([]candidate)
+	for _, c := range els {
+		if c.Label == label {
+			return true
+		}
+	}
+	return false
+}
+
 // answerWith answers one question with a valid distribution favouring choice.
 func answerWith(q decision.Question, choice string, conf float64) decision.Answer {
 	ids := decision.Candidates(q)
@@ -124,12 +147,14 @@ func indexOf(q decision.Question, want string) string {
 	return ""
 }
 
-// choose answers every head: the operation as named, and each target head
-// pointing at the element whose label contains target.
+// choose answers whichever question the request asks: the operation as
+// named, or the target head pointing at the element whose label contains
+// target.
 func choose(req wireQuestions, op, target string, conf float64) map[string]decision.Answer {
-	answers := map[string]decision.Answer{"operation": answerWith(req.Questions["operation"], op, conf)}
+	answers := map[string]decision.Answer{}
 	for name, q := range req.Questions {
 		if name == "operation" {
+			answers[name] = answerWith(q, op, conf)
 			continue
 		}
 		idx := indexOf(q, target)
@@ -182,12 +207,10 @@ func TestBrowserRunCompletesASearchEndToEnd(t *testing.T) {
 		if strings.Contains(text, "Flights to London") {
 			return choose(req, opDone, "", 0.95)
 		}
-		if q, ok := req.Questions["type_text_target"]; ok {
-			if idx := indexOf(q, "Where to?"); idx != "" {
-				entry, _ := q.Criteria[idx].(map[string]any)
-				if entry["current_value"] == nil {
-					return choose(req, opType, "Where to?", 0.9)
-				}
+		els, _ := req.State["elements"].([]candidate)
+		for _, c := range els {
+			if c.Label == "Where to?" && c.Value == "" {
+				return choose(req, opType, "Where to?", 0.9)
 			}
 		}
 		return choose(req, opClick, "Search", 0.9)
@@ -209,13 +232,21 @@ func TestBrowserRunCompletesASearchEndToEnd(t *testing.T) {
 			t.Errorf("result lacks %q:\n%s", want, res.ForLLM)
 		}
 	}
-	reqs := f.model.seen()
-	if len(reqs) != 3 {
-		t.Fatalf("expected 3 decision requests, got %d", len(reqs))
+	// Three steps, and a target asked only for the two that took one.
+	if ops, all := len(f.model.operations()), len(f.model.seen()); ops != 3 || all != 5 {
+		t.Fatalf("expected 3 operation and 2 target requests, got %d of %d", ops, all)
 	}
-	first := reqs[0]
-	if indexOf(first.Questions["click_target"], "Book now") != "" {
-		t.Error("the booking control was offered as a click target")
+	for _, req := range f.model.seen() {
+		if len(req.Questions) != 1 {
+			t.Errorf("a request asked %d questions at once", len(req.Questions))
+		}
+		if indexOf(req.Questions["click_target"], "Book now") != "" {
+			t.Error("the booking control was offered as a click target")
+		}
+	}
+	first := f.model.seen()[0]
+	if offered(first, "Book now") {
+		t.Error("the booking control was offered")
 	}
 	if first.State["withheld_controls"] == nil {
 		t.Error("the state did not name the withheld control")
@@ -242,10 +273,10 @@ func TestBrowserRunOffersCommittingControlsOnlyWhenAllowed(t *testing.T) {
 		t.Fatalf("result: %+v", res)
 	}
 	req := f.model.seen()[0]
-	if indexOf(req.Questions["click_target"], "Book now") == "" {
+	if !offered(req, "Book now") {
 		t.Error("allow_submit did not offer the booking control")
 	}
-	if _, ok := req.Questions["type_text_target"]; ok {
+	if _, ok := req.Questions["operation"].Criteria[opType]; ok {
 		t.Error("TYPE_TEXT offered with no text writer")
 	}
 	if strings.Contains(res.ForLLM, "Withheld") {
@@ -415,7 +446,7 @@ func TestBrowserRunGivesUpOnAPageThatWillNotHoldStill(t *testing.T) {
 	if res.IsError || !strings.Contains(res.ForLLM, "kept changing") {
 		t.Fatalf("result: %+v", res)
 	}
-	if len(f.model.seen()) > runStaleLimit {
-		t.Errorf("%d decisions spent on a page that never held still", len(f.model.seen()))
+	if n := len(f.model.operations()); n > runStaleLimit {
+		t.Errorf("%d decisions spent on a page that never held still", n)
 	}
 }

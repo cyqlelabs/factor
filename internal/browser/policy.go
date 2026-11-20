@@ -266,6 +266,9 @@ func buildActionSpace(r *pageRead, allowSubmit, canType bool, perOp int) actionS
 // takes none. A dropdown is typed into: fill picks its option by the text
 // the helper writes, which is what a person choosing from it does too.
 func operationFor(el pageElement) string {
+	if el.Type == "editable" {
+		return opType
+	}
 	switch el.Tag {
 	case "input":
 		switch el.Type {
@@ -370,22 +373,31 @@ func (r *browserRun) reobserve(ctx context.Context) (*observation, *stop) {
 	return o, nil
 }
 
-// request builds the one round trip: the operation question over what this
-// page supports, and a target question per operation that takes one.
-func (r *browserRun) request(o *observation) *decision.Request {
-	ops := map[string]any{}
-	for op := range o.space.targets {
-		ops[op] = operationLabels[op]
-	}
-	for _, op := range []string{opScrollDn, opScrollUp, opBack, opWait, opDone, opBlocked} {
-		ops[op] = operationLabels[op]
-	}
-	questions := map[string]decision.Question{
-		"operation": {Criteria: ops, Instructions: map[string]any{"goal": r.goal, "rules": nextActionRules}},
-	}
-	for op, group := range o.space.targets {
+// request builds one question over an observation: with op empty, which
+// operation to take among those this page supports; otherwise, which
+// element op should act on.
+//
+// They are two requests rather than one because the model reads the whole
+// state again for every question it is asked: one request carrying the
+// operation and a target per operation costs a full window per head, and on
+// a busy page that is three windows — measured at 4.3 s on a 24-thread
+// desktop, past the 4 s deadline, so the run never took a step. Asking for
+// the target after the operation costs two windows whatever the page offers,
+// and nothing for an operation that takes no target.
+func (r *browserRun) request(o *observation, op string) *decision.Request {
+	questions := map[string]decision.Question{}
+	if op == "" {
+		ops := map[string]any{}
+		for op := range o.space.targets {
+			ops[op] = operationLabels[op]
+		}
+		for _, op := range []string{opScrollDn, opScrollUp, opBack, opWait, opDone, opBlocked} {
+			ops[op] = operationLabels[op]
+		}
+		questions["operation"] = decision.Question{Criteria: ops, Instructions: map[string]any{"goal": r.goal, "rules": nextActionRules}}
+	} else {
 		criteria := map[string]any{}
-		for idx, c := range group {
+		for idx, c := range o.space.targets[op] {
 			entry := map[string]any{"element": fmt.Sprintf("[%s] %s", idx, c.Label), "role": c.Role}
 			if c.Value != "" {
 				entry["current_value"] = c.Value
@@ -456,8 +468,9 @@ func (r *browserRun) execute(ctx context.Context) *tools.Result {
 			end = stop{how: "budget", note: fmt.Sprintf("%d actions taken without reaching the goal", r.budget)}
 			break
 		}
-		// Decide: one request, every head speculative.
-		resp, err := r.tool.decider.Decide(ctx, decision.KindOperation, r.request(o))
+		// Decide: the operation, then — only for an operation that clears
+		// the bar and takes one — its target.
+		resp, err := r.tool.decider.Decide(ctx, decision.KindOperation, r.request(o, ""))
 		if err != nil {
 			end = stop{how: "unavailable", note: err.Error()}
 			break
@@ -466,11 +479,17 @@ func (r *browserRun) execute(ctx context.Context) *tools.Result {
 		op := opVerdict.Choice
 		var target *candidate
 		var tgtVerdict decision.Verdict
-		if group, needsTarget := o.space.targets[op]; needsTarget {
-			tgtVerdict = r.tool.decider.Judge(ctx, decision.KindTarget, resp.Answers[targetQuestion(op)], resp)
+		group, needsTarget := o.space.targets[op]
+		if needsTarget && opVerdict.Actionable() {
+			tresp, err := r.tool.decider.Decide(ctx, decision.KindTarget, r.request(o, op))
+			if err != nil {
+				end = stop{how: "unavailable", note: err.Error()}
+				break
+			}
+			tgtVerdict = r.tool.decider.Judge(ctx, decision.KindTarget, tresp.Answers[targetQuestion(op)], tresp)
 			target = group[tgtVerdict.Choice]
 		}
-		if !opVerdict.Actionable() || (target != nil && !tgtVerdict.Actionable()) {
+		if !opVerdict.Actionable() || (needsTarget && (target == nil || !tgtVerdict.Actionable())) {
 			r.unsure++
 			why := opVerdict.Why
 			if why == "" {

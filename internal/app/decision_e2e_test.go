@@ -154,26 +154,28 @@ func (j *e2eJudge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return decision.Candidates(q)[0]
 	}
-	if op, isBrowser := req.Questions["operation"]; isBrowser {
-		page, _ := req.State["page"].(map[string]any)
+	// The browser executor asks the operation and then its target as two
+	// requests over one state, so both are answered from the state.
+	if page, isBrowser := req.State["page"].(map[string]any); isBrowser {
 		pageText, _ := page["text"].(string)
 		var operation, target string
 		switch {
 		case strings.Contains(pageText, "Flights to London"):
 			operation = "DONE"
-		case req.Questions["type_text_target"].Criteria != nil && fieldEmpty(req.Questions["type_text_target"], "Where to?"):
+		case fieldEmpty(req.State, "Where to?"):
 			operation, target = "TYPE_TEXT", "Where to?"
 		default:
 			operation, target = "CLICK", "Search"
 		}
-		j.mu.Lock()
-		j.kinds = append(j.kinds, "operation:"+operation)
-		j.mu.Unlock()
-		pick("operation", op, operation)
 		for name, q := range req.Questions {
-			if name != "operation" {
-				pick(name, q, labelled(q, target))
+			if name == "operation" {
+				j.mu.Lock()
+				j.kinds = append(j.kinds, "operation:"+operation)
+				j.mu.Unlock()
+				pick(name, q, operation)
+				continue
 			}
+			pick(name, q, labelled(q, target))
 		}
 	} else {
 		for name, q := range req.Questions {
@@ -192,11 +194,14 @@ func (j *e2eJudge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"usage": map[string]any{"input_tokens": 400, "output_tokens": 6}})
 }
 
-func fieldEmpty(q decision.Question, label string) bool {
-	for _, raw := range q.Criteria {
-		entry, _ := raw.(map[string]any)
-		if el, _ := entry["element"].(string); strings.Contains(el, label) {
-			return entry["current_value"] == nil
+// fieldEmpty reports whether the state lists the field labelled label with
+// nothing in it.
+func fieldEmpty(state map[string]any, label string) bool {
+	els, _ := state["elements"].([]any)
+	for _, raw := range els {
+		el, _ := raw.(map[string]any)
+		if el["label"] == label {
+			return el["value"] == nil
 		}
 	}
 	return false

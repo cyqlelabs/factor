@@ -26,7 +26,7 @@ const findFileInput = `(() => {
   const TARGET = %s;
   const cssPath = (el) => {
     const parts = [];
-    while (el && el.nodeType === 1 && parts.length < 8) {
+    while (el && el.nodeType === 1) {
       let part = el.tagName.toLowerCase();
       if (el.id) { parts.unshift(part + '#' + CSS.escape(el.id)); break; }
       const parent = el.parentNode;

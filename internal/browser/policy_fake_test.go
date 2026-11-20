@@ -113,19 +113,26 @@ func searchForm() *pageRead {
 	}}
 }
 
-// stepBackend scripts the decision model per request from the request itself.
+// stepBackend scripts the decision model per step from the request itself. A
+// step is an operation request; the target request that may follow it is
+// answered from the same step.
 type stepBackend struct {
-	step   int
-	decide func(step int, req *decision.Request) (op, target string, conf float64)
-	err    error
+	step       int
+	decide     func(step int, req *decision.Request) (op, target string, conf float64)
+	err        error
+	op, target string
+	conf       float64
 }
 
 func (b *stepBackend) Decide(_ context.Context, req *decision.Request) (*decision.Response, error) {
 	if b.err != nil {
 		return nil, b.err
 	}
-	op, target, conf := b.decide(b.step, req)
-	b.step++
+	if _, asksOp := req.Questions["operation"]; asksOp {
+		b.op, b.target, b.conf = b.decide(b.step, req)
+		b.step++
+	}
+	op, target, conf := b.op, b.target, b.conf
 	answers := map[string]decision.Answer{}
 	fill := func(name string, q decision.Question, choice string) {
 		ids := decision.Candidates(q)
@@ -139,9 +146,9 @@ func (b *stepBackend) Decide(_ context.Context, req *decision.Request) (*decisio
 		}
 		answers[name] = decision.Answer{Choice: choice, Confidence: conf, Probabilities: probs}
 	}
-	fill("operation", req.Questions["operation"], op)
 	for name, q := range req.Questions {
 		if name == "operation" {
+			fill(name, q, op)
 			continue
 		}
 		idx := ""

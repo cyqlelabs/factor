@@ -107,21 +107,28 @@ func runFor(goal string) *browserRun {
 	}}
 }
 
-func TestRequestOffersOnlySupportedOperationsAndATargetHeadPerOperation(t *testing.T) {
+func TestRequestAsksTheOperationAloneAndThenOneTarget(t *testing.T) {
 	r := runFor("search flights")
 	o := &observation{page: formPage(), space: buildActionSpace(formPage(), false, true, 0)}
-	req := r.request(o)
+	req := r.request(o, "")
 	op := req.Questions["operation"]
 	for _, want := range []string{opClick, opType, opScrollDn, opScrollUp, opBack, opWait, opDone, opBlocked} {
 		if _, ok := op.Criteria[want]; !ok {
 			t.Errorf("operation head misses %s", want)
 		}
 	}
-	if _, ok := req.Questions["click_target"]; !ok {
-		t.Error("no click_target head")
+	// One question per request: the model reads the whole state for each.
+	if len(req.Questions) != 1 {
+		t.Errorf("the operation request asks %d questions", len(req.Questions))
 	}
-	if _, ok := req.Questions["type_text_target"]; !ok {
-		t.Error("no type_text_target head")
+	for _, name := range []string{opClick, opType} {
+		treq := r.request(o, name)
+		if _, ok := treq.Questions[targetQuestion(name)]; !ok || len(treq.Questions) != 1 {
+			t.Errorf("the %s request asks %v", name, treq.Questions)
+		}
+		if treq.State.(map[string]any)["goal"] != "search flights" {
+			t.Errorf("the %s request carries no state", name)
+		}
 	}
 	state := req.State.(map[string]any)
 	if state["withheld_controls"] == nil {
@@ -132,17 +139,16 @@ func TestRequestOffersOnlySupportedOperationsAndATargetHeadPerOperation(t *testi
 	}
 	// A page with nothing to type into offers no TYPE_TEXT head or operation.
 	bare := &pageRead{Elements: []pageElement{{Ref: "e1", Tag: "a", Label: "Home"}}}
-	req = r.request(&observation{page: bare, space: buildActionSpace(bare, false, true, 0)})
+	req = r.request(&observation{page: bare, space: buildActionSpace(bare, false, true, 0)}, "")
 	if _, ok := req.Questions["operation"].Criteria[opType]; ok {
 		t.Error("TYPE_TEXT offered on a page with no fields")
 	}
-	if _, ok := req.Questions["type_text_target"]; ok {
-		t.Error("a type_text_target head for a page with no fields")
-	}
 	// Every head's candidates are exactly what validation will check.
-	for name, q := range req.Questions {
-		if len(decision.Candidates(q)) == 0 {
-			t.Errorf("%s has no candidates", name)
+	for _, name := range []string{"", opClick, opType} {
+		for qn, q := range r.request(o, name).Questions {
+			if len(decision.Candidates(q)) == 0 {
+				t.Errorf("%s has no candidates", qn)
+			}
 		}
 	}
 }
@@ -337,7 +343,7 @@ func TestRequestSaysWhatDidNotFit(t *testing.T) {
 	}
 	r := runFor("g")
 	space := buildActionSpace(page, false, true, 8)
-	state := r.request(&observation{page: page, space: space}).State.(map[string]any)
+	state := r.request(&observation{page: page, space: space}, "").State.(map[string]any)
 	if state["unlisted_controls"] != 12 {
 		t.Errorf("unlisted_controls = %v, want 12", state["unlisted_controls"])
 	}

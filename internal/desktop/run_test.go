@@ -84,12 +84,16 @@ func accountWindow() *fakeWindow {
 	}}
 }
 
-// script answers the decision model from the request itself.
+// script answers the decision model from the request itself. A step is an
+// operation request; the target request that may follow it is answered from
+// the same step.
 type script struct {
-	step   int
-	decide func(step int, req *decision.Request) (op, target string, conf float64)
-	err    error
-	asked  []*decision.Request
+	step       int
+	decide     func(step int, req *decision.Request) (op, target string, conf float64)
+	err        error
+	asked      []*decision.Request
+	op, target string
+	conf       float64
 }
 
 func (b *script) Name() string { return "script" }
@@ -99,8 +103,11 @@ func (b *script) Decide(_ context.Context, req *decision.Request) (*decision.Res
 	if b.err != nil {
 		return nil, b.err
 	}
-	op, target, conf := b.decide(b.step, req)
-	b.step++
+	if _, asksOp := req.Questions["operation"]; asksOp {
+		b.op, b.target, b.conf = b.decide(b.step, req)
+		b.step++
+	}
+	op, target, conf := b.op, b.target, b.conf
 	answers := map[string]decision.Answer{}
 	fill := func(name string, q decision.Question, choice string) {
 		ids := decision.Candidates(q)
@@ -114,9 +121,9 @@ func (b *script) Decide(_ context.Context, req *decision.Request) (*decision.Res
 		}
 		answers[name] = decision.Answer{Choice: choice, Confidence: conf, Probabilities: probs}
 	}
-	fill("operation", req.Questions["operation"], op)
 	for name, q := range req.Questions {
 		if name == "operation" {
+			fill(name, q, op)
 			continue
 		}
 		idx := ""
@@ -244,7 +251,7 @@ func TestDesktopRunOffersCommitsOnlyWhenAllowed(t *testing.T) {
 		t.Errorf("an allowed commit was not taken:\n%s", res.ForLLM)
 	}
 	// Without a text helper nothing is offered for typing.
-	if _, ok := b.asked[0].Questions[targetQuestion(opType)]; ok {
+	if _, ok := b.asked[0].Questions["operation"].Criteria[opType]; ok {
 		t.Error("typing offered with no text helper")
 	}
 }

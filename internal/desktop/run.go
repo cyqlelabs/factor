@@ -309,22 +309,27 @@ func (r *desktopRun) observe(ctx context.Context) (*observation, error) {
 	}, nil
 }
 
-// request is the one round trip: the operation question over what this
-// window supports, and a target question per operation that takes one.
-func (r *desktopRun) request(o *observation) *decision.Request {
-	ops := map[string]any{}
-	for op := range o.space.targets {
-		ops[op] = operationLabels[op]
-	}
-	for _, op := range []string{opWait, opDone, opBlocked} {
-		ops[op] = operationLabels[op]
-	}
-	questions := map[string]decision.Question{
-		"operation": {Criteria: ops, Instructions: map[string]any{"goal": r.goal, "rules": nextActionRules}},
-	}
-	for op, group := range o.space.targets {
+// request builds one question over an observation: with op empty, which
+// operation to take among those this window supports; otherwise, which
+// control op should act on. They are separate requests because the model
+// reads the whole state again for every question in one, so a request with
+// a target head per operation costs a window per head and outruns the
+// deadline on a rich window; browser_run's request says the same with the
+// numbers.
+func (r *desktopRun) request(o *observation, op string) *decision.Request {
+	questions := map[string]decision.Question{}
+	if op == "" {
+		ops := map[string]any{}
+		for op := range o.space.targets {
+			ops[op] = operationLabels[op]
+		}
+		for _, op := range []string{opWait, opDone, opBlocked} {
+			ops[op] = operationLabels[op]
+		}
+		questions["operation"] = decision.Question{Criteria: ops, Instructions: map[string]any{"goal": r.goal, "rules": nextActionRules}}
+	} else {
 		criteria := map[string]any{}
-		for idx, c := range group {
+		for idx, c := range o.space.targets[op] {
 			entry := map[string]any{"control": fmt.Sprintf("[%s] %s", idx, c.Label), "role": c.Role}
 			if c.Value != "" {
 				entry["current_value"] = c.Value
@@ -388,7 +393,7 @@ func (r *desktopRun) execute(ctx context.Context) *tools.Result {
 			end = stop{how: "budget", note: fmt.Sprintf("%d actions taken without reaching the goal", r.budget)}
 			continue
 		}
-		resp, err := r.tool.decider.Decide(ctx, decision.KindOperation, r.request(o))
+		resp, err := r.tool.decider.Decide(ctx, decision.KindOperation, r.request(o, ""))
 		if err != nil {
 			end = stop{how: "unavailable", note: err.Error()}
 			continue
@@ -397,11 +402,17 @@ func (r *desktopRun) execute(ctx context.Context) *tools.Result {
 		op := opVerdict.Choice
 		var target *candidate
 		var tgtVerdict decision.Verdict
-		if group, needsTarget := o.space.targets[op]; needsTarget {
-			tgtVerdict = r.tool.decider.Judge(ctx, decision.KindTarget, resp.Answers[targetQuestion(op)], resp)
+		group, needsTarget := o.space.targets[op]
+		if needsTarget && opVerdict.Actionable() {
+			tresp, err := r.tool.decider.Decide(ctx, decision.KindTarget, r.request(o, op))
+			if err != nil {
+				end = stop{how: "unavailable", note: err.Error()}
+				continue
+			}
+			tgtVerdict = r.tool.decider.Judge(ctx, decision.KindTarget, tresp.Answers[targetQuestion(op)], tresp)
 			target = group[tgtVerdict.Choice]
 		}
-		if !opVerdict.Actionable() || (target == nil && o.space.targets[op] != nil) || (target != nil && !tgtVerdict.Actionable()) {
+		if !opVerdict.Actionable() || (needsTarget && (target == nil || !tgtVerdict.Actionable())) {
 			r.unsure++
 			why := opVerdict.Why
 			if why == "" {

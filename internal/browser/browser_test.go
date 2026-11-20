@@ -19,7 +19,7 @@ import (
 
 func TestSelectorForRefMapping(t *testing.T) {
 	s := NewSession(config.BrowserConfig{}, t.TempDir(), nil)
-	s.refs["e1"] = "div > button:nth-child(2)"
+	s.refs["e1"] = refTarget{selector: "div > button:nth-child(2)"}
 	if got := s.selectorFor("e1"); got != "div > button:nth-child(2)" {
 		t.Errorf("ref lookup = %q", got)
 	}

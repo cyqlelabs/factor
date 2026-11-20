@@ -553,3 +553,122 @@ func TestClickRefusesARefFromAnEarlierPage(t *testing.T) {
 		t.Fatalf("re-read after refusal: %s", res.ForLLM)
 	}
 }
+
+// chatPage is built the way WhatsApp Web's chat list is: rows that are
+// focusable gridcells rather than buttons or links, which open on a trusted
+// press and ignore both element.click() and an in-page mousedown, and a
+// message box that is an editable div. The old suite listed none of it and
+// clicked with element.click(), so the agent could neither name a chat nor
+// open one.
+const chatPage = `<html><head><title>Chats</title></head><body>
+<input id="search" placeholder="Search chats">
+<div role="grid" id="list">
+  <div role="row"><div role="gridcell" tabindex="0" data-chat="Ana"><span>Ana</span> <span>see you</span></div></div>
+  <div role="row"><div role="gridcell" tabindex="0" data-chat="Bruno"><span>Bruno</span> <span>the quote</span></div></div>
+</div>
+<div id="open">no chat open</div>
+<div id="box" role="textbox" contenteditable="true" tabindex="10" aria-label="Write a message"></div>
+<script>
+  document.getElementById('list').addEventListener('mousedown', (e) => {
+    if (!e.isTrusted) return;
+    document.getElementById('open').textContent = 'open: ' + e.target.closest('[role=gridcell]').dataset.chat;
+  });
+</script>
+</body></html>`
+
+func serveChats(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, chatPage)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// refFor finds the ref a read handed to the element whose listing line
+// carries want.
+func refFor(t *testing.T, read, want string) string {
+	t.Helper()
+	for _, line := range strings.Split(read, "\n") {
+		if strings.Contains(line, want) {
+			if f := strings.Fields(strings.TrimSpace(line)); len(f) > 0 && isRef(f[0]) {
+				return f[0]
+			}
+		}
+	}
+	t.Fatalf("no ref for %s in:\n%s", want, read)
+	return ""
+}
+
+func TestClickOpensAChatRowThatAnswersOnlyARealPress(t *testing.T) {
+	requireBrowser(t)
+	srv := serveChats(t)
+	byName := liveSuite(t)
+	out := mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+
+	if !strings.Contains(out, `<div:editable> "Write a message"`) {
+		t.Errorf("the message box is not listed as something to type into:\n%s", out)
+	}
+	out = mustRun(t, byName["browser_click"], map[string]any{"target": refFor(t, out, `"Bruno the quote"`)})
+	if !strings.Contains(out, "open: Bruno") {
+		t.Fatalf("the chat row did not open:\n%s", out)
+	}
+
+	// A person's click on a field leaves the caret in it; element.click()
+	// never did.
+	mustRun(t, byName["browser_click"], map[string]any{"target": "#search"})
+	if got := mustRun(t, byName["browser_eval"], map[string]any{"expression": "document.activeElement.id"}); !strings.Contains(got, "search") {
+		t.Errorf("clicking the field did not focus it; active element: %s", got)
+	}
+}
+
+func TestClickRefusesARefWhoseRowMovedUnderIt(t *testing.T) {
+	requireBrowser(t)
+	srv := serveChats(t)
+	byName := liveSuite(t)
+	out := mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+	ref := refFor(t, out, `"Bruno the quote"`)
+
+	// A message arrives and the list re-sorts: Bruno moves to the top, and
+	// the position his ref was read at now holds Ana.
+	mustRun(t, byName["browser_eval"], map[string]any{"expression": `(() => {
+		const list = document.getElementById('list');
+		list.prepend(list.children[1]);
+		return true;
+	})()`})
+	res := byName["browser_click"].Execute(context.Background(), map[string]any{"target": ref})
+	if !res.IsError || !strings.Contains(res.ForLLM, "browser_read") {
+		t.Fatalf("a ref whose row moved was clicked without complaint:\n%s", res.ForLLM)
+	}
+	if got := mustRun(t, byName["browser_eval"], map[string]any{"expression": "document.getElementById('open').textContent"}); !strings.Contains(got, "no chat open") {
+		t.Fatalf("the refused click still opened a chat: %s", got)
+	}
+
+	out = mustRun(t, byName["browser_read"], nil)
+	out = mustRun(t, byName["browser_click"], map[string]any{"target": refFor(t, out, `"Bruno the quote"`)})
+	if !strings.Contains(out, "open: Bruno") {
+		t.Errorf("a fresh ref for the moved row did not open it:\n%s", out)
+	}
+}
+
+// A list that renders rows as it scrolls, like WhatsApp Web's chat list,
+// changes the page whenever a click scrolls its target into view. Measured
+// from before that scroll, a click that did nothing read as one that did, and
+// the agent was never told its click had changed nothing.
+func TestClickOnAnInertTargetSaysSoOnAPageThatRendersAsItScrolls(t *testing.T) {
+	requireBrowser(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><head><title>Rows</title></head><body>
+<div style="height:3000px">top</div><button id="inert">Nothing</button>
+<script>window.addEventListener('scroll', () => {
+  const d = document.createElement('div'); d.textContent = 'rendered row'; document.body.prepend(d);
+}, {once: true});</script></body></html>`)
+	}))
+	t.Cleanup(srv.Close)
+	byName := liveSuite(t)
+	mustRun(t, byName["browser_navigate"], map[string]any{"url": srv.URL})
+	out := mustRun(t, byName["browser_click"], map[string]any{"target": "#inert"})
+	if !strings.Contains(out, "changed nothing") {
+		t.Errorf("a click that did nothing was reported as a change:\n%s", out)
+	}
+}

@@ -179,7 +179,7 @@ func (s *Session) switchTo(ctx context.Context, id target.ID) error {
 		}
 	}
 	s.cur = h
-	s.refs = map[string]string{} // refs belong to the page they were read from
+	s.refs = map[string]refTarget{} // refs belong to the page they were read from
 	s.mu.Unlock()
 
 	// Attach now so a dead target fails here rather than inside the next tool,
