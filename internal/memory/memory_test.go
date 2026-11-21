@@ -113,6 +113,42 @@ func TestClientUnreachableMarksUnhealthy(t *testing.T) {
 	}
 }
 
+// A slow engine is not called unreachable: on the box that sent the agent
+// looking for an engine that was down.
+func TestClientSlowAnswerSaysSo(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	c := NewClient(srv.URL, "", "")
+	c.SetTimeout(20 * time.Millisecond)
+	_, err := c.Recall(context.Background(), "x", 5, 0.1, Scope{})
+	if err == nil || !strings.Contains(err.Error(), "did not answer POST /recall in time") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// An epoch outlasts the deadline every other call gets: measured at 124 s on
+// the 3.5 GB box's disk, against 30 s.
+func TestClientReflectOutlastsRequestTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"beliefs_updated":1}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "", "")
+	c.SetTimeout(20 * time.Millisecond)
+	report, err := c.Reflect(context.Background())
+	if err != nil || report["beliefs_updated"] != float64(1) {
+		t.Fatalf("reflect = %v, %v", report, err)
+	}
+}
+
 func TestBuildRecallQuery(t *testing.T) {
 	history := []provider.Message{
 		{Role: "user", Content: "first message"},

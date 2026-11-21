@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -113,6 +115,11 @@ func (c *Client) doWith(ctx context.Context, client *http.Client, method, path s
 	resp, err := client.Do(req)
 	if err != nil {
 		c.healthy.Store(false)
+		// A deadline is an engine that is up and slow: called unreachable,
+		// the agent went looking for one that was down.
+		if isTimeout(err) {
+			return fmt.Errorf("smrti did not answer %s %s in time: %w", method, path, err)
+		}
 		return fmt.Errorf("smrti unreachable: %w", err)
 	}
 	defer resp.Body.Close()
@@ -346,10 +353,20 @@ func (c *Client) MergeSpaces(ctx context.Context, space, other string, minJaccar
 	return out.Created, nil
 }
 
+// reflectTimeout bounds one consolidation epoch, which is not a request like
+// the others: its cost is the graph and the disk under it. Measured on the
+// 3.5 GB box against smrti 0.22.4, an epoch over 4,850 atoms took 124 s on its
+// disk — every neighbour update a commit of its own — and a call waits behind
+// the epoch the engine runs on its own every minute, so the 30 s the other
+// calls get failed every /reflect there.
+const reflectTimeout = 5 * time.Minute
+
 func (c *Client) Reflect(ctx context.Context) (map[string]any, error) {
 	defer c.activity()()
+	ctx, cancel := context.WithTimeout(ctx, reflectTimeout)
+	defer cancel()
 	out := map[string]any{}
-	if err := c.do(ctx, http.MethodPost, "/reflect", struct{}{}, &out); err != nil {
+	if err := c.doWith(ctx, &http.Client{}, http.MethodPost, "/reflect", struct{}{}, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -374,6 +391,13 @@ func (c *Client) CheckHealth(ctx context.Context) error {
 	defer cancel()
 	_, err := c.Status(ctx)
 	return err
+}
+
+// isTimeout reports a request that ran out of time rather than one that could
+// not reach the engine.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 func (c *Client) Enabled() bool { return true }
