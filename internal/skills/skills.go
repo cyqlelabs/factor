@@ -97,25 +97,62 @@ func (l *Loader) Summary() string {
 }
 
 // parseFrontmatter reads a minimal `key: value` YAML block between --- fences.
-// Hand-rolled on purpose: no YAML dependency for a hot-path parse.
+// Hand-rolled on purpose: no YAML dependency for a hot-path parse. A value
+// written as a block scalar (`description: >-` and its indented lines, the
+// shape many registry skills use) is read from the lines below and joined onto
+// one line, since the catalog lists each skill on one. A byte order mark and
+// CRLF line endings, both left by Windows editors, are read past; content with
+// no frontmatter comes back exactly as given.
 func parseFrontmatter(content string) (map[string]string, string) {
 	meta := map[string]string{}
-	if !strings.HasPrefix(content, "---\n") {
+	text := strings.ReplaceAll(strings.TrimPrefix(content, "\ufeff"), "\r\n", "\n")
+	if !strings.HasPrefix(text, "---\n") {
 		return meta, content
 	}
-	rest := content[4:]
+	rest := text[4:]
 	end := strings.Index(rest, "\n---")
 	if end < 0 {
 		return meta, content
 	}
-	for _, line := range strings.Split(rest[:end], "\n") {
+	lines := strings.Split(rest[:end], "\n")
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		key, value, found := strings.Cut(line, ":")
-		if !found || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+		if !found || indented(line) {
 			continue
 		}
-		meta[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(value), `"'`)
+		value = strings.TrimSpace(value)
+		if blockScalar(value) {
+			meta[strings.TrimSpace(key)], i = blockText(lines, i)
+			continue
+		}
+		meta[strings.TrimSpace(key)] = strings.Trim(value, `"'`)
 	}
 	return meta, rest[end+4:]
+}
+
+// blockText joins the indented lines below lines[at] — a block scalar's
+// text — and returns it with the index of the last line it took.
+func blockText(lines []string, at int) (string, int) {
+	var parts []string
+	for at+1 < len(lines) && (strings.TrimSpace(lines[at+1]) == "" || indented(lines[at+1])) {
+		at++
+		if part := strings.TrimSpace(lines[at]); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, " "), at
+}
+
+func indented(line string) bool {
+	return strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
+}
+
+// blockScalar reports whether a value is a YAML block indicator — `>` or `|`
+// with optional chomping and indentation indicators — whose text sits on the
+// indented lines that follow.
+func blockScalar(value string) bool {
+	return value != "" && (value[0] == '>' || value[0] == '|') && strings.Trim(value[1:], "-+123456789") == ""
 }
 
 func firstParagraph(body string) string {

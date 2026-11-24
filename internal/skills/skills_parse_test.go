@@ -82,6 +82,36 @@ func TestParseFrontmatter(t *testing.T) {
 			wantMeta: map[string]string{"name": "weather", "description": "Get forecasts"},
 			wantBody: "\nbody\n",
 		},
+		{
+			name:     "a folded block description is read from the lines below it",
+			content:  "---\nname: agent-reach\ndescription: >-\n  Search the web and read\n  any platform.\nlicense: MIT\n---\nbody\n",
+			wantMeta: map[string]string{"name": "agent-reach", "description": "Search the web and read any platform.", "license": "MIT"},
+			wantBody: "\nbody\n",
+		},
+		{
+			name:     "a literal block description is joined onto one catalog line",
+			content:  "---\nname: humanizer\ndescription: |\n  Remove signs of AI writing.\n\n  Use when editing text.\n---\nbody\n",
+			wantMeta: map[string]string{"name": "humanizer", "description": "Remove signs of AI writing. Use when editing text."},
+			wantBody: "\nbody\n",
+		},
+		{
+			name:     "a byte order mark before the fence is not content",
+			content:  "\xef\xbb\xbf---\nname: bom\ndescription: saved by a Windows editor\n---\nbody\n",
+			wantMeta: map[string]string{"name": "bom", "description": "saved by a Windows editor"},
+			wantBody: "\nbody\n",
+		},
+		{
+			name:     "windows line endings still fence the frontmatter",
+			content:  "---\r\nname: crlf\r\ndescription: windows endings\r\n---\r\nbody\r\n",
+			wantMeta: map[string]string{"name": "crlf", "description": "windows endings"},
+			wantBody: "\nbody\n",
+		},
+		{
+			name:     "an empty block leaves the description empty",
+			content:  "---\nname: blank\ndescription: |2-\nlicense: MIT\n---\nbody\n",
+			wantMeta: map[string]string{"name": "blank", "description": "", "license": "MIT"},
+			wantBody: "\nbody\n",
+		},
 	}
 
 	for _, c := range cases {
