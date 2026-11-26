@@ -13,3 +13,9 @@ linters:
         - fmt.Fprintf
         - fmt.Fprintln
         - (*bufio.Writer).Flush
+  exclusions:
+    rules:
+      # wormhole-william, which pairing is built on, links nhooyr.io/websocket;
+      # the swarm uses the same library rather than ship its fork beside it.
+      - linters: [staticcheck]
+        text: "SA1019: .*nhooyr.io/websocket"

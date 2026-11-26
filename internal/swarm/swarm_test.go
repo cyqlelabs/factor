@@ -24,6 +24,7 @@ func init() {
 	spokenWait = 300 * time.Millisecond
 	writtenWait = 300 * time.Millisecond
 	pollEvery = 50 * time.Millisecond
+	attachWait = 500 * time.Millisecond
 }
 
 // fakeTurns stands in for the agent loop.

@@ -259,11 +259,12 @@ func (s *Service) send(ctx context.Context, req sendRequest) (string, error) {
 // exchange streams the task and settles the delegation when it reaches an
 // answer, a question, or an end.
 func (s *Service) exchange(d *Delegation, msg *a2a.Message, w *waiter) {
-	if s.transport == nil {
+	transport, _, _ := s.net()
+	if transport == nil {
 		s.settle(d, w, stFailed, "this agent has no connection to the swarm")
 		return
 	}
-	hc, base, err := s.transport.HTTPClient(d.Peer)
+	hc, base, err := transport.HTTPClient(d.Peer)
 	if err != nil {
 		s.settle(d, w, stFailed, fmt.Sprintf("could not reach it: %v", err))
 		return
@@ -355,10 +356,11 @@ func (s *Service) follow(d *Delegation, w *waiter) {
 // poll asks the other agent once about a task. It reports whether the
 // delegation settled.
 func (s *Service) poll(d *Delegation, w *waiter) bool {
-	if s.transport == nil || d.Task == "" {
+	transport, _, _ := s.net()
+	if transport == nil || d.Task == "" {
 		return false
 	}
-	hc, base, err := s.transport.HTTPClient(d.Peer)
+	hc, base, err := transport.HTTPClient(d.Peer)
 	if err != nil {
 		return false
 	}

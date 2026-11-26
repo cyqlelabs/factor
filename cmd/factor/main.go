@@ -47,6 +47,7 @@ Usage:
   factor talk            push-to-talk: arm the PC voice channel's microphone
   factor status          show daemon, provider, memory, channel, and desktop status
   factor upgrade         install the newest release
+  factor rendezvous      serve a swarm rendezvous (factor rendezvous -h)
   factor version         print version
 
 Flags:
@@ -80,6 +81,14 @@ func main() {
 	cmd := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		cmd, args = args[0], args[1:]
+	}
+	if cmd == "rendezvous" {
+		// A server with flags of its own, and nothing of an agent's to load.
+		if err := runRendezvous(args); err != nil {
+			fmt.Fprintf(os.Stderr, "factor: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 	_ = fs.Parse(args)
 

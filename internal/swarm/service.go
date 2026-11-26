@@ -36,7 +36,18 @@ type Service struct {
 	version string
 	now     func() time.Time
 
-	transport Transport
+	// netMu guards the path to the others, which a pairing can swap for a
+	// link to another rendezvous while tools are using it.
+	netMu      sync.Mutex
+	transport  Transport
+	link       *Link
+	tunnel     *Tunnel
+	linkCancel context.CancelFunc
+	// offline says why the swarm cannot connect at all, when it cannot.
+	offline string
+	notify  func(string)
+	asker   func(ctx context.Context) tools.Asker
+	gate    func(channel string) error
 	// peerOf names the agent behind an inbound request. The tunnel reads it
 	// off the pinned certificate; a test can stand in for it.
 	peerOf func(*http.Request) (string, bool)
@@ -108,7 +119,17 @@ func (s *Service) Name() string {
 }
 
 // SetTransport is how this agent reaches the others.
-func (s *Service) SetTransport(t Transport) { s.transport = t }
+func (s *Service) SetTransport(t Transport) {
+	s.netMu.Lock()
+	s.transport = t
+	s.netMu.Unlock()
+}
+
+func (s *Service) net() (Transport, *Link, *Tunnel) {
+	s.netMu.Lock()
+	defer s.netMu.Unlock()
+	return s.transport, s.link, s.tunnel
+}
 
 // Handler serves A2A to the members. It is mounted on the tunnel, never on a
 // listening port: only a connection whose certificate the roster lists gets
@@ -169,6 +190,7 @@ func (s *Service) Start() {
 func (s *Service) Close() {
 	s.cancel()
 	s.server.Close()
+	s.disconnect()
 	s.wg.Wait()
 }
 

@@ -59,6 +59,16 @@ func (t *AskTool) SetAsker(a Asker) {
 	t.asker = a
 }
 
+// AskerFor is where a question asked on ctx goes: the turn's own asker if it
+// has one, else the tool's. A tool that needs an answer the model must not
+// see — a pairing code — asks through it directly.
+func (t *AskTool) AskerFor(ctx context.Context) Asker {
+	if a := askerFrom(ctx); a != nil {
+		return a
+	}
+	return t.current()
+}
+
 func (t *AskTool) current() Asker {
 	t.mu.RLock()
 	defer t.mu.RUnlock()

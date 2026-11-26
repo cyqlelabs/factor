@@ -423,3 +423,31 @@ func TestCloseWaitsForThePriceRefresh(t *testing.T) {
 		t.Errorf("the price cache was written after Close returned (%v)", err)
 	}
 }
+
+// The swarm is opt-in: an agent that never enabled it holds no swarm state,
+// writes no key and offers the model no swarm tool.
+func TestSwarmIsOptIn(t *testing.T) {
+	cfg := testConfig(t)
+	a := newTestApp(t, cfg)
+	if a.Swarm != nil {
+		t.Fatal("the swarm started without being enabled")
+	}
+	for _, n := range a.Registry.Names() {
+		if strings.HasPrefix(n, "swarm") {
+			t.Errorf("tool %s is offered with the swarm off", n)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(config.Home(), "swarm")); !os.IsNotExist(err) {
+		t.Errorf("the swarm directory exists with the swarm off: %v", err)
+	}
+
+	on := testConfig(t)
+	on.Swarm.Enabled = true
+	b := newTestApp(t, on)
+	if b.Swarm == nil || b.Swarm.ID() == "" {
+		t.Fatal("an enabled swarm did not start")
+	}
+	if !strings.Contains(b.Swarm.Status(), "not in a swarm") {
+		t.Errorf("status %q", b.Swarm.Status())
+	}
+}

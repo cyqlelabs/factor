@@ -32,6 +32,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/proxy"
+	"github.com/cyqlelabs/factor/internal/swarm"
 	"github.com/cyqlelabs/factor/internal/upgrade"
 	"github.com/cyqlelabs/factor/internal/version"
 )
@@ -200,6 +201,15 @@ func serve(configPath string) (bool, error) {
 	// lands in, and only the connector knows what that room is.
 	a.Loop.SetAudience(manager.Audience)
 	manager.Start(ctx)
+	// The swarm connects here and nowhere else: one outbound socket to the
+	// rendezvous, held by the process that lives long enough to answer the
+	// tasks that arrive on it.
+	if a.Swarm != nil {
+		a.Swarm.OnNotice(swarm.NoticeTo(a.Bus, a.Loop.LastChannel))
+		a.Registry.Register(a.Swarm.Tools()...)
+		a.Swarm.Connect()
+		a.Swarm.Start()
+	}
 	// Only the process that lives long enough to see an adopted engine
 	// through an upgrade restarts it on stale settings.
 	memory.WatchSettings(a.Memory)
@@ -208,8 +218,12 @@ func serve(configPath string) (bool, error) {
 	// deferred nil runs before a.Close, so a late ask never reaches a closed
 	// engine.
 	setStatusSource(func() []string {
-		return statusLines(version.Version, time.Since(began),
+		lines := statusLines(version.Version, time.Since(began),
 			a.Memory.Enabled(), a.Memory.Healthy(), manager.Running(), manager.Failed(), a.Cost.OverviewLine())
+		if a.Swarm != nil {
+			lines = append(lines, "swarm: "+a.Swarm.Status())
+		}
+		return lines
 	})
 	defer setStatusSource(nil)
 
@@ -436,7 +450,7 @@ func startHealthServer(cfg *config.Config, a *app.App, manager *channel.Manager,
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		health := map[string]any{
 			"version":        version.Version,
 			"uptime_seconds": int(time.Since(started).Seconds()),
 			"memory_healthy": a.Memory.Healthy(),
@@ -449,7 +463,12 @@ func startHealthServer(cfg *config.Config, a *app.App, manager *channel.Manager,
 			// gets reported as delivered and then dropped.
 			"channels":        manager.Running(),
 			"channels_failed": manager.Failed(),
-		})
+		}
+		// Only an agent that joined the swarm feature says anything about it.
+		if a.Swarm != nil {
+			health["swarm"] = a.Swarm.Status()
+		}
+		_ = json.NewEncoder(w).Encode(health)
 	})
 	mux.Handle("POST /reload", reloadHandler(reload))
 	addr := net.JoinHostPort(cfg.Gateway.Host, strconv.Itoa(cfg.Gateway.Port))
