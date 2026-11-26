@@ -1,0 +1,18 @@
+sequenceDiagram
+    actor U as You
+    participant D as desktop Factor
+    participant R as rendezvous
+    participant P as Puppy Factor
+    U->>D: "Add another machine to the swarm"
+    D->>R: open a pairing mailbox
+    D-->>U: says the code "47 · 3829 1506"
+    U->>P: gives it the code when it asks
+    P->>R: claim mailbox 47
+    D->>P: SPAKE2 through the mailbox
+    Note over D,P: the rendezvous relays it but cannot read it or guess the code
+    D->>P: bootstrap envelope: swarm id, desktop key, one-time pass
+    P->>D: pinned TLS through the relay: redeem the pass, prove its own key
+    D->>R: roster epoch n+1, signed by the desktop, committed
+    R-->>P: new roster
+    R-->>D: new roster
+    D-->>U: "Puppy joined"
