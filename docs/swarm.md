@@ -382,6 +382,9 @@ is 5.38 MB, and Factor today is 17.06 MB.
 | `go-libp2p`, trimmed | +16.6 MB | Rejected: doubles the binary |
 | `tailscale.com/tsnet` | +17.2 MB | Rejected: doubles the binary and needs a coordination server |
 
+With the swarm built in, through P5, the same build is 19.00 MB: +1.94 MB, and
+still no gRPC or protobuf linked.
+
 A2A 1.0 is final (1.0.0 on 2026-03-12, 1.0.1 on 2026-05-28). The SDK stops
 processing a task at `INPUT_REQUIRED` and cancels the context that produced
 it.
