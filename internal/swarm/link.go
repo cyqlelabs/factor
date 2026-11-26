@@ -40,6 +40,9 @@ type Link struct {
 
 	onRoster func(*Roster)
 	onAccept func(net.Conn, string)
+	// rostered says whether this agent holds a roster listing it, which is
+	// when the rendezvous already knows its key.
+	rostered func() bool
 
 	mu      sync.Mutex
 	sess    *session
@@ -165,12 +168,17 @@ func (l *Link) connect(ctx context.Context) error {
 	}
 	swarmID := l.swarm()
 	hello := Control{Type: CtlHello, Key: EncodeKey(l.id.Public), Sig: l.id.SignHello(challenge.Nonce), Swarm: swarmID}
-	if swarmID == "" {
-		if hello.Work, err = wire.SolveWork(challenge.Nonce, hello.Key, challenge.Bits); err != nil {
+	// A key the rendezvous may not know yet pays the work up front: one that
+	// has just paired reconnects before its roster commit lands, and refused
+	// for the work it would only wait out a backoff.
+	if swarmID == "" || l.rostered == nil || !l.rostered() {
+		work, werr := wire.SolveWork(challenge.Nonce, hello.Key, challenge.Bits)
+		if werr != nil && swarmID == "" {
 			cancel()
 			_ = ws.CloseNow()
-			return err
+			return werr
 		}
+		hello.Work = work
 	}
 	if err := writeCtl(dctx, ws, hello); err != nil {
 		cancel()
