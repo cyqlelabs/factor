@@ -236,39 +236,57 @@ func (p *pairing) exchange(ctx context.Context, id *Identity, mine envelope) (en
 	}
 	mine.Key = EncodeKey(id.Public)
 	mine.Proof = base64.StdEncoding.EncodeToString(id.Sign(transcript(key)))
-	plain, _ := json.Marshal(mine)
-	out, err := sealer(key, p.side)
+	sealed, err := seal(key, p.side, mine)
 	if err != nil {
 		return envelope{}, err
 	}
-	nonce := make([]byte, out.NonceSize())
-	_, _ = rand.Read(nonce)
-	if err := p.rc.AddMessage(ctx, "envelope", hex.EncodeToString(out.Seal(nonce, nonce, plain, nil))); err != nil {
+	if err := p.rc.AddMessage(ctx, "envelope", sealed); err != nil {
 		return envelope{}, err
 	}
-	body, err = p.next(ctx, "envelope")
-	if err != nil {
+	if body, err = p.next(ctx, "envelope"); err != nil {
 		return envelope{}, err
 	}
-	sealed, err := hex.DecodeString(body)
-	in, serr := sealer(key, p.peerSide())
-	if err != nil || serr != nil || len(sealed) < in.NonceSize() {
-		return envelope{}, p.fail(errWrongCode)
-	}
-	opened, err := in.Open(nil, sealed[:in.NonceSize()], sealed[in.NonceSize():], nil)
+	theirs, err := open(key, p.peerSide(), body)
 	if err != nil {
-		return envelope{}, p.fail(errWrongCode)
-	}
-	var theirs envelope
-	if err := json.Unmarshal(opened, &theirs); err != nil {
-		return envelope{}, p.fail(errors.New("the other machine sent a malformed envelope"))
-	}
-	pub, err := DecodeKey(theirs.Key)
-	sig, serr := base64.StdEncoding.DecodeString(theirs.Proof)
-	if err != nil || serr != nil || !ed25519.Verify(pub, transcript(key), sig) {
-		return envelope{}, p.fail(errors.New("the other machine could not prove it holds the key it sent"))
+		return envelope{}, p.fail(err)
 	}
 	return theirs, nil
+}
+
+// seal encrypts an envelope under the key one side sends with.
+func seal(key []byte, side string, env envelope) (string, error) {
+	aead, err := sealer(key, side)
+	if err != nil {
+		return "", err
+	}
+	plain, _ := json.Marshal(env)
+	nonce := make([]byte, aead.NonceSize())
+	_, _ = rand.Read(nonce)
+	return hex.EncodeToString(aead.Seal(nonce, nonce, plain, nil)), nil
+}
+
+// open decrypts the other side's envelope and checks its proof. Anything
+// that does not open was sealed under another code.
+func open(key []byte, side, body string) (envelope, error) {
+	sealed, err := hex.DecodeString(body)
+	aead, serr := sealer(key, side)
+	if err != nil || serr != nil || len(sealed) < aead.NonceSize() {
+		return envelope{}, errWrongCode
+	}
+	plain, err := aead.Open(nil, sealed[:aead.NonceSize()], sealed[aead.NonceSize():], nil)
+	if err != nil {
+		return envelope{}, errWrongCode
+	}
+	var env envelope
+	if err := json.Unmarshal(plain, &env); err != nil {
+		return envelope{}, errors.New("the other machine sent a malformed envelope")
+	}
+	pub, err := DecodeKey(env.Key)
+	sig, serr := base64.StdEncoding.DecodeString(env.Proof)
+	if err != nil || serr != nil || !ed25519.Verify(pub, transcript(key), sig) {
+		return envelope{}, errors.New("the other machine could not prove it holds the key it sent")
+	}
+	return env, nil
 }
 
 // peerSide is the other side's id, read off its key exchange: a mailbox

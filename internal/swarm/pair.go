@@ -74,9 +74,15 @@ func (s *Service) conclude(ctx context.Context, theirs envelope, role string) (s
 	case theirs.Swarm == "":
 		return "", errors.New("neither machine is in a swarm; add the other machine from this one instead")
 	}
+	return name, s.await(ctx, theirs, name)
+}
+
+// await is the newcomer's half of a pairing: it records the swarm it is
+// joining and waits to see itself on that swarm's roster.
+func (s *Service) await(ctx context.Context, theirs envelope, name string) error {
 	pub, err := DecodeKey(theirs.Key)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if err := s.book.Update(func(st *State) error {
 		st.Joining, st.Rendezvous = theirs.Swarm, theirs.Rendezvous
@@ -85,17 +91,17 @@ func (s *Service) conclude(ctx context.Context, theirs envelope, role string) (s
 		}
 		return nil
 	}); err != nil {
-		return "", err
+		return err
 	}
 	s.relink()
 	deadline := time.Now().Add(time.Minute)
 	for !s.book.Read().Joined() {
 		if time.Now().After(deadline) || ctx.Err() != nil {
-			return "", errors.New("paired, but the swarm's roster has not arrived yet; it will once this agent reaches the rendezvous")
+			return errors.New("paired, but the swarm's roster has not arrived yet; it will once this agent reaches the rendezvous")
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return name, nil
+	return nil
 }
 
 // relink points the link at the rendezvous the swarm meets at, reconnecting

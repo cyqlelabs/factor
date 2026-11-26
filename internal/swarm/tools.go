@@ -64,31 +64,11 @@ func (t *sendTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 	if spoken(tc) {
 		req.wait = spokenWait
 	}
-	if tc.Channel == "a2a" {
-		// Passing on work another agent asked for. Its caller is waiting on
-		// this same answer, so the turn waits too, and the chain it arrived
-		// with goes along so the work can never come back around.
-		incoming, ok := chainFrom(ctx)
-		if !ok {
-			return tools.Errorf("this task arrived without the swarm extension, so it cannot be passed on")
-		}
-		req.meta, req.hold = incoming.Next(s.id.ID), true
-	} else {
-		audience := fa2a.AudienceShared
-		if tc.Audience == "" {
-			audience = fa2a.AudiencePrivate
-		}
-		req.meta = fa2a.Meta{Audience: audience}.Next(s.id.ID)
+	if req.meta, req.hold, err = s.chain(ctx, tc); err != nil {
+		return tools.Errorf("%v", err)
 	}
-	if isExternal(member.ID) {
-		a, _ := s.external(member.ID)
-		switch {
-		case !tc.ByPerson():
-			return tools.Errorf("%s is outside the swarm; only a request the user makes reaches it", member.Name)
-		case tc.Audience == "" && !a.Private:
-			return tools.Errorf("%s is outside the swarm and not granted private conversations; the user can grant it "+
-				"with swarm.agents.%s.private", member.Name, member.Name)
-		}
+	if err := s.mayTell(member, tc); err != nil {
+		return tools.Errorf("%v", err)
 	}
 	if req.meta.Loops(member.ID) {
 		return tools.Errorf("%s has already handled this work on its way here; sending it back would be a loop", member.Name)
@@ -101,6 +81,42 @@ func (t *sendTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 		return tools.Errorf("%v", err)
 	}
 	return tools.Text(text)
+}
+
+// chain is the extension a message carries. Work another agent asked for
+// keeps the chain it arrived with, one hop further, so it can never come
+// back around — and its turn holds on until the answer, which its own caller
+// is waiting on. Work the user asked for starts a chain here.
+func (s *Service) chain(ctx context.Context, tc tools.ToolContext) (meta fa2a.Meta, hold bool, err error) {
+	if tc.Channel == "a2a" {
+		incoming, ok := chainFrom(ctx)
+		if !ok {
+			return fa2a.Meta{}, false, errors.New("this task arrived without the swarm extension, so it cannot be passed on")
+		}
+		return incoming.Next(s.id.ID), true, nil
+	}
+	audience := fa2a.AudienceShared
+	if tc.Audience == "" {
+		audience = fa2a.AudiencePrivate
+	}
+	return fa2a.Meta{Audience: audience}.Next(s.id.ID), false, nil
+}
+
+// mayTell applies an outside agent's grant: only a request the user makes
+// reaches it, and from a private conversation only if granted.
+func (s *Service) mayTell(member Member, tc tools.ToolContext) error {
+	if !isExternal(member.ID) {
+		return nil
+	}
+	a, _ := s.external(member.ID)
+	switch {
+	case !tc.ByPerson():
+		return fmt.Errorf("%s is outside the swarm; only a request the user makes reaches it", member.Name)
+	case tc.Audience == "" && !a.Private:
+		return fmt.Errorf("%s is outside the swarm and not granted private conversations; the user can grant it "+
+			"with swarm.agents.%s.private", member.Name, member.Name)
+	}
+	return nil
 }
 
 func spoken(tc tools.ToolContext) bool {

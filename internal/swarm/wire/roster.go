@@ -98,10 +98,7 @@ func (r *Roster) Valid(prev *Roster) error {
 		return err
 	}
 	if prev == nil {
-		if r.Epoch != 1 || r.Prev != "" || len(r.Members) != 1 || r.Members[0].Key != r.Signer {
-			return errors.New("a first roster must hold only the key that signed it")
-		}
-		return nil
+		return r.validGenesis()
 	}
 	switch {
 	case r.Swarm != prev.Swarm:
@@ -117,6 +114,15 @@ func (r *Roster) Valid(prev *Roster) error {
 		if slices.Contains(r.Removed, m.Key) {
 			return errors.New("the roster lists a removed key as a member")
 		}
+	}
+	return nil
+}
+
+// validGenesis checks a first roster: epoch one, no predecessor, and only
+// the key that signed it.
+func (r *Roster) validGenesis() error {
+	if r.Epoch != 1 || r.Prev != "" || len(r.Members) != 1 || r.Members[0].Key != r.Signer {
+		return errors.New("a first roster must hold only the key that signed it")
 	}
 	return nil
 }

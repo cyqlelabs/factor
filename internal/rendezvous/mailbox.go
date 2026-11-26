@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -175,6 +174,19 @@ func (c *mailConn) send(v map[string]any) {
 	}
 }
 
+// mailIn is one client message, with every field any message type uses.
+type mailIn struct {
+	Type      string `json:"type"`
+	ID        string `json:"id"`
+	Side      string `json:"side"`
+	AppID     string `json:"appid"`
+	Nameplate string `json:"nameplate"`
+	Mailbox   string `json:"mailbox"`
+	Phase     string `json:"phase"`
+	Body      string `json:"body"`
+	Mood      string `json:"mood"`
+}
+
 func (m *mailboxes) serve(w http.ResponseWriter, r *http.Request) {
 	if !m.s.admitIP(r) {
 		http.Error(w, "too many connections from this address", http.StatusTooManyRequests)
@@ -192,77 +204,73 @@ func (m *mailboxes) serve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), m.s.cfg.MailboxTTL)
 	defer cancel()
 	c := &mailConn{m: m, ws: ws, ctx: ctx, out: make(chan []byte, 64), gone: make(chan struct{})}
-	go func() {
-		defer cancel()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-c.gone:
-				_ = ws.Close(websocket.StatusNormalClosure, "the mailbox is closed")
-				return
-			case data := <-c.out:
-				if ws.Write(ctx, websocket.MessageText, data) != nil {
-					return
-				}
-			}
-		}
-	}()
-	defer func() {
-		m.mu.Lock()
-		if c.box != nil {
-			delete(c.box.listeners, c)
-		}
-		m.mu.Unlock()
-		// The last reply is usually the reason the connection is ending, and
-		// a client only learns it if it leaves before the socket does.
-		for wait := time.Now().Add(time.Second); len(c.out) > 0 && time.Now().Before(wait); {
-			time.Sleep(5 * time.Millisecond)
-		}
-		_ = ws.CloseNow()
-	}()
+	go c.writeLoop(cancel)
+	defer c.end()
 	c.send(map[string]any{"type": "welcome", "welcome": map[string]any{"motd": ""}})
 	for {
 		_, data, err := ws.Read(ctx)
 		if err != nil {
 			return
 		}
-		var msg struct {
-			Type      string `json:"type"`
-			ID        string `json:"id"`
-			Side      string `json:"side"`
-			AppID     string `json:"appid"`
-			Nameplate string `json:"nameplate"`
-			Mailbox   string `json:"mailbox"`
-			Phase     string `json:"phase"`
-			Body      string `json:"body"`
-			Mood      string `json:"mood"`
-		}
+		var msg mailIn
 		if json.Unmarshal(data, &msg) != nil {
 			return
 		}
 		c.send(map[string]any{"type": "ack", "id": msg.ID})
-		if !c.handle(msg.Type, msg.Side, msg.AppID, msg.Nameplate, msg.Mailbox, msg.Phase, msg.Body, msg.Mood) {
+		if !c.handle(msg) {
 			return
 		}
 	}
 }
 
-// handle runs one client message. It reports false when the connection
-// should end — the way this server says no, since the client waits for a
-// reply it will never get otherwise.
-func (c *mailConn) handle(typ, side, app, nameplate, boxID, phase, body, mood string) bool {
-	m := c.m
-	fail := func(why string) bool {
-		c.send(map[string]any{"type": "error", "error": why})
-		return false
-	}
-	switch typ {
-	case "bind":
-		if c.side != "" || side == "" || app == "" {
-			return fail("bind needs a side and an app id, once")
+func (c *mailConn) writeLoop(cancel context.CancelFunc) {
+	defer cancel()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-c.gone:
+			_ = c.ws.Close(websocket.StatusNormalClosure, "the mailbox is closed")
+			return
+		case data := <-c.out:
+			if c.ws.Write(c.ctx, websocket.MessageText, data) != nil {
+				return
+			}
 		}
-		c.side, c.app = side, app
+	}
+}
+
+// end leaves the mailbox and closes the socket once the replies queued on it
+// have gone out: the last one is usually why the connection is ending, and a
+// client only learns it if it leaves before the socket does.
+func (c *mailConn) end() {
+	c.m.mu.Lock()
+	if c.box != nil {
+		delete(c.box.listeners, c)
+	}
+	c.m.mu.Unlock()
+	for wait := time.Now().Add(time.Second); len(c.out) > 0 && time.Now().Before(wait); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	_ = c.ws.CloseNow()
+}
+
+// fail says no and reports that the connection should end — the way this
+// server refuses, since the client waits for a reply it would otherwise
+// never get.
+func (c *mailConn) fail(why string) bool {
+	c.sendLocked(map[string]any{"type": "error", "error": why})
+	return false
+}
+
+// handle runs one client message, reporting whether the connection goes on.
+func (c *mailConn) handle(msg mailIn) bool {
+	switch msg.Type {
+	case "bind":
+		if c.side != "" || msg.Side == "" || msg.AppID == "" {
+			return c.fail("bind needs a side and an app id, once")
+		}
+		c.side, c.app = msg.Side, msg.AppID
 		return true
 	case "list":
 		// Listing would let anyone enumerate the codes in flight.
@@ -270,99 +278,119 @@ func (c *mailConn) handle(typ, side, app, nameplate, boxID, phase, body, mood st
 		return true
 	}
 	if c.side == "" {
-		return fail("bind first")
+		return c.fail("bind first")
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := m.s.now()
-	m.expireLocked(now)
-	switch typ {
-	case "allocate":
-		if len(m.byID) >= maxMailboxes {
-			return fail("too many pairings in flight; try again in a few minutes")
-		}
-		names := m.byName[c.app]
-		if names == nil {
-			names = map[int]*mailbox{}
-			m.byName[c.app] = names
-		}
-		n := 1
-		for names[n] != nil {
-			n++
-		}
-		raw := make([]byte, 16)
-		_, _ = rand.Read(raw)
-		mb := &mailbox{id: hex.EncodeToString(raw), app: c.app, nameplate: n, created: now,
-			claims: map[string]bool{}, closed: map[string]bool{}, listeners: map[*mailConn]bool{}}
-		names[n] = mb
-		m.byID[mb.id] = mb
-		c.sendLocked(map[string]any{"type": "allocated", "nameplate": strconv.Itoa(n)})
-	case "claim":
-		n, err := strconv.Atoi(nameplate)
-		mb := m.byName[c.app][n]
-		if err != nil || mb == nil {
-			// Said, not hung up on: the client only ever waits for a reply,
-			// and closing under it races its own teardown. Guessing is what
-			// several misses on one connection look like, and that is cut.
-			c.misses++
-			c.sendLocked(map[string]any{"type": "error", "error": "no pairing is waiting under that code"})
-			return c.misses < 3
-		}
-		if !mb.claims[c.side] && len(mb.claims) >= 2 {
-			return fail("crowded")
-		}
-		mb.claims[c.side] = true
-		c.sendLocked(map[string]any{"type": "claimed", "mailbox": mb.id})
-	case "open":
-		mb := m.byID[boxID]
-		if mb == nil || !mb.claims[c.side] || c.box != nil {
-			return fail("no such mailbox")
-		}
-		c.box = mb
-		mb.listeners[c] = true
-		for _, msg := range mb.msgs {
-			c.sendLocked(mailMap(msg))
-		}
-	case "add":
-		mb := c.box
-		if mb == nil {
-			return fail("open a mailbox first")
-		}
-		if len(mb.msgs) >= 16 {
-			return fail("the mailbox is full")
-		}
-		msg := mailMsg{Type: "message", Side: c.side, Phase: phase, Body: body,
-			ID: fmt.Sprintf("%d", len(mb.msgs)), ServerRX: float64(now.UnixNano()) / 1e9}
-		mb.msgs = append(mb.msgs, msg)
-		for l := range mb.listeners {
-			l.sendLocked(mailMap(msg))
-		}
-	case "release":
-		if names := m.byName[c.app]; names != nil {
-			if n, err := strconv.Atoi(nameplate); err == nil && names[n] != nil && names[n].claims[c.side] {
-				delete(names, n)
-			}
-		}
-		c.sendLocked(map[string]any{"type": "released"})
-	case "close":
-		mb := m.byID[boxID]
-		if mb != nil {
-			mb.closed[c.side] = true
-			delete(mb.listeners, c)
-			// A failed exchange burns the code: whoever got it wrong gets no
-			// second guess. The other side still hears the rest of the
-			// exchange, so it fails at once rather than waiting out the code.
-			if mood == "scary" {
-				m.releaseLocked(mb)
-			}
-			if len(mb.closed) >= len(mb.claims) {
-				m.deleteLocked(mb, c)
-			}
-		}
-		c.sendLocked(map[string]any{"type": "closed"})
-	default:
-		return fail("unknown message " + typ)
+	op, ok := map[string]func(mailIn) bool{
+		"allocate": c.allocate, "claim": c.claim, "open": c.open,
+		"add": c.add, "release": c.release, "close": c.closeBox,
+	}[msg.Type]
+	if !ok {
+		return c.fail("unknown message " + msg.Type)
 	}
+	c.m.mu.Lock()
+	defer c.m.mu.Unlock()
+	c.m.expireLocked(c.m.s.now())
+	return op(msg)
+}
+
+func (c *mailConn) allocate(mailIn) bool {
+	m := c.m
+	if len(m.byID) >= maxMailboxes {
+		return c.fail("too many pairings in flight; try again in a few minutes")
+	}
+	names := m.byName[c.app]
+	if names == nil {
+		names = map[int]*mailbox{}
+		m.byName[c.app] = names
+	}
+	n := 1
+	for names[n] != nil {
+		n++
+	}
+	raw := make([]byte, 16)
+	_, _ = rand.Read(raw)
+	mb := &mailbox{id: hex.EncodeToString(raw), app: c.app, nameplate: n, created: m.s.now(),
+		claims: map[string]bool{}, closed: map[string]bool{}, listeners: map[*mailConn]bool{}}
+	names[n] = mb
+	m.byID[mb.id] = mb
+	c.sendLocked(map[string]any{"type": "allocated", "nameplate": strconv.Itoa(n)})
+	return true
+}
+
+func (c *mailConn) claim(msg mailIn) bool {
+	n, err := strconv.Atoi(msg.Nameplate)
+	mb := c.m.byName[c.app][n]
+	if err != nil || mb == nil {
+		// Said, not hung up on: the client only ever waits for a reply, and
+		// closing under it races its own teardown. Guessing is what several
+		// misses on one connection look like, and that is cut.
+		c.misses++
+		c.sendLocked(map[string]any{"type": "error", "error": "no pairing is waiting under that code"})
+		return c.misses < 3
+	}
+	if !mb.claims[c.side] && len(mb.claims) >= 2 {
+		return c.fail("crowded")
+	}
+	mb.claims[c.side] = true
+	c.sendLocked(map[string]any{"type": "claimed", "mailbox": mb.id})
+	return true
+}
+
+func (c *mailConn) open(msg mailIn) bool {
+	mb := c.m.byID[msg.Mailbox]
+	if mb == nil || !mb.claims[c.side] || c.box != nil {
+		return c.fail("no such mailbox")
+	}
+	c.box = mb
+	mb.listeners[c] = true
+	for _, held := range mb.msgs {
+		c.sendLocked(mailMap(held))
+	}
+	return true
+}
+
+func (c *mailConn) add(msg mailIn) bool {
+	mb := c.box
+	if mb == nil {
+		return c.fail("open a mailbox first")
+	}
+	if len(mb.msgs) >= 16 {
+		return c.fail("the mailbox is full")
+	}
+	held := mailMsg{Type: "message", Side: c.side, Phase: msg.Phase, Body: msg.Body,
+		ID: strconv.Itoa(len(mb.msgs)), ServerRX: float64(c.m.s.now().UnixNano()) / 1e9}
+	mb.msgs = append(mb.msgs, held)
+	for l := range mb.listeners {
+		l.sendLocked(mailMap(held))
+	}
+	return true
+}
+
+func (c *mailConn) release(msg mailIn) bool {
+	if names := c.m.byName[c.app]; names != nil {
+		if n, err := strconv.Atoi(msg.Nameplate); err == nil && names[n] != nil && names[n].claims[c.side] {
+			delete(names, n)
+		}
+	}
+	c.sendLocked(map[string]any{"type": "released"})
+	return true
+}
+
+func (c *mailConn) closeBox(msg mailIn) bool {
+	if mb := c.m.byID[msg.Mailbox]; mb != nil {
+		mb.closed[c.side] = true
+		delete(mb.listeners, c)
+		// A failed exchange burns the code: whoever got it wrong gets no
+		// second guess. The other side still hears the rest of the exchange,
+		// so it fails at once rather than waiting out the code.
+		if msg.Mood == "scary" {
+			c.m.releaseLocked(mb)
+		}
+		if len(mb.closed) >= len(mb.claims) {
+			c.m.deleteLocked(mb, c)
+		}
+	}
+	c.sendLocked(map[string]any{"type": "closed"})
 	return true
 }
 

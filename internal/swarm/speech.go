@@ -44,40 +44,16 @@ const passwordDigits = 8
 // digits in English and Spanish are read as digits; a number word, a
 // repeat word or anything else that could mean two things is refused.
 func NormalizeCode(input string) (string, error) {
-	var digits strings.Builder
 	fields := strings.FieldsFunc(strings.ToLower(input), func(r rune) bool {
 		return unicode.IsSpace(r) || r == '-' || r == '.' || r == ',' || r == '·' || r == '/' || r == ':'
 	})
-	for _, f := range fields {
-		switch {
-		case isDigits(f):
-			digits.WriteString(f)
-		case digitWords[f] != 0:
-			digits.WriteByte(digitWords[f])
-		case fillers[f]:
-		default:
-			return "", fmt.Errorf("%q is not a digit; say or type the code one digit at a time", f)
-		}
+	d, err := spokenDigits(fields)
+	if err != nil {
+		return "", err
 	}
-	// Typed in groups, the groups are checked: a digit dropped from one would
-	// otherwise shift the split and read as another code.
-	// Digits spaced one by one, as a transcriber writes them, are no groups.
-	var groups []string
-	grouped := false
-	for _, f := range fields {
-		if isDigits(f) {
-			groups = append(groups, f)
-			grouped = grouped || len(f) > 1
-		}
+	if err := checkGroups(fields); err != nil {
+		return "", err
 	}
-	if grouped && len(groups) == len(fields) && len(groups) >= 2 {
-		tail := strings.Join(groups[1:], "")
-		if len(groups) == 2 && len(tail) != passwordDigits ||
-			len(groups) >= 3 && (len(groups[len(groups)-1]) != 4 || len(groups[len(groups)-2]) != 4) {
-			return "", errors.New("a code is written as a number and two groups of four digits; this one is not")
-		}
-	}
-	d := digits.String()
 	if len(d) <= passwordDigits {
 		return "", fmt.Errorf("a code has more than %d digits; this one has %d", passwordDigits, len(d))
 	}
@@ -85,6 +61,46 @@ func NormalizeCode(input string) (string, error) {
 		return "", errors.New("that is too many digits for a code")
 	}
 	return d[:len(d)-passwordDigits] + "-" + d[len(d)-passwordDigits:], nil
+}
+
+// spokenDigits reads the digits out of the fields, typed or spoken.
+func spokenDigits(fields []string) (string, error) {
+	var digits strings.Builder
+	for _, f := range fields {
+		switch {
+		case isDigits(f):
+			digits.WriteString(f)
+		case digitWords[f] != 0:
+			digits.WriteByte(digitWords[f])
+		case !fillers[f]:
+			return "", fmt.Errorf("%q is not a digit; say or type the code one digit at a time", f)
+		}
+	}
+	return digits.String(), nil
+}
+
+// checkGroups checks a code typed in groups: a digit dropped from one would
+// otherwise shift the split and read as another code. Digits spaced one by
+// one, as a transcriber writes them, are no groups.
+func checkGroups(fields []string) error {
+	var groups []string
+	grouped := false
+	for _, f := range fields {
+		if !isDigits(f) {
+			return nil
+		}
+		groups = append(groups, f)
+		grouped = grouped || len(f) > 1
+	}
+	if !grouped || len(groups) < 2 {
+		return nil
+	}
+	last := len(groups) - 1
+	if len(groups) == 2 && len(groups[1]) == passwordDigits ||
+		len(groups) >= 3 && len(groups[last]) == 4 && len(groups[last-1]) == 4 {
+		return nil
+	}
+	return errors.New("a code is written as a number and two groups of four digits; this one is not")
 }
 
 func isDigits(s string) bool {
