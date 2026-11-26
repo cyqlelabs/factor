@@ -42,6 +42,7 @@ than logging, so past failures become constraints it doesn't repeat.
 | ☎️ **Answers the phone** | A real number to call, or it calls and texts you — barge-in, voicemail detection, optional fully local speech ([Phone](#phone-calls-and-sms)) |
 | 🎙️ **Listens in the room** | Mic in, speakers out, barge-in, optional wake word, push-to-talk via `factor talk` ([PC voice](#pc-voice-mic-and-speakers)) |
 | 👥 **Tells voices apart** | A recording is read voice by voice, so each person holds their own conversation — and company in the room moves the answer to a memory space it can hear ([PC voice](#pc-voice-mic-and-speakers)) |
+| 🎵 **Plays your music** | Radio streams, audio links, YouTube or SoundCloud pages and local files, through an mpv it installs itself; it reports a song only once it is really playing, and turns the music down while you talk |
 | 🖐️ **Hands on your desktop** | Windows, screenshots, mouse, keyboard, clipboard, notifications on X11/Wayland/macOS/Windows — plus grid vision with the accessibility tree tagged on top ([Desktop](#desktop)) |
 | 🌐 **A real browser, not just fetch** | CDP tools attach to your running Chrome/Chromium/Brave or launch a managed one ([Browser](#browser)) |
 | 🧩 **Extensible everything** | Channel connectors, Go tools, runtime-mounted MCP servers, markdown skills ([Extending](#extending-factor)) |
@@ -554,7 +555,8 @@ tests that auto-skip where the machine can't host them.
 
 ## Code signing policy
 
-Windows releases are signed. Free code signing provided by
+Windows releases will be signed once SignPath approves the project; until then
+they ship unsigned. Free code signing provided by
 [SignPath.io](https://about.signpath.io), certificate by
 [SignPath Foundation](https://signpath.org).
 

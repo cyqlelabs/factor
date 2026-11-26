@@ -52,7 +52,8 @@ style is a review whose real finding gets scrolled past.
   coverage floor, the linters in `.golangci.yml`. CI says it better and sooner.
 - Comment density or prose style. The commentary here is deliberately dense and
   explains why rather than what; that is the house style, not an accident.
-- Generated files: `docs/assets/*.png` (rebuilt by `make diagrams`).
+- Generated files: `docs/assets/*.png` (rebuilt by `make diagrams`) and
+  `site/assets/og-*.png` (rebuilt by `make og`).
 
 ## Two standing rules
 
