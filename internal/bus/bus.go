@@ -55,10 +55,12 @@ func (m InboundMessage) SessionKey() string { return m.Channel + ":" + m.ChatID 
 // process, and so is somewhere Factor can reach the user on its own
 // initiative. The CLI is one process's stdin, system is Factor talking to
 // itself, and cron is a schedule rather than an inbox: none of them is an
-// address a heartbeat, a job result or a restart notice can be sent to.
+// address a heartbeat, a job result or a restart notice can be sent to. Nor
+// is a2a: it is another agent handing this one work, and making it the last
+// chat would send the heartbeat and the restart notices to that agent.
 func External(channel string) bool {
 	switch channel {
-	case "", "cli", "system", "cron":
+	case "", "cli", "system", "cron", "a2a":
 		return false
 	}
 	return true

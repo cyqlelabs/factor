@@ -41,6 +41,32 @@ type Meter struct {
 	flight   int
 
 	onCharge func(sessionKey, model string, t Totals, cacheWrite int)
+
+	// memberOf names the swarm member a session works for, and memberUSD
+	// is the daily cap on each one. Unset, no session belongs to a member.
+	memberOf  func(sessionKey string) string
+	memberUSD float64
+}
+
+// CapMembers puts a daily cap on what each swarm member's tasks may spend
+// here, on top of the session and global caps. memberOf names the member a
+// session works for, or "" for the user's own sessions. A cap of zero or less
+// counts the spend and caps nothing.
+func (m *Meter) CapMembers(usd float64, memberOf func(sessionKey string) string) *Meter {
+	if m != nil {
+		m.memberUSD, m.memberOf = usd, memberOf
+		if memberOf != nil {
+			m.active = true
+		}
+	}
+	return m
+}
+
+func (m *Meter) member(sessionKey string) string {
+	if m.memberOf == nil {
+		return ""
+	}
+	return m.memberOf(sessionKey)
 }
 
 // NewMeter wires a meter around inner. It stays a pass-through unless
@@ -127,6 +153,11 @@ func (m *Meter) reserved(s Snapshot) float64 {
 // prices adds tokens rather than money, so it moves no cap at all — the
 // usage report names those models for exactly that reason.
 func (m *Meter) check(sessionKey string) error {
+	if member := m.member(sessionKey); member != "" && m.memberUSD > 0 {
+		if spent := m.ledger.MemberToday(member).USD; spent >= m.memberUSD {
+			return &BudgetError{Scope: "member", Spent: spent, Limit: m.memberUSD}
+		}
+	}
 	if m.budget.Off() {
 		return nil
 	}
@@ -161,7 +192,7 @@ func (m *Meter) record(sessionKey string, resp *provider.Response) {
 	if m.onCharge != nil {
 		m.onCharge(sessionKey, resp.Model, t, u.CacheWriteTokens)
 	}
-	m.ledger.Record(sessionKey, resp.Model, t)
+	m.ledger.RecordFor(sessionKey, m.member(sessionKey), resp.Model, t)
 }
 
 // Snapshot reads the ledger as one session sees it.
@@ -199,6 +230,11 @@ func (e *BudgetError) Error() string {
 // Message is the sentence the user reads instead of an answer: what was
 // spent, against which cap, and the two ways out of it.
 func (e *BudgetError) Message() string {
+	if e.Scope == "member" {
+		return fmt.Sprintf("Budget cap reached: this agent's work for the swarm member that asked has cost %s today, "+
+			"against its %s daily cap. Ask again tomorrow, or raise swarm.member_daily_usd on this machine.",
+			FormatUSD(e.Spent), FormatUSD(e.Limit))
+	}
 	if e.Scope == "session" {
 		return fmt.Sprintf("Budget cap reached: this session has spent %s of its %s cap. "+
 			"Start a fresh session, or raise cost.budget.session_usd.", FormatUSD(e.Spent), FormatUSD(e.Limit))

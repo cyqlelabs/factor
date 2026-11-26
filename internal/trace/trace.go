@@ -35,13 +35,16 @@ import (
 
 // Record is one turn, written as a single JSON line when the turn ends.
 type Record struct {
-	ID       string    `json:"id"`
-	Started  time.Time `json:"started"`
-	Session  string    `json:"session"`
-	Channel  string    `json:"channel"`
-	Trigger  string    `json:"trigger,omitempty"` // user | cron | job | heartbeat
-	Speaker  string    `json:"speaker,omitempty"`
-	Duration float64   `json:"duration_s"`
+	ID      string    `json:"id"`
+	Started time.Time `json:"started"`
+	Session string    `json:"session"`
+	Channel string    `json:"channel"`
+	Trigger string    `json:"trigger,omitempty"` // user | cron | job | heartbeat | a2a
+	Speaker string    `json:"speaker,omitempty"`
+	// Peer and Task name the agent and the A2A task an a2a turn served.
+	Peer     string  `json:"peer,omitempty"`
+	Task     string  `json:"task,omitempty"`
+	Duration float64 `json:"duration_s"`
 
 	Models []ModelCall `json:"models,omitempty"`
 	Tools  []ToolCall  `json:"tools,omitempty"`
@@ -241,6 +244,16 @@ func (r *Recorder) Begin(sessionKey, trigger, speaker string) *Turn {
 	r.open[sessionKey] = t
 	r.mu.Unlock()
 	return t
+}
+
+// Remote names the agent and the task a turn from another agent served.
+func (t *Turn) Remote(peer, task string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.data.Peer, t.data.Task = peer, task
+	t.mu.Unlock()
 }
 
 // Tool records one execution. said is what the tool returned; it is kept, as

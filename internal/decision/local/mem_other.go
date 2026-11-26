@@ -10,3 +10,7 @@ package local
 var availableMB = func() (int, bool) { return 0, false }
 
 var totalMB = func() (int, bool) { return 0, false }
+
+// AvailableMB is availableMB for the rest of Factor; off Linux nothing reads
+// it, so nothing is refused on its account.
+func AvailableMB() (int, bool) { return availableMB() }

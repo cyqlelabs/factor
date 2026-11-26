@@ -202,6 +202,9 @@ func gapNotice(gap time.Duration) string {
 // history-less turn has no user message to match the language of, and the
 // English it falls back to is noise in a Spanish voice.
 func channelBriefing(tc tools.ToolContext) string {
+	if tc.Channel == remoteChannel {
+		return remoteBriefing(tc.Audience)
+	}
 	brief := mediumBriefing(tc.Channel)
 	if tc.Outlet != "" && tc.Outlet != tc.Channel {
 		brief = joinBriefs(brief, mediumBriefing(tc.Outlet))

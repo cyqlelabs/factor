@@ -384,6 +384,17 @@ func interleave(first, second []Memory, limit int) []Memory {
 // start downloads models), it waits for health rather than dropping the very
 // first memories.
 func (a *Ambient) StoreExchange(channel, audience, speaker, userText, assistantText string) {
+	a.storeExchange(channel, audience, speaker, SourceUser, userText, assistantText)
+}
+
+// StoreAgentExchange is StoreExchange for a request another agent made. Its
+// words are recorded as an agent's, which the engine weighs below a person's
+// and may prune, and attributed to that agent by name.
+func (a *Ambient) StoreAgentExchange(channel, audience, agent, request, reply string) {
+	a.storeExchange(channel, audience, agent, SourceAgent, request, reply)
+}
+
+func (a *Ambient) storeExchange(channel, audience, speaker, requestSource, userText, assistantText string) {
 	if a == nil || a.Engine == nil || !a.Engine.Enabled() {
 		return
 	}
@@ -419,7 +430,7 @@ func (a *Ambient) StoreExchange(channel, audience, speaker, userText, assistantT
 			slog.Debug("memory store dropped", "error", err)
 		}
 	}
-	store(SourceUser, attribute(speaker, userText))
+	store(requestSource, attribute(speaker, userText))
 	store(SourceAgent, assistantText)
 	// The turn that ends a gathering is the moment the two spaces have
 	// finished diverging, and the moment nobody is waiting on a reply.

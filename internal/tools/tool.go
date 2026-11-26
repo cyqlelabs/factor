@@ -79,6 +79,19 @@ type ToolContext struct {
 	// reads anything else as noise. Blank where the reply is read, and the
 	// user's own language is the one to match.
 	Language string
+	// Trigger names what started the turn: "user" for a person, or "cron",
+	// "job", "heartbeat", "system" or "a2a" for work nobody is holding the
+	// line for. Blank is read as a person, which is what every caller that
+	// predates the field meant.
+	Trigger string
+}
+
+// ByPerson reports whether a person started the turn. It is the test for the
+// actions only the user may take — joining or leaving a swarm, changing what
+// another agent may do here — which a job reporting back into a chat cannot
+// pass, though it runs under the chat's channel.
+func (tc ToolContext) ByPerson() bool {
+	return tc.Trigger == "" || tc.Trigger == "user"
 }
 
 // AudienceShared marks a turn that more than the user can hear — a second
@@ -156,4 +169,38 @@ func WithInterrupt(ctx context.Context, fn Interrupt) context.Context {
 func Interrupted(ctx context.Context) bool {
 	fn, _ := ctx.Value(interruptKey{}).(Interrupt)
 	return fn != nil && fn()
+}
+
+type withheldKey struct{}
+
+// WithWithheld marks tools a turn may not use. The registry neither offers
+// them to the model nor runs them, so a turn another agent started cannot
+// reach a tool its grant leaves out by naming it anyway.
+func WithWithheld(ctx context.Context, allowed func(name string) bool) context.Context {
+	if allowed == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, withheldKey{}, allowed)
+}
+
+// Withheld reports whether the turn on ctx may not use the named tool.
+func Withheld(ctx context.Context, name string) bool {
+	allowed, _ := ctx.Value(withheldKey{}).(func(string) bool)
+	return allowed != nil && !allowed(name)
+}
+
+type askerKey struct{}
+
+// WithAsker routes ask_user for one turn somewhere other than the user: a
+// turn another agent started puts its questions to that agent.
+func WithAsker(ctx context.Context, a Asker) context.Context {
+	if a == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, askerKey{}, a)
+}
+
+func askerFrom(ctx context.Context) Asker {
+	a, _ := ctx.Value(askerKey{}).(Asker)
+	return a
 }

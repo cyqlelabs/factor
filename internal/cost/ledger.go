@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -61,6 +62,9 @@ type book struct {
 	Months   map[string]Totals  `json:"months"`
 	Models   map[string]Totals  `json:"models"`
 	Sessions map[string]stamped `json:"sessions"`
+	// Members is today's spend per swarm member, keyed "<day> <member>":
+	// what work another agent asked for has cost this machine.
+	Members map[string]Totals `json:"members,omitempty"`
 }
 
 func (b *book) init() {
@@ -75,6 +79,9 @@ func (b *book) init() {
 	}
 	if b.Sessions == nil {
 		b.Sessions = map[string]stamped{}
+	}
+	if b.Members == nil {
+		b.Members = map[string]Totals{}
 	}
 }
 
@@ -94,6 +101,7 @@ type entry struct {
 	at      time.Time
 	session string
 	model   string
+	member  string
 	totals  Totals
 }
 
@@ -183,9 +191,15 @@ func (l *Ledger) read() book {
 // worth saying once, because the totals are then only as durable as the
 // process, but not worth saying on every call while the disk stays broken.
 func (l *Ledger) Record(sessionKey, model string, t Totals) {
+	l.RecordFor(sessionKey, "", model, t)
+}
+
+// RecordFor is Record for a call made on a swarm member's behalf, which also
+// counts against that member's daily cap.
+func (l *Ledger) RecordFor(sessionKey, member, model string, t Totals) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e := entry{at: l.now(), session: sessionKey, model: model, totals: t}
+	e := entry{at: l.now(), session: sessionKey, member: member, model: model, totals: t}
 	l.pending = append(l.pending, e)
 	apply(&l.book, e)
 	if err := l.flushLocked(); err != nil && !l.warned {
@@ -272,6 +286,9 @@ func apply(b *book, e entry) {
 	if e.model != "" {
 		addTo(b.Models, e.model, e.totals)
 	}
+	if e.member != "" {
+		addTo(b.Members, memberKey(e.at, e.member), e.totals)
+	}
 	if e.session != "" {
 		s := b.Sessions[e.session]
 		s.add(e.totals)
@@ -286,7 +303,27 @@ func addTo(m map[string]Totals, key string, t Totals) {
 	m[key] = cur
 }
 
+func memberKey(t time.Time, member string) string { return dayKey(t) + " " + member }
+
 func prune(b *book) {
+	// A member's cap is a daily one, so the newest two days are all it needs.
+	days := map[string]bool{}
+	for k := range b.Members {
+		day, _, _ := strings.Cut(k, " ")
+		days[day] = true
+	}
+	if len(days) > 2 {
+		order := make([]string, 0, len(days))
+		for d := range days {
+			order = append(order, d)
+		}
+		sort.Strings(order)
+		for k := range b.Members {
+			if day, _, _ := strings.Cut(k, " "); day < order[len(order)-2] {
+				delete(b.Members, k)
+			}
+		}
+	}
 	trimOldest(b.Days, keepDays)
 	trimOldest(b.Months, keepMonths)
 	if len(b.Sessions) <= keepSessions {
@@ -361,6 +398,14 @@ func (l *Ledger) Snapshot(sessionKey string) Snapshot {
 		s.Sessions[k] = v.Totals
 	}
 	return s
+}
+
+// MemberToday is what work for one swarm member has cost here today.
+func (l *Ledger) MemberToday(member string) Totals {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.refreshLocked()
+	return l.book.Members[memberKey(l.now(), member)]
 }
 
 // Spent returns what one budget scope has cost so far.
