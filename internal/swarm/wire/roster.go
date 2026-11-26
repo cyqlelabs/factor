@@ -107,8 +107,8 @@ func (r *Roster) Valid(prev *Roster) error {
 		return fmt.Errorf("roster epoch %d does not follow %d", r.Epoch, prev.Epoch)
 	case r.Prev != prev.Hash():
 		return errors.New("the roster does not follow the one before it")
-	case !prev.HasKey(r.Signer):
-		return errors.New("the roster is signed by a key that was not a member")
+	case !prev.CanSign(r.Signer):
+		return errors.New("the roster is signed by a key that was not a member; a guest cannot change who belongs")
 	}
 	for _, m := range r.Members {
 		if slices.Contains(r.Removed, m.Key) {
@@ -121,7 +121,8 @@ func (r *Roster) Valid(prev *Roster) error {
 // validGenesis checks a first roster: epoch one, no predecessor, and only
 // the key that signed it.
 func (r *Roster) validGenesis() error {
-	if r.Epoch != 1 || r.Prev != "" || len(r.Members) != 1 || r.Members[0].Key != r.Signer {
+	if r.Epoch != 1 || r.Prev != "" || len(r.Members) != 1 || r.Members[0].Key != r.Signer ||
+		r.Members[0].Role != RoleMember {
 		return errors.New("a first roster must hold only the key that signed it")
 	}
 	return nil
@@ -150,6 +151,14 @@ func (r *Roster) Remove(key string) {
 	if !slices.Contains(r.Removed, key) {
 		r.Removed = append(r.Removed, key)
 	}
+}
+
+// CanSign reports whether key may sign the next roster: a member, never a
+// guest, so somebody else's agent cannot add or remove anyone.
+func (r *Roster) CanSign(key string) bool {
+	return r != nil && slices.ContainsFunc(r.Members, func(m RosterMember) bool {
+		return m.Key == key && m.Role == RoleMember
+	})
 }
 
 // HasKey reports whether key is a current member.

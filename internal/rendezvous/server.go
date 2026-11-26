@@ -223,6 +223,17 @@ func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request) {
 	go c.writeLoop(ctx, cancel)
 	defer s.drop(c)
 	go c.keepalive(ctx, cancel)
+	// A key no roster lists is here to pair, which takes a code's lifetime;
+	// past that, it is holding a socket for nothing.
+	timer := time.AfterFunc(s.cfg.MailboxTTL, func() {
+		s.mu.Lock()
+		unlisted := c.swarm == ""
+		s.mu.Unlock()
+		if unlisted {
+			_ = ws.Close(websocket.StatusPolicyViolation, "a key no roster lists has only a code's lifetime to pair")
+		}
+	})
+	defer timer.Stop()
 	c.readLoop(ctx)
 }
 

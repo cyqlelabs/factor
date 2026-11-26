@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/cost"
@@ -165,5 +166,14 @@ func TestGuestRemoteTaskReadsOnlyTheGuestSpace(t *testing.T) {
 	}
 	if !strings.Contains(remoteBriefing(tools.AudienceGuest), "guest") {
 		t.Error("guest briefing")
+	}
+}
+
+func TestBusMessagesForRemoteSessionsAreDropped(t *testing.T) {
+	h := newHarness(t)
+	h.loop.dispatch(context.Background(), bus.InboundMessage{Channel: remoteChannel, ChatID: "p:c", Content: "hi"})
+	h.loop.WaitBackground(time.Second)
+	if len(h.chat.requests) != 0 {
+		t.Error("a bus message ran a turn on another agent's session")
 	}
 }

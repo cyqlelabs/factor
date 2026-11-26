@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"testing"
 
 	"github.com/cyqlelabs/factor/internal/tools"
@@ -36,3 +37,17 @@ func TestGuestSpace(t *testing.T) {
 		t.Error("a guest's explicit space")
 	}
 }
+
+func TestGuestWithoutASpaceWritesNothing(t *testing.T) {
+	p, _ := NewSpacePolicy("origin", "main", "system", "shared")
+	tc := tools.ToolContext{Channel: "a2a", Audience: tools.AudienceGuest}
+	ctx := tools.WithToolContext(context.Background(), tc)
+	if _, refusal := requestedSpace(ctx, routing{}, p, map[string]any{}); refusal == nil {
+		t.Error("a guest with no space was given the default one")
+	}
+}
+
+// routing is an engine that routes spaces and writes main by default.
+type routing struct{ Engine }
+
+func (routing) SpaceSupport() (bool, string) { return true, "main" }

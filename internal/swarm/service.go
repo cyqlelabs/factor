@@ -3,6 +3,7 @@ package swarm
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,8 +36,10 @@ type Service struct {
 	deleg   *ledger
 	version string
 	now     func() time.Time
-	// pollEvery is how often a task followed without a stream is asked about.
-	pollEvery time.Duration
+	// pollEvery is how often a task followed without a stream is asked about,
+	// and refreshEvery how often the roster is confirmed.
+	pollEvery    time.Duration
+	refreshEvery time.Duration
 
 	// netMu guards the path to the others, which a pairing can swap for a
 	// link to another rendezvous while tools are using it.
@@ -92,7 +95,7 @@ func New(cfg config.SwarmConfig, dir, version string, turns Turns, b *bus.Messag
 	bg, cancel := context.WithCancel(context.Background())
 	s := &Service{cfg: cfg, dir: dir, id: id, book: book, turns: turns, bus: b, store: store,
 		deleg: &ledger{dir: delegDir}, version: version, now: time.Now, bg: bg, cancel: cancel,
-		pollEvery: pollEvery}
+		pollEvery: pollEvery, refreshEvery: refreshEvery}
 	s.peerOf = s.tlsPeer
 	s.server = fa2a.NewServer(s, store, fa2a.Options{
 		Self:       id.ID,
@@ -187,6 +190,9 @@ func MemberOf(sessionKey string) string {
 // Start reconciles what the last process left unfinished and keeps an eye on
 // results held back for company.
 func (s *Service) Start() {
+	if err := s.store.FailRunning(); err != nil {
+		slog.Warn("swarm: tasks left running by the last process could not be failed", "error", err)
+	}
 	s.reconcile()
 	s.wg.Add(1)
 	go func() {
@@ -209,6 +215,7 @@ func (s *Service) Start() {
 func (s *Service) Close() {
 	s.cancel()
 	s.server.Close()
+	s.store.Close()
 	s.disconnect()
 	s.wg.Wait()
 }

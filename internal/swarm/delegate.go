@@ -426,6 +426,16 @@ func (s *Service) deliver(d *Delegation) {
 	if d.Delivered {
 		return
 	}
+	if !bus.External(d.Origin.Channel) {
+		// Asked from somewhere that is not a chat — a turn another agent
+		// started, a scheduled task — and abandoned there. Published, it
+		// would start a turn on a session nobody reads.
+		slog.Info("swarm: an answer for a turn that is no longer waiting was dropped",
+			"delegation", d.ID, "origin", d.Origin.Session)
+		d.Delivered, d.Updated = true, s.now()
+		s.deleg.save(d)
+		return
+	}
 	name := s.book.Read().Label(d.Peer)
 	if d.Private && s.turns.AudienceAt(d.Origin.Channel, d.Origin.ChatID) == tools.AudienceShared {
 		if !d.Held {

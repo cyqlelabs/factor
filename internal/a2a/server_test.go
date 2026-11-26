@@ -358,6 +358,13 @@ func TestRestartFailsWhatWasRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Opening alone leaves it be: a terminal session opens the store too.
+	if got, _ := again.Get(context.Background(), "t1"); got.Task.Status.State != a2a.TaskStateWorking {
+		t.Errorf("opening the store changed a running task to %s", got.Task.Status.State)
+	}
+	if err := again.FailRunning(); err != nil {
+		t.Fatal(err)
+	}
 	got, err := again.Get(context.Background(), "t1")
 	if err != nil || got.Task.Status.State != a2a.TaskStateFailed || TextOf(got.Task.Status.Message) != restartReason {
 		t.Errorf("reopened: %+v %v", got, err)
@@ -383,6 +390,11 @@ func TestStoreKeepsAWeekAndRefusesOddIDs(t *testing.T) {
 	if _, err := s.Create(context.Background(), task); err == nil {
 		t.Error("created the same task twice")
 	}
+	s.Close()
+	if _, err := s.Create(context.Background(), &a2a.Task{ID: "late"}); !errors.Is(err, errClosed) {
+		t.Errorf("a closed store wrote: %v", err)
+	}
+	s.closed = false
 	s.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
 	s.mu.Lock()
 	s.pruneLocked()

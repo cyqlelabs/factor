@@ -204,8 +204,7 @@ func TestHandshakeRefusals(t *testing.T) {
 	go func() {
 		l.Run(ctx)
 	}()
-	time.Sleep(200 * time.Millisecond)
-	if state, _ := l.Status(); l.Online() || !strings.Contains(state, "proof of work") {
+	if state := stateWith(l, "proof of work"); l.Online() || !strings.Contains(state, "proof of work") {
 		t.Errorf("a new key against a greedy rendezvous: %q", state)
 	}
 	// And one that pays nothing is not welcomed.
@@ -232,9 +231,21 @@ func TestHandshakeRefusals(t *testing.T) {
 	_ = r.srv.store.Commit(three)
 	gone := swarm.NewLink(r.url, id, func() string { return g.Swarm })
 	go gone.Run(ctx)
-	time.Sleep(200 * time.Millisecond)
-	if state, _ := gone.Status(); gone.Online() || !strings.Contains(state, "removed") {
+	if state := stateWith(gone, "removed"); gone.Online() || !strings.Contains(state, "removed") {
 		t.Errorf("a removed agent: %q", state)
+	}
+}
+
+// stateWith waits for a link's state to mention want, and returns the state
+// it ended on.
+func stateWith(l *swarm.Link, want string) string {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, _ := l.Status()
+		if strings.Contains(state, want) || time.Now().After(deadline) {
+			return state
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

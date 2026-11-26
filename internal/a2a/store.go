@@ -34,7 +34,20 @@ type Store struct {
 	keep time.Duration
 	now  func() time.Time
 
-	mu sync.Mutex
+	mu     sync.Mutex
+	closed bool
+}
+
+// errClosed is a write to a store whose process has shut it.
+var errClosed = errors.New("the task store is closed")
+
+// Close stops all writes. The SDK finishes processing events on goroutines
+// of its own, which can outlive the server that started them; a closed store
+// keeps them from writing after the process has let go of the directory.
+func (s *Store) Close() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 }
 
 type stored struct {
@@ -46,9 +59,9 @@ type stored struct {
 
 var _ taskstore.Store = (*Store)(nil)
 
-// OpenStore opens the store in dir. Tasks older than keep are removed, and
-// any task still marked as running is failed: whatever was running it died
-// with the last process.
+// OpenStore opens the store in dir and removes tasks older than keep.
+// Opening changes nothing else: every Factor process with the swarm on opens
+// it, and only the one serving tasks may say what became of them.
 func OpenStore(dir string, keep time.Duration) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -57,15 +70,24 @@ func OpenStore(dir string, keep time.Duration) (*Store, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked()
+	return s, nil
+}
+
+// FailRunning fails every task still marked as running. The process that
+// serves tasks calls it as it starts: whatever was running one died with the
+// last such process.
+func (s *Store) FailRunning() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, rec := range s.allLocked() {
 		if Terminal(rec.Task.Status.State) || rec.Task.Status.State == a2a.TaskStateUnspecified {
 			continue
 		}
 		if err := s.setStatusLocked(rec, a2a.TaskStateFailed, restartReason); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return s, nil
+	return nil
 }
 
 // requester is the agent a call is made by, or "" for this process's own
@@ -113,6 +135,9 @@ func (s *Store) readLocked(id a2a.TaskID) (*stored, error) {
 }
 
 func (s *Store) writeLocked(rec *stored) error {
+	if s.closed {
+		return errClosed
+	}
 	path, ok := s.path(rec.Task.ID)
 	if !ok {
 		return fmt.Errorf("task id %q cannot be stored", rec.Task.ID)

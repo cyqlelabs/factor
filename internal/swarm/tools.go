@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	fa2a "github.com/cyqlelabs/factor/internal/a2a"
+	"github.com/cyqlelabs/factor/internal/bus"
 	"github.com/cyqlelabs/factor/internal/tools"
 )
 
@@ -66,6 +67,11 @@ func (t *sendTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 	}
 	if req.meta, req.hold, err = s.chain(ctx, tc); err != nil {
 		return tools.Errorf("%v", err)
+	}
+	// Only a chat can be told later. A scheduled task, a job or a heartbeat
+	// waits for its answer, because nothing would carry one back to it.
+	if !bus.External(tc.Channel) {
+		req.hold = true
 	}
 	if err := s.mayTell(member, tc); err != nil {
 		return tools.Errorf("%v", err)

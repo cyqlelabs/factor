@@ -419,7 +419,12 @@ func (a *Ambient) storeExchange(channel, audience, speaker, requestSource, userT
 	// The write happens whether or not recall was possible: what was said in
 	// company is not a secret from anyone who was there, and dropping it
 	// would lose the conversation for both of them.
-	space, _ := a.scope(channel, audience)
+	space, ok := a.scope(channel, audience)
+	if !ok && audience == tools.AudienceGuest {
+		// A guest with no space of its own stores nothing: the default space
+		// is the private graph.
+		return
+	}
 	writeSpace := space.Space
 	store := func(source, text string) {
 		text = strings.TrimSpace(text)

@@ -204,7 +204,7 @@ func TestPairingThroughTheTool(t *testing.T) {
 	if res.IsError || !strings.Contains(res.ForLLM, "run commands on this machine") {
 		t.Fatalf("invite: %q", res.ForLLM)
 	}
-	msg := <-deskBus.Outbound()
+	msg := outbound(t, deskBus)
 	code, err := NormalizeCode(msg.Content)
 	if err != nil || msg.ChatID != "7" {
 		t.Fatalf("the code went out as %+v (%v)", msg, err)
@@ -223,7 +223,7 @@ func TestPairingThroughTheTool(t *testing.T) {
 	if strings.Contains(res.ForLLM, code) || asker.asked[0] != "¿Cuál es el código?" {
 		t.Error("the join leaked the code or asked the wrong question")
 	}
-	report := <-deskBus.Inbound()
+	report := inbound(t, deskBus)
 	if !report.System || !strings.Contains(report.Content, `"home"`) {
 		t.Errorf("the sponsor's report: %+v", report)
 	}
@@ -250,7 +250,7 @@ func TestPairingThroughTheTool(t *testing.T) {
 		map[string]any{"action": "invite"}); res.IsError {
 		t.Fatalf("voice invite: %q", res.ForLLM)
 	}
-	if spoken := (<-deskBus.Outbound()).Content; !strings.Contains(spoken, ", ") {
+	if spoken := outbound(t, deskBus).Content; !strings.Contains(spoken, ", ") {
 		t.Errorf("spoken code %q", spoken)
 	}
 	nobody := newNode(t, "x")
@@ -290,7 +290,7 @@ func TestGuestRole(t *testing.T) {
 	if res := relaySend(t, visitor, desk.ID(), "hi"); !strings.Contains(res.ForLLM, "hello guest") {
 		t.Fatalf("guest call: %q", res.ForLLM)
 	}
-	if !got.Guest || got.Allowed("exec") || got.Allowed(SendToolName) || !got.Allowed("web_search") || !got.Allowed(tools.AskToolName) {
+	if !got.Guest || got.Allowed("exec") || got.Allowed(SendToolName) || !got.Allowed("web_search") || got.Allowed("web_fetch") || !got.Allowed(tools.AskToolName) {
 		t.Errorf("guest turn %+v", got)
 	}
 	if err := desk.Admit(ctx, EncodeKey(visitor.Identity().Public), "", "admin"); err == nil {
@@ -299,4 +299,45 @@ func TestGuestRole(t *testing.T) {
 	if !strings.Contains(roleSentence(RoleGuest), "guest") || roleSentence("") != grantSentence() {
 		t.Error("role sentences")
 	}
+}
+
+func TestGuestCannotChangeMembership(t *testing.T) {
+	r := newRelay(t)
+	desk, visitor := r.agent("desk", echo("desk")), r.agent("visitor", echo("visitor"))
+	codes := make(chan string, 1)
+	done := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := desk.Invite(ctx, RoleGuest, func(code string) error { codes <- code; return nil },
+		func(name string, err error) { done <- result{name, err} }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := visitor.Join(ctx, <-codes, ""); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if err := visitor.Remove(ctx, desk.ID()); err == nil {
+		t.Error("a guest removed a member")
+	}
+	if err := visitor.Invite(ctx, "", func(string) error { return nil }, func(string, error) {}); err == nil {
+		t.Error("a guest invited a machine")
+	}
+	// The rendezvous refuses a roster a guest signs, whatever the agent does.
+	st := visitor.Book().Read()
+	forged := st.Roster.Next(visitor.Identity(), func(x *Roster) { x.Remove(EncodeKey(desk.Identity().Public)) })
+	_, link, _ := visitor.net()
+	if err := link.Commit(ctx, forged); err == nil {
+		t.Error("the rendezvous took a roster a guest signed")
+	}
+}
+
+func outbound(t *testing.T, b *bus.MessageBus) bus.OutboundMessage {
+	t.Helper()
+	select {
+	case msg := <-b.Outbound():
+		return msg
+	case <-time.After(10 * time.Second):
+		t.Fatal("nothing was sent")
+	}
+	return bus.OutboundMessage{}
 }

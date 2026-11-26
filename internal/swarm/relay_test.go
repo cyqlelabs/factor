@@ -39,6 +39,8 @@ type relay struct {
 	srv *rendezvous.Server
 	hs  *httptest.Server
 	url string
+	// refreshEvery is the roster refresh its agents get.
+	refreshEvery time.Duration
 }
 
 func newRelay(t *testing.T) *relay {
@@ -50,7 +52,7 @@ func newRelay(t *testing.T) *relay {
 	}
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
-	return &relay{t: t, srv: srv, hs: hs, url: "ws" + strings.TrimPrefix(hs.URL, "http")}
+	return &relay{t: t, srv: srv, hs: hs, url: "ws" + strings.TrimPrefix(hs.URL, "http"), refreshEvery: refreshEvery}
 }
 
 func (r *relay) agent(name string, reply func(agent.RemoteTurn) string) *Service {
@@ -60,6 +62,7 @@ func (r *relay) agent(name string, reply func(agent.RemoteTurn) string) *Service
 	if err != nil {
 		r.t.Fatal(err)
 	}
+	svc.refreshEvery = r.refreshEvery
 	svc.Connect()
 	r.t.Cleanup(svc.Close)
 	return svc

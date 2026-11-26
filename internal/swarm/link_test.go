@@ -199,8 +199,8 @@ func TestAdoptRules(t *testing.T) {
 	// Removing this agent tells the user.
 	out := n.svc.book.Read().Roster.Next(other, func(r *Roster) { r.Remove(EncodeKey(n.svc.id.Public)) })
 	n.svc.adopt(out, true)
-	if !strings.Contains(told[len(told)-1], "removed") {
-		t.Errorf("removal of this agent: %v", told)
+	if !strings.Contains(told[len(told)-1], "removed") || n.svc.book.Read().Joined() {
+		t.Errorf("removal of this agent: %v, still joined: %v", told, n.svc.book.Read().Joined())
 	}
 	n.svc.adopt(nil, true)
 }

@@ -94,10 +94,20 @@ func (s *Service) await(ctx context.Context, theirs envelope, name string) error
 		return err
 	}
 	s.relink()
+	// The sponsor's commit can be pushed before this side has recorded the
+	// swarm it joins, and a push for a swarm nobody is joining is refused;
+	// so the roster is asked for until it lists this agent.
 	deadline := time.Now().Add(time.Minute)
 	for !s.book.Read().Joined() {
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			return errors.New("paired, but the swarm's roster has not arrived yet; it will once this agent reaches the rendezvous")
+		}
+		if _, link, _ := s.net(); link != nil && link.Online() {
+			fctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if r, err := link.Fetch(fctx, theirs.Swarm); err == nil {
+				s.adopt(r, true)
+			}
+			cancel()
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -119,6 +129,9 @@ func (s *Service) relink() {
 // it in front of the user. The pairing then waits in the background, up to
 // the code's lifetime, and report is told how it ended.
 func (s *Service) Invite(ctx context.Context, role string, deliver func(code string) error, report func(name string, err error)) error {
+	if s.guest() {
+		return errGuest
+	}
 	if err := s.Found(ctx); err != nil {
 		return err
 	}
@@ -269,7 +282,9 @@ func (s *Service) join(ctx context.Context, tc tools.ToolContext, prompt, role s
 	if strings.TrimSpace(prompt) == "" {
 		prompt = "Swarm code?"
 	}
-	answer, err := asker.Ask(ctx, tools.Question{Prompt: prompt, Timeout: 3 * time.Minute})
+	actx, stopAsking := context.WithTimeout(ctx, 3*time.Minute)
+	answer, err := asker.Ask(actx, tools.Question{Prompt: prompt, Timeout: 3 * time.Minute})
+	stopAsking()
 	if err != nil {
 		return tools.Errorf("no code came: %v", err)
 	}
