@@ -5,8 +5,9 @@ each other work over the [A2A protocol](https://a2a-protocol.org). Adding an
 agent takes two sentences, and the agents already in the swarm learn about the
 newcomer on their own.
 
-This page is the design and the development plan. **Nothing here is
-implemented yet** (status: 2026-11-26).
+This page is the design and the development plan. Phases P1 to P5 are built,
+except hole punching, which waits on measurements from real pairs; see
+[Status](#status).
 
 ## What you do
 
@@ -23,6 +24,23 @@ enter it on the one you can type into: a synthesized voice reads digits
 reliably, and transcription of spoken digits is less certain. On a new machine,
 `factor init` shows a code, the way a TV does when you link a streaming
 account.
+
+The swarm is off until you turn it on, on each machine: set `swarm.enabled`
+and `swarm.rendezvous`, or answer yes to the swarm step of `factor init`. An
+agent that never turns it on opens no connection, writes no key and offers
+the model no swarm tool. Only the gateway connects, since a second process
+holding the same key would knock the first off the rendezvous.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `swarm.enabled` | `false` | Turns the swarm on |
+| `swarm.rendezvous` | none | The `wss://` rendezvous to pair through; a newcomer inherits it |
+| `swarm.name` | host name | What this agent calls itself to the others |
+| `swarm.remote_tasks`, `swarm.remote_queue` | `1`, `1` | Tasks from other agents run at once, and waiting |
+| `swarm.member_daily_usd` | `1` | Daily spending cap per member; negative turns it off |
+| `swarm.lan` | `false` | The direct path on a shared network, which opens a listening port |
+| `swarm.agents` | none | Agents outside the swarm, by name: `url`, `token`, and the `private` grant |
+| `memory.guest_space` | `guest` | The only memory space a guest's tasks read and write |
 
 ## How it fits together
 
@@ -86,7 +104,8 @@ mailbox, and a rate limit per IP address. The rendezvous writes nothing to
 disk that links an IP address to a swarm.
 
 To run your own, put `factor rendezvous` behind a TLS proxy and set
-`swarm.rendezvous` on your agents. The URL travels inside the pairing
+`swarm.rendezvous` on your agents. Start it once with `--init` to create the
+store; after that, a missing store is refused rather than recreated. The URL travels inside the pairing
 envelope, so a newcomer inherits it.
 
 The proposed default instance runs in Cyqle's regional cells (open question 1).
@@ -101,7 +120,7 @@ right mailbox.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/cyqlelabs/factor/main/docs/assets/swarm-pairing.png" width="784"
-       alt="Sequence: you ask the desktop to add a machine; the desktop opens a pairing mailbox on the rendezvous and says the code 47 · 3829 1506; you give it to the home box, which claims mailbox 47; the two agents run SPAKE2 through the mailbox, which the rendezvous relays but cannot read or guess; the desktop sends a bootstrap envelope with the swarm id, its key and a one-time pass; the home box opens pinned TLS to the desktop through the relay, redeems the pass and proves its own key; the desktop commits roster epoch n+1, which the rendezvous pushes to both; the desktop tells you the home box joined.">
+       alt="Sequence: you ask the desktop to add a machine; the desktop opens a pairing mailbox on the rendezvous and says the code 47 · 3829 1506; you give it to the home box, which claims mailbox 47; the two agents run SPAKE2 through the mailbox, which the rendezvous relays but cannot read or guess; the desktop sends an envelope with the swarm id, the rendezvous, its key and a proof of that key; the home box answers with its key, its name and a proof of its key; the desktop commits roster epoch n+1, which the rendezvous pushes to both; the desktop tells you the home box joined.">
 </p>
 
 The two agents run SPAKE2 through
@@ -124,10 +143,12 @@ agent that joins asks you for the code directly and hands it to the pairing
 step unread. A model provider that saw a live code could claim the mailbox
 first.
 
-The key exchange carries a bootstrap envelope: the sponsor's public key, the
-swarm id, the rendezvous URL and a one-time pass. The newcomer opens pinned TLS
-to the sponsor through the relay, redeems the pass and proves it holds its own
-key. The sponsor then signs the next roster.
+Inside the channel SPAKE2 opens, each side sends an envelope: its public key,
+its name, and a signature over the exchange's transcript, which proves it holds
+that key. The sponsor's envelope adds the swarm id and the rendezvous URL. The
+sponsor then signs the next roster. Nothing crosses the relay until the roster
+lists the newcomer, which keeps the rule that a key no roster lists can only
+open and claim mailboxes.
 
 When the existing member hands out or accepts a code, it says what the new one
 will be allowed to do, for example: "It will be able to run commands on this
@@ -136,10 +157,11 @@ change grants. A remote, cron, heartbeat or job turn is refused, the way
 `config_set` already refuses `tools.disabled` from a heartbeat. On Telegram,
 pairing also requires `allow_from`.
 
-Making the code on the joining side, TV style, needs one small addition to
-wormhole-william: allocating a mailbox and receiving on the same client.
-Choosing a random mailbox number instead would collide now and then, because
-claiming a mailbox already in use joins it. P3 starts with that change.
+Making the code on the joining side, TV style, needs a client that allocates a
+mailbox and then receives on it. Factor builds that from wormhole-william's
+mailbox client and the SPAKE2 library it uses, so no fork was needed. Either
+side can make the code: the one already in a swarm becomes the sponsor, and a
+pairing where both or neither are is refused.
 
 ## Membership
 
@@ -241,6 +263,16 @@ counting both directions. That suggests €10–30 a month for one region, and
 direct paths bring it down. On shared cells, the rendezvous' own container
 limits and the per-agent quotas keep it from taking capacity Cyqle needs.
 
+## Status
+
+| Phase | State |
+|---|---|
+| P1 | Built. `go test -tags tck -run TestServeForTCK ./internal/a2a` serves the server for the conformance kit, whose run is not yet recorded here |
+| P2 | Built, and tested end to end with an in-process rendezvous. Open: the network-namespace NAT checkpoint, and a deployed instance (open question 1) |
+| P3 | Built, with the transcription eval set in `internal/swarm/speech_test.go`. Open: the live checkpoint across two networks |
+| P4 | The shared-LAN path is built, behind `swarm.lan`. Hole punching is not: it ships only on measurements from real pairs |
+| P5 | Built: the guest role, agents outside the swarm, the REST binding, and push notifications carried over the tunnel |
+
 ## Development plan
 
 Each phase ships on its own and keeps `make check`, `make lint` and the evals
@@ -288,12 +320,12 @@ latency is measured against the targets.
 
 ### P3 — Pairing in two sentences (about 3–4 days)
 
-1. Codes: the allocate-and-receive addition to wormhole-william (upstream if
-   accepted), the mailbox side of magic-wormhole in the rendezvous, and
-   numeric codes under a Factor app id. Codes reach you from the tool and come
-   back to the tool without passing through the model.
-2. Enrollment: the bootstrap envelope, pinned redemption, and roster epoch
-   n+1.
+1. Codes: allocate-and-receive on wormhole-william's mailbox client, the
+   mailbox side of magic-wormhole in the rendezvous, and numeric codes under a
+   Factor app id. Codes reach you from the tool and come back to the tool
+   without passing through the model.
+2. Enrollment: the envelopes with their proofs of key possession, and roster
+   epoch n+1.
 3. The roster: signed snapshots, the durable roster head, compare-and-swap,
    push, removal, fork detection and the seven-day freshness rule.
 4. The `swarm` tool: invite, join, list and remove, under the admin-turn rule,
@@ -325,6 +357,13 @@ A `guest` role whose tools are restricted when they run, not only when listed,
 and which gets its own memory space. Third-party A2A agents over plain HTTPS,
 with explicit grants for what Factor may tell them. The REST binding and push
 notifications.
+
+As built, a guest's tasks may ask, search the web and use the guest memory
+space unless granted more, and never pass work on. An agent outside the swarm
+is reached only from a turn the user started, and from a private conversation
+only when `swarm.agents.<name>.private` grants it. A worker pushes a task's
+changes to `https://<caller>.swarm/swarm/v1/push` over the tunnel and nowhere
+else, so a push wakes the caller instead of waiting for its next poll.
 
 Until P5, "A2A-compatible" means a spec 1.0 server that passes the conformance
 kit and answers Factor members only.
@@ -370,6 +409,8 @@ anywhere with P2P preferred.
 | A rendezvous with no durable state | Rejected: a removed member could fork the roster after a restart |
 | Six or ten secret digits | Eight: one guess per code, short enough to read aloud |
 | Removing `USER.md` from shared remote turns | Kept: the same prompt-level holding back the voice room uses, which the live eval covers |
+| Redeeming a one-time pass over pinned TLS through the relay | Replaced, while building: each side's proof of key possession rides the SPAKE2 channel, so a key no roster lists never relays |
+| `golang.org/x/net/http2` for the tunnel | Replaced, while building: the standard library's HTTP/2 serves pre-wrapped TLS connections, without pulling in `idna` and `x/text` |
 
 </details>
 
