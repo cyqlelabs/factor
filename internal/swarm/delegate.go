@@ -52,12 +52,14 @@ type Origin struct {
 // record is written before the message leaves, so a restart can always find
 // out what happened to it.
 type Delegation struct {
-	ID      string    `json:"id"`
-	Peer    string    `json:"peer"`
-	Origin  Origin    `json:"origin"`
-	Request string    `json:"request"`
-	Context string    `json:"context"`
-	Task    string    `json:"task,omitempty"`
+	ID      string `json:"id"`
+	Peer    string `json:"peer"`
+	Origin  Origin `json:"origin"`
+	Request string `json:"request"`
+	Context string `json:"context"`
+	Task    string `json:"task,omitempty"`
+	// Token is what the worker's pushes about this delegation carry back.
+	Token   string    `json:"token,omitempty"`
 	Private bool      `json:"private,omitempty"`
 	State   string    `json:"state"`
 	Said    string    `json:"said,omitempty"`
@@ -198,7 +200,7 @@ type sendRequest struct {
 // req.wait. It returns what the turn should be told.
 func (s *Service) send(ctx context.Context, req sendRequest) (string, error) {
 	d := &Delegation{ID: newID(), Peer: req.member.ID, Origin: req.origin, Request: req.message,
-		Private: req.meta.Private(), State: stSending, Created: s.now(), Updated: s.now()}
+		Private: req.meta.Private(), State: stSending, Created: s.now(), Updated: s.now(), Token: newID()}
 	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(req.message))
 	if req.task != "" {
 		prev, ok := s.deleg.byTask(req.member.ID, req.task)
@@ -215,7 +217,11 @@ func (s *Service) send(ctx context.Context, req sendRequest) (string, error) {
 		d.Context = ctxID
 		msg.ContextID = ctxID
 	}
-	req.meta.Attach(msg)
+	// The extension is for members: an agent outside learns nothing of who
+	// asked or how the work got here.
+	if !isExternal(req.member.ID) {
+		req.meta.Attach(msg)
+	}
 	s.deleg.save(d)
 
 	w := &waiter{ready: make(chan struct{})}
@@ -259,12 +265,7 @@ func (s *Service) send(ctx context.Context, req sendRequest) (string, error) {
 // exchange streams the task and settles the delegation when it reaches an
 // answer, a question, or an end.
 func (s *Service) exchange(d *Delegation, msg *a2a.Message, w *waiter) {
-	transport, _, _ := s.net()
-	if transport == nil {
-		s.settle(d, w, stFailed, "this agent has no connection to the swarm")
-		return
-	}
-	hc, base, err := transport.HTTPClient(d.Peer)
+	hc, base, err := s.clientFor(d.Peer)
 	if err != nil {
 		s.settle(d, w, stFailed, fmt.Sprintf("could not reach it: %v", err))
 		return
@@ -276,7 +277,13 @@ func (s *Service) exchange(d *Delegation, msg *a2a.Message, w *waiter) {
 	}
 	defer func() { _ = cl.Destroy() }()
 	var artifacts []string
-	for ev, err := range cl.SendStreamingMessage(s.bg, &a2a.SendMessageRequest{Message: msg}) {
+	// The worker pushes what happens to the task back through the tunnel, so
+	// a stream that breaks is picked up again without waiting for a poll.
+	sreq := &a2a.SendMessageRequest{Message: msg}
+	if !isExternal(d.Peer) {
+		sreq.Config = &a2a.SendMessageConfig{PushConfig: s.pushConfig(d)}
+	}
+	for ev, err := range cl.SendStreamingMessage(s.bg, sreq) {
 		if err != nil {
 			if d.Task != "" {
 				// The stream broke after the task existed: what it ends as is
@@ -339,7 +346,9 @@ func (s *Service) observe(d *Delegation, w *waiter, st a2a.TaskStatus, said stri
 
 // follow polls a task this agent has no stream for, until it settles.
 func (s *Service) follow(d *Delegation, w *waiter) {
-	ticker := time.NewTicker(pollEvery)
+	nudged, release := s.follower(d.ID)
+	defer release()
+	ticker := time.NewTicker(s.pollEvery)
 	defer ticker.Stop()
 	for {
 		if done := s.poll(d, w); done {
@@ -349,6 +358,7 @@ func (s *Service) follow(d *Delegation, w *waiter) {
 		case <-s.bg.Done():
 			return
 		case <-ticker.C:
+		case <-nudged:
 		}
 	}
 }
@@ -356,11 +366,10 @@ func (s *Service) follow(d *Delegation, w *waiter) {
 // poll asks the other agent once about a task. It reports whether the
 // delegation settled.
 func (s *Service) poll(d *Delegation, w *waiter) bool {
-	transport, _, _ := s.net()
-	if transport == nil || d.Task == "" {
+	if d.Task == "" {
 		return false
 	}
-	hc, base, err := transport.HTTPClient(d.Peer)
+	hc, base, err := s.clientFor(d.Peer)
 	if err != nil {
 		return false
 	}

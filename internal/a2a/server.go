@@ -13,7 +13,11 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2asrv/push"
 )
+
+// restPrefix is where the HTTP+JSON binding is served.
+const restPrefix = "/rest"
 
 // Turn is one task, handed to the Runner.
 type Turn struct {
@@ -50,6 +54,9 @@ type Options struct {
 	FreeMB    func() int
 	MinFreeMB int
 	Card      *a2a.AgentCard
+	// Push delivers push notifications, where the transport can carry them.
+	// Nil leaves them off.
+	Push push.Sender
 }
 
 // Server runs tasks other agents send. A turn runs on a context the server
@@ -119,11 +126,20 @@ type peerKey struct{}
 // a request from what the connection proved — a pinned certificate — and a
 // request it cannot name is refused before the protocol sees it.
 func (s *Server) Handler(peerOf func(*http.Request) (string, bool)) http.Handler {
-	handler := a2asrv.NewHandler(s, a2asrv.WithTaskStore(s.store), a2asrv.WithCallInterceptors(identify{}))
+	opts := []a2asrv.RequestHandlerOption{a2asrv.WithTaskStore(s.store), a2asrv.WithCallInterceptors(identify{})}
+	if s.opts.Push != nil {
+		opts = append(opts, a2asrv.WithPushNotifications(push.NewInMemoryStore(), s.opts.Push))
+	}
+	handler := a2asrv.NewHandler(s, opts...)
 	mux := http.NewServeMux()
 	if s.opts.Card != nil {
-		mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(s.opts.Card))
+		card := *s.opts.Card
+		card.Capabilities.PushNotifications = s.opts.Push != nil
+		mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(&card))
 	}
+	// Both of A2A's HTTP bindings: JSON-RPC at the root, HTTP+JSON under
+	// /rest, which the card names as a second interface.
+	mux.Handle(restPrefix+"/", http.StripPrefix(restPrefix, a2asrv.NewRESTHandler(handler)))
 	mux.Handle("/", a2asrv.NewJSONRPCHandler(handler))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		peer, ok := peerOf(r)

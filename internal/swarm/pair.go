@@ -39,6 +39,14 @@ func grantSentence() string {
 	return fmt.Sprintf("It will be able to run commands on this machine, as %s.", who)
 }
 
+// roleSentence is grantSentence for the role a new machine is given here.
+func roleSentence(role string) string {
+	if role == RoleGuest {
+		return "It joins as a guest: here it may only ask, search the web and use a memory space of its own."
+	}
+	return grantSentence()
+}
+
 func (s *Service) mine() envelope {
 	env := envelope{Name: s.Name()}
 	if st := s.book.Read(); st.Joined() {
@@ -50,12 +58,12 @@ func (s *Service) mine() envelope {
 // conclude acts on a finished exchange: a member admits a newcomer, a
 // newcomer waits to see itself on the roster. It returns what to call the
 // other machine.
-func (s *Service) conclude(ctx context.Context, theirs envelope) (string, error) {
+func (s *Service) conclude(ctx context.Context, theirs envelope, role string) (string, error) {
 	st := s.book.Read()
 	name := strings.TrimSpace(theirs.Name)
 	switch {
 	case st.Joined() && theirs.Swarm == "":
-		if err := s.Admit(ctx, theirs.Key, name); err != nil {
+		if err := s.Admit(ctx, theirs.Key, name, role); err != nil {
 			return "", err
 		}
 		return name, nil
@@ -104,7 +112,7 @@ func (s *Service) relink() {
 // Invite makes a code for a new machine and hands it to deliver, which puts
 // it in front of the user. The pairing then waits in the background, up to
 // the code's lifetime, and report is told how it ended.
-func (s *Service) Invite(ctx context.Context, deliver func(code string) error, report func(name string, err error)) error {
+func (s *Service) Invite(ctx context.Context, role string, deliver func(code string) error, report func(name string, err error)) error {
 	if err := s.Found(ctx); err != nil {
 		return err
 	}
@@ -126,7 +134,7 @@ func (s *Service) Invite(ctx context.Context, deliver func(code string) error, r
 			report("", err)
 			return
 		}
-		name, err := s.conclude(ctx, theirs)
+		name, err := s.conclude(ctx, theirs, role)
 		if err == nil {
 			p.done()
 		}
@@ -137,7 +145,7 @@ func (s *Service) Invite(ctx context.Context, deliver func(code string) error, r
 
 // Join enters a code another machine made: it joins that machine's swarm, or,
 // when this agent is a member and the other machine is new, admits it.
-func (s *Service) Join(ctx context.Context, code string) (string, error) {
+func (s *Service) Join(ctx context.Context, code, role string) (string, error) {
 	base := s.rendezvousURL()
 	if base == "" {
 		return "", errors.New("no rendezvous is configured (swarm.rendezvous)")
@@ -150,7 +158,7 @@ func (s *Service) Join(ctx context.Context, code string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	name, err := s.conclude(ctx, theirs)
+	name, err := s.conclude(ctx, theirs, role)
 	if err != nil {
 		_ = p.fail(err)
 		return "", err
@@ -181,7 +189,7 @@ func (s *Service) JoinByCode(ctx context.Context, base string, show func(code st
 	if err != nil {
 		return "", err
 	}
-	name, err := s.conclude(ctx, theirs)
+	name, err := s.conclude(ctx, theirs, RoleMember)
 	if err != nil {
 		_ = p.fail(err)
 		return "", err
@@ -205,7 +213,7 @@ func (s *Service) pairable(tc tools.ToolContext) error {
 }
 
 // invite is the tool's invite action.
-func (s *Service) invite(ctx context.Context, tc tools.ToolContext, _ string) *tools.Result {
+func (s *Service) invite(ctx context.Context, tc tools.ToolContext, role string) *tools.Result {
 	if err := s.pairable(tc); err != nil {
 		return tools.Errorf("%v", err)
 	}
@@ -232,16 +240,16 @@ func (s *Service) invite(ctx context.Context, tc tools.ToolContext, _ string) *t
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := s.Invite(ctx, deliver, report); err != nil {
+	if err := s.Invite(ctx, role, deliver, report); err != nil {
 		return tools.Errorf("could not make a code: %v", err)
 	}
 	return tools.Textf("A pairing code went to the user directly; you do not see it. On the new machine they "+
 		"turn the swarm on and say \"join the swarm\", then give it the code within %d minutes. Tell them that, "+
-		"and this: %s", int(CodeTTL.Minutes()), grantSentence())
+		"and this: %s", int(CodeTTL.Minutes()), roleSentence(role))
 }
 
 // join is the tool's join action: it asks the user for the code itself.
-func (s *Service) join(ctx context.Context, tc tools.ToolContext, prompt string) *tools.Result {
+func (s *Service) join(ctx context.Context, tc tools.ToolContext, prompt, role string) *tools.Result {
 	if err := s.pairable(tc); err != nil {
 		return tools.Errorf("%v", err)
 	}
@@ -268,12 +276,12 @@ func (s *Service) join(ctx context.Context, tc tools.ToolContext, prompt string)
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	name, err := s.Join(ctx, code)
+	name, err := s.Join(ctx, code, role)
 	if err != nil {
 		return tools.Errorf("pairing failed: %v", err)
 	}
 	st := s.book.Read()
-	return tools.Textf("Paired with %q: this agent and it are in one swarm of %d. %s", name, len(st.Roster.Members), grantSentence())
+	return tools.Textf("Paired with %q: this agent and it are in one swarm of %d. %s", name, len(st.Roster.Members), roleSentence(role))
 }
 
 // TelegramGate refuses pairing over a Telegram bot that answers anyone: with

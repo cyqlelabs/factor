@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
@@ -20,10 +21,13 @@ func Dial(ctx context.Context, hc *http.Client, baseURL string) (*a2aclient.Clie
 // Card describes this agent to the others.
 func Card(name, version, url string) *a2a.AgentCard {
 	return &a2a.AgentCard{
-		Name:                name,
-		Description:         "A Factor agent: a personal desktop agent with long-term memory, reachable by the other agents in its swarm.",
-		Version:             version,
-		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(url, a2a.TransportProtocolJSONRPC)},
+		Name:        name,
+		Description: "A Factor agent: a personal desktop agent with long-term memory, reachable by the other agents in its swarm.",
+		Version:     version,
+		SupportedInterfaces: []*a2a.AgentInterface{
+			a2a.NewAgentInterface(url, a2a.TransportProtocolJSONRPC),
+			a2a.NewAgentInterface(strings.TrimRight(url, "/")+restPrefix, a2a.TransportProtocolHTTPJSON),
+		},
 		Capabilities: a2a.AgentCapabilities{
 			Streaming: true,
 			Extensions: []a2a.AgentExtension{{URI: ExtensionURI,

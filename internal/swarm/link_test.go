@@ -211,7 +211,7 @@ func TestMembershipErrors(t *testing.T) {
 	if err := n.svc.Found(ctx); err == nil {
 		t.Error("founded a swarm with no link")
 	}
-	if err := n.svc.Admit(ctx, "x", ""); err == nil {
+	if err := n.svc.Admit(ctx, "x", "", ""); err == nil {
 		t.Error("admitted outside a swarm")
 	}
 	if err := n.svc.commit(ctx, Genesis(n.svc.id, NewSwarmID(), "")); err == nil {
@@ -222,10 +222,10 @@ func TestMembershipErrors(t *testing.T) {
 	if err := n.svc.Found(ctx); err != nil {
 		t.Errorf("found while in a swarm: %v", err)
 	}
-	if err := n.svc.Admit(ctx, "not a key", ""); err == nil {
+	if err := n.svc.Admit(ctx, "not a key", "", ""); err == nil {
 		t.Error("admitted a malformed key")
 	}
-	if err := n.svc.Admit(ctx, EncodeKey(home.svc.id.Public), "nas"); err != nil {
+	if err := n.svc.Admit(ctx, EncodeKey(home.svc.id.Public), "nas", ""); err != nil {
 		t.Errorf("admitting a member again: %v", err)
 	}
 	if n.svc.book.Read().Label(home.svc.ID()) != "nas" {
@@ -294,7 +294,7 @@ func TestRemovalCancelsRunningTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = home.Book().Update(func(st *State) error { st.Joining = desk.Book().Read().Roster.Swarm; return nil })
-	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "home"); err != nil {
+	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "home", ""); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "join", func() bool { return home.Book().Read().Joined() })

@@ -101,6 +101,11 @@ func (tc ToolContext) ByPerson() bool {
 // a channel that cannot tell who is listening behaves exactly as before.
 const AudienceShared = "shared"
 
+// AudienceGuest marks a turn a guest of the swarm started: an agent that
+// belongs to somebody else. It reads and writes a memory space of its own
+// and nothing else.
+const AudienceGuest = "guest"
+
 type ctxKey struct{}
 
 func WithToolContext(ctx context.Context, tc ToolContext) context.Context {

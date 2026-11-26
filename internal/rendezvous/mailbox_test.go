@@ -40,11 +40,11 @@ func TestPairingThroughTheMailbox(t *testing.T) {
 	defer cancel()
 	codes := make(chan string, 1)
 	done := make(chan error, 1)
-	if err := desk.Invite(ctx, func(code string) error { codes <- code; return nil },
+	if err := desk.Invite(ctx, "", func(code string) error { codes <- code; return nil },
 		func(_ string, err error) { done <- err }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := home.Join(ctx, <-codes); err != nil {
+	if _, err := home.Join(ctx, <-codes, ""); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	if err := <-done; err != nil {

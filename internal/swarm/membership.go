@@ -33,8 +33,15 @@ func (s *Service) Found(ctx context.Context) error {
 }
 
 // Admit puts a new member on the roster under the name this agent will call
-// it, with the default grant.
-func (s *Service) Admit(ctx context.Context, key, name string) error {
+// it, with the default grant for its role: a member of the swarm, or a guest
+// — somebody else's agent, held to a few tools and a memory space of its own.
+func (s *Service) Admit(ctx context.Context, key, name, role string) error {
+	if role == "" {
+		role = RoleMember
+	}
+	if role != RoleMember && role != RoleGuest {
+		return fmt.Errorf("unknown role %q", role)
+	}
 	st := s.book.Read()
 	if !st.Joined() {
 		return errors.New("this agent is not in a swarm")
@@ -58,7 +65,7 @@ func (s *Service) Admit(ctx context.Context, key, name string) error {
 	if st.Roster.Has(peer) {
 		return nil
 	}
-	return s.commit(ctx, st.Roster.Next(s.id, func(r *Roster) { r.Add(key, RoleMember) }))
+	return s.commit(ctx, st.Roster.Next(s.id, func(r *Roster) { r.Add(key, role) }))
 }
 
 // Remove takes a member off the roster for good. Every member drops it, the

@@ -29,7 +29,7 @@ func invite(t *testing.T, s *Service) (string, chan result) {
 	done := make(chan result, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err := s.Invite(ctx, func(code string) error { codes <- code; return nil },
+	err := s.Invite(ctx, "", func(code string) error { codes <- code; return nil },
 		func(name string, err error) { done <- result{name, err} })
 	if err != nil {
 		t.Fatalf("invite: %v", err)
@@ -47,7 +47,7 @@ func TestPairingByInvite(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	start := time.Now()
-	name, err := home.Join(ctx, SpokenCode(code))
+	name, err := home.Join(ctx, SpokenCode(code), "")
 	if err != nil {
 		t.Fatalf("join: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestPairingByInvite(t *testing.T) {
 	// A third machine pairs with the newcomer, and the first learns of it.
 	nas := r.agent("nas", echo("nas"))
 	code, done = invite(t, home)
-	if _, err := nas.Join(ctx, code); err != nil {
+	if _, err := nas.Join(ctx, code, ""); err != nil {
 		t.Fatalf("third join: %v", err)
 	}
 	<-done
@@ -96,7 +96,7 @@ func TestPairingTVStyle(t *testing.T) {
 		name, err := fresh.JoinByCode(ctx, r.url, func(code string) { codes <- code })
 		joined <- result{name, err}
 	}()
-	name, err := desk.Join(ctx, WrittenCode(<-codes))
+	name, err := desk.Join(ctx, WrittenCode(<-codes), "")
 	if err != nil || name != "new box" {
 		t.Fatalf("the member entering the code: %q %v", name, err)
 	}
@@ -116,13 +116,13 @@ func TestWrongCodeBurnsTheMailbox(t *testing.T) {
 	wrong := n + "-" + p[:7] + string('0'+(p[7]-'0'+1)%10)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := home.Join(ctx, wrong); err == nil {
+	if _, err := home.Join(ctx, wrong, ""); err == nil {
 		t.Fatal("a wrong code paired")
 	}
 	if res := <-done; res.err == nil {
 		t.Error("the sponsor did not see the failure")
 	}
-	if _, err := home.Join(ctx, code); err == nil {
+	if _, err := home.Join(ctx, code, ""); err == nil {
 		t.Error("the right code worked after a wrong guess")
 	}
 	if home.Book().Read().Joined() || len(desk.Book().Read().Roster.Members) != 1 {
@@ -146,7 +146,7 @@ func TestPairingRefusals(t *testing.T) {
 	if !ok {
 		t.Fatal("no code was made")
 	}
-	if _, err := b.Join(ctx, code); err == nil || !strings.Contains(err.Error(), "neither") {
+	if _, err := b.Join(ctx, code, ""); err == nil || !strings.Contains(err.Error(), "neither") {
 		t.Errorf("neither in a swarm: %v", err)
 	}
 	// Both in swarms of their own.
@@ -155,18 +155,18 @@ func TestPairingRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, done := invite(t, c)
-	if _, err := d.Join(ctx, code); err == nil || !strings.Contains(err.Error(), "both") {
+	if _, err := d.Join(ctx, code, ""); err == nil || !strings.Contains(err.Error(), "both") {
 		t.Errorf("both in swarms: %v", err)
 	}
 	<-done
-	if _, err := b.Join(ctx, "not a code"); err == nil {
+	if _, err := b.Join(ctx, "not a code", ""); err == nil {
 		t.Error("joined with a non-code")
 	}
 	if _, err := b.JoinByCode(ctx, "", func(string) {}); err == nil {
 		t.Error("made a code with no rendezvous")
 	}
 	n := newNode(t, "loner")
-	if _, err := n.svc.Join(ctx, "1-23456789"); err == nil {
+	if _, err := n.svc.Join(ctx, "1-23456789", ""); err == nil {
 		t.Error("joined with no rendezvous configured")
 	}
 }
@@ -258,8 +258,45 @@ func TestPairingThroughTheTool(t *testing.T) {
 	if res := nobody.svc.invite(context.Background(), chat, ""); !res.IsError {
 		t.Error("invited with no bus")
 	}
-	if res := nobody.svc.join(context.Background(), chat, ""); !res.IsError {
+	if res := nobody.svc.join(context.Background(), chat, "", ""); !res.IsError {
 		t.Error("joined with no asker")
 	}
 	_ = bus.External
+}
+
+func TestGuestRole(t *testing.T) {
+	r := newRelay(t)
+	var got agent.RemoteTurn
+	desk := r.agent("desk", func(rt agent.RemoteTurn) string { got = rt; return "hello guest" })
+	visitor := r.agent("visitor", echo("visitor"))
+	codes := make(chan string, 1)
+	done := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := desk.Invite(ctx, RoleGuest, func(code string) error { codes <- code; return nil },
+		func(name string, err error) { done <- result{name, err} }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := visitor.Join(ctx, <-codes, ""); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if m, _ := desk.Book().Read().Roster.Member(visitor.ID()); m.Role != RoleGuest {
+		t.Fatalf("role %q", m.Role)
+	}
+	// Even granted forwarding and every tool, a guest's task holds to the
+	// guest's defaults where it matters.
+	_ = desk.Book().Update(func(st *State) error { st.peer(visitor.ID()).Grant = Grant{Forward: true}; return nil })
+	if res := relaySend(t, visitor, desk.ID(), "hi"); !strings.Contains(res.ForLLM, "hello guest") {
+		t.Fatalf("guest call: %q", res.ForLLM)
+	}
+	if !got.Guest || got.Allowed("exec") || got.Allowed(SendToolName) || !got.Allowed("web_search") || !got.Allowed(tools.AskToolName) {
+		t.Errorf("guest turn %+v", got)
+	}
+	if err := desk.Admit(ctx, EncodeKey(visitor.Identity().Public), "", "admin"); err == nil {
+		t.Error("admitted with an unknown role")
+	}
+	if !strings.Contains(roleSentence(RoleGuest), "guest") || roleSentence("") != grantSentence() {
+		t.Error("role sentences")
+	}
 }

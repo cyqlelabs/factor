@@ -398,11 +398,11 @@ func TestForwardingRules(t *testing.T) {
 		t.Error("forwarded past the hop limit")
 	}
 	// The grant decides whether swarm_send is offered at all.
-	if allowed(Grant{}, true)(SendToolName) || !allowed(Grant{Forward: true}, true)(SendToolName) ||
-		allowed(Grant{Forward: true}, false)(SendToolName) {
+	if allowed(Grant{}, RoleMember, true)(SendToolName) || !allowed(Grant{Forward: true}, RoleMember, true)(SendToolName) ||
+		allowed(Grant{Forward: true}, RoleMember, false)(SendToolName) {
 		t.Error("forwarding grant")
 	}
-	if allowed(Grant{Tools: []string{"read_file"}}, true)("exec") || !allowed(Grant{Tools: []string{"read_file"}}, true)("read_file") {
+	if allowed(Grant{Tools: []string{"read_file"}}, RoleMember, true)("exec") || !allowed(Grant{Tools: []string{"read_file"}}, RoleMember, true)("read_file") {
 		t.Error("tool grant")
 	}
 }

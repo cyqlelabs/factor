@@ -150,6 +150,9 @@ func (s State) Peer(id string) Peer {
 
 // Label is what to call a member: its name, or the start of its id.
 func (s State) Label(id string) string {
+	if name, ok := strings.CutPrefix(id, externalPrefix); ok {
+		return name
+	}
 	if name := s.Peer(id).Name; name != "" {
 		return name
 	}

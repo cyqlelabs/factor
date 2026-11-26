@@ -27,9 +27,10 @@ type sendTool struct{ s *Service }
 func (t *sendTool) Name() string { return SendToolName }
 
 func (t *sendTool) Description() string {
-	return "Hand work to another agent in this swarm — another machine running Factor — and get its answer. " +
-		"Use it when the user asks for something that has to happen on that machine: its disk, its files, " +
-		"its screen, its network. Name the agent as the user does. A quick answer comes back here; slow work " +
+	return "Hand work to another agent in this swarm — another machine running Factor — or to an agent outside " +
+		"it that the user named in swarm.agents, and get its answer. Use it when the user asks for something " +
+		"that has to happen on that machine: its disk, its files, its screen, its network. Name the agent as " +
+		"the user does. A quick answer comes back here; slow work " +
 		"carries on in the background and its outcome arrives later as a system message. If the agent asks a " +
 		"question, put it to the user, then call this again with the task id and their answer."
 }
@@ -48,11 +49,7 @@ func (t *sendTool) Parameters() map[string]any {
 
 func (t *sendTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
 	s := t.s
-	st := s.book.Read()
-	if !st.Joined() {
-		return tools.Errorf("this agent is not in a swarm; the user can add it with the swarm tool")
-	}
-	member, err := st.Resolve(s.id.ID, tools.StringArg(args, "agent"))
+	member, err := s.resolve(tools.StringArg(args, "agent"))
 	if err != nil {
 		return tools.Errorf("%v", err)
 	}
@@ -82,6 +79,16 @@ func (t *sendTool) Execute(ctx context.Context, args map[string]any) *tools.Resu
 			audience = fa2a.AudiencePrivate
 		}
 		req.meta = fa2a.Meta{Audience: audience}.Next(s.id.ID)
+	}
+	if isExternal(member.ID) {
+		a, _ := s.external(member.ID)
+		switch {
+		case !tc.ByPerson():
+			return tools.Errorf("%s is outside the swarm; only a request the user makes reaches it", member.Name)
+		case tc.Audience == "" && !a.Private:
+			return tools.Errorf("%s is outside the swarm and not granted private conversations; the user can grant it "+
+				"with swarm.agents.%s.private", member.Name, member.Name)
+		}
 	}
 	if req.meta.Loops(member.ID) {
 		return tools.Errorf("%s has already handled this work on its way here; sending it back would be a loop", member.Name)
@@ -125,7 +132,9 @@ func (t *adminTool) Parameters() map[string]any {
 			"action": map[string]any{"type": "string",
 				"enum": []any{"list", "status", "invite", "join", "remove", "rename", "grant"}},
 			"agent": map[string]any{"type": "string", "description": "The member, for remove, rename and grant"},
-			"name":  map[string]any{"type": "string", "description": "For rename: the new name. For invite: what to call the new machine"},
+			"name":  map[string]any{"type": "string", "description": "For rename: the new name"},
+			"role": map[string]any{"type": "string", "enum": []any{"member", "guest"},
+				"description": "For invite and join: member (the default) for the user's own machines, guest for somebody else's agent"},
 			"tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
 				"description": "For grant: the only tools the member's tasks may use here. Leave out for all of them"},
 			"forward":  map[string]any{"type": "boolean", "description": "For grant: whether the member's tasks may pass work on to a third agent"},
@@ -154,9 +163,9 @@ func (t *adminTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 	case "grant":
 		return t.grant(args)
 	case "invite":
-		return s.invite(ctx, tc, strings.TrimSpace(tools.StringArg(args, "name")))
+		return s.invite(ctx, tc, tools.StringArg(args, "role"))
 	case "join":
-		return s.join(ctx, tc, tools.StringArg(args, "question"))
+		return s.join(ctx, tc, tools.StringArg(args, "question"), tools.StringArg(args, "role"))
 	case "remove":
 		return s.removeMember(ctx, tools.StringArg(args, "agent"))
 	}

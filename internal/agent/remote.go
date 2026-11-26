@@ -33,6 +33,10 @@ type RemoteTurn struct {
 	Ask tools.Asker
 	// Allowed says which tools the caller's grant covers. Nil allows all.
 	Allowed func(tool string) bool
+	// Guest says the caller is a guest of the swarm — somebody else's agent.
+	// Its task reads and writes the guest space alone, whatever it claims
+	// about its room.
+	Guest bool
 }
 
 type remoteKey struct{}
@@ -58,7 +62,10 @@ func (l *Loop) ProcessRemote(ctx context.Context, rt RemoteTurn) (string, error)
 		return "", fmt.Errorf("a remote turn needs a peer and a context")
 	}
 	audience := tools.AudienceShared
-	if rt.Private {
+	switch {
+	case rt.Guest:
+		audience = tools.AudienceGuest
+	case rt.Private:
 		audience = ""
 	}
 	ctx = context.WithValue(ctx, remoteKey{}, rt)
@@ -75,9 +82,13 @@ func remoteBriefing(audience string) string {
 		"so make it complete and plain — it may be read aloud or passed on. If you need something only its " +
 		"user can tell you, use ask_user: the question goes back to that agent, which asks its user. Do only " +
 		"what the request asks."
-	if audience == tools.AudienceShared {
+	switch audience {
+	case tools.AudienceShared:
 		brief += " That agent did not say its user is alone, so only shared memory is consulted and you must " +
 			"not volunteer private details about the user of this machine."
+	case tools.AudienceGuest:
+		brief += " That agent is a guest of the swarm: it belongs to somebody else. Only its own guest memory " +
+			"is consulted, and nothing about the user of this machine is to be shared with it."
 	}
 	return brief
 }

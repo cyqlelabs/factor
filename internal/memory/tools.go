@@ -55,6 +55,12 @@ func requestedSpace(ctx context.Context, engine Engine, spaces SpacePolicy, args
 // try: the space parameter reads as an ordinary advanced option, and nothing
 // in the graph says which side of the room a space belongs to.
 func refuseCrossAudience(spaces SpacePolicy, tc tools.ToolContext, space string) *tools.Result {
+	if tc.Audience == tools.AudienceGuest {
+		if space == spaces.Guest && space != "" {
+			return nil
+		}
+		return tools.Errorf("a guest's task reaches only the %q memory space", spaces.Guest)
+	}
 	if tc.Audience != tools.AudienceShared || spaces.Shared == "" || space == spaces.Shared {
 		return nil
 	}

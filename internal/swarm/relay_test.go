@@ -37,6 +37,7 @@ func (t replyTurns) AudienceAt(string, string) string { return t.audience }
 type relay struct {
 	t   *testing.T
 	srv *rendezvous.Server
+	hs  *httptest.Server
 	url string
 }
 
@@ -49,7 +50,7 @@ func newRelay(t *testing.T) *relay {
 	}
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
-	return &relay{t: t, srv: srv, url: "ws" + strings.TrimPrefix(hs.URL, "http")}
+	return &relay{t: t, srv: srv, hs: hs, url: "ws" + strings.TrimPrefix(hs.URL, "http")}
 }
 
 func (r *relay) agent(name string, reply func(agent.RemoteTurn) string) *Service {
@@ -98,7 +99,7 @@ func TestTwoAgentsThroughTheRelay(t *testing.T) {
 	if err := home.Book().Update(func(st *State) error { st.Joining = swarmID; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "home box"); err != nil {
+	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "home box", ""); err != nil {
 		t.Fatalf("admit: %v", err)
 	}
 	waitFor(t, "the newcomer to adopt the roster", func() bool { return home.Book().Read().Joined() })
@@ -142,7 +143,7 @@ func TestTwoAgentsThroughTheRelay(t *testing.T) {
 	}
 	waitFor(t, "the removed agent to be cut off", func() bool { return !strings.Contains(home.Status(), "online") })
 	// It cannot come back.
-	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), ""); err == nil {
+	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "", ""); err == nil {
 		t.Error("a removed agent was admitted again")
 	}
 }
