@@ -6,20 +6,18 @@ package swarm
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base32"
-	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
+
+	"github.com/cyqlelabs/factor/internal/swarm/wire"
 )
 
 // Identity is this agent's Ed25519 key. The key is the agent: its id is a
@@ -32,25 +30,13 @@ type Identity struct {
 	cert    tls.Certificate
 }
 
-var idEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
-
-// IDOf is the agent id for a public key: 32 lowercase base32 characters, so
-// one id is at once a session key, a file name and a host name label.
-func IDOf(pub ed25519.PublicKey) string {
-	sum := sha256.Sum256(pub)
-	return strings.ToLower(idEncoding.EncodeToString(sum[:20]))
-}
+// IDOf is the agent id for a public key.
+func IDOf(pub ed25519.PublicKey) string { return wire.IDOf(pub) }
 
 // EncodeKey and DecodeKey write a public key the way the roster carries it.
-func EncodeKey(pub ed25519.PublicKey) string { return base64.StdEncoding.EncodeToString(pub) }
+func EncodeKey(pub ed25519.PublicKey) string { return wire.EncodeKey(pub) }
 
-func DecodeKey(s string) (ed25519.PublicKey, error) {
-	raw, err := base64.StdEncoding.DecodeString(s)
-	if err != nil || len(raw) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("not an Ed25519 public key")
-	}
-	return ed25519.PublicKey(raw), nil
-}
+func DecodeKey(s string) (ed25519.PublicKey, error) { return wire.DecodeKey(s) }
 
 const identityFile = "identity.pem"
 

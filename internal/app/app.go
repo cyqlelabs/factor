@@ -28,6 +28,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/provider"
 	"github.com/cyqlelabs/factor/internal/session"
 	"github.com/cyqlelabs/factor/internal/skills"
+	"github.com/cyqlelabs/factor/internal/swarm"
 	"github.com/cyqlelabs/factor/internal/tools"
 	"github.com/cyqlelabs/factor/internal/trace"
 	"github.com/cyqlelabs/factor/internal/upgrade"
@@ -71,6 +72,10 @@ type App struct {
 	// Tracer keeps the local record of what each turn did; the control bands
 	// read it. Nil when tracing is off.
 	Tracer *trace.Recorder
+
+	// Swarm is this agent's membership in a swarm of Factor agents. It is nil
+	// unless swarm.enabled is set, and only the gateway connects it.
+	Swarm *swarm.Service
 
 	// Decisions is the typed-decision model Factor runs itself, and is nil
 	// on every other backend — a hosted endpoint and a server somebody else
@@ -182,6 +187,14 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	meter.OnCharge(charge)
 	utilityCost.OnCharge(charge)
 	lightCost.OnCharge(charge)
+	// Work another agent asks for is billed to that agent's daily cap here,
+	// on top of the session and global caps: a worker's credits are its
+	// owner's money.
+	if cfg.Swarm.Enabled {
+		for _, m := range []*cost.Meter{meter, utilityCost, lightCost} {
+			m.CapMembers(cfg.Swarm.MemberDailyUSD, swarm.MemberOf)
+		}
+	}
 	// A failover is invisible in aggregate today: the chain logs a line and
 	// nothing counts it, so "it got slower last week" has no answer.
 	failover := func(ctx context.Context, name, reason string) {
@@ -466,6 +479,23 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 	registry.Register(&cron.Tool{Service: cronService})
 
+	// The swarm opens nothing here: its state is read and its key made, and
+	// the gateway is what connects it, since a second process holding the
+	// same key would knock the first off the rendezvous.
+	var swarmSvc *swarm.Service
+	if cfg.Swarm.Enabled {
+		if swarmSvc, err = swarm.New(cfg.Swarm, swarm.Dir(), version.Version, loop, b); err != nil {
+			slog.Warn("the swarm could not start; carrying on without it", "error", err)
+			swarmSvc = nil
+		} else {
+			// A pairing code is asked for the way ask_user asks anything, so
+			// it reaches the chat the user is in — and goes to the pairing,
+			// not to the model.
+			swarmSvc.SetAsker(askTool.AskerFor)
+			swarmSvc.SetPairingGate(swarm.TelegramGate(cfg.Channels["telegram"]))
+		}
+	}
+
 	bgCtx, bgCancel := context.WithCancel(ctx)
 	app := &App{
 		Cfg:      cfg,
@@ -492,6 +522,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		closeBrowser: closeBrowser,
 		bgCancel:     bgCancel,
 		Decisions:    decisionModel,
+		Swarm:        swarmSvc,
 	}
 	// The decision model is supervised for as long as the App lives: it is
 	// spawned, health-probed and restarted on the background context, so a
@@ -551,6 +582,11 @@ func (a *App) Close() {
 	if a.bgCancel != nil {
 		a.bgCancel()
 		a.bg.Wait()
+	}
+	// The tasks other agents have running here end with the process, and say
+	// so to their callers.
+	if a.Swarm != nil {
+		a.Swarm.Close()
 	}
 	// After the background context is cancelled, because that is what tells
 	// the supervisor to stop respawning; this waits for the child to go.

@@ -128,7 +128,8 @@ func (t *adminTool) Parameters() map[string]any {
 			"name":  map[string]any{"type": "string", "description": "For rename: the new name. For invite: what to call the new machine"},
 			"tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
 				"description": "For grant: the only tools the member's tasks may use here. Leave out for all of them"},
-			"forward": map[string]any{"type": "boolean", "description": "For grant: whether the member's tasks may pass work on to a third agent"},
+			"forward":  map[string]any{"type": "boolean", "description": "For grant: whether the member's tasks may pass work on to a third agent"},
+			"question": map[string]any{"type": "string", "description": "For join: the question that asks the user for the code, in their language. Their answer goes to the pairing, not to you"},
 		},
 		"required": []any{"action"},
 	}
@@ -155,7 +156,7 @@ func (t *adminTool) Execute(ctx context.Context, args map[string]any) *tools.Res
 	case "invite":
 		return s.invite(ctx, tc, strings.TrimSpace(tools.StringArg(args, "name")))
 	case "join":
-		return s.join(ctx, tc)
+		return s.join(ctx, tc, tools.StringArg(args, "question"))
 	case "remove":
 		return s.removeMember(ctx, tools.StringArg(args, "agent"))
 	}

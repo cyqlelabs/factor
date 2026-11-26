@@ -72,6 +72,9 @@ func chainFrom(ctx context.Context) (fa2a.Meta, bool) {
 
 // Run implements a2a.Runner: one task, as a turn under the member's grant.
 func (s *Service) Run(ctx context.Context, t fa2a.Turn) (string, error) {
+	if s.turns == nil {
+		return "", errors.New("this agent is not running yet; its gateway takes tasks")
+	}
 	st := s.book.Read()
 	if !st.Roster.Has(t.Peer) || t.Peer == s.id.ID {
 		return "", fmt.Errorf("agent %s is not a member of this swarm", t.Peer)

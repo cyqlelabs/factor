@@ -22,6 +22,7 @@ import (
 	"github.com/cyqlelabs/factor/internal/media"
 	"github.com/cyqlelabs/factor/internal/memory"
 	"github.com/cyqlelabs/factor/internal/provider"
+	"github.com/cyqlelabs/factor/internal/swarm"
 	"github.com/cyqlelabs/factor/internal/tools"
 )
 
@@ -79,6 +80,11 @@ type Options struct {
 	// The autostart trio: saying yes to "start Factor at login" is a request
 	// for a login entry, not for homework, so the wizard installs and removes
 	// the entry itself.
+	// SwarmJoined reports whether this machine already belongs to a swarm,
+	// and JoinSwarm pairs it into one by showing a code a member enters.
+	SwarmJoined func() (members int, ok bool)
+	JoinSwarm   func(ctx context.Context, cfg config.SwarmConfig, show func(code string)) (sponsor string, err error)
+
 	AutostartInstalled func() (mechanism string, ok bool)
 	InstallAutostart   func(ctx context.Context, configPath string) (mechanism string, err error)
 	RemoveAutostart    func(ctx context.Context) error
@@ -128,6 +134,31 @@ func (o *Options) defaults() {
 			return browser.EnsureCamofox(ctx, o.Home, progress)
 		}
 	}
+	if o.SwarmJoined == nil {
+		o.SwarmJoined = func() (int, bool) {
+			book, err := swarm.OpenBook(filepath.Join(o.Home, "swarm"))
+			if err != nil {
+				return 0, false
+			}
+			st := book.Read()
+			if !st.Joined() {
+				return 0, false
+			}
+			return len(st.Roster.Members), true
+		}
+	}
+	if o.JoinSwarm == nil {
+		o.JoinSwarm = func(ctx context.Context, cfg config.SwarmConfig, show func(string)) (string, error) {
+			svc, err := swarm.New(cfg, filepath.Join(o.Home, "swarm"), o.Version, nil, nil)
+			if err != nil {
+				return "", err
+			}
+			defer svc.Close()
+			ctx, cancel := context.WithTimeout(ctx, swarm.CodeTTL)
+			defer cancel()
+			return svc.JoinByCode(ctx, cfg.Rendezvous, show)
+		}
+	}
 	if o.AutostartInstalled == nil {
 		o.AutostartInstalled = func() (string, bool) {
 			entry, ok := autostart.Installed(o.Desktop)
@@ -168,7 +199,7 @@ func (o *Options) defaults() {
 // drive both sides of it without running as root.
 var geteuid = os.Geteuid
 
-const totalSteps = 6
+const totalSteps = 7
 
 type wiz struct {
 	cfg  *config.Config
@@ -178,6 +209,8 @@ type wiz struct {
 	// autostart is what stepAutostart arranged, in words for the summary;
 	// blank means the gateway only runs when asked to.
 	autostart string
+	// swarm is what stepSwarm arranged, the same way.
+	swarm string
 }
 
 // Run walks the user through setup and writes the config file at path
@@ -209,6 +242,7 @@ func Run(ctx context.Context, path string, opts Options) error {
 		w.stepChannels,
 		w.stepDesktop,
 		w.stepAutostart,
+		w.stepSwarm,
 		w.stepFinish,
 	} {
 		if err := step(ctx); err != nil {
@@ -2291,10 +2325,76 @@ func (w *wiz) autostartConfigPath() string {
 	return w.cfg.Path()
 }
 
-// ---- step 6: save ----------------------------------------------------------
+// ---- step 6: swarm ---------------------------------------------------------
+
+// stepSwarm joins this machine to a swarm of Factor agents, the way a TV
+// links an account: it shows a code to enter on a machine already in the
+// swarm, which is the side with a keyboard to type it on. It is opt-in, and
+// the default mirrors what is already set, so Enter never changes it.
+func (w *wiz) stepSwarm(ctx context.Context) error {
+	w.ui.Step(6, totalSteps, "Swarm")
+	join, err := w.ui.Confirm("Let this machine work with your other Factor agents (a swarm)?", w.cfg.Swarm.Enabled)
+	if err != nil {
+		return err
+	}
+	if !join {
+		if w.cfg.Swarm.Enabled {
+			w.ui.Success("the swarm is off on this machine")
+		}
+		w.cfg.Swarm.Enabled = false
+		return nil
+	}
+	w.cfg.Swarm.Enabled = true
+	if w.opts.SwarmJoined != nil {
+		if members, ok := w.opts.SwarmJoined(); ok {
+			w.swarm = fmt.Sprintf("on, %d members", members)
+			w.ui.Info("this machine is already in a swarm of %d", members)
+			return nil
+		}
+	}
+	addr, err := w.ui.Input("Rendezvous address (wss://…)", w.cfg.Swarm.Rendezvous)
+	if err != nil {
+		return err
+	}
+	if addr = strings.TrimSpace(addr); addr == "" {
+		w.swarm = "on, not paired"
+		w.ui.Note("no rendezvous yet — set swarm.rendezvous, then ask any member to add this machine")
+		return nil
+	}
+	w.cfg.Swarm.Rendezvous = addr
+	pair, err := w.ui.Confirm("Pair now? A code will show here; enter it on a machine already in the swarm", true)
+	if err != nil || !pair {
+		w.swarm = "on, not paired"
+		return err
+	}
+	if w.opts.JoinSwarm == nil {
+		w.swarm = "on, not paired"
+		return nil
+	}
+	var sponsor string
+	err = w.ui.Task("waiting for a member to enter the code", func() error {
+		var jerr error
+		sponsor, jerr = w.opts.JoinSwarm(ctx, w.cfg.Swarm, func(code string) {
+			w.ui.printf("\n    code  %s   (tell a member: \"join the swarm\", then this code)\n\n",
+				w.ui.style(ansiBold, swarm.WrittenCode(code)))
+		})
+		return jerr
+	})
+	if err != nil {
+		w.swarm = "on, not paired"
+		w.ui.Warn("pairing failed: %v", err)
+		w.ui.Note("ask any member to add this machine later")
+		return nil
+	}
+	w.swarm = "on, paired with " + sponsor
+	w.ui.Success("this machine joined the swarm through %s", sponsor)
+	return nil
+}
+
+// ---- step 7: save ----------------------------------------------------------
 
 func (w *wiz) stepFinish(context.Context) error {
-	w.ui.Step(6, totalSteps, "Saving")
+	w.ui.Step(7, totalSteps, "Saving")
 
 	if err := config.EnsureWorkspace(w.cfg.Agent.Workspace); err != nil {
 		return err
@@ -2314,6 +2414,7 @@ func (w *wiz) stepFinish(context.Context) error {
 		{"desktop", w.desktopSummary()},
 		{"browser", enabledLabel(w.cfg.Browser.Enabled)},
 		{"autostart", firstNonEmpty(w.autostart, "off")},
+		{"swarm", firstNonEmpty(w.swarm, enabledLabel(w.cfg.Swarm.Enabled))},
 		{"workspace", w.cfg.Agent.Workspace},
 	}
 	w.ui.Summary("Factor is ready", rows)

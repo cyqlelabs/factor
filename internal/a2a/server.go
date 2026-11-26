@@ -87,6 +87,25 @@ func (s *Server) Close() {
 	s.wg.Wait()
 }
 
+// CancelPeer ends every task an agent has running here, which removing it
+// from the swarm calls for.
+func (s *Server) CancelPeer(peer string) {
+	s.mu.Lock()
+	var cancel []*liveTask
+	for _, lt := range s.live {
+		if lt.peer == peer {
+			cancel = append(cancel, lt)
+		}
+	}
+	s.mu.Unlock()
+	for _, lt := range cancel {
+		lt.mu.Lock()
+		lt.failure = "the agent that sent this task was removed from the swarm"
+		lt.mu.Unlock()
+		lt.cancel()
+	}
+}
+
 // Running is how many tasks have a turn in memory, waiting ones included.
 func (s *Server) Running() int {
 	s.mu.Lock()

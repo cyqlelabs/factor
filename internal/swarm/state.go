@@ -48,6 +48,9 @@ type State struct {
 	// Frozen is why membership changes are stopped, when two rosters with
 	// the same epoch have been seen.
 	Frozen string `json:"frozen,omitempty"`
+	// Joining is the swarm this agent has paired into and is waiting to see
+	// itself on the roster of.
+	Joining string `json:"joining,omitempty"`
 }
 
 // StaleAfter is how old the roster may get before this agent stops taking
