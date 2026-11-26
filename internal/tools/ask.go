@@ -115,7 +115,10 @@ func (t *AskTool) Execute(ctx context.Context, args map[string]any) *Result {
 	}
 	timeout := askTimeout(args)
 
-	asker := t.current()
+	asker := askerFrom(ctx)
+	if asker == nil {
+		asker = t.current()
+	}
 	if asker == nil {
 		return Errorf("%s — ask in the conversation instead", ErrAskUnavailable)
 	}

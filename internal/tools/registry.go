@@ -77,11 +77,19 @@ func (r *Registry) Names() []string {
 // Definitions returns the schema list sent to the LLM, sorted for stable
 // prompts (stability helps provider-side prompt caching).
 func (r *Registry) Definitions() []provider.ToolDefinition {
+	return r.DefinitionsFor(context.Background())
+}
+
+// DefinitionsFor is Definitions without the tools the turn on ctx may not
+// use. A turn with nothing withheld gets exactly the list Definitions does.
+func (r *Registry) DefinitionsFor(ctx context.Context) []provider.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	names := make([]string, 0, len(r.tools))
 	for n := range r.tools {
-		names = append(names, n)
+		if !Withheld(ctx, n) {
+			names = append(names, n)
+		}
 	}
 	sort.Strings(names)
 	defs := make([]provider.ToolDefinition, 0, len(names))
@@ -122,6 +130,9 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 		}
 	}()
 
+	if Withheld(ctx, name) {
+		return Errorf("%s is not available in this turn", name)
+	}
 	t, ok := r.Get(name)
 	if !ok {
 		return Errorf("unknown tool: %s (available: %v)", name, r.Names())

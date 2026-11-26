@@ -607,8 +607,10 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, out
 	}, t)
 	// A budget cap is a decision the user made, so it is answered rather
 	// than reported as a breakage — and left out of memory, since "you ran
-	// out of budget" is not a fact about the user worth recalling.
-	if stop := cost.BudgetStop(err); stop != "" {
+	// out of budget" is not a fact about the user worth recalling. Another
+	// agent's task is the exception: its caller fails the task with the
+	// reason, and needs the error to know there is one.
+	if stop := cost.BudgetStop(err); stop != "" && msg.Channel != remoteChannel {
 		return stop, nil
 	}
 	if err == nil && l.ambient != nil {
@@ -618,6 +620,12 @@ func (l *Loop) runTurn(ctx context.Context, msg bus.InboundMessage, t *turn, out
 			// The speaker goes to memory as who said it, not as part of what
 			// was said: the graph decides how to record a person, and a tag
 			// meant for the prompt has no business becoming remembered text.
+			if msg.Channel == remoteChannel {
+				// Another agent's words carry none of the standing a
+				// person's do.
+				l.ambient.StoreAgentExchange(msg.Channel, msg.Audience, msg.Speaker, msg.Content, reply)
+				return
+			}
 			l.ambient.StoreExchange(msg.Channel, msg.Audience, msg.Speaker, msg.Content, reply)
 		}()
 	}
@@ -662,6 +670,7 @@ func (l *Loop) WaitBackground(timeout time.Duration) {
 
 // execute is the turn state machine: assemble → chat → tools → steer → repeat.
 func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string, err error) {
+	in.toolCtx.Trigger = in.trigger
 	ctx = tools.WithToolContext(ctx, in.toolCtx)
 	// A tool that runs many steps of its own asks this between them, so a
 	// message the user sends mid-call ends the call rather than waiting it
@@ -675,6 +684,9 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 	// point: the phase watcher above is a live status line that nobody can
 	// read afterwards.
 	tr := l.tracer.Begin(in.sessionKey, in.trigger, in.speaker)
+	if rt, ok := remoteFrom(ctx); ok {
+		tr.Remote(rt.Peer, rt.Task)
+	}
 	defer func() { tr.End(turnOutcome(ctx, err), err) }()
 	ctx = trace.WithTurn(ctx, tr)
 
@@ -764,7 +776,7 @@ func (l *Loop) execute(ctx context.Context, in turnInput, t *turn) (reply string
 		l.emit(in.sessionKey, PhaseThinking, "")
 		resp, err := l.chat.Chat(ctx, &provider.Request{
 			Messages:    messages,
-			Tools:       l.registry.Definitions(),
+			Tools:       l.registry.DefinitionsFor(ctx),
 			MaxTokens:   l.cfg.Provider.MaxTokens,
 			Temperature: l.cfg.Provider.Temperature,
 		})
@@ -946,6 +958,10 @@ func triggerOf(msg bus.InboundMessage) string {
 	// spent half an hour paying a filler to talk to an empty room.
 	case msg.Channel == "job", msg.System:
 		return "job"
+	// Another agent's task. Nobody is holding a line for it, so it gets no
+	// filler, and the trace keeps it apart from the user's own turns.
+	case msg.Channel == "a2a":
+		return "a2a"
 	}
 	return "user"
 }

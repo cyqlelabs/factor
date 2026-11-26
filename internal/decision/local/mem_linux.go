@@ -47,3 +47,7 @@ func meminfo(prefix string) (int, bool) {
 	}
 	return 0, false
 }
+
+// AvailableMB is availableMB for the rest of Factor: the swarm refuses a
+// task from another agent on a machine this short of memory.
+func AvailableMB() (int, bool) { return availableMB() }

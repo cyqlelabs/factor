@@ -18,8 +18,12 @@ require (
 )
 
 require (
+	github.com/a2aproject/a2a-go/v2 v2.9.0 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/ws v1.5.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 )

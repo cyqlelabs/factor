@@ -47,6 +47,7 @@ type fakeEngine struct {
 	remembered []string
 	spaces     []string
 	recalls    []memory.Memory
+	scopes     []memory.Scope
 	healthy    bool
 }
 
@@ -57,7 +58,10 @@ func (f *fakeEngine) Remember(_ context.Context, req memory.RememberRequest) (st
 	f.spaces = append(f.spaces, req.Space)
 	return "atom", nil
 }
-func (f *fakeEngine) Recall(context.Context, string, int, float64, memory.Scope) ([]memory.Memory, error) {
+func (f *fakeEngine) Recall(_ context.Context, _ string, _ int, _ float64, scope memory.Scope) ([]memory.Memory, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scopes = append(f.scopes, scope)
 	return f.recalls, nil
 }
 func (f *fakeEngine) Forget(context.Context, string, string, string) error { return nil }

@@ -36,6 +36,7 @@ type Config struct {
 	Proxy         ProxyConfig                `json:"proxy"`
 	Trace         TraceConfig                `json:"trace"`
 	Decision      DecisionConfig             `json:"decision"`
+	Swarm         SwarmConfig                `json:"swarm"`
 
 	// LogLevel is the lowest severity that reaches the log: "debug", "info"
 	// (the default), "warn", or "error". Debug is where the per-decision
@@ -441,6 +442,34 @@ type HeartbeatConfig struct {
 	IntervalMinutes int  `json:"interval_minutes"`
 }
 
+// SwarmConfig joins this agent to a swarm: other Factor agents, on any
+// machine, that hand each other work over A2A (docs/swarm.md). It is off
+// until enabled, and an agent that never enables it opens no connection,
+// writes no key and offers the model no swarm tool.
+type SwarmConfig struct {
+	Enabled bool `json:"enabled" env:"FACTOR_SWARM_ENABLED"`
+	// Rendezvous is the wss:// address this agent pairs and relays through.
+	// A newcomer inherits it from the pairing envelope; only the first agent
+	// of a swarm, or a code made with `factor init`, needs it set.
+	Rendezvous string `json:"rendezvous,omitempty" env:"FACTOR_SWARM_RENDEZVOUS"`
+	// Name is what this agent calls itself to the others ("home box").
+	// Blank is the machine's host name.
+	Name string `json:"name,omitempty"`
+	// RemoteTasks is how many tasks from other agents run here at once, and
+	// RemoteQueue how many more may wait for a turn. A small machine runs
+	// one with one waiting.
+	RemoteTasks int `json:"remote_tasks"`
+	RemoteQueue int `json:"remote_queue"`
+	// MemberDailyUSD caps what one member's tasks may spend here in a day,
+	// on top of the session and global caps: a worker's credits are its
+	// owner's money. Negative turns the cap off.
+	MemberDailyUSD float64 `json:"member_daily_usd"`
+	// LAN lets two members on one network talk directly instead of through
+	// the relay. It opens a listening port on the local network, which is
+	// why it is a separate switch.
+	LAN bool `json:"lan"`
+}
+
 // CronConfig bounds the turns the scheduler runs. JobTimeoutMinutes is how
 // long one scheduled task may run before it is cut off; the model is told how
 // much of it is left at each checkpoint.
@@ -724,6 +753,7 @@ func Default() *Config {
 			MinConfidence: 0.6,
 			CacheEntries:  512,
 		},
+		Swarm: SwarmConfig{RemoteTasks: 1, RemoteQueue: 1, MemberDailyUSD: 1},
 	}
 }
 
@@ -878,6 +908,12 @@ func (c *Config) normalize() {
 	}
 	if c.Cost.RefreshHours <= 0 {
 		c.Cost.RefreshHours = 24
+	}
+	if c.Swarm.RemoteTasks <= 0 {
+		c.Swarm.RemoteTasks = 1
+	}
+	if c.Swarm.RemoteQueue < 0 {
+		c.Swarm.RemoteQueue = 0
 	}
 	switch c.Cost.Budget.Period {
 	case "day", "month", "total":
