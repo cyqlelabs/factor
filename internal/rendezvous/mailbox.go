@@ -158,8 +158,10 @@ type mailConn struct {
 	out  chan []byte
 	once sync.Once
 	gone chan struct{}
-	// misses counts claims of codes nobody is waiting under.
-	misses int
+	// misses counts claims of codes nobody is waiting under, and allocated
+	// says this connection has made its one code.
+	misses    int
+	allocated bool
 }
 
 func (c *mailConn) drop() { c.once.Do(func() { close(c.gone) }) }
@@ -295,6 +297,11 @@ func (c *mailConn) handle(msg mailIn) bool {
 
 func (c *mailConn) allocate(mailIn) bool {
 	m := c.m
+	// One proof of work buys one code, not a run on the nameplates.
+	if c.allocated {
+		return c.fail("one code per connection")
+	}
+	c.allocated = true
 	if len(m.byID) >= maxMailboxes {
 		return c.fail("too many pairings in flight; try again in a few minutes")
 	}

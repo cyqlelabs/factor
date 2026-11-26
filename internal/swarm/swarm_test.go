@@ -502,3 +502,48 @@ func TestToolsDescribeThemselves(t *testing.T) {
 		t.Error("a request without TLS named a peer")
 	}
 }
+
+func TestNonChatOriginsHoldAndNeverGetPublished(t *testing.T) {
+	desk, home := newNode(t, "desk"), newNode(t, "home")
+	pair(t, map[string]*node{"desk": desk, "home box": home})
+	release := make(chan struct{})
+	home.turns.run = func(context.Context, agent.RemoteTurn) (string, error) {
+		<-release
+		return "slow answer", nil
+	}
+	// A scheduled task waits past the written wait for its answer.
+	cron := tools.ToolContext{Channel: "cron", ChatID: "j1", SessionKey: "cron:j1", Trigger: "cron"}
+	go func() {
+		time.Sleep(2 * writtenWait)
+		close(release)
+	}()
+	if res := call(t, sendTo(desk), cron, map[string]any{"agent": "home box", "message": "x"}); !strings.Contains(res.ForLLM, "slow answer") {
+		t.Errorf("cron send: %q", res.ForLLM)
+	}
+	// An abandoned answer for a turn that is not a chat is dropped, not
+	// published into a session nobody reads.
+	d := &Delegation{ID: "dx", Peer: home.svc.ID(), Origin: Origin{Channel: "a2a", ChatID: "p:c"}, State: stDone, Said: "x"}
+	desk.svc.deliver(d)
+	if !d.Delivered {
+		t.Error("the abandoned answer was kept")
+	}
+	noInbound(t, desk.bus)
+}
+
+func TestRosterStaysFreshWhileConnected(t *testing.T) {
+	saved := refreshEvery
+	refreshEvery = 50 * time.Millisecond
+	r := newRelay(t)
+	refreshEvery = saved
+	desk, home := r.agent("desk", echo("desk")), r.agent("home", echo("home"))
+	code, done := invite(t, desk)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := home.Join(ctx, code, ""); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	old := time.Now().Add(-StaleAfter - time.Hour)
+	_ = home.Book().Update(func(st *State) error { st.Refreshed = old; return nil })
+	waitFor(t, "the roster to be confirmed again", func() bool { return home.Book().Read().Refreshed.After(old.Add(time.Hour)) })
+}

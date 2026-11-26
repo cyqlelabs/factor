@@ -45,7 +45,11 @@ func requestedSpace(ctx context.Context, engine Engine, spaces SpacePolicy, args
 		}
 		return s, nil
 	}
-	scope, _ := scopeFor(engine, spaces, tc.Channel, tc.Audience)
+	scope, ok := scopeFor(engine, spaces, tc.Channel, tc.Audience)
+	if !ok && tc.Audience == tools.AudienceGuest {
+		// With no guest space to write to, the default is the private graph.
+		return "", tools.Errorf("a guest's task has no memory space to write to here")
+	}
 	return scope.Space, nil
 }
 

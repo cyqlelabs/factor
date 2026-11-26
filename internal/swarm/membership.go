@@ -9,6 +9,15 @@ import (
 	"github.com/cyqlelabs/factor/internal/tools"
 )
 
+// errGuest is what a guest gets for trying to change the swarm.
+var errGuest = errors.New("a guest of the swarm cannot change who belongs to it")
+
+// guest reports whether this agent holds only a guest's place.
+func (s *Service) guest() bool {
+	m, ok := s.book.Read().Roster.Member(s.id.ID)
+	return ok && m.Role == RoleGuest
+}
+
 // Found starts a new swarm with this agent as its only member, at the
 // rendezvous it is connected to. Adding the first other machine calls it.
 func (s *Service) Found(ctx context.Context) error {
@@ -46,6 +55,9 @@ func (s *Service) Admit(ctx context.Context, key, name, role string) error {
 	if !st.Joined() {
 		return errors.New("this agent is not in a swarm")
 	}
+	if s.guest() {
+		return errGuest
+	}
 	pub, err := DecodeKey(key)
 	if err != nil {
 		return err
@@ -71,6 +83,9 @@ func (s *Service) Admit(ctx context.Context, key, name, role string) error {
 // Remove takes a member off the roster for good. Every member drops it, the
 // rendezvous refuses it from then on, and its tasks here are cancelled.
 func (s *Service) Remove(ctx context.Context, peer string) error {
+	if s.guest() {
+		return errGuest
+	}
 	st := s.book.Read()
 	m, ok := st.Roster.Member(peer)
 	if !ok {

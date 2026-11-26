@@ -407,6 +407,12 @@ func (l *Loop) release(key string, t *turn) []bus.InboundMessage {
 
 func (l *Loop) dispatch(ctx context.Context, msg bus.InboundMessage) {
 	key := msg.SessionKey()
+	// A remote agent's turn only ever runs through ProcessRemote, which
+	// applies its grant; one off the bus would run with nothing withheld.
+	if msg.Channel == remoteChannel {
+		slog.Warn("dropped a bus message for another agent's session", "session", key)
+		return
+	}
 	// Who can hear this is asked again here rather than trusted from the
 	// publisher. A background job's completion was queued when the work
 	// started and a channel's own reading of the room is current, so a

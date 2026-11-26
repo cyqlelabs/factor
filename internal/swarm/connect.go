@@ -41,6 +41,38 @@ func (s *Service) Connect() {
 	if s.cfg.LAN {
 		s.startLAN(ctx, tunnel)
 	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.keepFresh(ctx, link)
+	}()
+}
+
+// refreshEvery is how often a connected agent asks for its roster again. A
+// roster only arrives when membership changes or the link reconnects, and a
+// link that stays up all week would otherwise read as a roster gone stale.
+var refreshEvery = time.Hour
+
+func (s *Service) keepFresh(ctx context.Context, link *Link) {
+	ticker := time.NewTicker(s.refreshEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		st := s.book.Read()
+		if !st.Joined() || !link.Online() {
+			continue
+		}
+		fctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		r, err := link.Fetch(fctx, st.Roster.Swarm)
+		cancel()
+		if err == nil {
+			s.adopt(r, true)
+		}
+	}
 }
 
 // disconnect ends the link and the tunnel over it.
@@ -116,8 +148,8 @@ func (s *Service) judge(cur *Roster, joining string, r *Roster) (verdict, error)
 	if err := r.VerifySig(); err != nil {
 		return 0, err
 	}
-	if !cur.HasKey(r.Signer) && !r.HasKey(r.Signer) {
-		return 0, errors.New("signed by a key neither roster lists")
+	if !cur.CanSign(r.Signer) && !r.CanSign(r.Signer) {
+		return 0, errors.New("signed by a key neither roster lists as a member")
 	}
 	return takeIt, nil
 }
@@ -158,6 +190,11 @@ func (s *Service) adopt(r *Roster, fromRendezvous bool) {
 			}
 		}
 		st.Roster, st.Rendezvous, st.Joining = r, r.Home, ""
+		if !r.Has(s.id.ID) {
+			// Removed: the roster that says so is no swarm to belong to, and
+			// keeping it would leave this agent unable to pair into another.
+			st.Roster, st.Contexts = nil, nil
+		}
 		return nil
 	})
 	if err != nil {

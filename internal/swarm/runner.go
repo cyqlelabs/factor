@@ -31,9 +31,10 @@ var neverRemote = []string{
 }
 
 // guestTools are what a guest's tasks may use unless granted otherwise:
-// asking, looking things up, and its own memory. No shell, no files, no
-// screen — a guest is somebody else's agent.
-var guestTools = []string{tools.AskToolName, "web_search", "web_fetch", "recall", "remember"}
+// asking, searching the web, and its own memory. No shell, no files, no
+// screen — a guest is somebody else's agent — and no web_fetch, which reaches
+// the services this machine runs on loopback.
+var guestTools = []string{tools.AskToolName, "web_search", "recall", "remember"}
 
 // allowed is the tool rule for one member's task. It is applied when a tool
 // runs, not only when the list is offered.

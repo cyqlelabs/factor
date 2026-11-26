@@ -90,3 +90,19 @@ func TestRosterChain(t *testing.T) {
 		t.Error("Add duplicated a member")
 	}
 }
+
+func TestOnlyMembersSign(t *testing.T) {
+	a, g := newKey(t), newKey(t)
+	two := Genesis(a, NewSwarmID(), "").Next(a, func(r *Roster) { r.Add(EncodeKey(g.PublicKey()), RoleGuest) })
+	if two.CanSign(EncodeKey(g.PublicKey())) || !two.CanSign(EncodeKey(a.PublicKey())) {
+		t.Error("CanSign")
+	}
+	if err := two.Next(g, func(*Roster) {}).Valid(two); err == nil {
+		t.Error("a guest signed a roster")
+	}
+	bad := &Roster{Epoch: 1, Members: []RosterMember{{Key: EncodeKey(a.PublicKey()), Role: RoleGuest}}}
+	bad.Sign(a)
+	if err := bad.Valid(nil); err == nil {
+		t.Error("a first roster whose only key is a guest")
+	}
+}

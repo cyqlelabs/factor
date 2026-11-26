@@ -245,3 +245,36 @@ func TestMailboxWorkAndExpiry(t *testing.T) {
 		t.Error("a mailbox outlived its lifetime")
 	}
 }
+
+func TestOneCodePerConnection(t *testing.T) {
+	r := newRig(t)
+	a := r.mailbox(t)
+	a.say(map[string]any{"type": "bind", "id": "1", "side": "a", "appid": "app"})
+	a.say(map[string]any{"type": "allocate", "id": "2"})
+	if m := a.reply(); m["type"] != "allocated" {
+		t.Fatalf("first: %v", m)
+	}
+	a.say(map[string]any{"type": "allocate", "id": "3"})
+	if m := a.reply(); m["type"] != "error" {
+		t.Errorf("second allocation on one connection: %v", m)
+	}
+}
+
+func TestUnlistedKeysGetACodesLifetime(t *testing.T) {
+	r := newRig(t)
+	r.srv.cfg.MailboxTTL = 200 * time.Millisecond
+	id, _ := swarm.NewIdentity()
+	l := swarm.NewLink(r.url, id, func() string { return "" })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go l.Run(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if state, _ := l.Status(); strings.Contains(state, "lifetime") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	state, _ := l.Status()
+	t.Errorf("an unlisted key kept its socket: %q", state)
+}
