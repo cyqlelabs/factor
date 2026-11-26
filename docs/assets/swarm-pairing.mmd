@@ -10,8 +10,8 @@ sequenceDiagram
     P->>R: claim mailbox 47
     D->>P: SPAKE2 through the mailbox
     Note over D,P: the rendezvous relays it but cannot read it or guess the code
-    D->>P: bootstrap envelope: swarm id, desktop key, one-time pass
-    P->>D: pinned TLS through the relay: redeem the pass, prove its own key
+    D->>P: envelope: swarm id, rendezvous, desktop key, proof of that key
+    P->>D: envelope: Puppy key, its name, proof of that key
     D->>R: roster epoch n+1, signed by the desktop, committed
     R-->>P: new roster
     R-->>D: new roster
