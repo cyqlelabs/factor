@@ -64,21 +64,30 @@ func OpenStore(dir string, create bool) (*Store, error) {
 		if !ok {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, "rosters", e.Name()))
-		var r wire.Roster
-		if err == nil {
-			err = json.Unmarshal(data, &r)
-		}
-		if err == nil && r.Swarm != id {
-			err = errors.New("the file holds another swarm's roster")
-		}
+		r, err := readRoster(filepath.Join(dir, "rosters", e.Name()), id)
 		if err != nil {
 			s.broken[id] = err.Error()
 			continue
 		}
-		s.heads[id] = &r
+		s.heads[id] = r
 	}
 	return s, nil
+}
+
+// readRoster reads one stored head, which must be the roster of swarm id.
+func readRoster(path, id string) (*wire.Roster, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var r wire.Roster
+	if err := json.Unmarshal(data, &r); err != nil {
+		return nil, err
+	}
+	if r.Swarm != id {
+		return nil, errors.New("the file holds another swarm's roster")
+	}
+	return &r, nil
 }
 
 // Refusing says why the store takes no changes, or "".

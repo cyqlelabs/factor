@@ -36,14 +36,21 @@ func (p tunnelPusher) SendPush(ctx context.Context, cfg *a2a.PushConfig, event a
 	return nil
 }
 
-func (p tunnelPusher) send(ctx context.Context, cfg *a2a.PushConfig, event a2a.Event) error {
-	u, err := url.Parse(cfg.URL)
-	if err != nil || u.Scheme != "https" {
-		return fmt.Errorf("a push goes to a member's tunnel address, not %q", cfg.URL)
+// pushTarget is the member a push address names, if it names one.
+func (p tunnelPusher) pushTarget(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err == nil && u.Scheme == "https" && strings.TrimPrefix(u.Path, "/") == pushPath {
+		if peer, ok := strings.CutSuffix(u.Hostname(), HostSuffix); ok && p.s.IsMember(peer) {
+			return peer, nil
+		}
 	}
-	peer, ok := strings.CutSuffix(u.Hostname(), HostSuffix)
-	if !ok || !p.s.IsMember(peer) || strings.TrimPrefix(u.Path, "/") != pushPath {
-		return fmt.Errorf("a push goes to a member's tunnel address, not %q", cfg.URL)
+	return "", fmt.Errorf("a push goes to a member's tunnel address, not %q", raw)
+}
+
+func (p tunnelPusher) send(ctx context.Context, cfg *a2a.PushConfig, event a2a.Event) error {
+	peer, err := p.pushTarget(cfg.URL)
+	if err != nil {
+		return err
 	}
 	transport, _, _ := p.s.net()
 	if transport == nil {

@@ -276,13 +276,13 @@ func (s *Service) exchange(d *Delegation, msg *a2a.Message, w *waiter) {
 		return
 	}
 	defer func() { _ = cl.Destroy() }()
-	var artifacts []string
 	// The worker pushes what happens to the task back through the tunnel, so
 	// a stream that breaks is picked up again without waiting for a poll.
 	sreq := &a2a.SendMessageRequest{Message: msg}
 	if !isExternal(d.Peer) {
 		sreq.Config = &a2a.SendMessageConfig{PushConfig: s.pushConfig(d)}
 	}
+	st := &streamState{answering: msg.TaskID != ""}
 	for ev, err := range cl.SendStreamingMessage(s.bg, sreq) {
 		if err != nil {
 			if d.Task != "" {
@@ -294,39 +294,49 @@ func (s *Service) exchange(d *Delegation, msg *a2a.Message, w *waiter) {
 			s.settle(d, w, stFailed, fmt.Sprintf("the message did not get through: %v", err))
 			return
 		}
-		switch e := ev.(type) {
-		case *a2a.Task:
-			d.Task, d.Context = string(e.ID), e.ContextID
-			if msg.TaskID != "" && !fa2a.Terminal(e.Status.State) {
-				// An answer's stream opens with the task as it stood before
-				// the answer landed — still asking the question this message
-				// answers.
-				s.deleg.save(d)
-				continue
-			}
-			if s.observe(d, w, e.Status, fa2a.ResultText(e)) {
-				return
-			}
-		case *a2a.TaskStatusUpdateEvent:
-			said := fa2a.TextOf(e.Status.Message)
-			if e.Status.State == a2a.TaskStateCompleted && len(artifacts) > 0 {
-				said = strings.Join(artifacts, "\n")
-			}
-			if s.observe(d, w, e.Status, said) {
-				return
-			}
-		case *a2a.TaskArtifactUpdateEvent:
-			if t := fa2a.ResultText(&a2a.Task{Artifacts: []*a2a.Artifact{e.Artifact}}); t != "" {
-				artifacts = append(artifacts, t)
-			}
-		case *a2a.Message:
-			s.settle(d, w, stDone, fa2a.TextOf(e))
+		if s.onEvent(d, w, st, ev) {
 			return
 		}
 	}
 	if !d.settled() {
 		s.follow(d, w)
 	}
+}
+
+// streamState is what one exchange's stream has said so far.
+type streamState struct {
+	// answering marks a stream that carries an answer to a question.
+	answering bool
+	artifacts []string
+}
+
+// onEvent takes one streamed event, reporting whether the delegation settled.
+func (s *Service) onEvent(d *Delegation, w *waiter, st *streamState, ev a2a.Event) bool {
+	switch e := ev.(type) {
+	case *a2a.Task:
+		d.Task, d.Context = string(e.ID), e.ContextID
+		if st.answering && !fa2a.Terminal(e.Status.State) {
+			// An answer's stream opens with the task as it stood before the
+			// answer landed — still asking the question this message answers.
+			s.deleg.save(d)
+			return false
+		}
+		return s.observe(d, w, e.Status, fa2a.ResultText(e))
+	case *a2a.TaskStatusUpdateEvent:
+		said := fa2a.TextOf(e.Status.Message)
+		if e.Status.State == a2a.TaskStateCompleted && len(st.artifacts) > 0 {
+			said = strings.Join(st.artifacts, "\n")
+		}
+		return s.observe(d, w, e.Status, said)
+	case *a2a.TaskArtifactUpdateEvent:
+		if t := fa2a.ResultText(&a2a.Task{Artifacts: []*a2a.Artifact{e.Artifact}}); t != "" {
+			st.artifacts = append(st.artifacts, t)
+		}
+	case *a2a.Message:
+		s.settle(d, w, stDone, fa2a.TextOf(e))
+		return true
+	}
+	return false
 }
 
 // observe records a status and settles on one worth reporting.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -26,6 +27,7 @@ func (s *Service) Connect() {
 	}
 	link := NewLink(url, s.id, s.swarmID)
 	link.OnRoster(func(r *Roster) { s.adopt(r, true) })
+	link.rostered = func() bool { return s.book.Read().Joined() }
 	tunnel := NewTunnel(s.id, link, s.IsMember, s.Handler())
 	ctx, cancel := context.WithCancel(s.bg)
 	s.netMu.Lock()
@@ -79,6 +81,47 @@ func (s *Service) swarmID() string {
 	return st.Joining
 }
 
+// verdict is what a roster from the rendezvous means against the one held.
+type verdict int
+
+const (
+	takeIt  verdict = iota // a newer roster that checks out
+	confirm                // the roster already held
+	fork                   // another roster at the same epoch
+)
+
+// judge decides what to do with r, given the roster held (nil while
+// joining).
+func (s *Service) judge(cur *Roster, joining string, r *Roster) (verdict, error) {
+	switch {
+	case cur == nil:
+		if r.Swarm != joining || !r.Has(s.id.ID) {
+			return 0, errors.New("a roster for a swarm this agent is not joining")
+		}
+		return takeIt, r.VerifySig()
+	case r.Swarm != cur.Swarm:
+		return 0, errors.New("a roster for another swarm")
+	case r.Epoch < cur.Epoch:
+		return 0, fmt.Errorf("a rollback to epoch %d from %d", r.Epoch, cur.Epoch)
+	case r.Epoch == cur.Epoch && r.Hash() == cur.Hash():
+		return confirm, nil
+	case r.Epoch == cur.Epoch:
+		return fork, nil
+	case r.Epoch == cur.Epoch+1:
+		return takeIt, r.Valid(cur)
+	}
+	// Changes made while this agent was away. The rendezvous keeps only the
+	// head, so the steps between cannot be checked one by one; the signature
+	// and the signer's membership can.
+	if err := r.VerifySig(); err != nil {
+		return 0, err
+	}
+	if !cur.HasKey(r.Signer) && !r.HasKey(r.Signer) {
+		return 0, errors.New("signed by a key neither roster lists")
+	}
+	return takeIt, nil
+}
+
 // adopt takes a roster the rendezvous sent. It keeps the highest committed
 // epoch and refuses a rollback; two different rosters at one epoch freeze
 // membership changes and tell the user, and the last trusted roster stays in
@@ -89,82 +132,58 @@ func (s *Service) adopt(r *Roster, fromRendezvous bool) {
 	}
 	var removed []string
 	var alert string
-	var left bool
 	err := s.book.Update(func(st *State) error {
-		cur := st.Roster
-		switch {
-		case cur == nil:
-			if r.Swarm != st.Joining || !r.Has(s.id.ID) {
-				return errors.New("a roster for a swarm this agent is not joining")
-			}
-			if err := r.VerifySig(); err != nil {
-				return err
-			}
-		case r.Swarm != cur.Swarm:
-			return errors.New("a roster for another swarm")
-		case r.Epoch < cur.Epoch:
-			return fmt.Errorf("a rollback to epoch %d from %d", r.Epoch, cur.Epoch)
-		case r.Epoch == cur.Epoch:
-			if r.Hash() != cur.Hash() {
-				if st.Frozen == "" {
-					st.Frozen = fmt.Sprintf("two different rosters claim epoch %d", r.Epoch)
-					alert = st.Frozen
-				}
-				return nil
-			}
-			if fromRendezvous {
-				st.Refreshed = s.now()
+		v, err := s.judge(st.Roster, st.Joining, r)
+		if err != nil {
+			return err
+		}
+		if v == fork {
+			// A fork is no confirmation of anything: it neither refreshes
+			// the roster nor replaces it.
+			if st.Frozen == "" {
+				st.Frozen = fmt.Sprintf("two different rosters claim epoch %d", r.Epoch)
+				alert = st.Frozen
 			}
 			return nil
-		case r.Epoch == cur.Epoch+1:
-			if err := r.Valid(cur); err != nil {
-				return err
-			}
-		default:
-			// Changes made while this agent was away. The rendezvous keeps
-			// only the head, so the steps between cannot be checked one by
-			// one; the signature and the signer's membership can.
-			if err := r.VerifySig(); err != nil {
-				return err
-			}
-			if !cur.HasKey(r.Signer) && !r.HasKey(r.Signer) {
-				return errors.New("signed by a key neither roster lists")
-			}
 		}
-		for _, id := range cur.IDs() {
+		if fromRendezvous {
+			st.Refreshed = s.now()
+		}
+		if v == confirm {
+			return nil
+		}
+		for _, id := range st.Roster.IDs() {
 			if !r.Has(id) {
 				removed = append(removed, id)
 			}
 		}
-		if !r.Has(s.id.ID) {
-			left = true
-		}
-		st.Roster = r
-		st.Rendezvous = r.Home
-		if fromRendezvous {
-			st.Refreshed = s.now()
-		}
-		st.Joining = ""
+		st.Roster, st.Rendezvous, st.Joining = r, r.Home, ""
 		return nil
 	})
 	if err != nil {
 		slog.Warn("swarm: refused a roster", "epoch", r.Epoch, "error", err)
 		return
 	}
-	for _, id := range removed {
-		s.server.CancelPeer(id)
-		if _, _, tunnel := s.net(); tunnel != nil {
-			tunnel.Drop(id)
-		}
-	}
+	s.cutOff(removed)
 	if alert != "" {
 		s.tell("Membership changes in the swarm are frozen: " + alert + ". The rendezvous may be lying or a removed " +
 			"member may be trying to fork the swarm. The last roster this agent trusted stays in force.")
 	}
-	if left {
+	if slices.Contains(removed, s.id.ID) {
 		s.tell("This agent has been removed from the swarm.")
 	}
 	s.learnNames()
+}
+
+// cutOff ends what removed members had running here and open to here.
+func (s *Service) cutOff(removed []string) {
+	_, _, tunnel := s.net()
+	for _, id := range removed {
+		s.server.CancelPeer(id)
+		if tunnel != nil {
+			tunnel.Drop(id)
+		}
+	}
 }
 
 // tell reaches the user in the last chat they used.
