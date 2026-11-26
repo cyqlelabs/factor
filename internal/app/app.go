@@ -276,6 +276,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: %w", err)
 	}
+	if spaces, err = spaces.WithGuest(cfg.Memory.GuestSpace); err != nil {
+		return nil, fmt.Errorf("memory: %w", err)
+	}
 	ambient := memory.NewAmbient(engine,
 		cfg.Memory.RecallTopK, cfg.Memory.RecallMinConfidence,
 		cfg.Memory.QueryContextMsgs, cfg.Memory.QueryMaxChars, cfg.Memory.InjectMaxChars,

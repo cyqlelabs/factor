@@ -415,3 +415,23 @@ func TestMetaHelpers(t *testing.T) {
 		t.Errorf("card %+v", card)
 	}
 }
+
+func TestRESTBinding(t *testing.T) {
+	r := newRig(t, func(_ context.Context, turn Turn) (string, error) { return "rest: " + turn.Text, nil },
+		Options{Card: Card("w", "1", "http://x/")})
+	hc := &http.Client{Transport: asPeer{id: "desk", next: http.DefaultTransport}}
+	cl, err := a2aclient.NewFromEndpoints(context.Background(),
+		[]*a2a.AgentInterface{a2a.NewAgentInterface(r.http.URL+restPrefix, a2a.TransportProtocolHTTPJSON)},
+		a2aclient.WithRESTTransport(hc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := send(t, cl, text("hi"))
+	if task.Status.State != a2a.TaskStateCompleted || ResultText(task) != "rest: hi" {
+		t.Errorf("over REST: %s %q", task.Status.State, ResultText(task))
+	}
+	card := Card("w", "1", "https://x.swarm/")
+	if len(card.SupportedInterfaces) != 2 || card.SupportedInterfaces[1].URL != "https://x.swarm/rest" {
+		t.Errorf("card interfaces %+v", card.SupportedInterfaces)
+	}
+}

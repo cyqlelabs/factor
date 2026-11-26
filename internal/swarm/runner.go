@@ -30,8 +30,15 @@ var neverRemote = []string{
 	"job_start", "cron", "room", "voice_speakers",
 }
 
-// allowed is the tool rule for one member's task.
-func allowed(g Grant, hasMeta bool) func(string) bool {
+// guestTools are what a guest's tasks may use unless granted otherwise:
+// asking, looking things up, and its own memory. No shell, no files, no
+// screen — a guest is somebody else's agent.
+var guestTools = []string{tools.AskToolName, "web_search", "web_fetch", "recall", "remember"}
+
+// allowed is the tool rule for one member's task. It is applied when a tool
+// runs, not only when the list is offered.
+func allowed(g Grant, role string, hasMeta bool) func(string) bool {
+	guest := role == RoleGuest
 	return func(name string) bool {
 		if slices.Contains(neverRemote, name) {
 			return false
@@ -39,7 +46,11 @@ func allowed(g Grant, hasMeta bool) func(string) bool {
 		if name == SendToolName {
 			// Passing the work on needs the grant and a task that says where
 			// it has been: without the chain there is no way to refuse a loop.
-			return g.Forward && hasMeta
+			// A guest never passes work on.
+			return g.Forward && hasMeta && !guest
+		}
+		if guest && len(g.Tools) == 0 {
+			return slices.Contains(guestTools, name)
 		}
 		if name == tools.AskToolName || len(g.Tools) == 0 {
 			return true
@@ -84,6 +95,7 @@ func (s *Service) Run(ctx context.Context, t fa2a.Turn) (string, error) {
 			"so it takes no tasks until it reaches the rendezvous again", StaleAfter.Round(time.Hour))
 	}
 	peer := st.Peer(t.Peer)
+	rm, _ := st.Roster.Member(t.Peer)
 	if t.HasMeta {
 		ctx = context.WithValue(ctx, chainKey{}, t.Meta)
 	}
@@ -95,7 +107,8 @@ func (s *Service) Run(ctx context.Context, t fa2a.Turn) (string, error) {
 		Content: t.Text,
 		Private: t.HasMeta && t.Meta.Private(),
 		Ask:     remoteAsker{ask: t.Ask},
-		Allowed: allowed(peer.Grant, t.HasMeta),
+		Allowed: allowed(peer.Grant, rm.Role, t.HasMeta),
+		Guest:   rm.Role == RoleGuest,
 	})
 	if err != nil {
 		return "", failure(err)

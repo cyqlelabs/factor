@@ -35,6 +35,8 @@ type Service struct {
 	deleg   *ledger
 	version string
 	now     func() time.Time
+	// pollEvery is how often a task followed without a stream is asked about.
+	pollEvery time.Duration
 
 	// netMu guards the path to the others, which a pairing can swap for a
 	// link to another rendezvous while tools are using it.
@@ -48,6 +50,15 @@ type Service struct {
 	notify  func(string)
 	asker   func(ctx context.Context) tools.Asker
 	gate    func(channel string) error
+	// lan is the direct path, when swarm.lan turned it on; lanAddrs lists
+	// the addresses it is published at, and a test can stand in for it.
+	lan      *lanPath
+	lanAddrs func(port int) []string
+
+	// followers are the delegations this process is following by poll,
+	// each woken early by a push about its task.
+	followMu  sync.Mutex
+	followers map[string]chan struct{}
 	// peerOf names the agent behind an inbound request. The tunnel reads it
 	// off the pinned certificate; a test can stand in for it.
 	peerOf func(*http.Request) (string, bool)
@@ -80,7 +91,8 @@ func New(cfg config.SwarmConfig, dir, version string, turns Turns, b *bus.Messag
 	}
 	bg, cancel := context.WithCancel(context.Background())
 	s := &Service{cfg: cfg, dir: dir, id: id, book: book, turns: turns, bus: b, store: store,
-		deleg: &ledger{dir: delegDir}, version: version, now: time.Now, bg: bg, cancel: cancel}
+		deleg: &ledger{dir: delegDir}, version: version, now: time.Now, bg: bg, cancel: cancel,
+		pollEvery: pollEvery}
 	s.peerOf = s.tlsPeer
 	s.server = fa2a.NewServer(s, store, fa2a.Options{
 		Self:       id.ID,
@@ -94,6 +106,7 @@ func New(cfg config.SwarmConfig, dir, version string, turns Turns, b *bus.Messag
 			return -1
 		},
 		Card: fa2a.Card(s.Name(), version, "https://"+id.ID+HostSuffix+"/"),
+		Push: tunnelPusher{s: s},
 	})
 	return s, nil
 }
@@ -134,7 +147,13 @@ func (s *Service) net() (Transport, *Link, *Tunnel) {
 // Handler serves A2A to the members. It is mounted on the tunnel, never on a
 // listening port: only a connection whose certificate the roster lists gets
 // this far.
-func (s *Service) Handler() http.Handler { return s.server.Handler(s.peerOf) }
+func (s *Service) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /swarm/v1/addrs", s.serveAddrs)
+	mux.HandleFunc("POST /"+pushPath, s.servePush)
+	mux.Handle("/", s.server.Handler(s.peerOf))
+	return mux
+}
 
 func (s *Service) tlsPeer(r *http.Request) (string, bool) {
 	if r.TLS == nil {
@@ -172,7 +191,7 @@ func (s *Service) Start() {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		ticker := time.NewTicker(pollEvery)
+		ticker := time.NewTicker(s.pollEvery)
 		defer ticker.Stop()
 		for {
 			select {
@@ -210,11 +229,13 @@ func (s *Service) listText() string {
 	}
 	members := st.Members(s.id.ID)
 	if len(members) == 0 {
-		b.WriteString("It has no other members yet.")
-		return b.String()
+		b.WriteString("It has no other members yet.\n")
 	}
 	for _, m := range members {
 		fmt.Fprintf(&b, "- %s (id %s, %s): %s\n", m.Name, m.ID, m.Role, grantText("its", m.Grant))
+	}
+	for _, line := range s.externalNames() {
+		fmt.Fprintf(&b, "- %s\n", line)
 	}
 	return strings.TrimSpace(b.String())
 }

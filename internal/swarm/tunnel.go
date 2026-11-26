@@ -93,6 +93,8 @@ func (t *Tunnel) dialTLS(ctx context.Context, addr string) (net.Conn, error) {
 	if !ok || !t.member(peer) {
 		return nil, fmt.Errorf("%s is not a member of this swarm", host)
 	}
+	// A direct path is tried only where one already answered, so a call to
+	// a member never waits on a route that may not exist.
 	var raw net.Conn
 	if t.direct != nil {
 		dctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -116,6 +118,26 @@ func (t *Tunnel) dialTLS(ctx context.Context, addr string) (net.Conn, error) {
 		return nil, err
 	}
 	return conn, nil
+}
+
+// Serve takes connections from a listener — the direct path on a local
+// network — until it closes.
+func (t *Tunnel) Serve(ln net.Listener) error {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return err
+		}
+		t.Accept(conn)
+	}
+}
+
+// closeIdle drops idle connections, so the next request dials afresh and
+// takes the best path there is by then.
+func (t *Tunnel) closeIdle() {
+	if tr, ok := t.client.Transport.(*http.Transport); ok {
+		tr.CloseIdleConnections()
+	}
 }
 
 // Accept serves one inbound connection from any path: pinned TLS first, then

@@ -241,18 +241,21 @@ func (p ProviderConfig) Candidates() []Candidate {
 }
 
 type MemoryConfig struct {
-	Mode                string   `json:"mode" env:"FACTOR_MEMORY_MODE"` // sidecar | external | off
-	URL                 string   `json:"url,omitempty" env:"FACTOR_MEMORY_URL"`
-	Command             string   `json:"command"`
-	AutoInstall         bool     `json:"auto_install"` // install smrti (uv/pipx/pip/venv) when missing
-	KeepAlive           bool     `json:"keep_alive"`   // sidecar outlives Factor; later runs adopt it warm
-	Host                string   `json:"host"`
-	Port                int      `json:"port" env:"FACTOR_MEMORY_PORT"`
-	DBPath              string   `json:"db_path"`
-	Tenant              string   `json:"tenant"`
-	Space               string   `json:"space"`
-	SpaceStrategy       string   `json:"space_strategy"` // origin: conversations write to `space`, cron/job turns to `system_space`, each reading the other as an overlay (needs a smrti with space routing; older engines fall back to single). single: everything in `space`.
-	SystemSpace         string   `json:"system_space"`
+	Mode          string `json:"mode" env:"FACTOR_MEMORY_MODE"` // sidecar | external | off
+	URL           string `json:"url,omitempty" env:"FACTOR_MEMORY_URL"`
+	Command       string `json:"command"`
+	AutoInstall   bool   `json:"auto_install"` // install smrti (uv/pipx/pip/venv) when missing
+	KeepAlive     bool   `json:"keep_alive"`   // sidecar outlives Factor; later runs adopt it warm
+	Host          string `json:"host"`
+	Port          int    `json:"port" env:"FACTOR_MEMORY_PORT"`
+	DBPath        string `json:"db_path"`
+	Tenant        string `json:"tenant"`
+	Space         string `json:"space"`
+	SpaceStrategy string `json:"space_strategy"` // origin: conversations write to `space`, cron/job turns to `system_space`, each reading the other as an overlay (needs a smrti with space routing; older engines fall back to single). single: everything in `space`.
+	SystemSpace   string `json:"system_space"`
+	// GuestSpace is the memory space a swarm guest's tasks read and write,
+	// and the only one. Empty leaves guests without memory.
+	GuestSpace          string   `json:"guest_space"`
 	SharedSpace         string   `json:"shared_space"` // where a turn somebody else can hear is written and read; a private turn reads it too, a shared turn reads nothing else. Empty disables audience scoping, which makes a channel that reports one refuse to recall rather than recall everything.
 	Personality         string   `json:"personality" env:"FACTOR_MEMORY_PERSONALITY"`
 	APIKey              string   `json:"api_key,omitempty" env:"FACTOR_MEMORY_API_KEY"`
@@ -468,6 +471,22 @@ type SwarmConfig struct {
 	// the relay. It opens a listening port on the local network, which is
 	// why it is a separate switch.
 	LAN bool `json:"lan"`
+	// Agents are A2A agents outside the swarm — somebody else's, reached
+	// over plain HTTPS — by the name the user calls them.
+	Agents map[string]ExternalAgent `json:"agents,omitempty"`
+}
+
+// ExternalAgent is one agent outside the swarm and the grant for what Factor
+// may tell it. Only a turn the user started can reach it.
+type ExternalAgent struct {
+	// URL is its A2A JSON-RPC endpoint.
+	URL string `json:"url"`
+	// Token is a bearer token it asks for, if any.
+	Token string `json:"token,omitempty"`
+	// Private lets a private conversation send it requests. Without it, only
+	// a conversation with company present — already said in front of
+	// others — can.
+	Private bool `json:"private,omitempty"`
 }
 
 // CronConfig bounds the turns the scheduler runs. JobTimeoutMinutes is how
@@ -709,6 +728,7 @@ func Default() *Config {
 			SpaceStrategy: "origin",
 			SystemSpace:   "system",
 			SharedSpace:   "shared",
+			GuestSpace:    "guest",
 			Personality:   "balanced",
 			RecallTopK:    5,
 			// smrti never prunes a user-stated episode or belief — it pins

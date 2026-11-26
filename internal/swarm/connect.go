@@ -36,13 +36,16 @@ func (s *Service) Connect() {
 		defer s.wg.Done()
 		link.Run(ctx)
 	}()
+	if s.cfg.LAN {
+		s.startLAN(ctx, tunnel)
+	}
 }
 
 // disconnect ends the link and the tunnel over it.
 func (s *Service) disconnect() {
 	s.netMu.Lock()
 	cancel, tunnel := s.linkCancel, s.tunnel
-	s.link, s.tunnel, s.linkCancel = nil, nil, nil
+	s.link, s.tunnel, s.linkCancel, s.lan = nil, nil, nil, nil
 	if tunnel != nil && s.transport == Transport(tunnel) {
 		s.transport = nil
 	}
@@ -177,6 +180,7 @@ func (s *Service) learnNames() {
 	if _, _, tunnel := s.net(); tunnel == nil {
 		return
 	}
+	s.discoverAll()
 	st := s.book.Read()
 	for _, m := range st.Members(s.id.ID) {
 		if st.Peer(m.ID).Name != "" {
@@ -210,7 +214,7 @@ func (s *Service) askName(ctx context.Context, peer string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+a2asrv.WellKnownAgentCardPath[1:], nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, join(base, a2asrv.WellKnownAgentCardPath), nil)
 	if err != nil {
 		return "", err
 	}
@@ -261,7 +265,11 @@ func (s *Service) Status() string {
 	if st.Frozen != "" {
 		state += ", membership frozen"
 	}
-	return fmt.Sprintf("%s, %d members", state, members)
+	line := fmt.Sprintf("%s, %d members", state, members)
+	if direct := s.directCount(); direct > 0 {
+		line += fmt.Sprintf(", %d direct", direct)
+	}
+	return line
 }
 
 func (s *Service) offlineText() string {

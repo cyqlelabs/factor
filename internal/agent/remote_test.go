@@ -144,3 +144,26 @@ func TestRemoteBriefing(t *testing.T) {
 		t.Error("ByPerson")
 	}
 }
+
+func TestGuestRemoteTaskReadsOnlyTheGuestSpace(t *testing.T) {
+	h := newHarness(t)
+	spaces, _ := memory.NewSpacePolicy("origin", "main", "system", "shared")
+	spaces, _ = spaces.WithGuest("guest")
+	ambient := memory.NewAmbient(h.engine, 5, 0.3, 5, 500, 500, nil, spaces)
+	h.loop.ambient = ambient
+	h.loop.builder = NewContextBuilder(h.loop.cfg, skills.NewLoader(filepath.Join(h.loop.cfg.Agent.Workspace, "skills")), ambient)
+	if _, err := h.loop.ProcessRemote(context.Background(), RemoteTurn{
+		Peer: "p", Context: "c", Content: "hi", Private: true, Guest: true}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	for _, sc := range h.engine.scopes {
+		if sc.Space != "guest" || len(sc.ReadSpaces) != 1 {
+			t.Errorf("a guest's task recalled %+v", sc)
+		}
+	}
+	if !strings.Contains(remoteBriefing(tools.AudienceGuest), "guest") {
+		t.Error("guest briefing")
+	}
+}

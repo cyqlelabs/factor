@@ -94,6 +94,15 @@ type SpacePolicy struct {
 	// is unavailable, which callers must read as "cannot isolate" rather than
 	// as "isolate into Main".
 	Shared string
+	// Guest is the space a swarm guest's tasks read and write, apart from
+	// everything else. Empty means guests recall nothing.
+	Guest string
+}
+
+// isolated reports whether an audience must be kept out of the private
+// graph: company in the room, or a guest of the swarm.
+func isolated(audience string) bool {
+	return audience == tools.AudienceShared || audience == tools.AudienceGuest
 }
 
 // NewSpacePolicy validates the configured strategy. An unrecognised value is
@@ -115,6 +124,16 @@ func NewSpacePolicy(strategy, main, system, shared string) (SpacePolicy, error) 
 	return SpacePolicy{Strategy: strategy, Main: main, System: system, Shared: shared}, nil
 }
 
+// WithGuest sets the space a swarm guest's tasks are kept in. It must be a
+// space of its own: shared with any other, a guest would read it.
+func (p SpacePolicy) WithGuest(space string) (SpacePolicy, error) {
+	if space != "" && (space == p.Main || space == p.System || space == p.Shared) {
+		return p, fmt.Errorf("guest_space %q must differ from space, system_space and shared_space", space)
+	}
+	p.Guest = space
+	return p, nil
+}
+
 // Scope resolves the space a turn writes to and the overlay it reads. It
 // reports ok=false when the turn must not recall at all — an audience this
 // policy cannot isolate. Serving such a turn from the one space that holds
@@ -122,7 +141,14 @@ func NewSpacePolicy(strategy, main, system, shared string) (SpacePolicy, error) 
 // skipped instead of quietly widened.
 func (p SpacePolicy) Scope(channel, audience string) (Scope, bool) {
 	if p.Strategy == "single" || p.Main == "" || p.System == "" {
-		return Scope{}, audience != tools.AudienceShared
+		return Scope{}, !isolated(audience)
+	}
+	// A guest has a space of its own and no window onto any other.
+	if audience == tools.AudienceGuest {
+		if p.Guest == "" {
+			return Scope{}, false
+		}
+		return Scope{Space: p.Guest, ReadSpaces: []string{p.Guest}}, true
 	}
 	// Audience outranks channel. A background job or a scheduled task reports
 	// back into the room it was started from, and the routing that gives
@@ -160,7 +186,7 @@ func scopeFor(engine Engine, p SpacePolicy, channel, audience string) (Scope, bo
 		// No routing means one space holding everything. A private turn is
 		// served from it exactly as before spaces existed; a shared one
 		// cannot be, since reading it would hand a guest the private graph.
-		return Scope{}, audience != tools.AudienceShared
+		return Scope{}, !isolated(audience)
 	}
 	return p.Scope(channel, audience)
 }
