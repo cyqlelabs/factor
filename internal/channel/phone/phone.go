@@ -86,12 +86,14 @@ func New(cfg Config, b *bus.MessageBus) (*Phone, error) {
 // from Factor to its own child process, through the environment.
 func newBridgeToken() string {
 	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		// crypto/rand does not fail in practice; a time-derived token is still
-		// better than an unauthenticated loopback endpoint.
-		return fmt.Sprintf("factor-%d", time.Now().UnixNano())
+	// crypto/rand does not fail in practice; a time-derived token is still
+	// better than an unauthenticated loopback endpoint.
+	token := fmt.Sprintf("factor-%d", time.Now().UnixNano())
+	if _, err := rand.Read(buf); err == nil {
+		token = hex.EncodeToString(buf)
 	}
-	return hex.EncodeToString(buf)
+	config.AddSecret(token)
+	return token
 }
 
 func (p *Phone) Name() string          { return "phone" }

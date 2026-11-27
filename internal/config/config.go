@@ -976,6 +976,9 @@ const minSecretLen = 8
 // SecretValues returns every configured secret worth filtering out of output.
 func (c *Config) SecretValues() []string {
 	secrets := []string{c.Provider.APIKey, c.Memory.APIKey, c.Memory.ExtractAPIKey}
+	minted.mu.Lock()
+	secrets = append(secrets, minted.values...)
+	minted.mu.Unlock()
 	for _, f := range c.Provider.Fallbacks {
 		secrets = append(secrets, f.APIKey)
 	}
@@ -994,6 +997,21 @@ func (c *Config) SecretValues() []string {
 		}
 	}
 	return out
+}
+
+// minted holds the secrets this process made rather than read: the boot
+// tokens it hands its own children. They are in no file, yet a child's
+// environment is one read of /proc away from a tool result.
+var minted struct {
+	mu     sync.Mutex
+	values []string
+}
+
+// AddSecret makes FilterSecrets hide a secret minted at runtime.
+func AddSecret(s string) {
+	minted.mu.Lock()
+	defer minted.mu.Unlock()
+	minted.values = append(minted.values, s)
 }
 
 // FilterSecrets replaces occurrences of secret values in s with a placeholder.
