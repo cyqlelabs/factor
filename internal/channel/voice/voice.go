@@ -293,10 +293,12 @@ func New(cfg Config, b *bus.MessageBus) (*Voice, error) {
 // only ever travels from Factor to its own child, through the environment.
 func newToken() string {
 	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("factor-%d", time.Now().UnixNano())
+	token := fmt.Sprintf("factor-%d", time.Now().UnixNano())
+	if _, err := rand.Read(buf); err == nil {
+		token = hex.EncodeToString(buf)
 	}
-	return hex.EncodeToString(buf)
+	config.AddSecret(token)
+	return token
 }
 
 func (v *Voice) Name() string          { return "voice" }

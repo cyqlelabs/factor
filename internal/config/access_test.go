@@ -435,6 +435,26 @@ func TestFilterSecretsNoOpWithoutSecrets(t *testing.T) {
 	}
 }
 
+// A boot token is in no file the filter reads, but a child's environment is
+// one read of /proc away from a tool result.
+func TestFilterSecretsHidesMintedSecrets(t *testing.T) {
+	cfg := tempConfig(t)
+	const token = "4f1d9c0b7e2a6d35"
+	minted.mu.Lock()
+	before := minted.values
+	minted.mu.Unlock()
+	t.Cleanup(func() {
+		minted.mu.Lock()
+		minted.values = before
+		minted.mu.Unlock()
+	})
+	AddSecret(token)
+	got := cfg.FilterSecrets(`FACTOR_SPEECH_CONFIG={"port":8728,"token":"` + token + `"}`)
+	if strings.Contains(got, token) || !strings.Contains(got, "[redacted]") {
+		t.Errorf("a minted secret survived the filter: %q", got)
+	}
+}
+
 func TestEnsureWorkspaceFailsOnFileCollision(t *testing.T) {
 	dir := t.TempDir()
 	ws := filepath.Join(dir, "workspace")
