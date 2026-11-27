@@ -431,11 +431,9 @@ func startVoiceChannel(ctx context.Context, a *app.App, cfg *config.Config, sess
 			return ""
 		})
 	}
-	if addresser, ok := ch.(channel.Addresser); ok {
-		// A written reply lands in this terminal: the drain below prints
-		// every outbound cli message.
-		addresser.BindLastExternal(func() (string, string, bool) { return "cli", sessionName, true })
-	}
+	// A written reply to a spoken turn lands in this terminal: the drain
+	// below prints every outbound cli message.
+	a.Registry.Register(a.Loop.TerminalMessageTool(sessionName))
 	if hearing, ok := ch.(channel.Hearing); ok {
 		hearing.BindSound(a.Media)
 	}

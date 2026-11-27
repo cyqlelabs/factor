@@ -109,6 +109,7 @@ type Loop struct {
 
 	lastMu         sync.Mutex
 	lastChannel    bus.InboundMessage
+	lastChats      []chatAddr // the last chat on each channel, most recent first
 	reachable      func(channel string) bool
 	conversational func(channel string) bool
 	languageOf     func(channel string) string
@@ -150,6 +151,7 @@ type Loop struct {
 
 func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry *tools.Registry,
 	sessions *session.Store, builder *ContextBuilder, ambient *memory.Ambient) *Loop {
+	last, chats := loadLastChannel()
 	return &Loop{
 		cfg:              cfg,
 		bus:              b,
@@ -162,7 +164,8 @@ func NewLoop(cfg *config.Config, b *bus.MessageBus, chat ChatProvider, registry 
 		seen:             map[string]tools.ToolContext{},
 		pendingInduce:    map[string]induceCandidate{},
 		sem:              make(chan struct{}, cfg.Agent.MaxConcurrentTurns),
-		lastChannel:      loadLastChannel(),
+		lastChannel:      last,
+		lastChats:        chats,
 		fillGrace:        fillerGrace,
 		fillEvery:        fillerInterval,
 		fillGraceWritten: fillerGraceWritten,
@@ -549,7 +552,7 @@ func (l *Loop) processDirect(ctx context.Context, steer bool, content, sessionKe
 	}()
 	// A spoken conversation is the user's last chat as much as a written
 	// one: the heartbeat and the cron results follow them here, and
-	// voice_write already knows to look past it for a written chat.
+	// message_user already knows to look past it for a written chat.
 	l.recordLastChannel(msg)
 	return l.runTurn(ctx, msg, t, outlet, notice)
 }
@@ -1378,9 +1381,13 @@ func (l *Loop) recordLastChannel(msg bus.InboundMessage) {
 	l.lastMu.Lock()
 	moved := l.lastChannel.Channel != msg.Channel || l.lastChannel.ChatID != msg.ChatID
 	l.lastChannel = msg
+	if moved {
+		l.lastChats = withFirst(l.lastChats, chatAddr{Channel: msg.Channel, ChatID: msg.ChatID})
+	}
+	chats := l.lastChats
 	l.lastMu.Unlock()
 	if moved {
-		saveLastChannel(msg)
+		saveLastChannel(chats)
 	}
 }
 

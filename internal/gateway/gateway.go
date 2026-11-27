@@ -169,9 +169,6 @@ func serve(configPath string) (bool, error) {
 		if guarded, ok := ch.(channel.Guarded); ok {
 			guarded.BindPathGuard(a.Guard)
 		}
-		if addresser, ok := ch.(channel.Addresser); ok {
-			addresser.BindLastExternal(a.Loop.LastChannel)
-		}
 		if hearing, ok := ch.(channel.Hearing); ok {
 			hearing.BindSound(a.Media)
 		}
@@ -179,6 +176,7 @@ func serve(configPath string) (bool, error) {
 			a.Registry.Register(provider.Toolset()...)
 		}
 	}
+	a.Registry.Register(a.Loop.MessageTool())
 	began := time.Now()
 	manager := channel.NewManager(a.Bus, channels)
 	// Everything Factor says on its own initiative follows the user to the

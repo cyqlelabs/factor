@@ -90,8 +90,7 @@ const floorWait = 2 * time.Minute
 // turns onto the bus: an utterance is synchronous — the user is standing
 // there — so each one runs directly through the agent loop, and talking over
 // the reply cancels the turn. The bus half carries the genuinely asynchronous
-// traffic: proactive messages are spoken, and voice_write hands text to the
-// user's written chat.
+// traffic: proactive messages are spoken.
 type Voice struct {
 	cfg   Config
 	home  string
@@ -106,9 +105,8 @@ type Voice struct {
 	holdGrace time.Duration
 	holdEvery time.Duration
 
-	runner       channel.TurnFunc
-	lastExternal func() (chatChannel, chatID string, ok bool)
-	publish      func(bus.OutboundMessage) bool
+	runner  channel.TurnFunc
+	publish func(bus.OutboundMessage) bool
 
 	player *player
 	utts   chan capturedUtterance
@@ -318,13 +316,9 @@ func (v *Voice) AcceptsSteering() {}
 // the microphone, since nothing could answer.
 func (v *Voice) BindTurnRunner(run channel.TurnFunc) { v.runner = run }
 
-// BindLastExternal tells voice_write where the user's written conversation
-// is: the terminal session in CLI mode, the last external chat in the daemon.
-func (v *Voice) BindLastExternal(fn func() (string, string, bool)) { v.lastExternal = fn }
-
 // Toolset is the tools that only exist where a microphone does.
 func (v *Voice) Toolset() []tools.Tool {
-	set := []tools.Tool{&writeTool{voice: v}, &sayTool{voice: v}}
+	set := []tools.Tool{&sayTool{voice: v}}
 	if v.speakers != nil {
 		set = append(set, &speakersTool{voice: v})
 	}
