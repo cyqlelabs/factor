@@ -158,6 +158,9 @@ type mailConn struct {
 	out  chan []byte
 	once sync.Once
 	gone chan struct{}
+	// ending asks the writer to send what is queued and stop; flushed says
+	// it has.
+	ending, flushed chan struct{}
 	// misses counts claims of codes nobody is waiting under, and allocated
 	// says this connection has made its one code.
 	misses    int
@@ -205,7 +208,8 @@ func (m *mailboxes) serve(w http.ResponseWriter, r *http.Request) {
 	ws.SetReadLimit(64 << 10)
 	ctx, cancel := context.WithTimeout(r.Context(), m.s.cfg.MailboxTTL)
 	defer cancel()
-	c := &mailConn{m: m, ws: ws, ctx: ctx, out: make(chan []byte, 64), gone: make(chan struct{})}
+	c := &mailConn{m: m, ws: ws, ctx: ctx, out: make(chan []byte, 64), gone: make(chan struct{}),
+		ending: make(chan struct{}), flushed: make(chan struct{})}
 	go c.writeLoop(cancel)
 	defer c.end()
 	c.send(map[string]any{"type": "welcome", "welcome": map[string]any{"motd": ""}})
@@ -226,6 +230,7 @@ func (m *mailboxes) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *mailConn) writeLoop(cancel context.CancelFunc) {
+	defer close(c.flushed)
 	defer cancel()
 	for {
 		select {
@@ -237,6 +242,17 @@ func (c *mailConn) writeLoop(cancel context.CancelFunc) {
 		case data := <-c.out:
 			if c.ws.Write(c.ctx, websocket.MessageText, data) != nil {
 				return
+			}
+		case <-c.ending:
+			for {
+				select {
+				case data := <-c.out:
+					if c.ws.Write(c.ctx, websocket.MessageText, data) != nil {
+						return
+					}
+				default:
+					return
+				}
 			}
 		}
 	}
@@ -251,8 +267,12 @@ func (c *mailConn) end() {
 		delete(c.box.listeners, c)
 	}
 	c.m.mu.Unlock()
-	for wait := time.Now().Add(time.Second); len(c.out) > 0 && time.Now().Before(wait); {
-		time.Sleep(5 * time.Millisecond)
+	// An empty queue is not a sent one: the writer takes the last reply off
+	// it before the write is done.
+	close(c.ending)
+	select {
+	case <-c.flushed:
+	case <-time.After(time.Second):
 	}
 	_ = c.ws.CloseNow()
 }

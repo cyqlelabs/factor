@@ -180,16 +180,19 @@ func TestMailboxProtocol(t *testing.T) {
 	if m := c.reply(); m["type"] != "error" || m["error"] != "crowded" {
 		t.Errorf("third side: %v", m)
 	}
-	// Three misses on one connection end it.
-	for i := range 3 {
-		c.say(map[string]any{"type": "claim", "id": "x", "nameplate": "99"})
-		_ = i
+	// Three misses on one connection end it. Not on c, which being crowded
+	// out already ended.
+	g := r.mailbox(t)
+	g.say(map[string]any{"type": "bind", "id": "1", "side": "g", "appid": "app"})
+	for range 3 {
+		g.say(map[string]any{"type": "claim", "id": "x", "nameplate": "99"})
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if m := c.read(); m["type"] == "closed-socket" {
-			break
-		}
+	ended := false
+	for deadline := time.Now().Add(2 * time.Second); !ended && time.Now().Before(deadline); {
+		ended = g.read()["type"] == "closed-socket"
+	}
+	if !ended {
+		t.Error("three misses left the connection open")
 	}
 	// A scary close burns the code: nobody new can claim it.
 	b.say(map[string]any{"type": "close", "id": "5", "mailbox": claimed["mailbox"], "mood": "scary"})
