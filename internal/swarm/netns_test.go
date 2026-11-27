@@ -160,6 +160,10 @@ func (n *netnsRun) timeCalls(peer, name string) timing {
 		}
 		return took
 	}
+	// The address fetch that follows pairing holds the connection while it
+	// runs, and a connection in use is not idle: wait it out, or the first call
+	// rides that connection and is not cold.
+	n.until("the address fetch from "+name, 30*time.Second, func() bool { return len(n.svc.Book().Read().Peer(peer).Addrs) > 0 })
 	_, _, tunnel := n.svc.net()
 	tunnel.closeIdle()
 	out := timing{Path: "relay", Cold: call("cold").String()}
