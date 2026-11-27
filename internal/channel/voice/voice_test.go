@@ -727,11 +727,11 @@ func TestVoiceUnknownSpeakerStaysAnonymousByDefault(t *testing.T) {
 // to whoever spoke last, so "soy Roxana" works without naming a profile.
 func TestVoiceSpeakersTool(t *testing.T) {
 	h := newVoiceHarness(t, nil)
-	if len(h.v.Toolset()) != 2 {
+	if len(h.v.Toolset()) != 1 {
 		t.Error("the speakers tool exists without speaker_id")
 	}
 	h.enableSpeakerID(unknownEnroll)
-	if len(h.v.Toolset()) != 3 {
+	if len(h.v.Toolset()) != 2 {
 		t.Error("speaker_id did not bring the speakers tool")
 	}
 	h.v.speakers.enroll(vec(1, 0))

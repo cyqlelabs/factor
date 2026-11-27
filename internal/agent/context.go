@@ -237,7 +237,7 @@ func channelBriefing(tc tools.ToolContext) string {
 func mediumBriefing(channel string) string {
 	switch channel {
 	case "voice":
-		return "This reply is spoken aloud on the user's speakers, not read. Compose it to be said: no markdown, no lists, no code, no bare URLs, and a couple of sentences rather than a page. Anything long or written goes through voice_write instead."
+		return "This reply is spoken aloud on the user's speakers, not read. Compose it to be said: no markdown, no lists, no code, no bare URLs, and a couple of sentences rather than a page. Anything long or written goes through message_user instead."
 	case "phone":
 		return "This reply is spoken aloud on a live phone call, not read. Compose it to be said — no markdown, no lists, no code — lead with the answer, and keep it short: the user is holding a phone and can hang up mid-sentence."
 	case "cron":

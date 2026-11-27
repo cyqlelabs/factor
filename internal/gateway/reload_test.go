@@ -229,7 +229,7 @@ func TestShutdownDoesNotRelaunch(t *testing.T) {
 
 // The same chat, with its connector switched off. Nothing downstream may be
 // told that address: the pump would drop whatever was sent to it, and the
-// agent — voice_write, a cron result, this notice — would have reported a
+// agent — message_user, a cron result, this notice — would have reported a
 // delivery that never happened.
 func TestRestartLeavesNoNoticeForAChannelThisGatewayDoesNotRun(t *testing.T) {
 	requireSighup(t)

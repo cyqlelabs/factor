@@ -491,8 +491,9 @@ Factor recognizes its own voice when the speakers reach the mic and drops it; lo
 `output_volume` if they still overpower the mic. A sentence it heard but didn't take,
 such as one without the wake word, gets a soft chime; `ignored_chime` turns it off.
 
-Replies come out speakable — no markdown, lists or URLs — and `voice_write` sends
+Replies come out speakable — no markdown, lists or URLs — and `message_user` sends
 anything long to the terminal, or to your last chat when Factor runs as a daemon.
+It works from any turn, so another machine in your swarm can write to you too.
 `voice_say` works the other way round: ask from Telegram or another machine in your
 swarm, and Factor says it aloud on these speakers.
 Speech starts once the first sentence is rendered, not the whole reply. The local
