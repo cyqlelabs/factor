@@ -273,7 +273,8 @@ func (c *conn) handshake(ctx context.Context) error {
 		// The signed roster is the proof: an agent takes no word of the
 		// rendezvous for its own removal, and without it would keep a stale
 		// roster and retry for good.
-		_ = writeJSON(hctx, c.ws, wire.Control{Type: wire.CtlError, Error: errRemoved, Roster: head})
+		_ = writeJSON(hctx, c.ws, wire.Control{Type: wire.CtlError, Error: errRemoved,
+			Roster: s.store.RemovedBy(hello.Swarm, c.id)})
 		return errors.New(errRemoved)
 	case !wire.CheckWork(nonce, c.key, hello.Work, s.cfg.WorkBits):
 		return errors.New("a new key owes the proof of work")

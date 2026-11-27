@@ -30,9 +30,26 @@ func TestStoreRefusesRollbacksAndStrangers(t *testing.T) {
 	if err := s.Commit(g); err == nil {
 		t.Error("a rollback was committed")
 	}
+	// The roster that removes b is kept for b, and changes after it are not
+	// shown to it.
+	c, _ := swarm.NewIdentity()
+	three := two.Next(a, func(x *swarm.Roster) { x.Remove(swarm.EncodeKey(b.Public)) })
+	four := three.Next(a, func(x *swarm.Roster) { x.Add(swarm.EncodeKey(c.Public), swarm.RoleMember) })
+	if err := s.Commit(three); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Commit(four); err != nil {
+		t.Fatal(err)
+	}
+	if r := s.RemovedBy(g.Swarm, b.ID); r == nil || r.Epoch != 3 {
+		t.Errorf("the roster that removed b: %+v", r)
+	}
+	if s.RemovedBy(g.Swarm, c.ID) != nil || s.RemovedBy("../x", b.ID) != nil {
+		t.Error("a removal roster for an agent nobody removed")
+	}
 	// After a restart the store still holds the head.
 	again, err := OpenStore(dir, false)
-	if err != nil || again.Head(g.Swarm).Epoch != 2 || again.Swarms() != 1 {
+	if err != nil || again.Head(g.Swarm).Epoch != 4 || again.Swarms() != 1 {
 		t.Fatalf("reopened: %v", err)
 	}
 	// A store that has gone missing refuses changes rather than starting over.

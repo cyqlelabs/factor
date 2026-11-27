@@ -134,11 +134,53 @@ func (s *Store) Commit(r *wire.Roster) error {
 	if err != nil {
 		return err
 	}
+	if err := s.keepRemovals(head, r, data); err != nil {
+		return fmt.Errorf("the roster could not be stored: %w", err)
+	}
 	if err := writeDurable(filepath.Join(s.dir, "rosters", r.Swarm+".json"), data); err != nil {
 		return fmt.Errorf("the roster could not be stored: %w", err)
 	}
 	s.heads[r.Swarm] = r
 	return nil
+}
+
+// keepRemovals stores r beside each agent it removes. Shown that roster, a
+// removed agent can see it is out; shown the head, it would also see every
+// change made since, and who joined after it.
+func (s *Store) keepRemovals(head, r *wire.Roster, data []byte) error {
+	for _, key := range r.Removed {
+		pub, err := wire.DecodeKey(key)
+		if err != nil {
+			continue
+		}
+		id := wire.IDOf(pub)
+		if head.WasRemoved(id) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Join(s.dir, "removals"), 0o700); err != nil {
+			return err
+		}
+		if err := writeDurable(s.removalPath(r.Swarm, id), data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RemovedBy is the roster that removed an agent from a swarm, or nil.
+func (s *Store) RemovedBy(swarm, id string) *wire.Roster {
+	if !validID(swarm) || !validID(id) {
+		return nil
+	}
+	r, err := readRoster(s.removalPath(swarm, id), swarm)
+	if err != nil {
+		return nil
+	}
+	return r
+}
+
+func (s *Store) removalPath(swarm, id string) string {
+	return filepath.Join(s.dir, "removals", swarm+"."+id+".json")
 }
 
 func validID(id string) bool {

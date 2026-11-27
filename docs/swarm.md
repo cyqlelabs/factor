@@ -190,7 +190,9 @@ may do.
   offline member fetches it when it reconnects. Agents connect to a new member
   the first time they need it.
 - Any member can remove another. The rendezvous refuses the removed key at
-  once, members close its connections and cancel its tasks, and a member whose
+  once and shows it the roster that removed it, never a later one, so it
+  learns it is out without seeing who joined since. Members close its
+  connections and cancel its tasks, and a member whose
   roster is more than seven days old stops accepting privileged tasks until it
   refreshes.
 - The `role` field exists from day one, with `member` now and `guest` in P5, so

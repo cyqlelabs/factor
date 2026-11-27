@@ -175,6 +175,11 @@ func TestRemovedWhileAway(t *testing.T) {
 	if err := desk.Remove(ctx, home.ID()); err != nil {
 		t.Fatal(err)
 	}
+	// A change after the removal, which home is not shown.
+	later, _ := NewIdentity()
+	if err := desk.Admit(ctx, EncodeKey(later.Public), "later", ""); err != nil {
+		t.Fatal(err)
+	}
 	home.Connect()
 	waitFor(t, "home to learn it was removed", func() bool { return !home.Book().Read().Joined() })
 }
