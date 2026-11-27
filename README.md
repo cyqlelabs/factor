@@ -27,10 +27,16 @@ background, and calls or texts you when one lands. Long-term memory is
 [smrti](https://github.com/cyqlelabs/smrti): it consolidates and prioritizes rather
 than logging, so past failures become constraints it doesn't repeat.
 
+Run it on more than one machine and they work as one crew: pair two with a short
+code, then ask either one to have the other do the job. They talk over
+[A2A](https://a2a-protocol.org), sealed end to end, through a relay that cannot
+read what they say ([Swarm](#swarm)).
+
 ## Highlights
 
 | | |
 |---|---|
+| 🤝 **Your machines, one crew** | Pair two machines with a short code and either one can hand the other work. A2A, sealed end to end, and no router ports to open ([Swarm](#swarm)) |
 | 🧠 **Memory as the soul** | Salience-ranked recall every turn, consolidation that decays and prunes, plus `remember` / `recall` / `forget` / `reflect` tools |
 | ⚡ **Never keeps you waiting** | Says what it's about to do while the tools run; long work becomes a background job that messages you when it lands |
 | 🎯 **Mid-turn steering** | A second message during a live turn is injected between tool iterations, not queued |
@@ -58,7 +64,7 @@ than logging, so past failures become constraints it doesn't repeat.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/cyqlelabs/factor/main/docs/assets/architecture.png" width="625"
-       alt="Telegram and the CLI reach the message bus, which feeds the agent loop. The phone reaches the loop through the voice shell sidecar and PC voice through the mic and speakers, both running turns directly. The loop recalls from and stores to the smrti REST sidecar, calls the provider chain, asks the local decision model for typed decisions, and drives the tool registry and its suites. Jobs, cron and the heartbeat publish proactive results onto the bus.">
+       alt="Telegram and the CLI reach the message bus, which feeds the agent loop. The phone reaches the loop through the voice shell sidecar and PC voice through the mic and speakers, both running turns directly. The loop recalls from and stores to the smrti REST sidecar, calls the provider chain, asks the local decision model for typed decisions, and drives the tool registry and its suites. Your other machines reach the loop as remote turns through the swarm, over A2A through the rendezvous. Jobs, cron and the heartbeat publish proactive results onto the bus.">
 </p>
 
 Bus + bounded workers, mid-turn steering, narrow pluggable seams, CGO-free
@@ -220,6 +226,13 @@ reports back to. A save that doesn't parse is warned about and retried, never ap
     "cache_entries": 512,                    // memoize repeated decisions; 0 turns it off
     "device": "",                            // "" = let the runtime choose; a name pins the onnxruntime provider
     "auto_install": true                     // build the private virtualenv when it is missing
+  },
+  "swarm": {                                 // your machines handing each other work; see "Swarm"
+    "enabled": true,                         // false = no swarm tools, no key, no connection
+    "rendezvous": "",                        // "" = wss://rendezvous.fctr.app:8443; or your own factor rendezvous
+    "remote_tasks": 1, "remote_queue": 1,    // other machines' tasks run here at once, and waiting
+    "member_daily_usd": 1,                   // what one member's tasks may spend here a day
+    "lan": false                             // also try a direct path on the same network
   },
   "upgrade": { "check": true, "check_interval_hours": 24 },  // report new releases; never install one unasked
   "proxy": { "address": "", "ca": "" },      // "" = direct; host:port or a URL routes every call, sidecars included
@@ -485,6 +498,47 @@ speech server runs with onnxruntime's telemetry switched off
 ([onnxruntime#25573](https://github.com/microsoft/onnxruntime/issues/25573)).
 
 </details>
+
+## Swarm
+
+Every machine running Factor can join one swarm and hand the others work. A
+question you ask at your desk can run on the box in the closet, and the answer
+comes back to you.
+
+| You want to | You say |
+|---|---|
+| Add a machine | "Pair with the box." Factor reads out or writes a code. On the other machine, say "join the swarm" and give it the code. |
+| Hand off work | "Ask the box how much disk it has." A quick answer comes back in the same reply. |
+| Hand off slow work | "Have the box back up the photos." It runs there in the background and reports when it lands. |
+| Set limits | "Let the box use only the browser here," or cap what its tasks may spend a day. |
+| Remove a machine | "Remove the box from the swarm." Every member drops it and refuses it from then on. |
+
+<!-- A PNG, not a mermaid fence: the GitHub mobile app shows mermaid as raw code.
+     Source: docs/assets/swarm-topology.mmd — rebuild with: make diagrams -->
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cyqlelabs/factor/main/docs/assets/swarm-topology.png" width="468"
+       alt="Three Factor agents (a desktop on office WiFi, a box behind a home NAT, a laptop anywhere) each keep one outbound WebSocket on port 8443 to the rendezvous (rendezvous.fctr.app, or your own), which holds presence, pairing mailboxes, the signed roster and a byte relay. A dotted line between the desktop and the home box marks a direct path on the same LAN, used when swarm.lan is on.">
+</p>
+
+- **Nothing to set up.** The swarm is on by default, and an agent opens no
+  connection until you pair it. Machines meet through Factor's relay, so there
+  are no router ports to open and no VPN.
+- **Sealed end to end.** Agents speak mutual TLS 1.3 with keys pinned at
+  pairing, and HTTP/2 inside it. The relay passes bytes it cannot read, and only
+  between keys on the same signed roster. Pairing runs SPAKE2 over a numeric
+  code that never reaches the model.
+- **Remote work runs under your rules.** A task from another machine runs in a
+  session of its own, with the tools you granted that machine and a daily cap
+  on what it spends. An answer meant for you alone waits while someone else is
+  in the room.
+- **An open protocol.** Agents speak [A2A](https://a2a-protocol.org), so a swarm
+  can also call other A2A agents you name in `swarm.agents`.
+
+To run your own relay, put `factor rendezvous` behind a TLS proxy and tell any
+agent its `wss://` address. `swarm.enabled: false` turns the whole feature off.
+The design, its guarantees and what is still open are in
+[docs/swarm.md](docs/swarm.md).
 
 ## Extending Factor
 

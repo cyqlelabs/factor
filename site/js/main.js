@@ -329,6 +329,8 @@
       $(".st-shared").style.opacity = 1;
       $(".space-main").style.opacity = 0.3;
       $(".app-export").classList.add("done");
+      $(".swarm").classList.add("swarm-live");
+      swarmAt(1);
       ST.refresh();
       return;
     }
@@ -346,6 +348,7 @@
       reach(gsap, c, pins, hooks);
       hands(gsap, c, pins);
       work(gsap, c);
+      swarm(gsap, c, pins);
       memory(gsap, c, pins, hooks);
       room(gsap, c, pins);
       honest(gsap, c);
@@ -384,7 +387,8 @@
   /* hero: an orchestrated arrival, then layers that part as you leave */
   function hero(gsap) {
     var tl = gsap.timeline({ defaults: { ease: "expo.out", duration: 1.1 } });
-    tl.from(".hero .eyebrow", { y: 14, autoAlpha: 0, duration: 0.8 }, 0.1)
+    tl.from(".hero-new", { y: 14, autoAlpha: 0, duration: 0.8 }, 0.05)
+      .from(".hero .eyebrow", { y: 14, autoAlpha: 0, duration: 0.8 }, 0.1)
       .from(".hero-title .line > span", { yPercent: 108, duration: 1.25, stagger: 0.11 }, 0.15)
       .from(".hero-lead", { y: 24, autoAlpha: 0 }, 0.55)
       .from(".hero-cta, .cta-note", { y: 18, autoAlpha: 0, stagger: 0.08 }, 0.65)
@@ -529,6 +533,48 @@
     gsap.from(".msg-steer", { rotate: -2.5, scale: 1.06, ease: "back.out(2)", scrollTrigger: { trigger: ".msg-steer", start: "top 75%", end: "top 55%", scrub: true } });
   }
 
+  /* swarm: a code pairs two machines, then a task crosses the wire and the
+     answer comes back. One progress value draws every state, so the scrubbed
+     pin, the phone's one-off play and the reduced-motion still all agree. */
+  function swarmAt(p) {
+    var sec = $(".swarm");
+    sec.classList.toggle("pairing", p < 0.5);
+    sec.classList.toggle("apart", p < 0.38);
+    $$(".ln", sec).forEach(function (l) { l.classList.toggle("on", p >= +l.dataset.at); });
+    var step = p < 0.5 ? 0 : p < 0.8 ? 1 : 2;
+    $$(".swarm-steps .step").forEach(function (s, i) { s.classList.toggle("is-on", i === step); });
+    packet($(".pk-out"), p, 0.55, 0.63, false);
+    packet($(".pk-back"), p, 0.76, 0.84, true);
+  }
+
+  function packet(el, p, from, to, back) {
+    var on = p > from && p < to;
+    el.classList.toggle("on", on);
+    if (!on) return;
+    var t = (p - from) / (to - from);
+    el.style.setProperty("--t", (back ? 1 - t : t).toFixed(3));
+  }
+
+  function swarm(gsap, c, pins) {
+    var sec = $(".swarm");
+    sec.classList.add("swarm-live");
+    swarmAt(0);
+    if (!c.wide) {
+      var run = { p: 0 };
+      gsap.to(run, {
+        p: 1, duration: 10, ease: "none", onUpdate: function () { swarmAt(run.p); },
+        scrollTrigger: { trigger: ".swarm-stage", start: "top 75%" }
+      });
+      return;
+    }
+    var tl = gsap.timeline({
+      scrollTrigger: { trigger: ".swarm-pin", start: "top top", end: "+=220%", pin: true, scrub: 0.8 },
+      onUpdate: function () { swarmAt(tl.progress()); }
+    });
+    tl.to({}, { duration: 1 });
+    pins.set(sec, tl.scrollTrigger);
+  }
+
   // The constellation joins the chips' resting centres; offsetLeft/Top
   // ignore the transforms the scroll timeline is applying at the time.
   function memLines() {
@@ -623,7 +669,7 @@
   // The big outline coordinates drift behind everything, and each dark
   // section opens out from a framed screen to full bleed as it arrives.
   function parallax(gsap) {
-    $$(".hands, .room, .install").forEach(function (sec) {
+    $$(".hands, .swarm, .room, .install").forEach(function (sec) {
       gsap.fromTo(sec, { clipPath: "inset(0% 4% 0% 4%)" }, {
         clipPath: "inset(0% 0% 0% 0%)", ease: "none",
         scrollTrigger: { trigger: sec, start: "top bottom", end: "top 15%", scrub: true }

@@ -51,7 +51,7 @@ second process holding the same key would knock the first off the rendezvous.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/cyqlelabs/factor/main/docs/assets/swarm-topology.png" width="468"
-       alt="Three Factor agents (a desktop on office WiFi, a box behind a home NAT, a laptop anywhere) each keep one outbound WebSocket on port 443 to the rendezvous, which holds presence, pairing mailboxes, the signed roster and a byte relay. A dotted line between the desktop and the home box marks a direct path, used when one exists: same LAN first, then hole-punched QUIC.">
+       alt="Three Factor agents (a desktop on office WiFi, a box behind a home NAT, a laptop anywhere) each keep one outbound WebSocket on port 8443 to the rendezvous (rendezvous.fctr.app, or your own), which holds presence, pairing mailboxes, the signed roster and a byte relay. A dotted line between the desktop and the home box marks a direct path on the same LAN, used when swarm.lan is on.">
 </p>
 
 Every agent keeps one outbound WebSocket on port 443 to its swarm's

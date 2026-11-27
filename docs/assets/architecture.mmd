@@ -12,3 +12,5 @@ flowchart TD
     LOOP --> REG[tool registry]
     REG --- SUITES["fs · exec · web<br/>browser · desktop · media<br/>memory · jobs · cron<br/>config · pkg · skills · MCP"]
     BG[jobs · cron<br/>heartbeat] -.->|proactive<br/>results| BUS
+    PEERS([your other machines]) <-->|A2A through<br/>the rendezvous| SW["swarm<br/>pinned mutual TLS<br/>signed roster"]
+    SW <-->|remote<br/>turns| LOOP
