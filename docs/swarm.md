@@ -25,16 +25,18 @@ reliably, and transcription of spoken digits is less certain. On a new machine,
 `factor init` shows a code, the way a TV does when you link a streaming
 account.
 
-The swarm is off until you turn it on, on each machine: set `swarm.enabled`
-and `swarm.rendezvous`, or answer yes to the swarm step of `factor init`. An
-agent that never turns it on opens no connection, writes no key and offers
-the model no swarm tool. Only the gateway connects, since a second process
-holding the same key would knock the first off the rendezvous.
+The swarm is on by default, and an agent in no swarm opens no connection
+until you ask it to pair. Pairing goes through Factor's public rendezvous,
+`wss://rendezvous.fctr.app:8443`, unless you run your own: then tell any agent
+its address, or set `swarm.rendezvous`, which `factor init` also asks for.
+Set `swarm.enabled` to `false` to turn the swarm off; the agent then writes
+no key and offers the model no swarm tool. Only the gateway connects, since a
+second process holding the same key would knock the first off the rendezvous.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `swarm.enabled` | `false` | Turns the swarm on |
-| `swarm.rendezvous` | none | The `wss://` rendezvous to pair through; a newcomer inherits it |
+| `swarm.enabled` | `true` | `false` turns the swarm off |
+| `swarm.rendezvous` | `wss://rendezvous.fctr.app:8443` | The rendezvous to pair through; a newcomer inherits it |
 | `swarm.name` | host name | What this agent calls itself to the others |
 | `swarm.remote_tasks`, `swarm.remote_queue` | `1`, `1` | Tasks from other agents run at once, and waiting |
 | `swarm.member_daily_usd` | `1` | Daily spending cap per member; negative turns it off |
@@ -106,10 +108,12 @@ sustained, 15 MB a day), a small proof of work to register a key or open a
 mailbox, and a rate limit per IP address. The rendezvous writes nothing to
 disk that links an IP address to a swarm.
 
-To run your own, put `factor rendezvous` behind a TLS proxy and set
-`swarm.rendezvous` on your agents. Start it once with `--init` to create the
-store; after that, a missing store is refused rather than recreated. The URL travels inside the pairing
-envelope, so a newcomer inherits it.
+To run your own, put `factor rendezvous` behind a TLS proxy and point the
+first agent at it, by telling it the address or setting `swarm.rendezvous`.
+Start it once with `--init` to create the store; after that, a missing store
+is refused rather than recreated. The URL travels inside the pairing
+envelope, so a newcomer inherits it, and a swarm keeps meeting at the
+rendezvous it was founded on.
 
 The proposed default instance runs in Cyqle's regional cells (open question 1).
 It would use the cells, not Cyqle's own relays, which are sized for Cyqle

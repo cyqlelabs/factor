@@ -24,12 +24,14 @@ func (s *Service) Found(ctx context.Context) error {
 	if s.book.Read().Joined() {
 		return nil
 	}
-	_, link, _ := s.net()
+	link := s.linkUp()
 	if link == nil {
 		return errors.New(s.offlineText())
 	}
 	if err := link.WaitOnline(ctx); err != nil {
-		return fmt.Errorf("the rendezvous is not reachable: %w", err)
+		s.dropIfAlone()
+		return fmt.Errorf("the rendezvous at %s is not reachable (%w); if the user runs their own, set swarm.rendezvous "+
+			"to its address", link.url, err)
 	}
 	id := NewSwarmID()
 	if err := s.book.Update(func(st *State) error {

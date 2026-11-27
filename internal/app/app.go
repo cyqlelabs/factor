@@ -74,7 +74,7 @@ type App struct {
 	Tracer *trace.Recorder
 
 	// Swarm is this agent's membership in a swarm of Factor agents. It is nil
-	// unless swarm.enabled is set, and only the gateway connects it.
+	// with swarm.enabled off, and only the gateway connects it.
 	Swarm *swarm.Service
 
 	// Decisions is the typed-decision model Factor runs itself, and is nil

@@ -144,7 +144,9 @@ func (t *adminTool) Description() string {
 		"\"how's it going?\"); invite adds a machine — the code goes to the user directly, never to you; join " +
 		"joins a swarm with a code the user gives directly; remove takes a member out for good; rename changes " +
 		"what you call a member; grant sets which tools a member's tasks may use here and whether they may pass " +
-		"work on. Inviting, joining, removing and granting need the user's own request in this conversation."
+		"work on. Inviting, joining, removing and granting need the user's own request in this conversation. " +
+		"Pairing goes through Factor's public rendezvous unless the user runs their own: when they name its " +
+		"wss:// address, set swarm.rendezvous to it with config_set before inviting or joining."
 }
 
 func (t *adminTool) Parameters() map[string]any {
