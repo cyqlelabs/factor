@@ -33,6 +33,9 @@ func TestNetnsAgent(t *testing.T) {
 	if role == "" || dir == "" {
 		t.Skip("run by test/netns/run.sh")
 	}
+	// A first call across a delayed network outlasts the waits the other tests
+	// shorten these to.
+	spokenWait, writtenWait, pollEvery, attachWait = shipped.spoken, shipped.written, shipped.poll, shipped.attach
 	svc, err := New(config.SwarmConfig{Enabled: true, Name: role, Rendezvous: os.Getenv("NETNS_RENDEZVOUS"),
 		RemoteTasks: 2, RemoteQueue: 2, LAN: true},
 		t.TempDir(), "netns", replyTurns{reply: func(rt agent.RemoteTurn) string { return role + " saw: " + rt.Content }}, bus.New())
@@ -53,6 +56,10 @@ func TestNetnsAgent(t *testing.T) {
 		t.Fatalf("unknown role %q", role)
 	}
 }
+
+// shipped holds the waits as the product ships them: package variables are
+// set before any init runs, including the one that shortens them for tests.
+var shipped = struct{ spoken, written, poll, attach time.Duration }{spokenWait, writtenWait, pollEvery, attachWait}
 
 type netnsRun struct {
 	t   *testing.T
