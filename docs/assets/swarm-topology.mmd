@@ -2,8 +2,8 @@ flowchart TB
     A["desktop Factor<br/>office WiFi"]
     B["Puppy Factor<br/>home NAT"]
     C["laptop Factor<br/>anywhere"]
-    A <-.->|"direct path when one exists:<br/>same LAN, then hole-punched QUIC"| B
-    RV[["rendezvous · factor rendezvous · :443<br/>presence · pairing mailbox<br/>signed roster · byte relay"]]
+    A <-.->|"same-LAN direct path<br/>with swarm.lan"| B
+    RV[["rendezvous · rendezvous.fctr.app:8443 or your own<br/>presence · pairing mailbox<br/>signed roster · byte relay"]]
     A <-->|"one outbound WSS"| RV
     B <-->|"one outbound WSS"| RV
     C <-->|"one outbound WSS"| RV

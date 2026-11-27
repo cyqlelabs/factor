@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title data-i18n="meta.title">Factor — the AI agent that lives on your machine and answers the phone</title>
-<meta name="description" data-i18n-attr="content:meta.desc" content="Factor is a personal AI agent in one file under 20 MB. Talk to it in the terminal, on Telegram, over the phone or out loud. It works your browser and desktop, remembers what matters, and reports nothing home. MIT.">
+<meta name="description" data-i18n-attr="content:meta.desc" content="Factor is a personal AI agent in one file under 20 MB. Talk to it in the terminal, on Telegram, over the phone or out loud. It works your browser and desktop, remembers what matters, pairs your machines into one crew, and reports nothing home. MIT.">
 <meta name="theme-color" content="#EDF5FA">
 <link rel="canonical" href="https://fctr.app/">
 <link rel="alternate" hreflang="en" href="https://fctr.app/">
@@ -28,7 +28,7 @@
 <meta property="og:locale:alternate" content="ja_JP">
 <meta property="og:locale:alternate" content="zh_CN">
 <meta property="og:title" data-i18n-attr="content:og.title" content="Factor — lives on your machine, answers the phone">
-<meta property="og:description" data-i18n-attr="content:og.desc" content="A personal AI agent in one file under 20 MB: terminal, Telegram, phone and voice, with real memory and hands on your desktop. MIT.">
+<meta property="og:description" data-i18n-attr="content:og.desc" content="A personal AI agent in one file under 20 MB: terminal, Telegram, phone and voice, with real memory, hands on your desktop, and machines that work as one. MIT.">
 <meta property="og:image" content="https://fctr.app/assets/og-en.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
@@ -97,6 +97,7 @@
   <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2.8l2.8 6 6.5.7-4.9 4.4 1.4 6.4L12 17l-5.8 3.3 1.4-6.4-4.9-4.4 6.5-.7z" fill="currentColor"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><path d="M8 8h11v12H8zM5 16V4h11" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5" fill="none" stroke="currentColor" stroke-width="2.4"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" fill="currentColor"/><path d="M8 10.5V8a4 4 0 018 0v2.5" fill="none" stroke="currentColor" stroke-width="2.2"/></symbol>
   <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16.5 8.5a5 5 0 010 7M19 6a8.5 8.5 0 010 12" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
   <symbol id="mark" viewBox="0 0 512 512"><circle cx="256" cy="256" r="256" fill="url(#plate)"/><g fill="#fff" transform="translate(12.8 12.8) scale(.95)"><circle cx="256" cy="103" r="38.25"/><path d="M150.25 172.75h211.5V202l-38.25 38.25H150.25z"/><path d="M150.25 271.75h211.5V301l-38.25 38.25H214.75v108h-42.75l-21.75-21.75z"/></g></symbol>
   <defs><linearGradient id="plate" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0ea5e9"/><stop offset="1" stop-color="#0369a1"/></linearGradient></defs>
@@ -117,6 +118,7 @@
   </a>
   <nav class="nav-links" data-i18n-attr="aria-label:nav.label" aria-label="Primary">
     <a href="#reach" data-i18n="nav.how">How it works</a>
+    <a href="#swarm" data-i18n="nav.swarm">Swarm</a>
     <a href="#honest" data-i18n="nav.why">Why trust it</a>
     <a href="https://github.com/cyqlelabs/factor#readme" data-i18n="nav.docs">Docs</a>
   </nav>
@@ -144,6 +146,7 @@
   <div class="hero-letters" aria-hidden="true"><span>A</span><span>1</span></div>
   <div class="wrap hero-grid">
     <div class="hero-copy">
+      <a class="hero-new mono" href="#swarm"><b data-i18n="hero.newtag">New</b><span data-i18n="hero.new">Your machines now work as one</span></a>
       <p class="eyebrow mono" data-i18n="hero.eyebrow">Personal AI agent · open source · MIT</p>
       <h1 class="display hero-title">
         <span class="line"><span data-i18n="hero.t1">Lives on your machine.</span></span>
@@ -321,6 +324,74 @@
         <p data-i18n="work.m5">Done. The second desk is the only one under 70 cm deep, and it's on sale until Sunday.</p>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- SWARM: your machines hand each other work. The desk makes the code and
+     says it; the box, reached by text, is where it is typed: a synthesized
+     voice reads digits reliably, transcription of spoken digits less so. -->
+<section class="swarm dark" id="swarm">
+  <div class="swarm-pin">
+    <div class="wrap swarm-grid">
+      <div class="swarm-copy">
+        <p class="eyebrow mono"><span class="cellref" data-cellref></span><span data-i18n="swarm.eyebrow">Agent swarm · A2A</span></p>
+        <h2 class="display h2" data-i18n="swarm.title">Many machines. One crew.</h2>
+        <p class="lead" data-i18n="swarm.lead">Run Factor on each of your machines and pair them with a short code. Then any of them can hand work to the others: you ask at your desk, the box in the closet does the job, and the answer comes back to you.</p>
+        <ol class="steps swarm-steps">
+          <li class="step is-on" data-n="1"><code data-i18n="swarm.s1h">Pair</code><span data-i18n="swarm.s1">Say “pair with the box.” Your desk reads out a code, you type it into the box, and the two are paired. The model never sees the code.</span></li>
+          <li class="step" data-n="2"><code data-i18n="swarm.s2h">Ask</code><span data-i18n="swarm.s2">“Ask the box to back up the photos.” The job runs on the box, in a session of its own, under limits you set.</span></li>
+          <li class="step" data-n="3"><code data-i18n="swarm.s3h">Hear back</code><span data-i18n="swarm.s3">A quick answer comes straight back. A slow one keeps running and reaches you when it's done.</span></li>
+        </ol>
+      </div>
+      <div class="swarm-stage" aria-hidden="true">
+        <p class="swarm-status mono"><span class="dot"></span><span class="st st-apart" data-i18n="swarm.apart">two machines</span><span class="st st-joined" data-i18n="swarm.joined">one swarm, sealed end to end</span></p>
+        <div class="machines">
+          <div class="machine m-desk">
+            <p class="m-bar mono"><svg><use href="#i-mic"/></svg><span data-i18n="swarm.desk">desk</span></p>
+            <div class="m-body">
+              <div class="phase ph-pair">
+                <p class="ln ln-you" data-at=".04" data-i18n="swarm.d1">Pair with the box in the closet.</p>
+                <p class="ln ln-say mono" data-at=".12"><svg><use href="#i-speaker"/></svg>4 2, 1 7 0 3, 9 5 8 2</p>
+              </div>
+              <div class="phase ph-task">
+                <p class="ln ln-you" data-at=".53" data-i18n="swarm.d2">Ask the box to back up the photos.</p>
+                <p class="ln ln-done" data-at=".86" data-i18n="swarm.d3">Done. 2,314 photos are on the NAS, every one checked.</p>
+              </div>
+            </div>
+          </div>
+          <div class="link">
+            <span class="wire"></span>
+            <span class="relay mono"><svg><use href="#i-lock"/></svg><span data-i18n="swarm.relay">relay</span></span>
+            <span class="pk pk-out"></span><span class="pk pk-back"></span>
+          </div>
+          <div class="machine m-box">
+            <p class="m-bar mono"><svg><use href="#i-plane"/></svg><span data-i18n="swarm.box">closet box</span></p>
+            <div class="m-body">
+              <div class="phase ph-pair">
+                <p class="ln ln-you" data-at=".2" data-i18n="swarm.b1">Join the swarm.</p>
+                <p class="ln ln-bot" data-at=".25" data-i18n="swarm.b2">What's the code?</p>
+                <p class="ln ln-you mono" data-at=".31">42-1703-9582</p>
+                <p class="ln ln-bot" data-at=".38" data-i18n="swarm.b3">Paired with desk.</p>
+              </div>
+              <div class="phase ph-task">
+                <p class="ln ln-tag mono" data-at=".63" data-i18n="swarm.b4">task from desk</p>
+                <p class="ln ln-tool mono" data-at=".67"><span class="spin"></span>exec rsync -a ~/Photos nas:/backup</p>
+                <p class="ln ln-bot" data-at=".75" data-i18n="swarm.b5">2,314 photos copied and checked.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap swarm-after">
+    <ul class="facts swarm-facts">
+      <li data-i18n-html="swarm.f1"><b>Nothing to set up.</b> It's on out of the box. Machines meet through a relay, so there are no router ports to open and no VPN.</li>
+      <li data-i18n-html="swarm.f2"><b>Sealed end to end.</b> Machines speak mutual TLS with keys pinned when they pair. The relay passes bytes it can't read, and only between machines in the same swarm.</li>
+      <li data-i18n-html="swarm.f3"><b>You set the limits.</b> Choose which tools another machine may use here and what its tasks may spend a day. Remove one with a sentence.</li>
+      <li data-i18n-html="swarm.f4"><b>Speaks A2A.</b> Built on the open Agent2Agent protocol, so Factor also works with other A2A agents you name.</li>
+    </ul>
+    <p class="fine" data-i18n-html="swarm.fine">Pairing goes through Factor's public relay, or through your own: it's the same binary, run as <code>factor rendezvous</code>.</p>
   </div>
 </section>
 
