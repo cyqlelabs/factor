@@ -1,6 +1,7 @@
 package phone
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -40,10 +41,11 @@ func TestMain(m *testing.M) {
 }
 
 // fakeVoiceShell serves the control API the real shell exposes, echoing back
-// the configuration blob it was handed so the tests can assert on it.
+// the configuration blob it was handed on stdin so the tests can assert on it.
 func fakeVoiceShell() {
 	var cfg shellConfig
-	if err := json.Unmarshal([]byte(os.Getenv("FACTOR_VOICE_CONFIG")), &cfg); err != nil {
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err := json.Unmarshal([]byte(line), &cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "fake voice shell: bad config:", err)
 		os.Exit(4)
 	}

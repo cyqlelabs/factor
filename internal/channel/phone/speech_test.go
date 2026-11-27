@@ -140,7 +140,7 @@ func TestLocalVoiceGetsAModelIdTheDialectAccepts(t *testing.T) {
 // uses: a tier-2 machine must not pay for a voice it will never speak.
 func TestSpeechServerOnlyLoadsTheHalvesTheTierUses(t *testing.T) {
 	cfg := prepared(t, func(c *Config) { c.STT.Provider = providerLocalOpenAI })
-	rendered := renderSpeechConfig(cfg.SpeechServer, "/home", cfg.Language, "tok",
+	rendered := renderSpeechConfig(cfg.SpeechServer, "/home", cfg.Language,
 		cfg.localSTT(), cfg.localTTS(), false)
 	if !rendered.NeedSTT || rendered.NeedTTS {
 		t.Errorf("need_stt=%v need_tts=%v, want transcription only", rendered.NeedSTT, rendered.NeedTTS)
@@ -160,7 +160,7 @@ func TestSpeechConfigCarriesTheLanguage(t *testing.T) {
 		c.Language = "es-MX"
 		c.TTS.Provider = providerLocalOpenAI
 	})
-	rendered := renderSpeechConfig(cfg.SpeechServer, "/home", cfg.Language, "tok", false, true, false)
+	rendered := renderSpeechConfig(cfg.SpeechServer, "/home", cfg.Language, false, true, false)
 	if rendered.Language != "es-MX" {
 		t.Errorf("language = %q, want it passed through untouched", rendered.Language)
 	}
@@ -438,7 +438,7 @@ func TestRenderSpeechConfigCarriesTheEngine(t *testing.T) {
 		SttEngine: "parakeet",
 		SttModel:  "nemo-parakeet-tdt-0.6b-v3",
 	}
-	rendered := renderSpeechConfig(cfg, t.TempDir(), "es", "tok", true, false, false)
+	rendered := renderSpeechConfig(cfg, t.TempDir(), "es", true, false, false)
 	if rendered.SttEngine != "parakeet" || rendered.SttModel != "nemo-parakeet-tdt-0.6b-v3" {
 		t.Errorf("rendered = %+v", rendered)
 	}
@@ -735,7 +735,7 @@ class Response:
 // need_speaker has to reach the server process, or the embedding endpoint
 // would answer 503 forever while Go keeps asking it for vectors.
 func TestRenderSpeechConfigCarriesNeedSpeaker(t *testing.T) {
-	rendered := renderSpeechConfig(SpeechConfig{}, t.TempDir(), "es", "tok", true, false, true)
+	rendered := renderSpeechConfig(SpeechConfig{}, t.TempDir(), "es", true, false, true)
 	if !rendered.NeedSpeaker {
 		t.Error("need_speaker was dropped on the way to the server")
 	}
@@ -921,7 +921,7 @@ print(",".join(str(mod.read_speed(v, 1.0)) for v in values))
 
 // The knob is the server's, so it has to survive the trip to the server.
 func TestRenderSpeechConfigCarriesTheSpeechSpeed(t *testing.T) {
-	rendered := renderSpeechConfig(SpeechConfig{SpeechSpeed: 0.92}, t.TempDir(), "es", "tok", false, true, false)
+	rendered := renderSpeechConfig(SpeechConfig{SpeechSpeed: 0.92}, t.TempDir(), "es", false, true, false)
 	if rendered.SpeechSpeed != 0.92 {
 		t.Errorf("speech_speed = %v, dropped on the way to the server", rendered.SpeechSpeed)
 	}

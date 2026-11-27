@@ -6,7 +6,8 @@ can be pip-installed exists: Speaches ships as a container or a git checkout,
 and Piper's own HTTP server speaks its own dialect. So Factor brings its own —
 written to disk on start and run in a private virtualenv, exactly like the
 voice shell, with its configuration arriving as one JSON blob in
-FACTOR_SPEECH_CONFIG so no secret is ever visible in argv.
+FACTOR_SPEECH_CONFIG and its boot token on stdin, so no secret is visible in
+argv or in the environment.
 
 It implements only the two routes Patter actually calls, to the letter of what
 its adapters expect:
@@ -98,7 +99,7 @@ def load_config() -> dict:
 
 CFG = load_config()
 
-TOKEN = CFG.get("token") or ""
+TOKEN = ""  # main sets it from stdin before serving: see read_token
 DATA_DIR = Path(CFG.get("data_dir") or ".")
 LANGUAGE = (CFG.get("language") or "en").split("-")[0].lower()
 
@@ -1175,11 +1176,27 @@ def fetch_segmentation(into: Path) -> None:
         shutil.move(str(unpacked), str(into / SEGMENT_MODEL_DIR))
 
 
+def read_token() -> str:
+    """The boot secret Factor shares with its own children, from stdin.
+
+    Not from the environment: an environment is one read of /proc/<pid>/environ
+    away for any process of the same user, and a turn once lifted the token
+    there to call this server around the voice channel."""
+    if sys.stdin is None or sys.stdin.isatty():
+        die("no boot token on stdin; the speech server is started by Factor, not by hand")
+    token = sys.stdin.readline().strip()
+    if not token:
+        die("no boot token on stdin; the speech server is started by Factor, not by hand")
+    return token
+
+
 def main() -> None:
+    global TOKEN
     if "--prepare" in sys.argv:
         prepare()
         return
 
+    TOKEN = read_token()
     import uvicorn
 
     uvicorn.run(
