@@ -128,3 +128,12 @@ func TestPushRefusalsAndReceiver(t *testing.T) {
 		t.Error("join")
 	}
 }
+
+func TestNothingSpawnsAfterClose(t *testing.T) {
+	n := newNode(t, "desk")
+	n.svc.Close()
+	n.svc.spawn(func() { t.Error("ran after Close") })
+	if err := (tunnelPusher{s: n.svc}).SendPush(context.Background(), &a2a.PushConfig{URL: "https://x"}, a2a.NewMessage(a2a.MessageRoleAgent)); err != nil {
+		t.Error(err)
+	}
+}

@@ -72,6 +72,8 @@ type Service struct {
 	bg     context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	// spawnMu orders spawn against Close, whose Wait no Add may overlap.
+	spawnMu sync.Mutex
 }
 
 // Dir is where the swarm keeps its key, its state and its tasks.
@@ -216,11 +218,29 @@ func (s *Service) Start() {
 // Close ends the tasks this agent is running for others and stops following
 // the ones it sent.
 func (s *Service) Close() {
+	s.spawnMu.Lock()
 	s.cancel()
+	s.spawnMu.Unlock()
 	s.server.Close()
 	s.store.Close()
 	s.disconnect()
 	s.wg.Wait()
+}
+
+// spawn runs fn on a goroutine Close waits for, or not at all once Close has
+// begun: the SDK's own goroutines call in after that, finishing the tasks
+// Close cancelled, and a WaitGroup cannot be added to while it is waited on.
+func (s *Service) spawn(fn func()) {
+	s.spawnMu.Lock()
+	defer s.spawnMu.Unlock()
+	if s.bg.Err() != nil {
+		return
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		fn()
+	}()
 }
 
 // Tools are the two the model drives the swarm with.
