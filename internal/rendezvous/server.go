@@ -152,8 +152,10 @@ func (s *Server) admitIP(r *http.Request) bool {
 
 func (s *Server) clientIP(r *http.Request) string {
 	if s.cfg.TrustProxy {
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			parts := strings.Split(fwd, ",")
+		// The proxy's own entry is the last one: a proxy that adds a header
+		// line rather than extending the client's leaves a forged one first.
+		if fwd := r.Header.Values("X-Forwarded-For"); len(fwd) > 0 {
+			parts := strings.Split(fwd[len(fwd)-1], ",")
 			return strings.TrimSpace(parts[len(parts)-1])
 		}
 	}

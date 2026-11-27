@@ -301,6 +301,10 @@ func TestClientIPAndBucket(t *testing.T) {
 	if got := s.clientIP(req); got != "5.6.7.8" {
 		t.Errorf("behind a proxy: %q", got)
 	}
+	req.Header.Add("X-Forwarded-For", "9.9.9.9")
+	if got := s.clientIP(req); got != "9.9.9.9" {
+		t.Errorf("behind a proxy that adds its own line: %q", got)
+	}
 	s.cfg.TrustProxy = false
 	if got := s.clientIP(req); got != "10.0.0.1" {
 		t.Errorf("direct: %q", got)
