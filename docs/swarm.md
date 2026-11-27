@@ -115,9 +115,9 @@ is refused rather than recreated. The URL travels inside the pairing
 envelope, so a newcomer inherits it, and a swarm keeps meeting at the
 rendezvous it was founded on.
 
-The proposed default instance runs in Cyqle's regional cells (open question 1).
-It would use the cells, not Cyqle's own relays, which are sized for Cyqle
-sessions. Version 1 uses one region. Later, each swarm is homed on one cell, the
+The default instance, `wss://rendezvous.fctr.app:8443`, runs on Cyqle's US cell.
+It runs beside the cell's stack as a service of its own, not on Cyqle's relays,
+which are sized for Cyqle sessions. Version 1 uses one region. Later, each swarm is homed on one cell, the
 roster names it, and codes gain a one-digit cell prefix so a newcomer finds the
 right mailbox.
 
@@ -277,7 +277,7 @@ limits and the per-agent quotas keep it from taking capacity Cyqle needs.
 | Phase | State |
 |---|---|
 | P1 | Built. `go test -tags tck -run TestServeForTCK ./internal/a2a` serves the server for the conformance kit, whose run is not yet recorded here |
-| P2 | Built, and checked in network namespaces with `test/netns/run.sh` (it needs root): three agents behind two NATs that drop UDP pair, call each other and remove one, at 0 and 20 ms each way, inside every speed target; a removal reached both other members in 62 ms. Open: a deployed instance (open question 1) |
+| P2 | Built, and checked in network namespaces with `test/netns/run.sh` (it needs root): three agents behind two NATs that drop UDP pair, call each other and remove one, at 0 and 20 ms each way, inside every speed target; a removal reached both other members in 62 ms. Deployed at `wss://rendezvous.fctr.app:8443`: two agents on a home connection 170 ms away from it pair in 2.5 s and call each other in 389 ms, one round trip to it from each side |
 | P3 | Built, with the transcription eval set in `internal/swarm/speech_test.go`. Open: the live checkpoint across two networks |
 | P4 | The shared-LAN path is built, behind `swarm.lan`. The namespace checkpoint shows it finding a member on the same network, and refusing an address that names a different machine there. Hole punching is not built: it ships only on measurements from real pairs |
 | P5 | Built: the guest role, agents outside the swarm, the REST binding, and push notifications carried over the tunnel |
@@ -428,8 +428,6 @@ anywhere with P2P preferred.
 
 ## Open questions
 
-1. Which domain and operator the default rendezvous uses, for example
-   `swarm.fctr.app` on a Cyqle cell.
-2. The free quotas: 32 KB/s and 15 MB a day per agent are placeholders.
-3. How a swarm's home cell is chosen once there is more than one region.
-4. How a rendezvous that lost its store is re-seeded, and who confirms it.
+1. The free quotas: 32 KB/s and 15 MB a day per agent are placeholders.
+2. How a swarm's home cell is chosen once there is more than one region.
+3. How a rendezvous that lost its store is re-seeded, and who confirms it.
