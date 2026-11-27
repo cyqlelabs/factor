@@ -198,6 +198,10 @@ func (l *Link) connect(ctx context.Context) error {
 	cancel()
 	if welcome.Type != CtlWelcome {
 		_ = ws.CloseNow()
+		// A refusal for removal carries the roster that removed this agent.
+		if welcome.Roster != nil && l.onRoster != nil {
+			l.onRoster(welcome.Roster)
+		}
 		return fmt.Errorf("the rendezvous refused this agent: %s", welcome.Error)
 	}
 	sctx, scancel := context.WithCancel(ctx)
