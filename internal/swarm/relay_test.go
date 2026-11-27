@@ -3,10 +3,13 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,14 +48,22 @@ type relay struct {
 	refreshEvery time.Duration
 }
 
-func newRelay(t *testing.T) *relay {
+func newRelay(t *testing.T) *relay { return newSlowRelay(t, 0) }
+
+// newSlowRelay holds back everything the rendezvous sends by d, so a round
+// trip between two agents through it takes at least 2d.
+func newSlowRelay(t *testing.T, d time.Duration) *relay {
 	t.Helper()
 	srv, err := rendezvous.New(rendezvous.Config{Data: filepath.Join(t.TempDir(), "store"), Create: true, WorkBits: 4,
 		RateBytes: 1 << 30, BurstBytes: 1 << 30})
 	if err != nil {
 		t.Fatal(err)
 	}
-	hs := httptest.NewServer(srv.Handler())
+	hs := httptest.NewUnstartedServer(srv.Handler())
+	if d > 0 {
+		hs.Listener = slowListener{hs.Listener, d}
+	}
+	hs.Start()
 	t.Cleanup(hs.Close)
 	return &relay{t: t, srv: srv, hs: hs, url: "ws" + strings.TrimPrefix(hs.URL, "http"), refreshEvery: refreshEvery}
 }
@@ -182,6 +193,103 @@ func TestRemovedWhileAway(t *testing.T) {
 	}
 	home.Connect()
 	waitFor(t, "home to learn it was removed", func() bool { return !home.Book().Read().Joined() })
+}
+
+// A warm call through the relay costs one round trip. The worker's pushes
+// used to go out before each event reached the caller's stream, one round
+// trip apiece, which made it five.
+func TestWarmRelayedCallIsOneRoundTrip(t *testing.T) {
+	const rtt = 40 * time.Millisecond
+	old := writtenWait
+	writtenWait = 15 * time.Second
+	t.Cleanup(func() { writtenWait = old })
+	r := newSlowRelay(t, rtt/2)
+	desk := r.agent("desk", func(agent.RemoteTurn) string { return "" })
+	home := r.agent("home", func(rt agent.RemoteTurn) string { return "home saw: " + rt.Content })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := desk.Found(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = home.Book().Update(func(st *State) error { st.Joining = desk.Book().Read().Roster.Swarm; return nil })
+	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "home", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "join", func() bool { return home.Book().Read().Joined() })
+	var warm []time.Duration
+	for i := range 8 {
+		start := time.Now()
+		res := relaySend(t, desk, home.ID(), "ping")
+		took := time.Since(start)
+		if res.IsError || !strings.Contains(res.ForLLM, "home saw: ping") {
+			t.Fatalf("call %d: %q", i, res.ForLLM)
+		}
+		if i > 0 {
+			warm = append(warm, took)
+		}
+	}
+	slices.Sort(warm)
+	if median := warm[len(warm)/2]; median > 3*rtt {
+		t.Errorf("a warm relayed call took %s, more than three %s round trips", median, rtt)
+	}
+}
+
+// slowListener hands out connections whose writes arrive d late.
+type slowListener struct {
+	net.Listener
+	d time.Duration
+}
+
+func (l slowListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	sc := &slowConn{Conn: c, q: make(chan slowWrite, 1024), done: make(chan struct{})}
+	go sc.pump(l.d)
+	return sc, nil
+}
+
+type slowWrite struct {
+	b  []byte
+	at time.Time
+}
+
+// slowConn delays its writes without holding up the writer, the way a long
+// link does.
+type slowConn struct {
+	net.Conn
+	q    chan slowWrite
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *slowConn) Write(b []byte) (int, error) {
+	select {
+	case c.q <- slowWrite{append([]byte(nil), b...), time.Now()}:
+		return len(b), nil
+	case <-c.done:
+		return 0, net.ErrClosed
+	}
+}
+
+func (c *slowConn) Close() error {
+	c.once.Do(func() { close(c.done) })
+	return c.Conn.Close()
+}
+
+func (c *slowConn) pump(d time.Duration) {
+	for {
+		select {
+		case w := <-c.q:
+			time.Sleep(time.Until(w.at.Add(d)))
+			if _, err := c.Conn.Write(w.b); err != nil {
+				return
+			}
+		case <-c.done:
+			return
+		}
+	}
 }
 
 func (r *relay) online() int {
