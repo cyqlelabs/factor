@@ -424,30 +424,30 @@ func TestCloseWaitsForThePriceRefresh(t *testing.T) {
 	}
 }
 
-// The swarm is opt-in: an agent that never enabled it holds no swarm state,
-// writes no key and offers the model no swarm tool.
-func TestSwarmIsOptIn(t *testing.T) {
-	cfg := testConfig(t)
-	a := newTestApp(t, cfg)
-	if a.Swarm != nil {
-		t.Fatal("the swarm started without being enabled")
+// The swarm is on by default and opens nothing until this agent pairs; off,
+// it makes no key and offers the model no swarm tool.
+func TestSwarmIsOnByDefaultAndOffMeansNothing(t *testing.T) {
+	on := testConfig(t)
+	a := newTestApp(t, on)
+	if a.Swarm == nil || a.Swarm.ID() == "" {
+		t.Fatal("the swarm did not start by default")
 	}
-	for _, n := range a.Registry.Names() {
+	if !strings.Contains(a.Swarm.Status(), "not in a swarm") {
+		t.Errorf("status %q", a.Swarm.Status())
+	}
+
+	off := testConfig(t)
+	off.Swarm.Enabled = false
+	b := newTestApp(t, off)
+	if b.Swarm != nil {
+		t.Fatal("the swarm started while turned off")
+	}
+	for _, n := range b.Registry.Names() {
 		if strings.HasPrefix(n, "swarm") {
 			t.Errorf("tool %s is offered with the swarm off", n)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(config.Home(), "swarm")); !os.IsNotExist(err) {
 		t.Errorf("the swarm directory exists with the swarm off: %v", err)
-	}
-
-	on := testConfig(t)
-	on.Swarm.Enabled = true
-	b := newTestApp(t, on)
-	if b.Swarm == nil || b.Swarm.ID() == "" {
-		t.Fatal("an enabled swarm did not start")
-	}
-	if !strings.Contains(b.Swarm.Status(), "not in a swarm") {
-		t.Errorf("status %q", b.Swarm.Status())
 	}
 }

@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -156,7 +157,7 @@ func (o *Options) defaults() {
 			defer svc.Close()
 			ctx, cancel := context.WithTimeout(ctx, swarm.CodeTTL)
 			defer cancel()
-			return svc.JoinByCode(ctx, cfg.Rendezvous, show)
+			return svc.JoinByCode(ctx, cmp.Or(cfg.Rendezvous, config.DefaultRendezvous), show)
 		}
 	}
 	if o.AutostartInstalled == nil {
@@ -2329,8 +2330,9 @@ func (w *wiz) autostartConfigPath() string {
 
 // stepSwarm joins this machine to a swarm of Factor agents, the way a TV
 // links an account: it shows a code to enter on a machine already in the
-// swarm, which is the side with a keyboard to type it on. It is opt-in, and
-// the default mirrors what is already set, so Enter never changes it.
+// swarm, which is the side with a keyboard to type it on. The swarm is on
+// unless turned off here, and pairing waits for a yes, so Enter neither
+// changes the setting nor holds the wizard on a code nobody is entering.
 func (w *wiz) stepSwarm(ctx context.Context) error {
 	w.ui.Step(6, totalSteps, "Swarm")
 	join, err := w.ui.Confirm("Let this machine work with your other Factor agents (a swarm)?", w.cfg.Swarm.Enabled)
@@ -2352,17 +2354,12 @@ func (w *wiz) stepSwarm(ctx context.Context) error {
 			return nil
 		}
 	}
-	addr, err := w.ui.Input("Rendezvous address (wss://…)", w.cfg.Swarm.Rendezvous)
+	addr, err := w.ui.Input("Rendezvous address (Enter for "+config.DefaultRendezvous+")", w.cfg.Swarm.Rendezvous)
 	if err != nil {
 		return err
 	}
-	if addr = strings.TrimSpace(addr); addr == "" {
-		w.swarm = "on, not paired"
-		w.ui.Note("no rendezvous yet — set swarm.rendezvous, then ask any member to add this machine")
-		return nil
-	}
-	w.cfg.Swarm.Rendezvous = addr
-	pair, err := w.ui.Confirm("Pair now? A code will show here; enter it on a machine already in the swarm", true)
+	w.cfg.Swarm.Rendezvous = strings.TrimSpace(addr)
+	pair, err := w.ui.Confirm("Pair now? A code will show here; enter it on a machine already in the swarm", false)
 	if err != nil || !pair {
 		w.swarm = "on, not paired"
 		return err

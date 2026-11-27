@@ -56,6 +56,35 @@ func TestLoadOverlayAndEnv(t *testing.T) {
 	}
 }
 
+// The swarm is on by default, and an explicit off in the file or the
+// environment still turns it off.
+func TestSwarmDefaultsOnAndTurnsOff(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("FACTOR_HOME", dir)
+	path := filepath.Join(dir, "config.json")
+	load := func(body string) bool {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Swarm.Enabled
+	}
+	if !load(`{}`) {
+		t.Error("a config without a swarm section has the swarm off")
+	}
+	if load(`{"swarm":{"enabled":false}}`) {
+		t.Error("swarm.enabled false in the file was ignored")
+	}
+	t.Setenv("FACTOR_SWARM_ENABLED", "false")
+	if load(`{}`) {
+		t.Error("FACTOR_SWARM_ENABLED=false was ignored")
+	}
+}
+
 // Windows PowerShell writes UTF-8 with a byte order mark, and so does Notepad
 // when asked to, so a config saved by either begins with one.
 func TestLoadReadsAFileWithAByteOrderMark(t *testing.T) {

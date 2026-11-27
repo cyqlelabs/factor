@@ -164,11 +164,17 @@ func (s *Service) Invite(ctx context.Context, role string, deliver func(code str
 
 // Join enters a code another machine made: it joins that machine's swarm, or,
 // when this agent is a member and the other machine is new, admits it.
-func (s *Service) Join(ctx context.Context, code, role string) (string, error) {
+func (s *Service) Join(ctx context.Context, code, role string) (name string, err error) {
 	base := s.rendezvousURL()
 	if base == "" {
 		return "", errors.New("no rendezvous is configured (swarm.rendezvous)")
 	}
+	undo := s.comeOnline()
+	defer func() {
+		if err != nil {
+			undo()
+		}
+	}()
 	p, err := takeCode(ctx, base, code)
 	if err != nil {
 		return "", err
@@ -177,8 +183,7 @@ func (s *Service) Join(ctx context.Context, code, role string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	name, err := s.conclude(ctx, theirs, role)
-	if err != nil {
+	if name, err = s.conclude(ctx, theirs, role); err != nil {
 		_ = p.fail(err)
 		return "", err
 	}
@@ -186,10 +191,31 @@ func (s *Service) Join(ctx context.Context, code, role string) (string, error) {
 	return name, nil
 }
 
+// comeOnline opens the link for a pairing that may make this agent a member,
+// so it can be reached the moment the sponsor's commit lists it: the members
+// ask a newcomer its name and its addresses as soon as they see it. It
+// returns what closes the link again when the pairing ends with this agent in
+// no swarm.
+func (s *Service) comeOnline() (undo func()) {
+	if s.book.Read().Roster != nil {
+		return func() {}
+	}
+	s.dial()
+	return s.dropIfAlone
+}
+
+// dropIfAlone closes the link of an agent in no swarm, which the rendezvous
+// would only cut off again and again.
+func (s *Service) dropIfAlone() {
+	if st := s.book.Read(); st.Roster == nil && st.Joining == "" {
+		s.disconnect()
+	}
+}
+
 // JoinByCode makes the code on this machine, for a member to enter, and
 // waits for one to: the way a TV shows a code to link an account. factor init
 // uses it on a new machine, where typing is easier on the member's side.
-func (s *Service) JoinByCode(ctx context.Context, base string, show func(code string)) (string, error) {
+func (s *Service) JoinByCode(ctx context.Context, base string, show func(code string)) (name string, err error) {
 	if base == "" {
 		return "", errors.New("say which rendezvous to pair through")
 	}
@@ -199,6 +225,12 @@ func (s *Service) JoinByCode(ctx context.Context, base string, show func(code st
 	}); err != nil {
 		return "", err
 	}
+	undo := s.comeOnline()
+	defer func() {
+		if err != nil {
+			undo()
+		}
+	}()
 	p, err := makeCode(ctx, base)
 	if err != nil {
 		return "", err
@@ -208,8 +240,7 @@ func (s *Service) JoinByCode(ctx context.Context, base string, show func(code st
 	if err != nil {
 		return "", err
 	}
-	name, err := s.conclude(ctx, theirs, RoleMember)
-	if err != nil {
+	if name, err = s.conclude(ctx, theirs, RoleMember); err != nil {
 		_ = p.fail(err)
 		return "", err
 	}

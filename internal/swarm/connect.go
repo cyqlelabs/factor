@@ -14,12 +14,41 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 
 	"github.com/cyqlelabs/factor/internal/bus"
+	"github.com/cyqlelabs/factor/internal/config"
 )
 
-// Connect brings this agent online in its swarm: one outbound link to the
-// rendezvous and the tunnel over it. It returns at once; the link reconnects
-// on its own for as long as the service runs.
+// Connect lets this agent come online in its swarm: one outbound link to the
+// rendezvous and the tunnel over it, which reconnect on their own for as long
+// as the service runs. An agent in no swarm opens nothing until it pairs: the
+// rendezvous cuts a key no roster lists off after a code's lifetime, so a link
+// held from startup would reconnect, and pay the proof of work, for good.
 func (s *Service) Connect() {
+	s.netMu.Lock()
+	s.connectable = true
+	s.netMu.Unlock()
+	if st := s.book.Read(); st.Roster != nil || st.Joining != "" {
+		s.dial()
+	}
+}
+
+// linkUp is the link, opened now if this process connects and has none.
+func (s *Service) linkUp() *Link {
+	s.netMu.Lock()
+	link, connectable := s.link, s.connectable
+	s.netMu.Unlock()
+	if link == nil && connectable {
+		s.dial()
+		_, link, _ = s.net()
+	}
+	return link
+}
+
+// defaultRendezvous is config.DefaultRendezvous, a variable so the tests can
+// keep off it.
+var defaultRendezvous = config.DefaultRendezvous
+
+// dial opens the link and the tunnel over it, unless they are open already.
+func (s *Service) dial() {
 	url := s.rendezvousURL()
 	if url == "" {
 		s.offline = "no rendezvous is configured (swarm.rendezvous)"
@@ -31,6 +60,12 @@ func (s *Service) Connect() {
 	tunnel := NewTunnel(s.id, link, s.IsMember, s.Handler())
 	ctx, cancel := context.WithCancel(s.bg)
 	s.netMu.Lock()
+	if s.link != nil {
+		s.netMu.Unlock()
+		cancel()
+		tunnel.Close()
+		return
+	}
 	s.link, s.tunnel, s.transport, s.linkCancel = link, tunnel, tunnel, cancel
 	s.netMu.Unlock()
 	s.wg.Add(1)
@@ -101,8 +136,10 @@ func (s *Service) rendezvousURL() string {
 		return st.Roster.Home
 	case st.Rendezvous != "":
 		return st.Rendezvous
+	case s.cfg.Rendezvous != "":
+		return s.cfg.Rendezvous
 	}
-	return s.cfg.Rendezvous
+	return defaultRendezvous
 }
 
 func (s *Service) swarmID() string {
@@ -208,6 +245,9 @@ func (s *Service) adopt(r *Roster, fromRendezvous bool) {
 	}
 	if slices.Contains(removed, s.id.ID) {
 		s.tell("This agent has been removed from the swarm.")
+		// Out of every swarm, it is a key the rendezvous refuses; pairing
+		// again opens a new link.
+		s.disconnect()
 	}
 	s.learnNames()
 }

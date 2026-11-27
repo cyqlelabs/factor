@@ -21,6 +21,7 @@ import (
 )
 
 func init() {
+	defaultRendezvous = ""
 	spokenWait = 300 * time.Millisecond
 	writtenWait = 300 * time.Millisecond
 	pollEvery = 50 * time.Millisecond

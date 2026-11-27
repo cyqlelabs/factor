@@ -51,10 +51,11 @@ func TestSwarmStepChoices(t *testing.T) {
 	if err := w.stepSwarm(context.Background()); err != nil || !strings.Contains(out.String(), "swarm of 3") {
 		t.Errorf("joined: %v %q", err, out.String())
 	}
-	// No rendezvous: on, and unpaired.
-	w, _ = swarmWiz(t, "y", "")
-	if err := w.stepSwarm(context.Background()); err != nil || w.swarm != "on, not paired" || !w.cfg.Swarm.Enabled {
-		t.Errorf("blank address: %v %q", err, w.swarm)
+	// Enter through: on, the built-in rendezvous, and no pairing wait.
+	w, _ = swarmWiz(t, "", "", "")
+	if err := w.stepSwarm(context.Background()); err != nil || w.swarm != "on, not paired" || !w.cfg.Swarm.Enabled ||
+		w.cfg.Swarm.Rendezvous != "" {
+		t.Errorf("enter through: %v %q %+v", err, w.swarm, w.cfg.Swarm)
 	}
 	// Not now.
 	w, _ = swarmWiz(t, "y", "wss://r", "n")
@@ -84,7 +85,7 @@ func TestSwarmDefaults(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := o.JoinSwarm(ctx, config.SwarmConfig{}, func(string) {}); err == nil {
-		t.Error("joined with no rendezvous")
+	if _, err := o.JoinSwarm(ctx, config.SwarmConfig{Rendezvous: "ws://127.0.0.1:1"}, func(string) {}); err == nil {
+		t.Error("joined through a rendezvous that is not there")
 	}
 }

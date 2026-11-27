@@ -81,6 +81,16 @@ func (r *relay) agent(name string, reply func(agent.RemoteTurn) string) *Service
 	return svc
 }
 
+// joining marks svc as joining swarm and brings its link up, as the
+// newcomer's half of a pairing does.
+func joining(t *testing.T, svc *Service, swarm string) {
+	t.Helper()
+	if err := svc.Book().Update(func(st *State) error { st.Joining = swarm; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	svc.relink()
+}
+
 func waitFor(t *testing.T, what string, ok func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -111,10 +121,7 @@ func TestTwoAgentsThroughTheRelay(t *testing.T) {
 	}
 	// The newcomer waits to see itself on the roster of the swarm it paired
 	// into; pairing is what tells it which one.
-	swarmID := desk.Book().Read().Roster.Swarm
-	if err := home.Book().Update(func(st *State) error { st.Joining = swarmID; return nil }); err != nil {
-		t.Fatal(err)
-	}
+	joining(t, home, desk.Book().Read().Roster.Swarm)
 	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "home box", ""); err != nil {
 		t.Fatalf("admit: %v", err)
 	}
@@ -176,7 +183,7 @@ func TestRemovedWhileAway(t *testing.T) {
 	if err := desk.Found(ctx); err != nil {
 		t.Fatal(err)
 	}
-	_ = home.Book().Update(func(st *State) error { st.Joining = desk.Book().Read().Roster.Swarm; return nil })
+	joining(t, home, desk.Book().Read().Roster.Swarm)
 	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "home", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +218,7 @@ func TestWarmRelayedCallIsOneRoundTrip(t *testing.T) {
 	if err := desk.Found(ctx); err != nil {
 		t.Fatal(err)
 	}
-	_ = home.Book().Update(func(st *State) error { st.Joining = desk.Book().Read().Roster.Swarm; return nil })
+	joining(t, home, desk.Book().Read().Roster.Swarm)
 	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "home", ""); err != nil {
 		t.Fatal(err)
 	}

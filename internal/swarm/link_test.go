@@ -252,11 +252,32 @@ func TestMembershipErrors(t *testing.T) {
 	}
 }
 
-func TestConnectWithoutRendezvous(t *testing.T) {
+// An agent in no swarm opens nothing; one joining a swarm with no rendezvous
+// to meet at says why it is offline.
+func TestConnectWaitsForASwarm(t *testing.T) {
 	n := newNode(t, "desk")
 	n.svc.Connect()
+	if homeLink(n.svc) != nil || n.svc.offline != "" {
+		t.Fatalf("an agent in no swarm connected (offline %q)", n.svc.offline)
+	}
+	joining(t, n.svc, "s")
 	if !strings.Contains(n.svc.offline, "no rendezvous") {
 		t.Errorf("offline %q", n.svc.offline)
+	}
+}
+
+// A founding that cannot reach the rendezvous leaves no link behind.
+func TestFailedFoundingClosesTheLink(t *testing.T) {
+	n := newNode(t, "desk")
+	n.svc.cfg.Rendezvous = "ws://127.0.0.1:1"
+	n.svc.Connect()
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := n.svc.Found(ctx); err == nil || !strings.Contains(err.Error(), "ws://127.0.0.1:1") {
+		t.Fatalf("founding with no rendezvous to reach: %v", err)
+	}
+	if homeLink(n.svc) != nil {
+		t.Error("a failed founding left the link open")
 	}
 }
 
@@ -293,7 +314,7 @@ func TestRemovalCancelsRunningTasks(t *testing.T) {
 	if err := desk.Found(ctx); err != nil {
 		t.Fatal(err)
 	}
-	_ = home.Book().Update(func(st *State) error { st.Joining = desk.Book().Read().Roster.Swarm; return nil })
+	joining(t, home, desk.Book().Read().Roster.Swarm)
 	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "home", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +333,7 @@ func TestRemovalCancelsRunningTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "the removed member's task to end", func() bool { return desk.server.Running() == 0 })
-	waitFor(t, "home to be cut off", func() bool { return !homeLink(home).Online() })
+	waitFor(t, "home to drop its link", func() bool { return homeLink(home) == nil })
 	<-done
 }
 

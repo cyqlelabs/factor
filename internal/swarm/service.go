@@ -48,6 +48,9 @@ type Service struct {
 	link       *Link
 	tunnel     *Tunnel
 	linkCancel context.CancelFunc
+	// connectable marks the one process that connects, the gateway: pairing
+	// opens the link on demand only there.
+	connectable bool
 	// offline says why the swarm cannot connect at all, when it cannot.
 	offline string
 	notify  func(string)

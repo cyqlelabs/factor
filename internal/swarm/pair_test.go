@@ -162,6 +162,9 @@ func TestPairingRefusals(t *testing.T) {
 	if _, err := b.Join(ctx, "not a code", ""); err == nil {
 		t.Error("joined with a non-code")
 	}
+	if homeLink(b) != nil {
+		t.Error("a failed join left an agent in no swarm connected")
+	}
 	if _, err := b.JoinByCode(ctx, "", func(string) {}); err == nil {
 		t.Error("made a code with no rendezvous")
 	}

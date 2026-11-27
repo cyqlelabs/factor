@@ -445,15 +445,21 @@ type HeartbeatConfig struct {
 	IntervalMinutes int  `json:"interval_minutes"`
 }
 
+// DefaultRendezvous is the rendezvous an agent pairs through when
+// swarm.rendezvous names none. A swarm founded on it keeps meeting there, so
+// the address must stay served for as long as any such swarm lives.
+const DefaultRendezvous = "wss://rendezvous.fctr.app:8443"
+
 // SwarmConfig joins this agent to a swarm: other Factor agents, on any
-// machine, that hand each other work over A2A (docs/swarm.md). It is off
-// until enabled, and an agent that never enables it opens no connection,
-// writes no key and offers the model no swarm tool.
+// machine, that hand each other work over A2A (docs/swarm.md). It is on by
+// default, and an agent in no swarm opens no connection until it pairs.
+// Turned off, it writes no key and offers the model no swarm tool.
 type SwarmConfig struct {
 	Enabled bool `json:"enabled" env:"FACTOR_SWARM_ENABLED"`
-	// Rendezvous is the wss:// address this agent pairs and relays through.
-	// A newcomer inherits it from the pairing envelope; only the first agent
-	// of a swarm, or a code made with `factor init`, needs it set.
+	// Rendezvous is the wss:// address this agent pairs and relays through;
+	// blank is DefaultRendezvous. A newcomer inherits the address from the
+	// pairing envelope, so only the first agent of a swarm on a rendezvous
+	// of its own, or a code made with `factor init`, needs it set.
 	Rendezvous string `json:"rendezvous,omitempty" env:"FACTOR_SWARM_RENDEZVOUS"`
 	// Name is what this agent calls itself to the others ("home box").
 	// Blank is the machine's host name.
@@ -773,7 +779,7 @@ func Default() *Config {
 			MinConfidence: 0.6,
 			CacheEntries:  512,
 		},
-		Swarm: SwarmConfig{RemoteTasks: 1, RemoteQueue: 1, MemberDailyUSD: 1},
+		Swarm: SwarmConfig{Enabled: true, RemoteTasks: 1, RemoteQueue: 1, MemberDailyUSD: 1},
 	}
 }
 
