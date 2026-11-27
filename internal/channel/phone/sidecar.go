@@ -194,9 +194,11 @@ func (s *supervisor) spawnAndWait(ctx context.Context) error {
 	s.down.Store("")
 
 	cmd := exec.CommandContext(ctx, command, s.scriptPath)
-	// Secrets ride in the environment, never in argv, where every process on
-	// the machine could read them out of /proc.
-	cmd.Env = append(childproc.Quiet(os.Environ()), "FACTOR_VOICE_CONFIG="+string(blob))
+	// The configuration rides stdin, never argv or the environment: it carries
+	// this boot's bridge token, which also unlocks Factor's own speech server,
+	// and both are one read of /proc away for any process of this user.
+	cmd.Env = childproc.Quiet(os.Environ())
+	cmd.Stdin = bytes.NewReader(append(blob, '\n'))
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Cancel = func() error { childproc.Stop(cmd.Process); return nil }
 

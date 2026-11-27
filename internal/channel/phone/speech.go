@@ -318,7 +318,7 @@ func PrepareSpeech(ctx context.Context, home, language string, cfg SpeechConfig,
 		return SpeechChoices{}, err
 	}
 
-	blob, err := json.Marshal(renderSpeechConfig(cfg, home, language, "", needSTT, needTTS, needSpeaker))
+	blob, err := json.Marshal(renderSpeechConfig(cfg, home, language, needSTT, needTTS, needSpeaker))
 	if err != nil {
 		return SpeechChoices{}, err
 	}
@@ -385,12 +385,12 @@ func WriteSpeechScript(path string) error {
 	return writeScript(path, speechServerScript)
 }
 
-// speechServerConfig is the JSON the server reads out of its environment.
+// speechServerConfig is the JSON the server reads out of its environment. It
+// holds no secret: the boot token rides stdin (see speechSupervisor.run).
 type speechServerConfig struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
 
-	Token    string `json:"token,omitempty"`
 	DataDir  string `json:"data_dir"`
 	Language string `json:"language"`
 
@@ -411,11 +411,10 @@ type speechServerConfig struct {
 	NeedSpeaker bool `json:"need_speaker,omitempty"`
 }
 
-func renderSpeechConfig(cfg SpeechConfig, home, language, token string, needSTT, needTTS, needSpeaker bool) speechServerConfig {
+func renderSpeechConfig(cfg SpeechConfig, home, language string, needSTT, needTTS, needSpeaker bool) speechServerConfig {
 	return speechServerConfig{
 		Host:           "127.0.0.1",
 		Port:           speechPort(cfg),
-		Token:          token,
 		DataDir:        speechDataDir(cfg, home),
 		Language:       language,
 		SttEngine:      cfg.SttEngine,

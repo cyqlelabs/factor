@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -278,7 +279,7 @@ func (s *speechSupervisor) spawnAndWait(ctx context.Context) error {
 		s.setDown("%v", err)
 		return err
 	}
-	blob, err := json.Marshal(renderSpeechConfig(s.cfg, s.home, s.language, s.token, s.needSTT, s.needTTS, s.needSpeaker))
+	blob, err := json.Marshal(renderSpeechConfig(s.cfg, s.home, s.language, s.needSTT, s.needTTS, s.needSpeaker))
 	if err != nil {
 		return err
 	}
@@ -286,6 +287,11 @@ func (s *speechSupervisor) spawnAndWait(ctx context.Context) error {
 
 	cmd := exec.CommandContext(ctx, command, s.scriptPath)
 	cmd.Env = append(speechEnv(), "FACTOR_SPEECH_CONFIG="+string(blob))
+	// The boot token rides stdin, not the environment: an environment is one
+	// read of /proc/<pid>/environ away for any process of this user, and a
+	// turn once lifted the token there to call the server around the voice
+	// channel and play what it synthesised through the media player.
+	cmd.Stdin = strings.NewReader(s.token + "\n")
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Cancel = func() error { childproc.Stop(cmd.Process); return nil }
 

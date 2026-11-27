@@ -3,8 +3,8 @@
 
 This is the only Patter-facing surface in the whole phone channel. It is
 written to disk by Factor on start and run in a private virtualenv; everything
-it needs arrives as one JSON blob in FACTOR_VOICE_CONFIG, so no secret is ever
-visible in argv.
+it needs arrives as one JSON line on stdin, so no secret is visible in argv or
+in the environment.
 
 What it does:
 
@@ -50,13 +50,18 @@ os.environ.setdefault("DO_NOT_TRACK", "1")
 
 
 def load_config() -> dict:
-    raw = os.environ.get("FACTOR_VOICE_CONFIG")
-    if not raw:
-        die("FACTOR_VOICE_CONFIG is not set; the voice shell is started by Factor, not by hand")
+    # Not the environment: the configuration carries this boot's bridge token,
+    # and an environment is one read of /proc/<pid>/environ away for any
+    # process of the same user.
+    if sys.stdin is None or sys.stdin.isatty():
+        die("no configuration on stdin; the voice shell is started by Factor, not by hand")
+    raw = sys.stdin.readline()
+    if not raw.strip():
+        die("no configuration on stdin; the voice shell is started by Factor, not by hand")
     try:
         return json.loads(raw)
     except ValueError as exc:
-        die(f"FACTOR_VOICE_CONFIG is not valid JSON: {exc}")
+        die(f"the configuration on stdin is not valid JSON: {exc}")
 
 
 def log(message: str, **fields: object) -> None:

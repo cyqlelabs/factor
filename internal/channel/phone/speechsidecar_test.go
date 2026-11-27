@@ -1,6 +1,7 @@
 package phone
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,17 +17,21 @@ import (
 )
 
 // fakeSpeechServer stands in for the Python speech server, echoing the
-// configuration it was handed so tests can assert on what Factor decided.
+// configuration and the token it was handed, and whether the token is
+// anywhere another process could read it, so tests can assert on all three.
 func fakeSpeechServer() {
 	var cfg speechServerConfig
 	if err := json.Unmarshal([]byte(os.Getenv("FACTOR_SPEECH_CONFIG")), &cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "fake speech server: bad config:", err)
 		os.Exit(4)
 	}
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	token := strings.TrimSpace(line)
+	exposed := token != "" && strings.Contains(strings.Join(append(os.Environ(), os.Args...), "\n"), token)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "config": cfg})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "config": cfg, "token": token, "exposed": exposed})
 	})
 	go func() { time.Sleep(2 * time.Minute); os.Exit(0) }()
 	srv := &http.Server{
@@ -112,7 +117,11 @@ func TestSpeechSupervisorSpawnsTheServerAndPassesItsConfiguration(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var body struct{ Config speechServerConfig }
+	var body struct {
+		Config  speechServerConfig
+		Token   string
+		Exposed bool
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
@@ -123,33 +132,19 @@ func TestSpeechSupervisorSpawnsTheServerAndPassesItsConfiguration(t *testing.T) 
 	if !got.NeedSTT || !got.NeedTTS {
 		t.Errorf("need_stt=%v need_tts=%v, want both for a fully local tier", got.NeedSTT, got.NeedTTS)
 	}
-	if got.Token != "test-token" {
-		t.Errorf("token = %q, want the boot secret", got.Token)
+	if body.Token != "test-token" {
+		t.Errorf("token = %q, want the boot secret", body.Token)
+	}
+	// Neither argv nor the environment: both are one read of /proc away
+	// for any process of this user.
+	if body.Exposed {
+		t.Error("the boot secret is readable from the server's environment or argv")
 	}
 	if got.Host != "127.0.0.1" {
 		t.Errorf("host = %q, want loopback only", got.Host)
 	}
 	if _, err := os.Stat(speechScriptPath(home)); err != nil {
 		t.Errorf("the server script was not written: %v", err)
-	}
-}
-
-// The configuration carries this boot's secret, so it must reach the child
-// through the environment and never through argv, where every process on the
-// machine could read it.
-func TestSpeechSupervisorNeverPutsSecretsInArgv(t *testing.T) {
-	s, _ := speechSupervisorFor(t, "serve", nil)
-	s.start(context.Background())
-	if !waitFor(t, 10*time.Second, s.Healthy) {
-		t.Fatalf("the speech server never became healthy: %s", s.Down())
-	}
-
-	out, err := os.ReadFile(filepath.Join("/proc", "self", "cmdline"))
-	if err != nil {
-		t.Skip("no /proc on this machine")
-	}
-	if strings.Contains(string(out), "test-token") {
-		t.Error("the boot secret appeared in argv")
 	}
 }
 

@@ -379,7 +379,7 @@ func TestEmbeddedScriptIsValidPython(t *testing.T) {
 	if len(voiceShellScript) == 0 {
 		t.Fatal("the voice shell script was not embedded")
 	}
-	for _, marker := range []string{"FACTOR_VOICE_CONFIG", "/internal/call-event", "getpatter"} {
+	for _, marker := range []string{"sys.stdin.readline()", "/internal/call-event", "getpatter"} {
 		if !strings.Contains(string(voiceShellScript), marker) {
 			t.Errorf("the embedded script never mentions %q", marker)
 		}
@@ -428,12 +428,10 @@ spec.loader.exec_module(mod)
 mod.TELNYX_API = os.environ["CARRIER_BASE"]
 ` + snippet
 	cmd := exec.Command(python, "-c", driver)
-	cmd.Env = append(os.Environ(),
-		"SCRIPT="+path,
-		"CARRIER_BASE="+carrierBase,
-		`FACTOR_VOICE_CONFIG={"bridge_url":"http://127.0.0.1:1","bridge_token":"tok",`+
-			`"carrier":{"name":"telnyx","api_key":"telnyx-secret","connection_id":"285123",`+
-			`"phone_number":"+15550002222"}}`)
+	cmd.Env = append(os.Environ(), "SCRIPT="+path, "CARRIER_BASE="+carrierBase)
+	cmd.Stdin = strings.NewReader(`{"bridge_url":"http://127.0.0.1:1","bridge_token":"tok",` +
+		`"carrier":{"name":"telnyx","api_key":"telnyx-secret","connection_id":"285123",` +
+		`"phone_number":"+15550002222"}}` + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the shell script failed: %v\n%s", err, out)
