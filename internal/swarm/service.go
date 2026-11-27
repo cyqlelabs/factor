@@ -65,6 +65,8 @@ type Service struct {
 	// each woken early by a push about its task.
 	followMu  sync.Mutex
 	followers map[string]chan struct{}
+	// deliverMu makes telling the conversation about a delegation one step.
+	deliverMu sync.Mutex
 	// peerOf names the agent behind an inbound request. The tunnel reads it
 	// off the pinned certificate; a test can stand in for it.
 	peerOf func(*http.Request) (string, bool)
