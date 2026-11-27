@@ -8,10 +8,11 @@
 #   r1         NAT for lan 1: desk 192.168.1.2, lap 192.168.1.3
 #   r2         NAT for lan 2: home 192.168.1.3 (the same address as lap)
 #
-# Run it as root, once per one-way WAN delay to measure against:
+# Run it as root, with each one-way WAN delay to measure at; results land in
+# $NETNS_OUT (default /tmp/factor-netns):
 #
 #   make build && go test -c -tags netns -o /tmp/swarm.test ./internal/swarm
-#   pkexec --keep-cwd test/netns/run.sh ./factor /tmp/swarm.test 0 20
+#   pkexec --keep-cwd /usr/bin/env NETNS_OUT=/tmp/factor-netns /bin/sh test/netns/run.sh ./factor /tmp/swarm.test 0 20
 set -eu
 BIN=$(realpath "$1") TEST=$(realpath "$2")
 shift 2
@@ -66,7 +67,9 @@ delay() { # delay MS: one way, on every WAN link in both directions
   ip netns exec fx-r2 tc qdisc replace dev wan root netem delay "${1}ms"
 }
 
-run() { # run DELAY
+# setup builds the networks. It runs under set -e, so a step that fails
+# stops the script instead of reading later as an agent timing out.
+setup() { # setup DELAY
   cleanup
   for n in $NS; do ip netns add "$n"; ip -n "$n" link set lo up; done
   veth fx-wan w1 fx-r1 wan
@@ -80,7 +83,9 @@ run() { # run DELAY
   host fx-lap fx-r1 192.168.1.3
   host fx-home fx-r2 192.168.1.3
   delay "$1"
+}
 
+agents() { # agents DELAY
   dir="$OUT/delay-${1}ms"
   rm -rf "$dir" && mkdir -p "$dir/shared"
   ip netns exec fx-wan "$BIN" rendezvous --listen 10.99.1.1:8740 --data "$dir/rendezvous" --init \
@@ -102,6 +107,9 @@ run() { # run DELAY
 
 [ $# -gt 0 ] || set -- 0
 status=0
-for d in "$@"; do run "$d" || status=1; done
+for d in "$@"; do
+  setup "$d"
+  agents "$d" || status=1
+done
 [ -n "${PKEXEC_UID:-}" ] && chown -R "$PKEXEC_UID" "$OUT"
 exit $status

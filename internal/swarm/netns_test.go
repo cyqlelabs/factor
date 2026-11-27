@@ -141,11 +141,12 @@ type timing struct {
 	Median string   `json:"median"`
 }
 
-func (n *netnsRun) timeCalls(name, peer string) timing {
+// timeCalls times calls to a member by its id, which needs no name learned.
+func (n *netnsRun) timeCalls(peer, name string) timing {
 	n.t.Helper()
 	call := func(msg string) time.Duration {
 		start := time.Now()
-		res := relaySend(n.t, n.svc, name, msg)
+		res := relaySend(n.t, n.svc, peer, msg)
 		took := time.Since(start)
 		if res.IsError || !strings.Contains(res.ForLLM, name+" saw: "+msg) {
 			n.t.Fatalf("call to %s: %q", name, res.ForLLM)
@@ -170,27 +171,51 @@ func (n *netnsRun) timeCalls(name, peer string) timing {
 	return out
 }
 
+// within reports whether ok came true in d.
+func (n *netnsRun) within(d time.Duration, ok func() bool) bool {
+	deadline := time.Now().Add(d)
+	for !ok() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return true
+}
+
+// desk writes what it has measured as it goes, so a later step that fails
+// still leaves the relay timings behind.
 func (n *netnsRun) desk() {
+	defer func() { _ = os.WriteFile(filepath.Join(n.dir, "stop"), nil, 0o644) }()
+	report := map[string]any{}
+	save := func() {
+		data, _ := json.MarshalIndent(report, "", "  ")
+		n.put("result.json", string(data))
+	}
 	n.invite("home")
 	homeID := n.await("id-home")
+	report["pairing_home"] = n.await("pairing-home")
+	report["home"] = n.timeCalls(homeID, "home")
+	save()
+	n.put("timed-home", "")
+
 	lapID := n.await("id-lap")
+	report["pairing_lap"] = n.await("pairing-lap")
 	n.until("desk to learn about lap from the roster", 30*time.Second, func() bool { return n.svc.IsMember(lapID) })
-	n.until("names", 30*time.Second, func() bool {
-		st := n.svc.Book().Read()
-		return st.Peer(homeID).Name == "home" && st.Peer(lapID).Name == "lap"
-	})
-	n.until("a direct path to lap", 30*time.Second, func() bool { return n.direct(lapID) != "" })
-	report := map[string]any{
-		"pairing_home": n.await("pairing-home"),
-		"pairing_lap":  n.await("pairing-lap"),
-		"home":         n.timeCalls("home", homeID),
-		"lap":          n.timeCalls("lap", lapID),
+	named := n.within(30*time.Second, func() bool { return n.svc.Book().Read().Peer(lapID).Name == "lap" })
+	direct := n.within(30*time.Second, func() bool { return n.direct(lapID) != "" })
+	report["lap_name_learned"], report["lap_direct_found"] = named, direct
+	report["lap"] = n.timeCalls(lapID, "lap")
+	save()
+	if !named || !direct {
+		n.t.Errorf("desk learned lap's name: %v, found a direct path to it: %v", named, direct)
 	}
 	// home published lap's address on this network: the pinned handshake must
 	// have refused it rather than taken lap for home.
 	if addr := n.direct(homeID); addr != "" {
 		n.t.Errorf("a direct path to home at %s, which is lap's address here", addr)
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	start := time.Now()
@@ -200,13 +225,12 @@ func (n *netnsRun) desk() {
 	n.await("home-saw-removal")
 	n.await("lap-removed")
 	report["removal_seen_by_both"] = time.Since(start).String()
-	data, _ := json.MarshalIndent(report, "", "  ")
-	n.put("result.json", string(data))
-	n.put("stop", "")
+	save()
 }
 
 func (n *netnsRun) home() {
 	n.join("home")
+	n.await("timed-home")
 	n.invite("lap")
 	lapID := n.await("id-lap")
 	n.until("home to see lap on the roster", 30*time.Second, func() bool { return n.svc.IsMember(lapID) })
