@@ -201,6 +201,9 @@ type outbound struct {
 // the ones an agent picks for the streams it opens do not.
 const inboundBit = 1 << 31
 
+// errRemoved is what a removed agent is told, beside the roster that says so.
+const errRemoved = "this agent was removed from the swarm"
+
 func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request) {
 	if !s.admitIP(r) {
 		http.Error(w, "too many connections from this address", http.StatusTooManyRequests)
@@ -267,7 +270,11 @@ func (c *conn) handshake(ctx context.Context) error {
 	case head.HasKey(c.key):
 		c.swarm = hello.Swarm
 	case head.WasRemoved(c.id):
-		return errors.New("this agent was removed from the swarm")
+		// The signed roster is the proof: an agent takes no word of the
+		// rendezvous for its own removal, and without it would keep a stale
+		// roster and retry for good.
+		_ = writeJSON(hctx, c.ws, wire.Control{Type: wire.CtlError, Error: errRemoved, Roster: head})
+		return errors.New(errRemoved)
 	case !wire.CheckWork(nonce, c.key, hello.Work, s.cfg.WorkBits):
 		return errors.New("a new key owes the proof of work")
 	default:
@@ -415,7 +422,12 @@ func (s *Server) announce(r *wire.Roster) {
 		c.send(websocket.MessageText, data)
 	}
 	for _, c := range cut {
-		_ = c.ws.Close(websocket.StatusPolicyViolation, "this agent was removed from the swarm")
+		go func() {
+			wctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+			defer cancel()
+			_ = c.ws.Write(wctx, websocket.MessageText, data)
+			_ = c.ws.Close(websocket.StatusPolicyViolation, errRemoved)
+		}()
 	}
 }
 

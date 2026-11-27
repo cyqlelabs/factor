@@ -2,6 +2,8 @@ package swarm
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -145,8 +147,47 @@ func TestTwoAgentsThroughTheRelay(t *testing.T) {
 		t.Errorf("sent to a removed agent: %q", res.ForLLM)
 	}
 	waitFor(t, "the removed agent to be cut off", func() bool { return !strings.Contains(home.Status(), "online") })
+	waitFor(t, "the removed agent to see the roster that removed it", func() bool { return !home.Book().Read().Joined() })
 	// It cannot come back.
 	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "", ""); err == nil {
 		t.Error("a removed agent was admitted again")
 	}
+}
+
+// An agent removed while it was away learns it from the roster the
+// rendezvous refuses it with, instead of keeping a stale one for good.
+func TestRemovedWhileAway(t *testing.T) {
+	r := newRelay(t)
+	desk := r.agent("desk", func(agent.RemoteTurn) string { return "" })
+	home := r.agent("home", func(agent.RemoteTurn) string { return "" })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := desk.Found(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = home.Book().Update(func(st *State) error { st.Joining = desk.Book().Read().Roster.Swarm; return nil })
+	if err := desk.Admit(ctx, EncodeKey(home.Identity().Public), "home", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "join", func() bool { return home.Book().Read().Joined() })
+	home.disconnect()
+	waitFor(t, "the rendezvous to see home leave", func() bool { return r.online() == 1 })
+	if err := desk.Remove(ctx, home.ID()); err != nil {
+		t.Fatal(err)
+	}
+	home.Connect()
+	waitFor(t, "home to learn it was removed", func() bool { return !home.Book().Read().Joined() })
+}
+
+func (r *relay) online() int {
+	resp, err := http.Get(r.hs.URL + "/healthz")
+	if err != nil {
+		return -1
+	}
+	defer resp.Body.Close()
+	var h struct {
+		Online int `json:"online"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&h)
+	return h.Online
 }
