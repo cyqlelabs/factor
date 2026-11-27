@@ -294,7 +294,7 @@ func (s *Service) invite(ctx context.Context, tc tools.ToolContext, role string)
 		return tools.Errorf("could not make a code: %v", err)
 	}
 	return tools.Textf("A pairing code went to the user directly; you do not see it. On the new machine they "+
-		"turn the swarm on and say \"join the swarm\", then give it the code within %d minutes. Tell them that, "+
+		"say \"join the swarm\" in their own words, then give it the code within %d minutes. Tell them that, "+
 		"and this: %s", int(CodeTTL.Minutes()), roleSentence(role))
 }
 
