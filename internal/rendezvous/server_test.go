@@ -207,8 +207,8 @@ func TestHandshakeRefusals(t *testing.T) {
 	if state := stateWith(l, "proof of work"); l.Online() || !strings.Contains(state, "proof of work") {
 		t.Errorf("a new key against a greedy rendezvous: %q", state)
 	}
-	// And one that pays nothing is not welcomed.
-	r.srv.cfg.WorkBits = 8
+	// And one that pays nothing is not welcomed. The bar stays high: a hello
+	// with no work clears 8 bits by luck once in 256 nonces.
 	ws2, _, err := websocket.Dial(ctx, r.url+"/v1/agent", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +221,9 @@ func TestHandshakeRefusals(t *testing.T) {
 		t.Error("a new key that skipped the work was welcomed")
 	}
 
-	// A removed member is refused outright.
+	// A removed member is refused outright, once its link has paid a bar it
+	// is willing to.
+	r.srv.cfg.WorkBits = 8
 	a, _ := swarm.NewIdentity()
 	g := swarm.Genesis(a, swarm.NewSwarmID(), r.url)
 	_ = r.srv.store.Commit(g)
