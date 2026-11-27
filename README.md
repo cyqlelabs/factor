@@ -493,6 +493,8 @@ such as one without the wake word, gets a soft chime; `ignored_chime` turns it o
 
 Replies come out speakable — no markdown, lists or URLs — and `voice_write` sends
 anything long to the terminal, or to your last chat when Factor runs as a daemon.
+`voice_say` works the other way round: ask from Telegram or another machine in your
+swarm, and Factor says it aloud on these speakers.
 Speech starts once the first sentence is rendered, not the whole reply. The local
 speech server runs with onnxruntime's telemetry switched off
 ([onnxruntime#25573](https://github.com/microsoft/onnxruntime/issues/25573)).

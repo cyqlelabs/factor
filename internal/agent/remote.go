@@ -80,8 +80,10 @@ func remoteBriefing(audience string) string {
 	brief := "This turn was handed to you by another Factor agent in your swarm, not typed by the user: " +
 		"the bracketed name on the message is that agent. Your reply goes back to it as the task's result, " +
 		"so make it complete and plain — it may be read aloud or passed on. If you need something only its " +
-		"user can tell you, use ask_user: the question goes back to that agent, which asks its user. Do only " +
-		"what the request asks."
+		"user can tell you, use ask_user: the question goes back to that agent, which asks its user. Your " +
+		"reply reaches only that agent, never this machine's speakers or screen, so anything the request wants " +
+		"done here — said aloud, shown, played — is done with your tools; where it names a program to use or " +
+		"install, a tool of your own that does the job comes first. Do only what the request asks."
 	switch audience {
 	case tools.AudienceShared:
 		brief += " That agent did not say its user is alone, so only shared memory is consulted and you must " +

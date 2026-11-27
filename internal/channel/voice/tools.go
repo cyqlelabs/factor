@@ -156,6 +156,68 @@ func (t *writeTool) Execute(_ context.Context, args map[string]any) *tools.Resul
 	return tools.Textf("Delivered in writing via %s. Keep the spoken reply to one short sentence.", chatChannel)
 }
 
+// sayTool is how a turn that is not a spoken conversation — a task another
+// agent handed this machine, a written chat, a scheduled task — says
+// something out loud here. Without it, a task asking to be read out on this
+// machine had no way to reach the speakers but its own: the model tried to
+// install espeak-ng, lifted the speech server's token out of /proc to
+// synthesise a WAV, and played it through the media player.
+type sayTool struct {
+	voice *Voice
+}
+
+func (t *sayTool) Name() string { return "voice_say" }
+
+func (t *sayTool) Description() string {
+	return "Say something out loud on this machine's speakers, in Factor's own voice. Use it when a turn " +
+		"whose reply is not already spoken — a task from another agent, a written chat — is asked to " +
+		"say, announce or read something aloud here. Never install a " +
+		"synthesizer or play an audio file for this. In a spoken conversation just answer: the reply is " +
+		"already spoken. It returns once the words have been heard out."
+}
+
+func (t *sayTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"message": map[string]any{
+				"type":        "string",
+				"description": "What to say, written as it should be heard: plain sentences, no markdown",
+			},
+		},
+		"required": []string{"message"},
+	}
+}
+
+func (t *sayTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
+	message := strings.TrimSpace(tools.StringArg(args, "message"))
+	if message == "" {
+		return tools.Errorf("message is required")
+	}
+	tc := tools.ToolContextFrom(ctx)
+	outlet := tc.Outlet
+	if outlet == "" {
+		outlet = tc.Channel
+	}
+	if outlet == t.voice.Name() {
+		// A spoken turn holds the floor until it answers, so waiting for the
+		// floor here would wait for itself; a scheduled one reporting to the
+		// speakers would say it twice.
+		return tools.Errorf("this turn's reply is already spoken — say it in your reply")
+	}
+	if tc.Audience == "" && t.voice.Audience("") == tools.AudienceShared {
+		return tools.Errorf("somebody else is in the room here and this turn may hold private details, so " +
+			"nothing was said aloud — say so, or put it in writing")
+	}
+	if t.voice.runCtx == nil || t.voice.runCtx.Err() != nil {
+		return tools.Errorf("the voice channel is not running, so nothing was said aloud")
+	}
+	if err := t.voice.speakWhenIdle(ctx, message); err != nil {
+		return tools.Errorf("it was not said aloud in full: %v", err)
+	}
+	return tools.Textf("Said aloud on this machine's speakers.")
+}
+
 // roomTool is how the conversation itself corrects the room. Sound can only
 // report people who make it: somebody who walks in and listens is invisible
 // to every acoustic signal, and somebody who leaves is announced by nothing

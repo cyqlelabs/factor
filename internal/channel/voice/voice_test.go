@@ -727,11 +727,11 @@ func TestVoiceUnknownSpeakerStaysAnonymousByDefault(t *testing.T) {
 // to whoever spoke last, so "soy Roxana" works without naming a profile.
 func TestVoiceSpeakersTool(t *testing.T) {
 	h := newVoiceHarness(t, nil)
-	if len(h.v.Toolset()) != 1 {
+	if len(h.v.Toolset()) != 2 {
 		t.Error("the speakers tool exists without speaker_id")
 	}
 	h.enableSpeakerID(unknownEnroll)
-	if len(h.v.Toolset()) != 2 {
+	if len(h.v.Toolset()) != 3 {
 		t.Error("speaker_id did not bring the speakers tool")
 	}
 	h.v.speakers.enroll(vec(1, 0))
@@ -811,6 +811,84 @@ func TestVoiceSendBeforeStartRefuses(t *testing.T) {
 	h := newVoiceHarness(t, nil)
 	if err := h.v.Send(context.Background(), bus.OutboundMessage{Channel: "voice", Content: "x"}); err == nil {
 		t.Error("a never-started channel accepted a message")
+	}
+}
+
+func voiceSay(t *testing.T, v *Voice) tools.Tool {
+	t.Helper()
+	for _, tool := range v.Toolset() {
+		if tool.Name() == "voice_say" {
+			return tool
+		}
+	}
+	t.Fatal("the voice channel offers no voice_say")
+	return nil
+}
+
+// A task another agent hands this machine has no speakers of its own: asked
+// to say something aloud, it says it through this channel, and hears back
+// only once the words have been heard.
+func TestVoiceSaySpeaksForATurnThatIsNotSpoken(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	h.start()
+	tool := voiceSay(t, h.v)
+	if tool.Parameters()["type"] != "object" || tool.Description() == "" {
+		t.Error("the tool schema is incomplete")
+	}
+	ctx := tools.WithToolContext(context.Background(),
+		tools.ToolContext{Channel: "a2a", SessionKey: "a2a:peer:ctx", Audience: tools.AudienceShared})
+	res := tool.Execute(ctx, map[string]any{"message": "the closet box is up"})
+	if res.IsError || !strings.Contains(res.ForLLM, "Said aloud") {
+		t.Fatalf("Execute: %s", res.ForLLM)
+	}
+	if !h.spoke("the closet box is up") {
+		t.Error("the tool answered before the words were spoken")
+	}
+
+	h.api.mu.Lock()
+	h.api.status = http.StatusInternalServerError
+	h.api.mu.Unlock()
+	if res := tool.Execute(ctx, map[string]any{"message": "one more"}); !res.IsError ||
+		!strings.Contains(res.ForLLM, "not said aloud") {
+		t.Errorf("a failed synthesis reported %q", res.ForLLM)
+	}
+}
+
+func TestVoiceSayRefuses(t *testing.T) {
+	h := newVoiceHarness(t, nil)
+	tool := voiceSay(t, h.v)
+	shared := tools.WithToolContext(context.Background(),
+		tools.ToolContext{Channel: "a2a", Audience: tools.AudienceShared})
+	if res := tool.Execute(shared, map[string]any{"message": "hi"}); !res.IsError ||
+		!strings.Contains(res.ForLLM, "not running") {
+		t.Errorf("a never-started channel answered %q", res.ForLLM)
+	}
+	h.enableRoom(time.Hour)
+	h.start()
+	if res := tool.Execute(shared, map[string]any{"message": " "}); !res.IsError {
+		t.Error("an empty message was accepted")
+	}
+	// A spoken turn holds the floor it would wait for.
+	spoken := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "voice"})
+	if res := tool.Execute(spoken, map[string]any{"message": "hi"}); !res.IsError {
+		t.Error("a spoken turn was handed the speakers")
+	}
+	// So does a scheduled turn reporting to them.
+	toSpeakers := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "cron", Outlet: "voice"})
+	if res := tool.Execute(toSpeakers, map[string]any{"message": "hi"}); !res.IsError {
+		t.Error("a turn whose reply is spoken was handed the speakers too")
+	}
+	// A private turn says nothing to a room with company in it.
+	h.v.room.declare(true, []string{"Roxana"}, time.Now())
+	private := tools.WithToolContext(context.Background(), tools.ToolContext{Channel: "telegram"})
+	if res := tool.Execute(private, map[string]any{"message": "your passport number"}); !res.IsError {
+		t.Error("a private turn was spoken into a shared room")
+	}
+	if h.spoke("your passport number") {
+		t.Error("the private words reached the speakers")
+	}
+	if res := tool.Execute(shared, map[string]any{"message": "dinner is ready"}); res.IsError {
+		t.Errorf("a shared turn was refused: %s", res.ForLLM)
 	}
 }
 
