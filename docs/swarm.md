@@ -268,7 +268,7 @@ limits and the per-agent quotas keep it from taking capacity Cyqle needs.
 | Phase | State |
 |---|---|
 | P1 | Built. `go test -tags tck -run TestServeForTCK ./internal/a2a` serves the server for the conformance kit, whose run is not yet recorded here |
-| P2 | Built, and tested end to end with an in-process rendezvous. Open: the network-namespace NAT checkpoint, and a deployed instance (open question 1) |
+| P2 | Built, and tested end to end with an in-process rendezvous. `test/netns/run.sh` scripts the network-namespace NAT checkpoint (it needs root), not yet run. Open: a deployed instance (open question 1) |
 | P3 | Built, with the transcription eval set in `internal/swarm/speech_test.go`. Open: the live checkpoint across two networks |
 | P4 | The shared-LAN path is built, behind `swarm.lan`. Hole punching is not: it ships only on measurements from real pairs |
 | P5 | Built: the guest role, agents outside the swarm, the REST binding, and push notifications carried over the tunnel |
