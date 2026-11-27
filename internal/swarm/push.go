@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 )
@@ -27,12 +28,28 @@ const pushHeader = "A2A-Notification-Token"
 // tunnelPusher implements the SDK's push sender over the tunnel.
 type tunnelPusher struct{ s *Service }
 
-// SendPush never fails the task it reports on: a push only saves the caller
-// a poll, and a task must not end over a notification that did not land.
-func (p tunnelPusher) SendPush(ctx context.Context, cfg *a2a.PushConfig, event a2a.Event) error {
-	if err := p.send(ctx, cfg, event); err != nil {
+// SendPush posts in the background and never fails the task it reports on: a
+// push only saves the caller a poll. The SDK delivers a task's pushes before
+// the event goes on to the caller's stream, so a push that waited out its own
+// round trip held the answer back one round trip for every event of the task.
+func (p tunnelPusher) SendPush(_ context.Context, cfg *a2a.PushConfig, event a2a.Event) error {
+	// Read here, while the event is still the SDK's to hand over.
+	body, err := json.Marshal(a2a.StreamResponse{Event: event})
+	if err != nil {
 		slog.Debug("swarm: a push did not land", "url", cfg.URL, "error", err)
+		return nil
 	}
+	to := *cfg
+	s := p.s
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ctx, cancel := context.WithTimeout(s.bg, 30*time.Second)
+		defer cancel()
+		if err := p.send(ctx, &to, body); err != nil {
+			slog.Debug("swarm: a push did not land", "url", to.URL, "error", err)
+		}
+	}()
 	return nil
 }
 
@@ -47,7 +64,7 @@ func (p tunnelPusher) pushTarget(raw string) (string, error) {
 	return "", fmt.Errorf("a push goes to a member's tunnel address, not %q", raw)
 }
 
-func (p tunnelPusher) send(ctx context.Context, cfg *a2a.PushConfig, event a2a.Event) error {
+func (p tunnelPusher) send(ctx context.Context, cfg *a2a.PushConfig, body []byte) error {
 	peer, err := p.pushTarget(cfg.URL)
 	if err != nil {
 		return err
@@ -57,10 +74,6 @@ func (p tunnelPusher) send(ctx context.Context, cfg *a2a.PushConfig, event a2a.E
 		return errOffline
 	}
 	hc, base, err := transport.HTTPClient(peer)
-	if err != nil {
-		return err
-	}
-	body, err := json.Marshal(a2a.StreamResponse{Event: event})
 	if err != nil {
 		return err
 	}

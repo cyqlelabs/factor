@@ -3,6 +3,7 @@ package swarm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,6 +66,10 @@ func TestPushRefusalsAndReceiver(t *testing.T) {
 	pair(t, map[string]*node{"desk": desk, "home": home})
 	p := tunnelPusher{s: home.svc}
 	ev := a2a.NewStatusUpdateEvent(&a2a.Task{ID: "t", ContextID: "c"}, a2a.TaskStateWorking, nil)
+	evBody, err := json.Marshal(a2a.StreamResponse{Event: ev})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, u := range []string{
 		"http://" + desk.svc.ID() + ".swarm/swarm/v1/push",
 		"https://evil.example/swarm/v1/push",
@@ -72,7 +77,7 @@ func TestPushRefusalsAndReceiver(t *testing.T) {
 		"https://" + desk.svc.ID() + ".swarm/elsewhere",
 		"::",
 	} {
-		if err := p.send(context.Background(), &a2a.PushConfig{URL: u}, ev); err == nil {
+		if err := p.send(context.Background(), &a2a.PushConfig{URL: u}, evBody); err == nil {
 			t.Errorf("pushed to %s", u)
 		}
 	}
@@ -80,7 +85,7 @@ func TestPushRefusalsAndReceiver(t *testing.T) {
 		t.Error("a failed push failed the task")
 	}
 	good := desk.svc.pushConfig(&Delegation{Token: "tok"})
-	if err := p.send(context.Background(), good, ev); err != nil {
+	if err := p.send(context.Background(), good, evBody); err != nil {
 		t.Errorf("push to a member: %v", err)
 	}
 
