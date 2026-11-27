@@ -66,14 +66,17 @@ to deal with. When a direct path exists, traffic moves to it.
 | Path | A relayed WebSocket first, then a direct TCP connection on a shared LAN, then hole-punched QUIC | The relay works everywhere; a direct path is faster and costs nothing |
 | Rendezvous | `factor rendezvous`, shipped in the same binary | Anyone can run one |
 
-Speed targets, to be measured in P2–P4:
+Speed targets, and what the network-namespace checkpoint measured
+(`test/netns/run.sh`: each home network behind its own NAT, 20 ms each way on
+every internet link, so 80 ms round trip between two agents through the
+rendezvous):
 
-| Moment | Target |
-|---|---|
-| Call to a member you talked to recently, relayed | one round trip to the rendezvous, about 40–120 ms |
-| The same call on a shared LAN | under 5 ms |
-| First call to a member | under 300 ms to the first byte, since the presence socket is already open |
-| Pairing, once the code is entered | under 3 s |
+| Moment | Target | Measured |
+|---|---|---|
+| Call to a member you talked to recently, relayed | one round trip to the rendezvous, about 40–120 ms | 84 ms |
+| The same call on a shared LAN | under 5 ms | 3.1 ms |
+| First call to a member | under 300 ms to the first byte, since the presence socket is already open | 247 ms to the whole answer |
+| Pairing, once the code is entered | under 3 s | 0.65 s |
 
 A first call never waits for a direct path. It goes over the relay at once
 while the agents look for a direct route alongside it, and later requests move
@@ -270,9 +273,9 @@ limits and the per-agent quotas keep it from taking capacity Cyqle needs.
 | Phase | State |
 |---|---|
 | P1 | Built. `go test -tags tck -run TestServeForTCK ./internal/a2a` serves the server for the conformance kit, whose run is not yet recorded here |
-| P2 | Built, and tested end to end with an in-process rendezvous. `test/netns/run.sh` scripts the network-namespace NAT checkpoint (it needs root), not yet run. Open: a deployed instance (open question 1) |
+| P2 | Built, and checked in network namespaces with `test/netns/run.sh` (it needs root): three agents behind two NATs that drop UDP pair, call each other and remove one, at 0 and 20 ms each way, inside every speed target; a removal reached both other members in 62 ms. Open: a deployed instance (open question 1) |
 | P3 | Built, with the transcription eval set in `internal/swarm/speech_test.go`. Open: the live checkpoint across two networks |
-| P4 | The shared-LAN path is built, behind `swarm.lan`. Hole punching is not: it ships only on measurements from real pairs |
+| P4 | The shared-LAN path is built, behind `swarm.lan`. The namespace checkpoint shows it finding a member on the same network, and refusing an address that names a different machine there. Hole punching is not built: it ships only on measurements from real pairs |
 | P5 | Built: the guest role, agents outside the swarm, the REST binding, and push notifications carried over the tunnel |
 
 ## Development plan
