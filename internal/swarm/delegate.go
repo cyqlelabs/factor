@@ -162,6 +162,21 @@ func (l *ledger) all() []*Delegation {
 	return out
 }
 
+// get is the stored record of one delegation.
+func (l *ledger) get(id string) (*Delegation, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	data, err := os.ReadFile(l.path(id))
+	if err != nil {
+		return nil, false
+	}
+	var d Delegation
+	if json.Unmarshal(data, &d) != nil {
+		return nil, false
+	}
+	return &d, true
+}
+
 // byTask is the latest delegation that carried task to peer.
 func (l *ledger) byTask(peer, task string) (*Delegation, bool) {
 	var found *Delegation
@@ -423,6 +438,14 @@ func (s *Service) settle(d *Delegation, w *waiter, state, said string) {
 // message the agent wrote rather than the user. A result produced in private
 // waits while the room it is headed for has company.
 func (s *Service) deliver(d *Delegation) {
+	// Callers hold copies read at different moments — a settle in flight, the
+	// startup reconcile, the redelivery tick — and a copy read before another
+	// caller saved what it sent would send it again.
+	s.deliverMu.Lock()
+	defer s.deliverMu.Unlock()
+	if cur, ok := s.deleg.get(d.ID); ok {
+		d = cur
+	}
 	if d.Delivered {
 		return
 	}
