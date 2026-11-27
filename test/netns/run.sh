@@ -38,9 +38,14 @@ router() { # router NS WAN-ADDR
   ip -n "$1" route add default via "${2%.*}.1"
   ip netns exec "$1" sysctl -qw net.ipv4.ip_forward=1
   ip netns exec "$1" nft -f - <<'EOF'
-table ip nat { chain post { type nat hook postrouting priority srcnat; oifname "wan" masquerade; } }
+table ip nat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    oifname "wan" masquerade
+  }
+}
 table ip filter {
-  chain fwd {
+  chain forward {
     type filter hook forward priority 0; policy accept;
     meta l4proto udp drop
     iifname "wan" ct state established,related accept
