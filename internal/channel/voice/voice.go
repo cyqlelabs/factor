@@ -82,6 +82,10 @@ const (
 	holdingInterval = 45 * time.Second
 )
 
+// floorWait is how long a message from outside a spoken turn waits for the
+// speakers to fall quiet before it is given up on.
+const floorWait = 2 * time.Minute
+
 // Voice is the PC voice connector. Like the phone it does not publish inbound
 // turns onto the bus: an utterance is synchronous — the user is standing
 // there — so each one runs directly through the agent loop, and talking over
@@ -318,7 +322,7 @@ func (v *Voice) BindLastExternal(fn func() (string, string, bool)) { v.lastExter
 
 // Toolset is the tools that only exist where a microphone does.
 func (v *Voice) Toolset() []tools.Tool {
-	set := []tools.Tool{&writeTool{voice: v}}
+	set := []tools.Tool{&writeTool{voice: v}, &sayTool{voice: v}}
 	if v.speakers != nil {
 		set = append(set, &speakersTool{voice: v})
 	}
@@ -434,7 +438,7 @@ func (v *Voice) speakOutbound(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case msg := <-v.outbound:
-			v.speakWhenIdle(ctx, msg.Content)
+			_ = v.speakWhenIdle(ctx, msg.Content)
 		}
 	}
 }
@@ -1009,15 +1013,26 @@ func (v *Voice) Audience(string) string {
 // sentence renders in a fraction of that, and the rest is in hand before the
 // speakers need it. One request stays in flight at most — a barge cancels
 // it with the reply, and anything past it would be paid for and thrown away.
-func (v *Voice) speak(ctx context.Context, text string) {
+func (v *Voice) speak(ctx context.Context, text string) { _ = v.speakHeard(ctx, text) }
+
+// Why speakHeard did not get a message heard out.
+var (
+	errNoSpeech  = errors.New("the speech tier is not up")
+	errCutOff    = errors.New("it was cut off before the end")
+	errFloorBusy = errors.New("the speakers were taken for two minutes")
+)
+
+// speakHeard is speak for a caller that has to know how it went: nil once
+// every word reached the speakers.
+func (v *Voice) speakHeard(ctx context.Context, text string) error {
 	client := v.speechClient()
 	if client == nil {
-		return
+		return errNoSpeech
 	}
 	v.speakMu.Lock()
 	defer v.speakMu.Unlock()
 	if ctx.Err() != nil {
-		return // the floor was taken while this waited its turn
+		return errCutOff // the floor was taken while this waited its turn
 	}
 	if v.sound != nil {
 		// The music comes down for the answer and back up after it.
@@ -1030,8 +1045,14 @@ func (v *Voice) speak(ctx context.Context, text string) {
 	defer v.echo.expire(v.echoSettle())
 	text = spokenText(text, v.cfg.Language)
 	if text == "" {
-		return
+		return nil
 	}
+	return v.playChunks(ctx, client, text)
+}
+
+// playChunks renders text a sentence at a time, each piece while the one
+// before it plays, and returns once the last has been heard out.
+func (v *Voice) playChunks(ctx context.Context, client *speechClient, text string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type rendered struct {
@@ -1054,10 +1075,12 @@ func (v *Voice) speak(ctx context.Context, text string) {
 			ahead = render(chunks[i+1])
 		}
 		if next.err != nil {
-			if ctx.Err() == nil {
-				slog.Warn("speech synthesis failed", "error", v.redact(next.err))
+			if ctx.Err() != nil {
+				return errCutOff
 			}
-			return
+			err := v.redact(next.err)
+			slog.Warn("speech synthesis failed", "error", err)
+			return fmt.Errorf("speech synthesis failed: %w", err)
 		}
 		if len(next.pcm) == 0 {
 			continue
@@ -1070,13 +1093,14 @@ func (v *Voice) speak(ctx context.Context, text string) {
 		done := v.player.play(ctx, next.pcm)
 		select {
 		case <-ctx.Done():
-			return
+			return errCutOff
 		case result := <-done:
 			if !result.completed {
-				return
+				return errCutOff
 			}
 		}
 	}
+	return nil
 }
 
 // echoSettle is how long a reply that has stopped sounding stays matchable as
@@ -1100,31 +1124,32 @@ func (v *Voice) armWindow() {
 // user's turn in progress. The startup wait matters most to the restart
 // notice, which the gateway delivers the moment it boots — while the local
 // speech server is still loading its models.
-func (v *Voice) speakWhenIdle(ctx context.Context, text string) {
+func (v *Voice) speakWhenIdle(ctx context.Context, text string) error {
 	started := time.Now()
 	for v.speechClient() == nil {
 		if ctx.Err() != nil {
-			return
+			return ctx.Err()
 		}
 		// run settles the tier within speechWait plus one probe, one way or
 		// the other; past that the channel is down and has said so.
 		if time.Since(started) > v.speechWait+30*time.Second {
 			slog.Warn("dropping a spoken message: the speech tier never came up", "text", text)
-			return
+			return errNoSpeech
 		}
 		sleepCtx(ctx, 500*time.Millisecond)
 	}
-	deadline := time.Now().Add(2 * time.Minute)
+	deadline := time.Now().Add(floorWait)
 	for ctx.Err() == nil && time.Now().Before(deadline) {
 		if !v.player.busy() && !v.turnInFlight() {
-			v.speak(ctx, text)
-			return
+			return v.speakHeard(ctx, text)
 		}
 		sleepCtx(ctx, 500*time.Millisecond)
 	}
-	if ctx.Err() == nil {
-		slog.Warn("dropping a spoken message: the floor was never free to say it", "text", text)
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
+	slog.Warn("dropping a spoken message: the floor was never free to say it", "text", text)
+	return errFloorBusy
 }
 
 func (v *Voice) turnInFlight() bool {

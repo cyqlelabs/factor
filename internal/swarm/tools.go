@@ -30,8 +30,10 @@ func (t *sendTool) Name() string { return SendToolName }
 func (t *sendTool) Description() string {
 	return "Hand work to another agent in this swarm — another machine running Factor — or to an agent outside " +
 		"it that the user named in swarm.agents, and get its answer. Use it when the user asks for something " +
-		"that has to happen on that machine: its disk, its files, its screen, its network. Name the agent as " +
-		"the user does. A quick answer comes back here; slow work " +
+		"that has to happen on that machine: its disk, its files, its screen, its speakers, its network. Name the " +
+		"agent as the user does, and pass on what the user wants done rather than how: the other agent knows its " +
+		"own tools, so to have it say something aloud ask it to say it aloud, and name a program for it to " +
+		"install or run only when the user did. A quick answer comes back here; slow work " +
 		"carries on in the background and its outcome arrives later as a system message. If the agent asks a " +
 		"question, put it to the user, then call this again with the task id and their answer."
 }
