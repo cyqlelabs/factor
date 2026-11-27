@@ -40,16 +40,13 @@ func (p tunnelPusher) SendPush(_ context.Context, cfg *a2a.PushConfig, event a2a
 		return nil
 	}
 	to := *cfg
-	s := p.s
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		ctx, cancel := context.WithTimeout(s.bg, 30*time.Second)
+	p.s.spawn(func() {
+		ctx, cancel := context.WithTimeout(p.s.bg, 30*time.Second)
 		defer cancel()
 		if err := p.send(ctx, &to, body); err != nil {
 			slog.Debug("swarm: a push did not land", "url", to.URL, "error", err)
 		}
-	}()
+	})
 	return nil
 }
 
