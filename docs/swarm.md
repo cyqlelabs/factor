@@ -230,6 +230,17 @@ state, so the turn runs on a context the gateway owns and waits in memory under
 the normal ask timeout. A timeout or a restart fails the task with a stated
 reason. Resuming a waiting task after a restart is out of scope.
 
+The turn's briefing says its reply reaches only the caller. Anything the
+request wants done on this machine goes through the tool made for it:
+`voice_say` to say something aloud, `message_user` to write to this machine's
+user. The briefing calls a program or file the request names a guess by an
+agent that cannot see these tools, and tells the turn to say so when no tool
+here can do what is asked. Both rules come from the first live tests. A box asked to speak read the speech
+server's token out of `/proc` and played a WAV through mpv; another, with no
+voice channel, spent 25 tool calls probing ports. The speech server and the
+phone's voice shell now read their secrets from stdin rather than from an
+environment any process of the same user can read.
+
 A small machine runs one remote task at a time (configurable), with a queue of
 one. The answer to a task's own question skips the queue. Tasks are kept on
 disk for seven days and checked for ownership, and a machine with less than
@@ -243,6 +254,15 @@ and backgrounding is made atomically, so an answer arrives exactly once. The
 delegation record is written before the message leaves. After a restart,
 Factor checks each record with `GetTask`, because the SDK cannot resubscribe
 to a finished task.
+
+Members also tell each other what their tasks can reach: whether the voice
+channel is running, which `voice_say` needs, and which written chats
+`message_user` would write to. Each member hears only what its own grant lets
+its tasks use, so a guest learns nothing it cannot have. The exchange runs on
+every link-up and every hourly roster confirmation, and `swarm_send`'s
+description lists the answers. A sender knows before it writes the request
+that a box with no voice cannot say anything aloud. A member that has never
+answered is listed apart from one that answered with nothing.
 
 Results come back into the session as machine-authored messages. Progress is
 silent. A completion, a question from the other agent or a failure is reported,

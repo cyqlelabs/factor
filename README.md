@@ -617,6 +617,8 @@ tests that auto-skip where the machine can't host them.
 Factor sends your conversations only where you point it: to the language-model
 providers you configure, to the channels you turn on (Telegram, phone, voice
 services), and to the sites, searches and servers its tools use for your requests.
+Once you pair machines, work between them passes through the swarm's relay
+(rendezvous.fctr.app, unless you run your own), sealed so the relay cannot read it.
 The memory engine runs on your machine and sends text to the same provider to
 extract facts from it. Factor has no telemetry, and it switches off the telemetry
 of every engine, library and browser it runs.
@@ -625,13 +627,13 @@ On its own, Factor contacts these services, sending none of your data:
 
 | Service | Why | Turned off by |
 |---|---|---|
-| GitHub | new Factor releases; the decision model's weights | `upgrade.check: false`; `decision.mode: off` |
-| PyPI | installing and updating the memory engine and the decision runtime | `memory.auto_install: false`; `decision.auto_install: false` |
+| GitHub | new Factor releases, and new images of a memory engine run as a container (ghcr.io); the decision model's weights; the browser engine's Firefox build | `upgrade.check: false`; `decision.mode: off`; `browser.engine: chromium` |
+| PyPI | installing and updating the memory engine and the decision runtime; checking for new memory engine releases; installing the phone's voice shell | `memory.auto_install: false`; `decision.auto_install: false`; `upgrade.check: false`; `channels.phone.auto_install: false` |
 | Hugging Face | the memory engine's embedding and entity models | `memory.mode: off` |
+| Hugging Face, GitHub, PyPI, aka.ms | a local speech tier: the speech server, its voices and models, and on Windows the Visual C++ runtime | cloud speech (tier 1) |
 | npm, nodejs.org | installing the browser engine | `browser.engine: chromium` |
 | Your package manager (winget, apt, Homebrew) | installing the media player | `tools.allow_install: false` |
 | openrouter.ai | its public price list | `cost.track: false`, with no budget caps set |
-
 ## License
 
 MIT © CyqleLabs
