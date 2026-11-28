@@ -137,6 +137,9 @@ func TestRemoteBriefing(t *testing.T) {
 	if !strings.Contains(remoteBriefing(tools.AudienceShared), "shared memory") {
 		t.Error("a shared task was not told")
 	}
+	if !strings.Contains(remoteBriefing(""), "not among yours, this machine cannot do it") {
+		t.Error("a task is not told to say what this machine lacks")
+	}
 	tc := tools.ToolContext{Channel: remoteChannel, Audience: tools.AudienceShared}
 	if !strings.Contains(channelBriefing(tc), "another Factor agent") {
 		t.Error("channelBriefing ignores a2a")

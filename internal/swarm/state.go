@@ -33,6 +33,9 @@ type Peer struct {
 	// Addrs are where the member said it can be reached directly on its
 	// network, signed by its key.
 	Addrs []string `json:"addrs,omitempty"`
+	// Reach is what the member last said its tasks can reach of its own
+	// user; nil until it has said anything.
+	Reach *Reach `json:"reach,omitempty"`
 }
 
 // State is everything this agent keeps about its swarm.
@@ -128,6 +131,11 @@ func (s State) clone() State {
 		p := *v
 		p.Grant.Tools = slices.Clone(v.Grant.Tools)
 		p.Addrs = slices.Clone(v.Addrs)
+		if v.Reach != nil {
+			r := *v.Reach
+			r.Chats = slices.Clone(v.Reach.Chats)
+			p.Reach = &r
+		}
 		c.Peers[k] = &p
 	}
 	c.Contexts = make(map[string]string, len(s.Contexts))

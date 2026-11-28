@@ -54,6 +54,7 @@ type Service struct {
 	// offline says why the swarm cannot connect at all, when it cannot.
 	offline string
 	notify  func(string)
+	reach   func() Reach
 	asker   func(ctx context.Context) tools.Asker
 	gate    func(channel string) error
 	// lan is the direct path, when swarm.lan turned it on; lanAddrs lists
@@ -161,6 +162,7 @@ func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /swarm/v1/addrs", s.serveAddrs)
 	mux.HandleFunc("POST /"+pushPath, s.servePush)
+	mux.HandleFunc("POST /"+reachPath, s.serveReach)
 	mux.Handle("/", s.server.Handler(s.peerOf))
 	return mux
 }

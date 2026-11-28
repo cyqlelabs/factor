@@ -204,6 +204,12 @@ func serve(configPath string) (bool, error) {
 	// tasks that arrive on it.
 	if a.Swarm != nil {
 		a.Swarm.OnNotice(swarm.NoticeTo(a.Bus, a.Loop.LastChannel))
+		// What the other agents may ask this one for, told to them as they
+		// connect: the voice voice_say speaks in, the chats message_user
+		// writes to.
+		a.Swarm.SetReach(func() swarm.Reach {
+			return swarm.Reach{Voice: manager.Serves("voice"), Chats: a.Loop.WrittenChats()}
+		})
 		a.Registry.Register(a.Swarm.Tools()...)
 		a.Swarm.Connect()
 		a.Swarm.Start()

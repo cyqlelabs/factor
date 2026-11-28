@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/cyqlelabs/factor/internal/bus"
@@ -110,10 +111,29 @@ func (t *messageTool) target(channel string) (chatAddr, error) {
 	return chatAddr{}, t.noChat(channel)
 }
 
-// written reports whether a channel is a chat running here that the user
+// WrittenChats are the channels message_user can write to now: running,
+// written, and holding a chat the user has written in. The swarm tells the
+// other agents, so they know what to ask this machine for.
+func (l *Loop) WrittenChats() []string {
+	l.lastMu.Lock()
+	chats := slices.Clone(l.lastChats)
+	l.lastMu.Unlock()
+	var out []string
+	for _, c := range chats {
+		if l.writable(c.Channel) && !slices.Contains(out, c.Channel) {
+			out = append(out, c.Channel)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func (t *messageTool) written(channel string) bool { return t.loop.writable(channel) }
+
+// writable reports whether a channel is a chat running here that the user
 // reads: a connector that runs its own turns speaks or dials instead.
-func (t *messageTool) written(channel string) bool {
-	return t.loop.Reachable(channel) && t.loop.channelConverses(channel)
+func (l *Loop) writable(channel string) bool {
+	return l.Reachable(channel) && l.channelConverses(channel)
 }
 
 // noChat says why no chat on channel (any channel, when blank) can be

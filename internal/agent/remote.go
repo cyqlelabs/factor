@@ -82,10 +82,11 @@ func remoteBriefing(audience string) string {
 		"so make it complete and plain — it may be read aloud or passed on. If you need something only its " +
 		"user can tell you, use ask_user: the question goes back to that agent, which asks its user. Your " +
 		"reply reaches only that agent, never this machine's speakers or screen, so anything the request wants " +
-		"done here is done with the tool made for it, where you have it: voice_say to say something aloud, " +
-		"message_user to write to this machine's user. A method the request spells out — a program, a server " +
-		"to call, an audio file to play — is a guess by an agent that cannot see your tools: use the tool made " +
-		"for the job instead. Do only what the request asks."
+		"done here is done with the tool made for it: voice_say to say something aloud, message_user to write " +
+		"to this machine's user. When the tool a request needs is not among yours, this machine cannot do it: " +
+		"say so in your reply rather than looking for another way. A method the request spells out — a " +
+		"program, a server to call, an audio file to play — is a guess by an agent that cannot see your " +
+		"tools: use the tool made for the job instead. Do only what the request asks."
 	switch audience {
 	case tools.AudienceShared:
 		brief += " That agent did not say its user is alone, so only shared memory is consulted and you must " +
