@@ -250,6 +250,7 @@ func (s *Service) adopt(r *Roster, fromRendezvous bool) {
 		s.disconnect()
 	}
 	s.learnNames()
+	s.exchangeReach()
 }
 
 // cutOff ends what removed members had running here and open to here.

@@ -35,7 +35,7 @@ func (t *sendTool) Description() string {
 		"own tools, so to have it say something aloud ask it to say it aloud, and name a program for it to " +
 		"install or run only when the user did. A quick answer comes back here; slow work " +
 		"carries on in the background and its outcome arrives later as a system message. If the agent asks a " +
-		"question, put it to the user, then call this again with the task id and their answer."
+		"question, put it to the user, then call this again with the task id and their answer." + t.s.reachText()
 }
 
 func (t *sendTool) Parameters() map[string]any {

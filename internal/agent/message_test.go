@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -42,6 +43,10 @@ func TestMessageUserWritesToTheLastWrittenChat(t *testing.T) {
 	gatewayLike(h.loop)
 	h.loop.recordLastChannel(bus.InboundMessage{Channel: "telegram", ChatID: "42"})
 	h.loop.recordLastChannel(bus.InboundMessage{Channel: "voice", ChatID: "local"})
+	// Slack runs and is written, but nobody has written there yet.
+	if got := h.loop.WrittenChats(); !slices.Equal(got, []string{"telegram"}) {
+		t.Errorf("WrittenChats = %v", got)
+	}
 	tool := h.loop.MessageTool()
 	if tool.Name() != MessageToolName || tool.Description() == "" || tool.Parameters()["type"] != "object" {
 		t.Error("the tool schema is incomplete")
